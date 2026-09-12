@@ -105,3 +105,5 @@ docker build -t aoyagikouhei/athena-local:dev .
 
 Tagging a commit as `v*` publishes `linux/amd64` and `linux/arm64` images to
 Docker Hub via GitHub Actions (`DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` secrets).
+Each architecture is built on a native runner and the results are merged into a
+single manifest, so no QEMU emulation is involved.
