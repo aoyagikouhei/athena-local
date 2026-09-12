@@ -99,9 +99,15 @@ memory, so it is lost when the container restarts.
 
 ```bash
 cargo run                 # needs a reachable Trino (TRINO_URL)
+cargo test                # no Trino needed: the tests start a fake one
 cargo clippy --all-targets -- -D warnings
 docker build -t aoyagikouhei/athena-local:dev .
 ```
+
+The test suite drives the real router against a fake Trino in-process, so it
+covers the Athena wire shapes (header row, `UpdateCount`, pagination, error
+mapping) and the fact that SQL is passed through unchanged. CI runs `fmt`,
+`clippy` and `test` on every push and pull request.
 
 Tagging a commit as `v*` publishes `linux/amd64` and `linux/arm64` images to
 Docker Hub via GitHub Actions (`DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` secrets).

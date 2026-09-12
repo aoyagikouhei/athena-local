@@ -151,3 +151,19 @@ fn statement_type(query: &str) -> &'static str {
 fn unknown_execution(id: &str) -> Response {
     invalid_request(format!("QueryExecutionId が見つかりません: {id}"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn statement_type_は先頭のキーワードで決まる() {
+        assert_eq!(statement_type("SELECT 1"), "DML");
+        assert_eq!(statement_type("  insert into t values (1)"), "DML");
+        assert_eq!(statement_type("MERGE INTO t USING s ON x"), "DML");
+        assert_eq!(statement_type("CREATE TABLE t AS SELECT 1"), "DDL");
+        assert_eq!(statement_type("DROP TABLE t"), "DDL");
+        assert_eq!(statement_type("SET SESSION x = 1"), "UTILITY");
+        assert_eq!(statement_type(""), "UTILITY");
+    }
+}

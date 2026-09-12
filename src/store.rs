@@ -23,7 +23,7 @@ pub struct Execution {
     pub result: Option<Arc<Outcome>>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum State {
     Queued,
     Running,
@@ -101,4 +101,51 @@ fn now() -> f64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs_f64())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn 投入から成功までの状態が進む() {
+        let store = Store::default();
+        store.submit("id", "SELECT 1", Some("cat".into()), Some("db".into()));
+
+        let execution = store.get("id").expect("登録されていない");
+        assert_eq!(execution.state, State::Queued);
+        assert_eq!(execution.catalog.as_deref(), Some("cat"));
+        assert!(execution.result.is_none());
+
+        store.mark_running("id");
+        assert_eq!(store.get("id").unwrap().state, State::Running);
+
+        store.finish("id", Ok(Outcome::default()));
+        let finished = store.get("id").unwrap();
+        assert_eq!(finished.state, State::Succeeded);
+        assert!(finished.result.is_some());
+        assert!(finished.completed_at.is_some());
+    }
+
+    #[test]
+    fn 失敗すると理由が残り結果は入らない() {
+        let store = Store::default();
+        store.submit("id", "SELECT 1", None, None);
+
+        store.finish("id", Err("TABLE_NOT_FOUND: t".to_string()));
+
+        let execution = store.get("id").unwrap();
+        assert_eq!(execution.state, State::Failed);
+        assert_eq!(
+            execution.state_change_reason.as_deref(),
+            Some("TABLE_NOT_FOUND: t")
+        );
+        assert!(execution.result.is_none());
+    }
+
+    #[test]
+    fn 知らない_id_は取れない() {
+        let store = Store::default();
+        assert!(store.get("missing").is_none());
+    }
 }

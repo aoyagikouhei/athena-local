@@ -23,7 +23,7 @@ pub struct App {
     pub config: Arc<Config>,
 }
 
-pub async fn dispatch(State(app): State<App>, headers: HeaderMap, body: Bytes) -> Response {
+pub(crate) async fn dispatch(State(app): State<App>, headers: HeaderMap, body: Bytes) -> Response {
     let Some(operation) = operation_name(&headers) else {
         return invalid_request("X-Amz-Target がありません");
     };
