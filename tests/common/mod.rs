@@ -1,4 +1,8 @@
 //! テスト用の足場。Trino の偽物と athena-local 本体を同一プロセスで立てる。
+//!
+//! テストバイナリごとにこのモジュールが取り込まれるため、使われないヘルパが
+//! 必ず出る（例: dml.rs は trino_requests を使わない）。
+#![allow(dead_code)]
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
