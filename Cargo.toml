@@ -1,0 +1,21 @@
+[package]
+name = "athena-local"
+version = "0.1.0"
+edition = "2024"
+description = "Local stand-in for the AWS Athena API that executes SQL on Trino"
+repository = "https://github.com/aoyagikouhei/athena-local"
+publish = false
+
+[dependencies]
+axum = "0.8.9"
+# TLS は入れない（ローカルの Trino は素の HTTP。必要なら features に "rustls" を足す）。
+reqwest = { version = "0.13.5", default-features = false, features = ["json"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tokio = { version = "1.53.1", default-features = false, features = ["rt-multi-thread", "macros", "net", "time"] }
+uuid = { version = "1.26.1", features = ["v4"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
