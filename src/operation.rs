@@ -9,6 +9,7 @@ use crate::athena::{
     GetQueryResultsResponse, QueryExecution, QueryExecutionContext, StartQueryExecutionRequest,
     StartQueryExecutionResponse, Statistics, Status,
 };
+use crate::config::Config;
 use crate::convert;
 use crate::handler::App;
 use crate::response::{invalid_request, ok, parse};
@@ -55,7 +56,7 @@ fn spawn_query(app: App, id: String) {
         };
         app.store.mark_running(&id);
 
-        let outcome = run(&app.trino, &execution)
+        let outcome = run(&app.trino, &app.config, &execution)
             .await
             .map_err(|error| error.to_string());
         app.store.finish(&id, outcome);
@@ -64,8 +65,12 @@ fn spawn_query(app: App, id: String) {
 
 /// 値を分類して EXECUTE IMMEDIATE で包んで実行する。
 /// パラメータが無ければ分類は走らず、SQL はそのまま送られる（to_trino_sql が判断する）。
-async fn run(trino: &Trino, execution: &Execution) -> Result<Outcome, QueryError> {
-    let catalog = execution.catalog.as_deref();
+async fn run(trino: &Trino, config: &Config, execution: &Execution) -> Result<Outcome, QueryError> {
+    // Trino に送るのは別名を当てた名前。実行情報には受け取った名前が残る。
+    let catalog = execution
+        .catalog
+        .as_deref()
+        .map(|catalog| config.trino_catalog(catalog));
     let database = execution.database.as_deref();
 
     // 分類も本体と同じカタログ・スキーマで問い合わせ、関数の解決先を揃える。

@@ -58,11 +58,23 @@ Any credentials work; requests are not verified.
 | `TRINO_USER` | `athena-local` | Value of the `X-Trino-User` header |
 | `TRINO_CATALOG` | *(none)* | Default catalog when the request has no `QueryExecutionContext.Catalog` |
 | `TRINO_SCHEMA` | *(none)* | Default schema when the request has no `QueryExecutionContext.Database` |
+| `TRINO_CATALOG_MAP` | *(none)* | Catalog aliases: `<athena name>=<trino name>`, comma separated. A malformed value stops the server at startup |
 
 Catalog and schema are passed to Trino as `X-Trino-Catalog` / `X-Trino-Schema`
 headers. **Without `ExecutionParameters` the SQL string is never rewritten**, so
 write unqualified table names and let the context carry the catalog and database —
 that way the same SQL works against real Athena.
+
+Some Athena catalog names cannot exist in Trino. Reading S3 Tables through Athena
+always uses `s3tablescatalog/<bucket>`, and a Trino catalog name cannot contain
+`/`. Map such names to a Trino catalog instead of changing your code:
+
+```yaml
+TRINO_CATALOG_MAP: s3tablescatalog/my-bucket=iceberg,AwsDataCatalog=hive
+```
+
+The alias is applied to the name Trino receives only; `GetQueryExecution` reports
+the catalog name the request used.
 
 ## Supported API
 
@@ -128,6 +140,10 @@ memory, so it is lost when the container restarts.
 - **Map key order.** Map entries are printed in ascending key order, compared as
   strings. That matched Athena for the keys we measured; other key sets (for
   example numeric keys `9` and `10`) were not verified.
+- **Catalog aliases cover the context only.** `TRINO_CATALOG_MAP` rewrites the
+  `X-Trino-Catalog` header, not the SQL, so a fully qualified name such as
+  `"s3tablescatalog/my-bucket".db.users` still fails. Rely on
+  `QueryExecutionContext` instead.
 - **Plain HTTP only.** The client is built without TLS. To reach an HTTPS Trino,
   add the `rustls` feature to `reqwest` in `Cargo.toml`.
 

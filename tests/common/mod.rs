@@ -46,6 +46,7 @@ pub struct HarnessBuilder {
     first: Value,
     next: Option<Value>,
     routes: HashMap<String, Value>,
+    catalog_map: HashMap<String, String>,
 }
 
 impl HarnessBuilder {
@@ -58,6 +59,15 @@ impl HarnessBuilder {
     /// この SQL を受けたときだけ返す応答（単一ページ）。
     pub fn route(mut self, sql: &str, response: Value) -> Self {
         self.routes.insert(sql.to_string(), response);
+        self
+    }
+
+    /// athena-local の TRINO_CATALOG_MAP にあたる別名。
+    pub fn catalog_map(mut self, pairs: &[(&str, &str)]) -> Self {
+        self.catalog_map = pairs
+            .iter()
+            .map(|(from, to)| (from.to_string(), to.to_string()))
+            .collect();
         self
     }
 
@@ -77,6 +87,7 @@ impl HarnessBuilder {
             trino_user: "test".to_string(),
             default_catalog: Some("default_catalog".to_string()),
             default_database: Some("default_schema".to_string()),
+            catalog_map: self.catalog_map,
         };
         let athena_addr = spawn(athena_local::router(config)).await;
 
@@ -94,6 +105,7 @@ impl Harness {
             first: response,
             next: None,
             routes: HashMap::new(),
+            catalog_map: HashMap::new(),
         }
     }
 

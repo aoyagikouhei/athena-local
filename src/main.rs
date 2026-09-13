@@ -6,7 +6,7 @@ use tokio::net::TcpListener;
 /// ローカル用の Athena 代役。SQL は Trino に実行させる。
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let config = Config::from_env();
+    let config = Config::from_env()?;
     let listener = TcpListener::bind(&config.bind_address).await?;
 
     println!(
