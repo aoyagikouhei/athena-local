@@ -23,6 +23,8 @@ pub struct Column {
     pub name: String,
     /// Trino の型名。Athena の ColumnInfo.Type にそのまま載せる。
     pub type_name: String,
+    /// 構造化された型（Trino の typeSignature）。複合型の値を Athena の表記にするときに使う。
+    pub type_signature: Option<serde_json::Value>,
 }
 
 /// クエリの失敗。Trino が返したエラーなら errorName を持つ（接続失敗などは None）。
@@ -128,6 +130,7 @@ impl Outcome {
                 .map(|column| Column {
                     name: column.name,
                     type_name: column.type_name,
+                    type_signature: column.type_signature,
                 })
                 .collect();
         }
@@ -197,6 +200,8 @@ struct StatementColumn {
     name: String,
     #[serde(rename = "type")]
     type_name: String,
+    #[serde(rename = "typeSignature", default)]
+    type_signature: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]

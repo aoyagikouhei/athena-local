@@ -112,6 +112,41 @@ async fn max_results_でページングされ_next_token_で続きが取れる()
 }
 
 #[tokio::test]
+async fn 配列の列は_athena_の表記で返る() {
+    // 利用側が "[1, 2, 3]" を ", " で分割して読んでも値が化けないこと。
+    let harness = Harness::start(json!({
+        "columns": [{
+            "name": "counts",
+            "type": "array(bigint)",
+            "typeSignature": {
+                "rawType": "array",
+                "arguments": [{ "kind": "TYPE", "value": { "rawType": "bigint", "arguments": [] } }]
+            }
+        }],
+        "data": [[[1, 2, 3]], [null]]
+    }))
+    .await;
+
+    let execution = harness
+        .run_query(json!({ "QueryString": "SELECT counts FROM t" }))
+        .await;
+    let (_, results) = harness
+        .call(
+            "GetQueryResults",
+            json!({ "QueryExecutionId": execution_id(&execution) }),
+        )
+        .await;
+
+    let rows = results["ResultSet"]["Rows"].as_array().unwrap();
+    assert_eq!(rows[1]["Data"][0]["VarCharValue"], "[1, 2, 3]");
+    assert!(rows[2]["Data"][0].get("VarCharValue").is_none());
+    assert_eq!(
+        results["ResultSet"]["ResultSetMetadata"]["ColumnInfo"][0]["Type"],
+        "array(bigint)"
+    );
+}
+
+#[tokio::test]
 async fn trino_が複数ページで返しても全行そろう() {
     let first = json!({
         "columns": [{ "name": "n", "type": "bigint" }],

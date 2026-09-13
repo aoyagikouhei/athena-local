@@ -76,6 +76,11 @@ Behaviour that matches real Athena:
 
 - The first row of the first page of a `SELECT` result holds the column names.
 - Values are returned as strings (`Datum.VarCharValue`); NULL omits the field.
+- `array`, `map` and `row` values use Athena's notation rather than JSON:
+  `[1, 2, 3]`, `[a, null]`, `[[1], [2, 3]]`, `{k=1}`, `{id=1, name=x}`, and
+  `{1, x}` for an unnamed row. Strings inside are not quoted, exactly as in Athena
+  (so `ARRAY['a, b']` reads `[a, b]`). The column's `typeSignature` from Trino
+  tells a row from an array; without it the value falls back to JSON.
 - DML (`INSERT` / `UPDATE` / `DELETE` / `MERGE`) returns no rows and sets `UpdateCount`.
 - Failed queries make `GetQueryResults` return `InvalidRequestException`.
 
@@ -120,6 +125,9 @@ memory, so it is lost when the container restarts.
   above, but a value that closes the parenthesis and still yields one column
   (for example `1) FROM t WHERE (1`) is passed through as an expression, and
   each parameter costs one extra round trip to Trino.
+- **Map key order.** Map entries are printed in ascending key order, compared as
+  strings. That matched Athena for the keys we measured; other key sets (for
+  example numeric keys `9` and `10`) were not verified.
 - **Plain HTTP only.** The client is built without TLS. To reach an HTTPS Trino,
   add the `rustls` feature to `reqwest` in `Cargo.toml`.
 

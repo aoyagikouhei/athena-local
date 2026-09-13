@@ -70,6 +70,7 @@ mod tests {
                 .map(|i| Column {
                     name: format!("_col{i}"),
                     type_name: "integer".to_string(),
+                    type_signature: None,
                 })
                 .collect(),
             ..Outcome::default()
