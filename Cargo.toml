@@ -1,6 +1,6 @@
 [package]
 name = "athena-local"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Local stand-in for the AWS Athena API that executes SQL on Trino"
 repository = "https://github.com/aoyagikouhei/athena-local"

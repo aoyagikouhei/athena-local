@@ -15,12 +15,14 @@ your app ──(aws-sdk-athena / awsJson1.1)──> athena-local ──(REST /v1
 ```yaml
 services:
   athena-local:
-    image: aoyagikouhei/athena-local:0.1.0
+    image: aoyagikouhei/athena-local:0.2.0
     environment:
       TRINO_URL: http://trino:8080
       # Defaults used when the request has no QueryExecutionContext.
       TRINO_CATALOG: iceberg
       TRINO_SCHEMA: my_schema
+      # Optional: Athena catalog names Trino cannot have (see Configuration).
+      # TRINO_CATALOG_MAP: s3tablescatalog/my-bucket=iceberg
     ports:
       - "8084:8080"
     depends_on:
