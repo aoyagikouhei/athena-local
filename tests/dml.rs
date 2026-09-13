@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{Harness, execution_id};
+use common::{Harness, execution_id, trino_error};
 use serde_json::json;
 
 #[tokio::test]
@@ -87,6 +87,29 @@ async fn trino_のエラーは_failed_と理由になる() {
     assert_eq!(code, 400);
     assert_eq!(error["__type"], "InvalidRequestException");
     assert!(error["message"].as_str().unwrap().contains("FAILED"));
+}
+
+#[tokio::test]
+async fn 偽_trino_は_sql_ごとに応答を変えられる() {
+    // 後続のテストが「分類用の問い合わせ」と「本体」を別々に演じさせる前提の確認。
+    let harness = Harness::builder(json!({ "columns": [], "data": [] }))
+        .route(
+            "SELECT * FROM no_such",
+            trino_error("TABLE_NOT_FOUND", "Table 'no_such' does not exist"),
+        )
+        .start()
+        .await;
+
+    let failed = harness
+        .run_query(json!({ "QueryString": "SELECT * FROM no_such" }))
+        .await;
+    let succeeded = harness
+        .run_query(json!({ "QueryString": "SELECT 1" }))
+        .await;
+
+    assert_eq!(failed["QueryExecution"]["Status"]["State"], "FAILED");
+    assert_eq!(succeeded["QueryExecution"]["Status"]["State"], "SUCCEEDED");
+    assert_eq!(harness.trino_sqls(), ["SELECT * FROM no_such", "SELECT 1"]);
 }
 
 #[tokio::test]

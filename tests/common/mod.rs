@@ -4,6 +4,7 @@
 //! 必ず出る（例: dml.rs は trino_requests を使わない）。
 #![allow(dead_code)]
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -24,11 +25,13 @@ pub struct TrinoRequest {
     pub schema: Option<String>,
 }
 
-/// Trino の偽物。1 ページ目と（あれば）2 ページ目の応答を固定で返す。
+/// Trino の偽物。SQL が routes に一致すればその応答を、
+/// しなければ 1 ページ目と（あれば）2 ページ目の応答を固定で返す。
 #[derive(Clone)]
 struct FakeTrino {
     first: Value,
     next: Option<Value>,
+    routes: Arc<HashMap<String, Value>>,
     requests: Arc<Mutex<Vec<TrinoRequest>>>,
 }
 
@@ -38,18 +41,32 @@ pub struct Harness {
     requests: Arc<Mutex<Vec<TrinoRequest>>>,
 }
 
-impl Harness {
-    /// 単一ページの応答を返す Trino を立てる。
-    pub async fn start(response: Value) -> Self {
-        Self::start_with_pages(response, None).await
+/// 偽 Trino の応答を組み立ててから立てる。
+pub struct HarnessBuilder {
+    first: Value,
+    next: Option<Value>,
+    routes: HashMap<String, Value>,
+}
+
+impl HarnessBuilder {
+    /// nextUri を辿らせる 2 ページ目の応答。
+    pub fn next_page(mut self, next: Value) -> Self {
+        self.next = Some(next);
+        self
     }
 
-    /// nextUri を辿らせる（2 ページ）Trino を立てる。
-    pub async fn start_with_pages(first: Value, next: Option<Value>) -> Self {
+    /// この SQL を受けたときだけ返す応答（単一ページ）。
+    pub fn route(mut self, sql: &str, response: Value) -> Self {
+        self.routes.insert(sql.to_string(), response);
+        self
+    }
+
+    pub async fn start(self) -> Harness {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let trino_addr = spawn_trino(FakeTrino {
-            first,
-            next,
+            first: self.first,
+            next: self.next,
+            routes: Arc::new(self.routes),
             requests: requests.clone(),
         })
         .await;
@@ -63,15 +80,44 @@ impl Harness {
         };
         let athena_addr = spawn(athena_local::router(config)).await;
 
-        Self {
+        Harness {
             athena_url: format!("http://{athena_addr}/"),
             requests,
         }
+    }
+}
+
+impl Harness {
+    /// 既定の応答を決めて組み立てを始める。
+    pub fn builder(response: Value) -> HarnessBuilder {
+        HarnessBuilder {
+            first: response,
+            next: None,
+            routes: HashMap::new(),
+        }
+    }
+
+    /// 単一ページの応答を返す Trino を立てる。
+    pub async fn start(response: Value) -> Self {
+        Self::builder(response).start().await
+    }
+
+    /// nextUri を辿らせる（2 ページ）Trino を立てる。
+    pub async fn start_with_pages(first: Value, next: Value) -> Self {
+        Self::builder(first).next_page(next).start().await
     }
 
     /// Trino が受け取ったリクエスト。
     pub fn trino_requests(&self) -> Vec<TrinoRequest> {
         self.requests.lock().expect("poisoned").clone()
+    }
+
+    /// Trino が受け取った SQL だけを順に並べたもの。
+    pub fn trino_sqls(&self) -> Vec<String> {
+        self.trino_requests()
+            .into_iter()
+            .map(|request| request.sql)
+            .collect()
     }
 
     /// Athena のオペレーションを 1 つ呼ぶ。
@@ -127,6 +173,25 @@ pub fn execution_id(execution: &Value) -> String {
         .to_string()
 }
 
+/// Trino のエラー応答（Trino 482 の実物から必要な項目だけ抜いた形）。
+pub fn trino_error(error_name: &str, message: &str) -> Value {
+    json!({
+        "error": {
+            "message": message,
+            "errorName": error_name,
+            "errorType": "USER_ERROR"
+        }
+    })
+}
+
+/// 1 列 1 行の成功応答。
+pub fn trino_single_value(type_name: &str, value: Value) -> Value {
+    json!({
+        "columns": [{ "name": "_col0", "type": type_name }],
+        "data": [[value]]
+    })
+}
+
 /// nextUri は実際に立てたポートを指す必要があるので、bind してから応答に埋め込む。
 async fn spawn_trino(mut fake: FakeTrino) -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -162,13 +227,19 @@ async fn statement(
             .map(str::to_string)
     };
 
+    let response = fake
+        .routes
+        .get(&sql)
+        .cloned()
+        .unwrap_or_else(|| fake.first.clone());
+
     fake.requests.lock().expect("poisoned").push(TrinoRequest {
         sql,
         catalog: header("x-trino-catalog"),
         schema: header("x-trino-schema"),
     });
 
-    axum::Json(fake.first.clone())
+    axum::Json(response)
 }
 
 async fn next_page(State(fake): State<FakeTrino>) -> axum::Json<Value> {

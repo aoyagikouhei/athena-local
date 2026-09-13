@@ -118,7 +118,7 @@ async fn trino_が複数ページで返しても全行そろう() {
         "data": [[1], [2]]
     });
     let next = json!({ "data": [[3]] });
-    let harness = Harness::start_with_pages(first, Some(next)).await;
+    let harness = Harness::start_with_pages(first, next).await;
 
     let execution = harness
         .run_query(json!({ "QueryString": "SELECT n FROM t" }))
