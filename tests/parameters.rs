@@ -248,6 +248,22 @@ async fn パラメータの数が合わなければ_failed_になり投げ直さ
 }
 
 #[tokio::test]
+async fn パラメータが_null_なら無いものとして扱う() {
+    // AWS SDK は未指定を送らないが、手書きのクライアントは null を送ることがある。
+    let harness = Harness::start(select_response()).await;
+
+    let execution = harness
+        .run_query(json!({
+            "QueryString": "SELECT 1 AS v",
+            "ExecutionParameters": null
+        }))
+        .await;
+
+    assert_eq!(execution["QueryExecution"]["Status"]["State"], "SUCCEEDED");
+    assert_eq!(harness.trino_sqls(), ["SELECT 1 AS v"]);
+}
+
+#[tokio::test]
 async fn 空のパラメータなら分類もせず_sql_をそのまま送る() {
     let harness = Harness::start(select_response()).await;
 

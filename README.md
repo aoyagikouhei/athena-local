@@ -137,8 +137,13 @@ memory, so it is lost when the container restarts.
   `decimal(2,1)`, and Trino has no session property to change that.
 - **Parameter classification is an approximation.** It follows the measured rules
   above, but a value that closes the parenthesis and still yields one column
-  (for example `1) FROM t WHERE (1`) is passed through as an expression, and
-  each parameter costs one extra round trip to Trino.
+  (for example `1) FROM t WHERE (1`) is passed through as an expression, and a
+  value ending in a line comment (`1 -- x`) becomes a string literal because the
+  comment swallows the closing parenthesis. How Athena classifies those, or a
+  bare `?`, has not been measured. Each parameter costs one extra round trip to
+  Trino.
+- **`varbinary` values.** Trino returns them base64-encoded and athena-local
+  passes that through; Athena returns them as hex.
 - **Map key order.** Map entries are printed in ascending key order, compared as
   strings. That matched Athena for the keys we measured; other key sets (for
   example numeric keys `9` and `10`) were not verified.

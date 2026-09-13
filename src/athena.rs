@@ -9,9 +9,9 @@ pub struct StartQueryExecutionRequest {
     pub query_string: String,
     #[serde(default)]
     pub query_execution_context: Option<QueryExecutionContext>,
-    /// `?` に位置順で当てる値。
+    /// `?` に位置順で当てる値。未指定と null は空として扱う。
     #[serde(default)]
-    pub execution_parameters: Vec<String>,
+    pub execution_parameters: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Default)]

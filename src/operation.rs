@@ -37,7 +37,7 @@ pub fn start_query_execution(app: &App, body: &Bytes) -> Response {
     app.store.submit(
         &id,
         &request.query_string,
-        request.execution_parameters,
+        request.execution_parameters.unwrap_or_default(),
         catalog,
         database,
     );
