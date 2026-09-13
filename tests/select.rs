@@ -61,7 +61,7 @@ async fn カタログとスキーマはヘッダで渡り_sql_は書き換えら
     harness
         .run_query(json!({
             "QueryString": "SELECT id, name FROM users",
-            "QueryExecutionContext": { "Catalog": "iceberg", "Database": "duck_sample" }
+            "QueryExecutionContext": { "Catalog": "iceberg", "Database": "my_schema" }
         }))
         .await;
 
@@ -69,7 +69,7 @@ async fn カタログとスキーマはヘッダで渡り_sql_は書き換えら
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].sql, "SELECT id, name FROM users");
     assert_eq!(requests[0].catalog.as_deref(), Some("iceberg"));
-    assert_eq!(requests[0].schema.as_deref(), Some("duck_sample"));
+    assert_eq!(requests[0].schema.as_deref(), Some("my_schema"));
 }
 
 #[tokio::test]
