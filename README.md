@@ -60,15 +60,15 @@ Any credentials work; requests are not verified.
 | `TRINO_SCHEMA` | *(none)* | Default schema when the request has no `QueryExecutionContext.Database` |
 
 Catalog and schema are passed to Trino as `X-Trino-Catalog` / `X-Trino-Schema`
-headers. **The SQL string is never rewritten**, so write unqualified table names
-and let the context carry the catalog and database — that way the same SQL works
-against real Athena.
+headers. **Without `ExecutionParameters` the SQL string is never rewritten**, so
+write unqualified table names and let the context carry the catalog and database —
+that way the same SQL works against real Athena.
 
 ## Supported API
 
 | Operation | Notes |
 | --- | --- |
-| `StartQueryExecution` | Returns an id immediately; the query runs in the background |
+| `StartQueryExecution` | Returns an id immediately; the query runs in the background. `ExecutionParameters` are supported (see below) |
 | `GetQueryExecution` | `QUEUED` → `RUNNING` → `SUCCEEDED` / `FAILED`. Trino errors land in `Status.StateChangeReason` |
 | `GetQueryResults` | Paginated with `MaxResults` / `NextToken` |
 
@@ -78,6 +78,28 @@ Behaviour that matches real Athena:
 - Values are returned as strings (`Datum.VarCharValue`); NULL omits the field.
 - DML (`INSERT` / `UPDATE` / `DELETE` / `MERGE`) returns no rows and sets `UpdateCount`.
 - Failed queries make `GetQueryResults` return `InvalidRequestException`.
+
+### `ExecutionParameters`
+
+Real Athena does not bind parameter values verbatim. Measured against Athena
+(2026-09-14), each value is classified:
+
+| Value | Treated as | Example → result of `SELECT ? AS v` |
+| --- | --- | --- |
+| Parses as an expression without column references | the expression | `'abc'` → `abc`, `1 + 1` → `2`, `DATE '2020-01-01'`, `NULL`, `now()` |
+| Does not parse | a string literal | `abc def`, `it's`, `123e4567-e89b-12d3-a456-426614174000` |
+| Contains an identifier | a string literal | `abc`, `x + 1`, `t.x` (even if a column `x` exists) |
+| Parses but fails analysis | the expression (the query fails) | `nosuchfunc(1)`, `1 OR 1=1` |
+
+athena-local reproduces this by asking Trino to run `SELECT (<value>)` for each
+value: `SYNTAX_ERROR` or `COLUMN_NOT_FOUND` (or a result with more than one
+column) makes it a quoted string literal, anything else is used as-is. The query
+is then sent as `EXECUTE IMMEDIATE '<sql>' USING <values>` (Trino 418+), so `?`
+inside string literals and comments is left alone. `GetQueryExecution` returns
+the original SQL, and `StatementType` is derived from it.
+
+A wrong number of values fails with `INVALID_PARAMETER_USAGE`, except that — like
+Athena — values passed to SQL without any `?` are ignored.
 
 Not implemented: every other operation, SigV4 verification, workgroups, result
 reuse, writing results to S3 (`ResultConfiguration.OutputLocation` is accepted
@@ -92,6 +114,12 @@ memory, so it is lost when the container restarts.
 - **DDL differs.** Iceberg table DDL is written differently by Athena
   (`table_type='ICEBERG'`) and Trino (`WITH (format = ...)`). Keep DDL out of the
   code paths you want to share.
+- **Decimal literals.** Athena types `1.5` as `double`; Trino types it as
+  `decimal(2,1)`, and Trino has no session property to change that.
+- **Parameter classification is an approximation.** It follows the measured rules
+  above, but a value that closes the parenthesis and still yields one column
+  (for example `1) FROM t WHERE (1`) is passed through as an expression, and
+  each parameter costs one extra round trip to Trino.
 - **Plain HTTP only.** The client is built without TLS. To reach an HTTPS Trino,
   add the `rustls` feature to `reqwest` in `Cargo.toml`.
 
@@ -106,7 +134,8 @@ docker build -t aoyagikouhei/athena-local:dev .
 
 The test suite drives the real router against a fake Trino in-process, so it
 covers the Athena wire shapes (header row, `UpdateCount`, pagination, error
-mapping) and the fact that SQL is passed through unchanged. CI runs `fmt`,
+mapping), parameter classification, and the fact that SQL without parameters is
+passed through unchanged. CI runs `fmt`,
 `clippy` and `test` on every push and pull request.
 
 Tagging a commit as `v*` publishes `linux/amd64` and `linux/arm64` images to

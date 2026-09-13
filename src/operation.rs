@@ -12,7 +12,9 @@ use crate::athena::{
 use crate::convert;
 use crate::handler::App;
 use crate::response::{invalid_request, ok, parse};
+use crate::statement;
 use crate::store::Execution;
+use crate::trino::{Outcome, QueryError, Trino};
 
 const DEFAULT_MAX_RESULTS: usize = 1000;
 
@@ -31,9 +33,14 @@ pub fn start_query_execution(app: &App, body: &Bytes) -> Response {
         .or_else(|| app.config.default_database.clone());
 
     let id = Uuid::new_v4().to_string();
-    app.store
-        .submit(&id, &request.query_string, catalog, database);
-    spawn_query(app.clone(), id.clone(), request.query_string);
+    app.store.submit(
+        &id,
+        &request.query_string,
+        request.execution_parameters,
+        catalog,
+        database,
+    );
+    spawn_query(app.clone(), id.clone());
 
     ok(&StartQueryExecutionResponse {
         query_execution_id: id,
@@ -41,23 +48,42 @@ pub fn start_query_execution(app: &App, body: &Bytes) -> Response {
 }
 
 /// 本物と同じく実行はバックグラウンドで進み、状態はポーリングで見る。
-fn spawn_query(app: App, id: String, query: String) {
+fn spawn_query(app: App, id: String) {
     tokio::spawn(async move {
         let Some(execution) = app.store.get(&id) else {
             return;
         };
         app.store.mark_running(&id);
 
-        let outcome = app
-            .trino
-            .execute(
-                &query,
-                execution.catalog.as_deref(),
-                execution.database.as_deref(),
-            )
-            .await;
+        let outcome = run(&app.trino, &execution)
+            .await
+            .map_err(|error| error.to_string());
         app.store.finish(&id, outcome);
     });
+}
+
+/// 値を分類して EXECUTE IMMEDIATE で包んで実行する。
+/// パラメータが無ければ分類は走らず、SQL はそのまま送られる（to_trino_sql が判断する）。
+async fn run(trino: &Trino, execution: &Execution) -> Result<Outcome, QueryError> {
+    let catalog = execution.catalog.as_deref();
+    let database = execution.database.as_deref();
+
+    // 分類も本体と同じカタログ・スキーマで問い合わせ、関数の解決先を揃える。
+    let mut bound = Vec::with_capacity(execution.execution_parameters.len());
+    for value in &execution.execution_parameters {
+        let probe = trino
+            .execute(&statement::probe_sql(value), catalog, database)
+            .await;
+        bound.push(statement::bind(value, &probe));
+    }
+
+    let sql = statement::to_trino_sql(&execution.query, &bound);
+    match trino.execute(&sql, catalog, database).await {
+        Err(error) if statement::is_unused_parameters(&error) => {
+            trino.execute(&execution.query, catalog, database).await
+        }
+        result => result,
+    }
 }
 
 pub fn get_query_execution(app: &App, body: &Bytes) -> Response {

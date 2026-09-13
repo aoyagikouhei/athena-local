@@ -1,3 +1,4 @@
+use std::fmt;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -24,6 +25,13 @@ pub struct Column {
     pub type_name: String,
 }
 
+/// クエリの失敗。Trino が返したエラーなら errorName を持つ（接続失敗などは None）。
+#[derive(Debug)]
+pub struct QueryError {
+    pub name: Option<String>,
+    pub message: String,
+}
+
 /// 503 は「まだ結果が無い」の合図なので、この間隔で追従し直す。
 const RETRY_INTERVAL: Duration = Duration::from_millis(50);
 const MAX_RETRIES: usize = 200;
@@ -42,13 +50,13 @@ impl Trino {
         sql: &str,
         catalog: Option<&str>,
         schema: Option<&str>,
-    ) -> Result<Outcome, String> {
+    ) -> Result<Outcome, QueryError> {
         let mut statement = self.start(sql, catalog, schema).await?;
         let mut outcome = Outcome::default();
 
         loop {
             if let Some(error) = statement.error {
-                return Err(error.into_message());
+                return Err(error.into_query_error());
             }
             outcome.absorb(&mut statement);
 
@@ -64,7 +72,7 @@ impl Trino {
         sql: &str,
         catalog: Option<&str>,
         schema: Option<&str>,
-    ) -> Result<Statement, String> {
+    ) -> Result<Statement, QueryError> {
         let mut request = self
             .http
             .post(format!("{}/v1/statement", self.base_url))
@@ -82,19 +90,17 @@ impl Trino {
             .body(sql.to_string())
             .send()
             .await
-            .map_err(|e| format!("trino への接続に失敗しました: {e}"))?;
+            .map_err(|e| QueryError::other(format!("trino への接続に失敗しました: {e}")))?;
 
         parse(response).await
     }
 
-    async fn follow(&self, uri: &str) -> Result<Statement, String> {
+    async fn follow(&self, uri: &str) -> Result<Statement, QueryError> {
         for _ in 0..MAX_RETRIES {
-            let response = self
-                .http
-                .get(uri)
-                .send()
-                .await
-                .map_err(|e| format!("trino からの取得に失敗しました: {e}"))?;
+            let response =
+                self.http.get(uri).send().await.map_err(|e| {
+                    QueryError::other(format!("trino からの取得に失敗しました: {e}"))
+                })?;
 
             // 503 は結果がまだ無いだけなので、同じ URI を叩き直す。
             if response.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE {
@@ -105,7 +111,9 @@ impl Trino {
             return parse(response).await;
         }
 
-        Err("trino が 503 を返し続けました".to_string())
+        Err(QueryError::other(
+            "trino が 503 を返し続けました".to_string(),
+        ))
     }
 }
 
@@ -137,18 +145,40 @@ impl Outcome {
     }
 }
 
-async fn parse(response: reqwest::Response) -> Result<Statement, String> {
+impl QueryError {
+    fn other(message: String) -> Self {
+        Self {
+            name: None,
+            message,
+        }
+    }
+}
+
+/// StateChangeReason に載せる形。本物の Athena と同じく `ERROR_NAME: message`。
+impl fmt::Display for QueryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.name {
+            Some(name) => write!(f, "{name}: {}", self.message),
+            None => f.write_str(&self.message),
+        }
+    }
+}
+
+async fn parse(response: reqwest::Response) -> Result<Statement, QueryError> {
     let status = response.status();
     let body = response
         .text()
         .await
-        .map_err(|e| format!("trino の応答を読めませんでした: {e}"))?;
+        .map_err(|e| QueryError::other(format!("trino の応答を読めませんでした: {e}")))?;
 
     if !status.is_success() {
-        return Err(format!("trino が {status} を返しました: {body}"));
+        return Err(QueryError::other(format!(
+            "trino が {status} を返しました: {body}"
+        )));
     }
 
-    serde_json::from_str(&body).map_err(|e| format!("trino の応答を解釈できません: {e}: {body}"))
+    serde_json::from_str(&body)
+        .map_err(|e| QueryError::other(format!("trino の応答を解釈できません: {e}: {body}")))
 }
 
 #[derive(Deserialize)]
@@ -177,10 +207,10 @@ struct StatementError {
 }
 
 impl StatementError {
-    fn into_message(self) -> String {
-        match self.error_name {
-            Some(name) => format!("{name}: {}", self.message),
-            None => self.message,
+    fn into_query_error(self) -> QueryError {
+        QueryError {
+            name: self.error_name,
+            message: self.message,
         }
     }
 }

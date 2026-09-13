@@ -7,6 +7,7 @@ mod convert;
 mod handler;
 mod operation;
 mod response;
+mod statement;
 mod store;
 pub mod trino;
 

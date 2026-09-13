@@ -13,6 +13,8 @@ pub struct Store {
 #[derive(Clone)]
 pub struct Execution {
     pub query: String,
+    /// StartQueryExecution の ExecutionParameters（加工前）。
+    pub execution_parameters: Vec<String>,
     pub catalog: Option<String>,
     pub database: Option<String>,
     pub state: State,
@@ -32,9 +34,17 @@ pub enum State {
 }
 
 impl Store {
-    pub fn submit(&self, id: &str, query: &str, catalog: Option<String>, database: Option<String>) {
+    pub fn submit(
+        &self,
+        id: &str,
+        query: &str,
+        execution_parameters: Vec<String>,
+        catalog: Option<String>,
+        database: Option<String>,
+    ) {
         let execution = Execution {
             query: query.to_string(),
+            execution_parameters,
             catalog,
             database,
             state: State::Queued,
@@ -110,10 +120,17 @@ mod tests {
     #[test]
     fn 投入から成功までの状態が進む() {
         let store = Store::default();
-        store.submit("id", "SELECT 1", Some("cat".into()), Some("db".into()));
+        store.submit(
+            "id",
+            "SELECT ?",
+            vec!["1".into()],
+            Some("cat".into()),
+            Some("db".into()),
+        );
 
         let execution = store.get("id").expect("登録されていない");
         assert_eq!(execution.state, State::Queued);
+        assert_eq!(execution.execution_parameters, ["1"]);
         assert_eq!(execution.catalog.as_deref(), Some("cat"));
         assert!(execution.result.is_none());
 
@@ -130,7 +147,7 @@ mod tests {
     #[test]
     fn 失敗すると理由が残り結果は入らない() {
         let store = Store::default();
-        store.submit("id", "SELECT 1", None, None);
+        store.submit("id", "SELECT 1", Vec::new(), None, None);
 
         store.finish("id", Err("TABLE_NOT_FOUND: t".to_string()));
 
