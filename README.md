@@ -242,7 +242,10 @@ memory, so it is lost when the container restarts.
   (`table_type='ICEBERG'`) and Trino (`WITH (format = ...)`). Keep DDL out of the
   code paths you want to share.
 - **Decimal literals.** Athena types `1.5` as `double`; Trino types it as
-  `decimal(2,1)`, and Trino has no session property to change that.
+  `decimal(2,1)`, and Trino has no session property to change that. So
+  `SELECT 0.1 + 0.2` reads `0.30000000000000004` on Athena and `0.3` here, and
+  `ColumnInfo.Type` differs. Put the type into the literal — `1.5E0` for a
+  `double`, `DECIMAL '1.5'` for a `decimal` — and both engines agree.
 - **Parameter classification is an approximation.** It follows the measured rules
   above, but a value that closes the parenthesis and still yields one column
   (for example `1) FROM t WHERE (1`) is passed through as an expression, and a
@@ -259,7 +262,10 @@ memory, so it is lost when the container restarts.
 - **Catalog aliases cover the context only.** `TRINO_CATALOG_MAP` rewrites the
   `X-Trino-Catalog` header, not the SQL, so a fully qualified name such as
   `"s3tablescatalog/my-bucket".db.users` still fails. Rely on
-  `QueryExecutionContext` instead.
+  `QueryExecutionContext` instead. A name Trino can have, such as
+  `AwsDataCatalog`, needs no alias at all: call the Trino catalog
+  `awsdatacatalog` and qualified names resolve, since Trino lowercases unquoted
+  identifiers.
 - **Syntax differs.** Trino-only syntax such as `CREATE OR REPLACE TABLE` passes
   here but is a syntax error on Athena, and the `Expecting:` list in a syntax
   error follows Trino's grammar. For an incomplete statement (`SELECT * FROM`)
