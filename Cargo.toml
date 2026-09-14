@@ -10,6 +10,7 @@ publish = false
 axum = "0.8.9"
 # TLS は入れない（ローカルの Trino は素の HTTP。必要なら features に "rustls" を足す）。
 reqwest = { version = "0.13.5", default-features = false, features = ["json"] }
+rusty-s3 = { version = "0.10.2", default-features = false, features = ["rustcrypto"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 tokio = { version = "1.53.1", default-features = false, features = ["rt-multi-thread", "macros", "net", "time"] }

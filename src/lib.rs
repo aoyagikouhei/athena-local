@@ -7,6 +7,7 @@ mod convert;
 mod handler;
 mod operation;
 mod response;
+mod results;
 mod statement;
 mod store;
 pub mod trino;
@@ -16,8 +17,9 @@ use std::sync::Arc;
 use axum::Router;
 use axum::routing::post;
 
-use crate::config::Config;
+use crate::config::{Config, ResultsMode};
 use crate::handler::App;
+use crate::results::ResultWriter;
 use crate::store::Store;
 use crate::trino::Trino;
 
@@ -26,6 +28,10 @@ pub fn router(config: Config) -> Router {
     let app = App {
         store: Store::default(),
         trino: Arc::new(Trino::new(&config.trino_url, &config.trino_user)),
+        results: match &config.results {
+            ResultsMode::S3(settings) => Some(Arc::new(ResultWriter::new(settings))),
+            ResultsMode::None => None,
+        },
         config: Arc::new(config),
     };
 

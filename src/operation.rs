@@ -6,19 +6,23 @@ use uuid::Uuid;
 
 use crate::athena::{
     GetQueryExecutionRequest, GetQueryExecutionResponse, GetQueryResultsRequest,
-    GetQueryResultsResponse, QueryExecution, QueryExecutionContext, StartQueryExecutionRequest,
-    StartQueryExecutionResponse, Statistics, Status, StopQueryExecutionRequest,
-    StopQueryExecutionResponse,
+    GetQueryResultsResponse, QueryExecution, QueryExecutionContext, ResultConfiguration,
+    StartQueryExecutionRequest, StartQueryExecutionResponse, Statistics, Status,
+    StopQueryExecutionRequest, StopQueryExecutionResponse,
 };
-use crate::config::Config;
+use crate::config::{Config, ResultsMode};
 use crate::convert;
 use crate::handler::App;
-use crate::response::{invalid_request_with_code, ok, parse};
+use crate::response::{invalid_request, invalid_request_with_code, ok, parse};
+use crate::results::{self, ResultFile, ResultLocation};
 use crate::statement;
 use crate::store::{CancelOutcome, Execution, State};
 use crate::trino::{Outcome, QueryError, Trino};
 
 const DEFAULT_MAX_RESULTS: usize = 1000;
+
+/// OutputLocation も既定も無いときの本物の文言（未実測）。
+const NO_OUTPUT_LOCATION: &str = "No output location provided. An output location is required either through the Workgroup result configuration setting or as an API input.";
 
 pub fn start_query_execution(app: &App, body: &Bytes) -> Response {
     let request: StartQueryExecutionRequest = match parse(body) {
@@ -35,18 +39,58 @@ pub fn start_query_execution(app: &App, body: &Bytes) -> Response {
         .or_else(|| app.config.default_database.clone());
 
     let id = Uuid::new_v4().to_string();
+    let result_location = match result_location(
+        app,
+        request.result_configuration,
+        &request.query_string,
+        &id,
+    ) {
+        Ok(location) => location,
+        Err(response) => return *response,
+    };
+
     app.store.submit(
         &id,
         &request.query_string,
         request.execution_parameters.unwrap_or_default(),
         catalog,
         database,
+        result_location,
     );
     spawn_query(app.clone(), id.clone());
 
     ok(&StartQueryExecutionResponse {
         query_execution_id: id,
     })
+}
+
+/// OutputLocation から結果の置き場所を決める。本物と同じく s3:// の形でない値は受け付けない
+/// （結果を書かないモードでも同じ）。書くモードでは、OutputLocation も既定も無ければ受け付けない。
+fn result_location(
+    app: &App,
+    configuration: Option<ResultConfiguration>,
+    query: &str,
+    id: &str,
+) -> Result<Option<ResultLocation>, Box<Response>> {
+    let requested = configuration.and_then(|configuration| configuration.output_location);
+    let output_location = match (requested, &app.config.results) {
+        (Some(location), _) => location,
+        (None, ResultsMode::S3(settings)) => match &settings.default_output_location {
+            Some(location) => location.clone(),
+            None => return Err(Box::new(invalid_request(NO_OUTPUT_LOCATION))),
+        },
+        (None, ResultsMode::None) => return Ok(None),
+    };
+
+    // 文言とコードは 2026-09-14 に本番 Athena で実測したもの。
+    ResultLocation::new(&output_location, id, ResultFile::of(query))
+        .map(Some)
+        .ok_or_else(|| {
+            Box::new(invalid_request_with_code(
+                "outputLocation is not a valid S3 path.",
+                "INVALID_INPUT",
+            ))
+        })
 }
 
 /// 本物と同じく実行はバックグラウンドで進み、状態はポーリングで見る。
@@ -60,12 +104,36 @@ fn spawn_query(app: App, id: String) {
             return;
         }
 
-        let outcome = run(&app.trino, &app.config, &execution)
-            .await
-            .map_err(|error| error.to_string());
+        let outcome = match run(&app.trino, &app.config, &execution).await {
+            Ok(outcome) => write_result(&app, &execution, outcome).await,
+            Err(error) => Err(error.to_string()),
+        };
         // 途中で止められていれば CANCELLED が先に書かれているので、finish は何もしない。
         app.store.finish(&id, outcome);
     });
+}
+
+/// 結果 CSV を置いてから結果を返す。SUCCEEDED にするのは書き終わってからにする
+/// （クライアントは SUCCEEDED を見た直後に S3 を読みに行く）。書けなければ FAILED。
+async fn write_result(
+    app: &App,
+    execution: &Execution,
+    outcome: Outcome,
+) -> Result<Outcome, String> {
+    let (Some(writer), Some(location)) = (&app.results, &execution.result_location) else {
+        return Ok(outcome);
+    };
+    // 置くのは SELECT の結果だけ。DML / DDL が置くファイル（manifest や .txt）は作らない。
+    // 途中で止められていれば書かない（CANCELLED の本物も何も置かない）。
+    if location.file != ResultFile::Csv
+        || outcome.update_count.is_some()
+        || execution.cancel.is_requested()
+    {
+        return Ok(outcome);
+    }
+
+    writer.put(location, results::to_csv(&outcome)).await?;
+    Ok(outcome)
 }
 
 /// 値を分類して EXECUTE IMMEDIATE で包んで実行する。
@@ -192,6 +260,11 @@ fn to_query_execution(id: &str, execution: &Execution) -> QueryExecution {
         query_execution_id: id.to_string(),
         query: execution.query.clone(),
         statement_type: statement_type(&execution.query).to_string(),
+        result_configuration: execution.result_location.as_ref().map(|location| {
+            ResultConfiguration {
+                output_location: Some(location.uri()),
+            }
+        }),
         query_execution_context: QueryExecutionContext {
             database: execution.database.clone(),
             catalog: execution.catalog.clone(),

@@ -4,7 +4,8 @@ A local stand-in for the AWS Athena API. It speaks the Athena wire protocol
 (`awsJson1.1`) and executes the SQL it receives on [Trino](https://trino.io/).
 
 Point the `endpoint_url` of any AWS SDK at this server and your Athena code runs
-locally — no AWS account, no S3 result bucket, no cost.
+locally — no AWS account, no cost. Result files are optional: add an
+S3-compatible store such as MinIO and the CSV lands in `OutputLocation` too.
 
 ```
 your app ──(aws-sdk-athena / awsJson1.1)──> athena-local ──(REST /v1/statement)──> Trino
@@ -23,6 +24,11 @@ services:
       TRINO_SCHEMA: my_schema
       # Optional: Athena catalog names Trino cannot have (see Configuration).
       # TRINO_CATALOG_MAP: s3tablescatalog/my-bucket=iceberg
+      # Optional: write result CSVs to MinIO (see Result files).
+      # ATHENA_LOCAL_RESULTS: s3
+      # AWS_ENDPOINT_URL_S3: http://minio:9000
+      # AWS_ACCESS_KEY_ID: minioadmin
+      # AWS_SECRET_ACCESS_KEY: minioadmin
     ports:
       - "8084:8080"
     depends_on:
@@ -61,6 +67,16 @@ Any credentials work; requests are not verified.
 | `TRINO_CATALOG` | *(none)* | Default catalog when the request has no `QueryExecutionContext.Catalog` |
 | `TRINO_SCHEMA` | *(none)* | Default schema when the request has no `QueryExecutionContext.Database` |
 | `TRINO_CATALOG_MAP` | *(none)* | Catalog aliases: `<athena name>=<trino name>`, comma separated. A malformed value stops the server at startup |
+| `ATHENA_LOCAL_RESULTS` | `none` | `s3` writes each `SELECT` result as CSV to `OutputLocation`. `none` writes nothing |
+| `ATHENA_LOCAL_OUTPUT_LOCATION` | *(none)* | With `s3`: `s3://bucket/prefix` used when the request has no `ResultConfiguration.OutputLocation` (stands in for the workgroup default) |
+| `AWS_ENDPOINT_URL_S3` | *(none)* | With `s3`: the S3-compatible store, `http://` only. Falls back to `AWS_ENDPOINT_URL` |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | *(none)* | With `s3`: credentials for the store |
+| `AWS_REGION` | `us-east-1` | With `s3`: region used for signing |
+
+With `ATHENA_LOCAL_RESULTS=s3`, a missing endpoint or credential, an `https://`
+endpoint, or a malformed `ATHENA_LOCAL_OUTPUT_LOCATION` stops the server at
+startup. The store itself is not contacted until a query finishes, so the
+bucket may be created after athena-local starts.
 
 Catalog and schema are passed to Trino as `X-Trino-Catalog` / `X-Trino-Schema`
 headers. **Without `ExecutionParameters` the SQL string is never rewritten**, so
@@ -109,6 +125,45 @@ Behaviour that matches real Athena:
   An unknown id returns `QueryExecution <id> was not found` (`QUERY_EXECUTION_NOT_FOUND`).
 - A stopped query reports `StateChangeReason` `Query cancelled by user`.
 
+### Result files
+
+`GetQueryExecution` returns `ResultConfiguration.OutputLocation` as the full
+path of the file Athena would create, whenever the request (or, with
+`ATHENA_LOCAL_RESULTS=s3`, the default) gives an output location. A trailing `/`
+on the location makes no difference. The file name depends on the statement:
+
+| Statement | `OutputLocation` |
+| --- | --- |
+| `SELECT` / `WITH` / `VALUES` | `s3://bucket/prefix/<id>.csv` |
+| `INSERT` / `UPDATE` / `DELETE` / `MERGE` | `s3://bucket/prefix/<id>` |
+| `CREATE TABLE ... AS SELECT` | `s3://bucket/prefix/tables/<id>` |
+| Other DDL, `SHOW`, `DESCRIBE`, ... | `s3://bucket/prefix/<id>.txt` |
+
+With `ATHENA_LOCAL_RESULTS=s3`, a successful `SELECT` writes the CSV there
+before the query becomes `SUCCEEDED`, so a client may read it as soon as it sees
+that state. The format matches Athena byte for byte:
+
+```
+"i","s","q","n","empty","a","vb"
+"1","it's","a""b",,"","[1, 2]","01 02"
+```
+
+- Every non-NULL value is quoted, including the header; `"` is doubled.
+- NULL is an empty field; an empty string is `""`.
+- Lines end with `\n` (also the last one); newlines inside values stay inside
+  the quotes. UTF-8 without a BOM.
+- Values use the same notation as `GetQueryResults`.
+- A query with no rows writes just the header line.
+
+The object is uploaded with a presigned `PUT` (path-style), so any
+S3-compatible store works. A failed upload makes the query `FAILED` with the
+store's response in `StateChangeReason`; it is not retried.
+
+An `OutputLocation` that is not `s3://bucket[/prefix]` is rejected in either
+mode with `outputLocation is not a valid S3 path.` (`INVALID_INPUT`), as Athena
+does. With `ATHENA_LOCAL_RESULTS=s3` and no location at all,
+`StartQueryExecution` fails with Athena's `No output location provided. ...`.
+
 ### `ExecutionParameters`
 
 Real Athena does not bind parameter values verbatim. Measured against Athena
@@ -134,8 +189,7 @@ Athena — values passed to SQL without any `?` are ignored.
 Messages above were measured against Athena (2026-09-14).
 
 Not implemented: every other operation, SigV4 verification, workgroups, result
-reuse, writing results to S3 (`ResultConfiguration.OutputLocation` is accepted
-and ignored), and the statistics fields (always zero). Query state is kept in
+reuse, encryption settings, and the statistics fields (always zero). Query state is kept in
 memory, so it is lost when the container restarts.
 
 ## Caveats
@@ -168,8 +222,18 @@ memory, so it is lost when the container restarts.
 - **Cancellation is checked between pages.** A stopped query is `CANCELLED`
   at once, but the `DELETE` reaches Trino only when the current long poll to
   `nextUri` returns (about a second at most).
-- **Plain HTTP only.** The client is built without TLS. To reach an HTTPS Trino,
-  add the `rustls` feature to `reqwest` in `Cargo.toml`.
+- **Only the `SELECT` CSV is written.** Athena also writes `<id>.csv.metadata`,
+  a manifest for DML and CTAS, and a `.txt` for DDL and `SHOW`. athena-local
+  writes none of those; `OutputLocation` still names the file Athena would use.
+- **A missing bucket fails the query.** Athena reported `SUCCEEDED` for a
+  `SELECT` whose output bucket did not exist (measured). athena-local makes it
+  `FAILED` so the mistake shows up locally.
+- **Unmeasured messages.** The `No output location provided` error and the
+  statement-to-file-name rule for `CTAS` written with `OR REPLACE`, `VALUES` and
+  `DESCRIBE` follow Athena's documented behaviour but were not measured.
+- **Plain HTTP only.** The clients are built without TLS, for both Trino and
+  the S3-compatible store. To reach an HTTPS endpoint, add the `rustls` feature
+  to `reqwest` in `Cargo.toml` (and CA certificates to the image).
 
 ## Development
 
@@ -180,8 +244,8 @@ cargo clippy --all-targets -- -D warnings
 docker build -t aoyagikouhei/athena-local:dev .
 ```
 
-The test suite drives the real router against a fake Trino in-process, so it
-covers the Athena wire shapes (header row, `UpdateCount`, pagination, error
+The test suite drives the real router against a fake Trino and a fake S3
+in-process, so it covers the Athena wire shapes (header row, `UpdateCount`, pagination, error
 mapping), parameter classification, and the fact that SQL without parameters is
 passed through unchanged. CI runs `fmt`,
 `clippy` and `test` on every push and pull request.

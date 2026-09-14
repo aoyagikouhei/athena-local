@@ -1,6 +1,6 @@
 use std::error::Error;
 
-use athena_local::config::Config;
+use athena_local::config::{Config, ResultsMode};
 use tokio::net::TcpListener;
 
 /// ローカル用の Athena 代役。SQL は Trino に実行させる。
@@ -16,6 +16,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         config.default_catalog.as_deref().unwrap_or("-"),
         config.default_database.as_deref().unwrap_or("-")
     );
+    match &config.results {
+        ResultsMode::None => println!("results: not written (ATHENA_LOCAL_RESULTS=none)"),
+        ResultsMode::S3(settings) => println!(
+            "results: written as CSV to {} (default output location: {})",
+            settings.endpoint,
+            settings.default_output_location.as_deref().unwrap_or("-")
+        ),
+    }
 
     axum::serve(listener, athena_local::router(config)).await?;
 

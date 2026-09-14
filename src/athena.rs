@@ -12,6 +12,17 @@ pub struct StartQueryExecutionRequest {
     /// `?` に位置順で当てる値。未指定と null は空として扱う。
     #[serde(default)]
     pub execution_parameters: Option<Vec<String>>,
+    /// OutputLocation だけを使う（暗号化などの設定は受け取って無視する）。
+    #[serde(default)]
+    pub result_configuration: Option<ResultConfiguration>,
+}
+
+#[derive(Deserialize, Serialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub struct ResultConfiguration {
+    /// リクエストでは `s3://bucket/prefix`、GetQueryExecution ではファイルまでのフルパス。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_location: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Default)]
@@ -58,6 +69,8 @@ pub struct QueryExecution {
     pub query: String,
     /// DML / DDL / UTILITY。
     pub statement_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result_configuration: Option<ResultConfiguration>,
     pub query_execution_context: QueryExecutionContext,
     pub status: Status,
     pub statistics: Statistics,

@@ -11,6 +11,7 @@ use axum::response::Response;
 use crate::config::Config;
 use crate::operation;
 use crate::response::invalid_request;
+use crate::results::ResultWriter;
 use crate::store::Store;
 use crate::trino::Trino;
 
@@ -21,6 +22,8 @@ pub struct App {
     pub store: Store,
     pub trino: Arc<Trino>,
     pub config: Arc<Config>,
+    /// ATHENA_LOCAL_RESULTS=s3 のときだけある。
+    pub results: Option<Arc<ResultWriter>>,
 }
 
 pub(crate) async fn dispatch(State(app): State<App>, headers: HeaderMap, body: Bytes) -> Response {

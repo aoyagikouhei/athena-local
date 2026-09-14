@@ -1,4 +1,4 @@
-//! テスト用の足場。Trino の偽物と athena-local 本体を同一プロセスで立てる。
+//! テスト用の足場。Trino と S3 の偽物と athena-local 本体を同一プロセスで立てる。
 //!
 //! テストバイナリごとにこのモジュールが取り込まれるため、使われないヘルパが
 //! 必ず出る（例: dml.rs は trino_requests を使わない）。
@@ -9,11 +9,11 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use athena_local::config::Config;
+use athena_local::config::{Config, ResultsMode, S3Settings};
 use axum::Router;
-use axum::extract::State;
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
 
@@ -46,11 +46,33 @@ struct FakeTrino {
     calls: Arc<Mutex<Vec<String>>>,
 }
 
+/// 偽 S3 が受けた PUT。
+#[derive(Clone, Debug, PartialEq)]
+pub struct S3Put {
+    pub bucket: String,
+    /// パーセントエンコードを戻したキー。
+    pub key: String,
+    pub body: String,
+    pub content_type: Option<String>,
+    /// 署名付き URL（クエリ文字列の X-Amz-Signature）で来たか。署名の中身は見ない。
+    pub presigned: bool,
+}
+
+/// S3 の偽物。`PUT /{bucket}/{key}` を記録して、決めたステータスを返すだけ。
+#[derive(Clone)]
+struct FakeS3 {
+    status: StatusCode,
+    /// 受けたことを記録してから応答するまでの待ち時間。
+    delay: Option<Duration>,
+    puts: Arc<Mutex<Vec<S3Put>>>,
+}
+
 /// 立てた偽 Trino と athena-local のセット。
 pub struct Harness {
     pub athena_url: String,
     requests: Arc<Mutex<Vec<TrinoRequest>>>,
     calls: Arc<Mutex<Vec<String>>>,
+    puts: Arc<Mutex<Vec<S3Put>>>,
 }
 
 /// 偽 Trino の応答を組み立ててから立てる。
@@ -61,9 +83,49 @@ pub struct HarnessBuilder {
     catalog_map: HashMap<String, String>,
     endless: bool,
     statement_delay: Option<Duration>,
+    /// Some なら ATHENA_LOCAL_RESULTS=s3 にして偽 S3 を立てる。
+    s3: Option<S3Options>,
+}
+
+struct S3Options {
+    default_output_location: Option<String>,
+    status: StatusCode,
+    delay: Option<Duration>,
 }
 
 impl HarnessBuilder {
+    /// 結果 CSV を偽 S3 に書かせる（ATHENA_LOCAL_RESULTS=s3）。
+    pub fn results_s3(mut self) -> Self {
+        self.s3 = Some(S3Options {
+            default_output_location: None,
+            status: StatusCode::OK,
+            delay: None,
+        });
+        self
+    }
+
+    /// ATHENA_LOCAL_OUTPUT_LOCATION にあたる既定。results_s3 のあとに呼ぶ。
+    pub fn default_output_location(mut self, location: &str) -> Self {
+        self.s3_options().default_output_location = Some(location.to_string());
+        self
+    }
+
+    /// 偽 S3 が PUT に返すステータス。results_s3 のあとに呼ぶ。
+    pub fn s3_status(mut self, status: u16) -> Self {
+        self.s3_options().status = StatusCode::from_u16(status).expect("ステータスでない");
+        self
+    }
+
+    /// 偽 S3 が PUT を受けてから応答するまで待たせる。results_s3 のあとに呼ぶ。
+    pub fn s3_delay(mut self, delay: Duration) -> Self {
+        self.s3_options().delay = Some(delay);
+        self
+    }
+
+    fn s3_options(&mut self) -> &mut S3Options {
+        self.s3.as_mut().expect("先に results_s3 を呼ぶ")
+    }
+
     /// 最初の応答に nextUri を付け、以降も nextUri だけを返し続ける（止めるまで終わらない）。
     pub fn endless(mut self) -> Self {
         self.endless = true;
@@ -112,6 +174,26 @@ impl HarnessBuilder {
         })
         .await;
 
+        let puts = Arc::new(Mutex::new(Vec::new()));
+        let results = match self.s3 {
+            Some(options) => {
+                let s3_addr = spawn(fake_s3(FakeS3 {
+                    status: options.status,
+                    delay: options.delay,
+                    puts: puts.clone(),
+                }))
+                .await;
+                ResultsMode::S3(S3Settings {
+                    endpoint: reqwest::Url::parse(&format!("http://{s3_addr}")).unwrap(),
+                    access_key_id: "test-key".to_string(),
+                    secret_access_key: "test-secret".to_string(),
+                    region: "us-east-1".to_string(),
+                    default_output_location: options.default_output_location,
+                })
+            }
+            None => ResultsMode::None,
+        };
+
         let config = Config {
             bind_address: "127.0.0.1:0".to_string(),
             trino_url: format!("http://{trino_addr}"),
@@ -119,6 +201,7 @@ impl HarnessBuilder {
             default_catalog: Some("default_catalog".to_string()),
             default_database: Some("default_schema".to_string()),
             catalog_map: self.catalog_map,
+            results,
         };
         let athena_addr = spawn(athena_local::router(config)).await;
 
@@ -126,6 +209,7 @@ impl HarnessBuilder {
             athena_url: format!("http://{athena_addr}/"),
             requests,
             calls,
+            puts,
         }
     }
 }
@@ -140,6 +224,7 @@ impl Harness {
             catalog_map: HashMap::new(),
             endless: false,
             statement_delay: None,
+            s3: None,
         }
     }
 
@@ -169,6 +254,11 @@ impl Harness {
     /// nextUri への GET / DELETE（`GET /next` / `DELETE /next`）を届いた順に。
     pub fn trino_calls(&self) -> Vec<String> {
         self.calls.lock().expect("poisoned").clone()
+    }
+
+    /// 偽 S3 が受けた PUT を届いた順に。
+    pub fn s3_puts(&self) -> Vec<S3Put> {
+        self.puts.lock().expect("poisoned").clone()
     }
 
     /// Athena のオペレーションを 1 つ呼ぶ。
@@ -342,6 +432,44 @@ async fn cancel_statement(State(fake): State<FakeTrino>) -> StatusCode {
         .expect("poisoned")
         .push("DELETE /next".to_string());
     StatusCode::NO_CONTENT
+}
+
+fn fake_s3(fake: FakeS3) -> Router {
+    Router::new()
+        .route("/{bucket}/{*key}", put(put_object))
+        .with_state(fake)
+}
+
+async fn put_object(
+    State(fake): State<FakeS3>,
+    Path((bucket, key)): Path<(String, String)>,
+    Query(query): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+    body: String,
+) -> (StatusCode, &'static str) {
+    fake.puts.lock().expect("poisoned").push(S3Put {
+        bucket,
+        key,
+        body,
+        content_type: headers
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string),
+        presigned: query.contains_key("X-Amz-Signature"),
+    });
+
+    if let Some(delay) = fake.delay {
+        tokio::time::sleep(delay).await;
+    }
+
+    if fake.status.is_success() {
+        (fake.status, "")
+    } else {
+        (
+            fake.status,
+            "<Error><Code>InternalError</Code><Message>fake failure</Message></Error>",
+        )
+    }
 }
 
 async fn spawn(router: Router) -> SocketAddr {

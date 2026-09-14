@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::results::ResultLocation;
 use crate::trino::{Cancel, Outcome};
 
 /// 止められたクエリの StateChangeReason（2026-09-14 に本番 Athena で実測）。
@@ -20,6 +21,8 @@ pub struct Execution {
     pub execution_parameters: Vec<String>,
     pub catalog: Option<String>,
     pub database: Option<String>,
+    /// 結果の置き場所。OutputLocation（またはその既定）が無ければ None。
+    pub result_location: Option<ResultLocation>,
     pub state: State,
     pub state_change_reason: Option<String>,
     pub submitted_at: f64,
@@ -57,12 +60,14 @@ impl Store {
         execution_parameters: Vec<String>,
         catalog: Option<String>,
         database: Option<String>,
+        result_location: Option<ResultLocation>,
     ) {
         let execution = Execution {
             query: query.to_string(),
             execution_parameters,
             catalog,
             database,
+            result_location,
             state: State::Queued,
             state_change_reason: None,
             submitted_at: now(),
@@ -163,7 +168,7 @@ mod tests {
 
     fn submitted() -> Store {
         let store = Store::default();
-        store.submit("id", "SELECT 1", Vec::new(), None, None);
+        store.submit("id", "SELECT 1", Vec::new(), None, None, None);
         store
     }
 
@@ -176,6 +181,7 @@ mod tests {
             vec!["1".into()],
             Some("cat".into()),
             Some("db".into()),
+            None,
         );
 
         let execution = store.get("id").expect("登録されていない");
