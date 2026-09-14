@@ -133,6 +133,12 @@ Behaviour that matches real Athena:
 
   An unknown id returns `QueryExecution <id> was not found` (`QUERY_EXECUTION_NOT_FOUND`).
 - A stopped query reports `StateChangeReason` `Query cancelled by user`.
+- `StatementType` and `SubstatementType` follow Athena: `SELECT` / `WITH` /
+  `VALUES` are `DML` / `SELECT`, `EXPLAIN` is `DML` / `EXPLAIN`, `SHOW TABLES` is
+  `UTILITY` / `SHOW_TABLES`, `CREATE TABLE ... AS SELECT` is `DDL` /
+  `CREATE_TABLE_AS_SELECT`, and so on. Trino spellings map to Athena's
+  (`CREATE SCHEMA` is `CREATE_DATABASE`, `SHOW SCHEMAS` is `SHOW_DATABASES`).
+  Statements whose `SubstatementType` was not measured leave the field out.
 - `Statistics` holds timings measured by athena-local: `QueryQueueTimeInMillis`
   (submitted until sent to Trino), `EngineExecutionTimeInMillis` (from then until
   finished, including parameter classification and the result upload) and

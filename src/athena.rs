@@ -69,6 +69,9 @@ pub struct QueryExecution {
     pub query: String,
     /// DML / DDL / UTILITY。
     pub statement_type: String,
+    /// CREATE_TABLE / INSERT / SHOW_TABLES など。実測していない形の文では省く。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub substatement_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result_configuration: Option<ResultConfiguration>,
     pub query_execution_context: QueryExecutionContext,

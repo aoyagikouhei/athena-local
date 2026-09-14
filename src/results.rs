@@ -38,8 +38,12 @@ impl ResultFile {
         let word = |index: usize| words.get(index).map(String::as_str).unwrap_or_default();
 
         match word(0).trim_start_matches('(') {
-            "SELECT" | "WITH" | "VALUES" | "TABLE" | "UPDATE" | "DELETE" | "MERGE" => Self::Csv,
+            "SELECT" | "WITH" | "VALUES" | "TABLE" | "UPDATE" | "DELETE" | "MERGE" | "VACUUM" => {
+                Self::Csv
+            }
             "INSERT" => Self::Manifest,
+            // Athena の OPTIMIZE は CTAS と同じ扱い（Trino には無い文なので実行はできない）。
+            "OPTIMIZE" => Self::Table,
             "CREATE" if is_create_table_as(&words) => Self::Table,
             _ => Self::Text,
         }
@@ -55,8 +59,8 @@ impl ResultFile {
     }
 }
 
-/// `CREATE [OR REPLACE] TABLE ... AS SELECT | WITH | (`。
-fn is_create_table_as(words: &[String]) -> bool {
+/// `CREATE [OR REPLACE] TABLE ... AS SELECT | WITH | (`。words は大文字にした単語の並び。
+pub(crate) fn is_create_table_as(words: &[String]) -> bool {
     let rest = match words.get(1).map(String::as_str) {
         Some("OR") => &words[words.len().min(3)..],
         _ => &words[words.len().min(1)..],
@@ -347,6 +351,8 @@ mod tests {
             ("DELETE FROM t", ResultFile::Csv),
             ("MERGE INTO t USING s ON t.id = s.id", ResultFile::Csv),
             ("DESCRIBE t", ResultFile::Text),
+            ("VACUUM t", ResultFile::Csv),
+            ("OPTIMIZE t REWRITE DATA USING BIN_PACK", ResultFile::Table),
             ("CREATE TABLE c AS SELECT 1 AS i", ResultFile::Table),
             (
                 "CREATE TABLE db.c WITH (format = 'PARQUET') AS SELECT 1 AS i",
