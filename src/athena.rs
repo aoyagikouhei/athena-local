@@ -166,8 +166,17 @@ pub struct ResultSetMetadata {
 pub struct ColumnInfo {
     pub name: String,
     pub label: String,
+    /// Athena の型名（精度などの引数を付けない基底名。real は float）。
     #[serde(rename = "Type")]
     pub type_name: String,
     pub nullable: String,
     pub case_sensitive: bool,
+    /// 本物は常に "hive"。
+    pub catalog_name: String,
+    /// 本物は常に空。
+    pub schema_name: String,
+    /// 本物は常に空。
+    pub table_name: String,
+    pub precision: i64,
+    pub scale: i64,
 }

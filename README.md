@@ -108,8 +108,13 @@ Behaviour that matches real Athena:
 - The first row of the first page of a `SELECT` result holds the column names.
 - Values are returned as strings (`Datum.VarCharValue`); NULL omits the field.
 - Timestamps keep their precision (`2020-01-01 12:34:56.789123` for
-  `timestamp(6)`, no fraction for `timestamp(0)`), while `ColumnInfo.Type` drops
-  it (`timestamp`, `timestamp with time zone`, `time`).
+  `timestamp(6)`, no fraction for `timestamp(0)`), as Athena does.
+- `ColumnInfo` looks like Athena's: `Type` is the base name (`varchar`, `decimal`,
+  `array`, `timestamp`, and `float` for `real`); `Precision` / `Scale` carry the
+  `decimal` digits and the `varchar` / `char` length, and Athena's fixed values for
+  other types (`integer` 10, `bigint` 19, `double` and `float` 17, `timestamp` 3,
+  `varbinary` 1073741824, 0 otherwise); `CaseSensitive` is true for `varchar` and
+  `char`; `CatalogName` is `hive` with empty `SchemaName` / `TableName`.
 - `double` and `real` values use Java's notation: `1.5`, `0.30000000000000004`,
   `1.0E20`, `1.0E-7`.
 - `array`, `map` and `row` values use Athena's notation rather than JSON:

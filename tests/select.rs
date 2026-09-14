@@ -44,12 +44,17 @@ async fn 先頭行に列名が入り値は文字列で返る() {
     // NULL は VarCharValue ごと省略される。
     assert!(rows[2]["Data"][1].get("VarCharValue").is_none());
 
-    // 型は Trino の型名をそのまま載せる。
+    // 型は Athena と同じ見え方にする（基底名・Precision・CaseSensitive。2026-09-14 実測）。
     let columns = results["ResultSet"]["ResultSetMetadata"]["ColumnInfo"]
         .as_array()
         .unwrap();
     assert_eq!(columns[0]["Name"], "id");
     assert_eq!(columns[0]["Type"], "uuid");
+    assert_eq!(columns[1]["Type"], "varchar");
+    assert_eq!(columns[1]["Precision"], 2147483647);
+    assert_eq!(columns[1]["CaseSensitive"], true);
+    assert_eq!(columns[1]["CatalogName"], "hive");
+    assert_eq!(columns[1]["SchemaName"], "");
 
     // 本物は SELECT でも UpdateCount に 0 を入れて返す（2026-09-14 実測）。
     assert_eq!(results["UpdateCount"], 0);
@@ -142,7 +147,7 @@ async fn 配列の列は_athena_の表記で返る() {
     assert!(rows[2]["Data"][0].get("VarCharValue").is_none());
     assert_eq!(
         results["ResultSet"]["ResultSetMetadata"]["ColumnInfo"][0]["Type"],
-        "array(bigint)"
+        "array"
     );
 }
 
