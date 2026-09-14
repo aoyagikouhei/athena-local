@@ -51,8 +51,8 @@ async fn 先頭行に列名が入り値は文字列で返る() {
     assert_eq!(columns[0]["Name"], "id");
     assert_eq!(columns[0]["Type"], "uuid");
 
-    // SELECT では UpdateCount を返さない。
-    assert!(results.get("UpdateCount").is_none());
+    // 本物は SELECT でも UpdateCount に 0 を入れて返す（2026-09-14 実測）。
+    assert_eq!(results["UpdateCount"], 0);
 }
 
 #[tokio::test]

@@ -113,6 +113,8 @@ Behaviour that matches real Athena:
   (so `ARRAY['a, b']` reads `[a, b]`). The column's `typeSignature` from Trino
   tells a row from an array; without it the value falls back to JSON.
 - DML (`INSERT` / `UPDATE` / `DELETE` / `MERGE`) returns no rows and sets `UpdateCount`.
+- `SELECT` and `SHOW` return `UpdateCount` `0`; DDL leaves it out (Athena sends
+  `null`, which SDKs read the same way).
 - `GetQueryResults` on a query without results returns `InvalidRequestException`
   with Athena's message and `AthenaErrorCode`:
 
@@ -224,6 +226,9 @@ memory, so it is lost when the container restarts.
   `X-Trino-Catalog` header, not the SQL, so a fully qualified name such as
   `"s3tablescatalog/my-bucket".db.users` still fails. Rely on
   `QueryExecutionContext` instead.
+- **DML column info.** For an `INSERT` into a Hive-format table, Athena's
+  `GetQueryResults` lists a `rows` (`bigint`) column alongside the empty rows;
+  athena-local lists no columns. Iceberg tables were not measured.
 - **Cancellation is checked between pages.** A stopped query is `CANCELLED`
   at once, but the `DELETE` reaches Trino only when the current long poll to
   `nextUri` returns (about a second at most).

@@ -42,19 +42,48 @@ async fn dml_は行を返さず_update_count_を返す() {
 }
 
 #[tokio::test]
-async fn ddl_は_statement_type_が_ddl_になる() {
-    let harness = Harness::start(json!({
+async fn ddl_は_statement_type_が_ddl_になり_件数の無い_ddl_は_update_count_を省く() {
+    // Trino は CTAS に件数を付け、ただの CREATE TABLE には付けない。
+    let harness = Harness::builder(json!({
         "columns": [{ "name": "rows", "type": "bigint" }],
         "updateType": "CREATE TABLE",
         "updateCount": 0
     }))
+    .route(
+        "CREATE TABLE t (i int)",
+        json!({ "updateType": "CREATE TABLE" }),
+    )
+    .start()
     .await;
 
-    let execution = harness
+    let ctas = harness
         .run_query(json!({ "QueryString": "CREATE TABLE t AS SELECT 1" }))
         .await;
+    let create = harness
+        .run_query(json!({ "QueryString": "CREATE TABLE t (i int)" }))
+        .await;
+    assert_eq!(ctas["QueryExecution"]["StatementType"], "DDL");
+    assert_eq!(create["QueryExecution"]["StatementType"], "DDL");
 
-    assert_eq!(execution["QueryExecution"]["StatementType"], "DDL");
+    let results = |execution: &serde_json::Value| {
+        harness.call(
+            "GetQueryResults",
+            json!({ "QueryExecutionId": execution_id(execution) }),
+        )
+    };
+
+    // CTAS は Trino の件数をそのまま載せる（本物も件数を返す）。
+    let (status, ctas_results) = results(&ctas).await;
+    assert_eq!(status, 200);
+    assert_eq!(ctas_results["UpdateCount"], 0);
+
+    // 本物は件数の無い DDL の UpdateCount を null で返す。SDK から見て同じなので項目ごと省く。
+    let (status, create_results) = results(&create).await;
+    assert_eq!(status, 200);
+    assert!(
+        create_results.get("UpdateCount").is_none(),
+        "{create_results}"
+    );
 }
 
 #[tokio::test]

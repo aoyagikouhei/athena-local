@@ -215,7 +215,7 @@ pub fn get_query_results(app: &App, body: &Bytes) -> Response {
 
     ok(&GetQueryResultsResponse {
         result_set: convert::result_set(&outcome, &rows[offset..end]),
-        update_count: outcome.update_count,
+        update_count: update_count(&execution.query, &outcome),
         next_token: (end < rows.len()).then(|| end.to_string()),
     })
 }
@@ -310,6 +310,15 @@ fn statistics(submitted_at: f64, started_at: Option<f64>, completed_at: Option<f
     }
 }
 
+/// GetQueryResults の UpdateCount。本物は SELECT と SHOW でも 0 を返し、DDL では null を返す
+/// （2026-09-14 実測。SDK から見て null と省略は同じなので、DDL は省く）。
+/// DML と CTAS は Trino が返す件数をそのまま載せる。
+fn update_count(query: &str, outcome: &Outcome) -> Option<i64> {
+    outcome
+        .update_count
+        .or_else(|| (statement_type(query) != "DDL").then_some(0))
+}
+
 fn statement_type(query: &str) -> &'static str {
     let head = query
         .split_whitespace()
@@ -371,6 +380,25 @@ mod tests {
                 ..Statistics::default()
             }
         );
+    }
+
+    #[test]
+    fn update_count_は件数が無ければ_ddl_以外で_0_になる() {
+        let counted = Outcome {
+            update_count: Some(3),
+            ..Outcome::default()
+        };
+        assert_eq!(update_count("INSERT INTO t VALUES (1)", &counted), Some(3));
+        assert_eq!(
+            update_count("CREATE TABLE c AS SELECT 1", &counted),
+            Some(3)
+        );
+
+        let uncounted = Outcome::default();
+        assert_eq!(update_count("SELECT 1", &uncounted), Some(0));
+        assert_eq!(update_count("SHOW TABLES", &uncounted), Some(0));
+        assert_eq!(update_count("CREATE TABLE t (i int)", &uncounted), None);
+        assert_eq!(update_count("DROP TABLE t", &uncounted), None);
     }
 
     #[test]
