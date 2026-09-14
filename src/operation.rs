@@ -275,8 +275,33 @@ fn to_query_execution(id: &str, execution: &Execution) -> QueryExecution {
             submission_date_time: execution.submitted_at,
             completion_date_time: execution.completed_at,
         },
-        statistics: Statistics::default(),
+        statistics: statistics(
+            execution.submitted_at,
+            execution.started_at,
+            execution.completed_at,
+        ),
         work_group: "primary".to_string(),
+    }
+}
+
+/// 投入 → 実行開始 → 完了の時刻から時間を出す。まだ来ていない区切りの時間は 0。
+/// 実行時間には、パラメータの分類の問い合わせと結果 CSV の書き込みも入る（どれも外を待つ時間）。
+/// ミリ秒に丸めてから引くので、待ち時間 + 実行時間 = 全体 が必ず成り立つ。
+fn statistics(submitted_at: f64, started_at: Option<f64>, completed_at: Option<f64>) -> Statistics {
+    let millis = |seconds: f64| (seconds * 1000.0).round() as i64;
+    let submitted = millis(submitted_at);
+    let started = started_at.map(millis);
+    let completed = completed_at.map(millis);
+
+    Statistics {
+        // 実行に進まずに止められたら、止めた時点までが待ち時間。
+        query_queue_time_in_millis: started.or(completed).map_or(0, |end| end - submitted),
+        engine_execution_time_in_millis: match (started, completed) {
+            (Some(started), Some(completed)) => completed - started,
+            _ => 0,
+        },
+        total_execution_time_in_millis: completed.map_or(0, |completed| completed - submitted),
+        data_scanned_in_bytes: 0,
     }
 }
 
@@ -304,6 +329,44 @@ fn unknown_execution(id: &str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 統計は待ち時間と実行時間に分かれ足すと全体になる() {
+        assert_eq!(
+            statistics(10.0, Some(10.25), Some(11.0)),
+            Statistics {
+                query_queue_time_in_millis: 250,
+                engine_execution_time_in_millis: 750,
+                total_execution_time_in_millis: 1000,
+                data_scanned_in_bytes: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn 実行に進まずに止められたら全体が待ち時間になる() {
+        assert_eq!(
+            statistics(10.0, None, Some(10.5)),
+            Statistics {
+                query_queue_time_in_millis: 500,
+                engine_execution_time_in_millis: 0,
+                total_execution_time_in_millis: 500,
+                data_scanned_in_bytes: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn まだ来ていない区切りの時間は_0() {
+        assert_eq!(statistics(10.0, None, None), Statistics::default());
+        assert_eq!(
+            statistics(10.0, Some(10.1), None),
+            Statistics {
+                query_queue_time_in_millis: 100,
+                ..Statistics::default()
+            }
+        );
+    }
 
     #[test]
     fn statement_type_は先頭のキーワードで決まる() {

@@ -88,13 +88,14 @@ pub struct Status {
     pub completion_date_time: Option<f64>,
 }
 
-/// 本物は課金・スキャン量などを返すが、ローカルでは意味が無いのでゼロを返す。
-#[derive(Serialize, Default)]
+/// 時間は athena-local で測ったもの。スキャン量は課金の計算に使われると誤解を招くので 0 のまま。
+#[derive(Serialize, Default, Debug, PartialEq, Eq)]
 #[serde(rename_all = "PascalCase")]
 pub struct Statistics {
     pub engine_execution_time_in_millis: i64,
     pub data_scanned_in_bytes: i64,
     pub total_execution_time_in_millis: i64,
+    pub query_queue_time_in_millis: i64,
 }
 
 #[derive(Deserialize)]

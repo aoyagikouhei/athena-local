@@ -124,6 +124,10 @@ Behaviour that matches real Athena:
 
   An unknown id returns `QueryExecution <id> was not found` (`QUERY_EXECUTION_NOT_FOUND`).
 - A stopped query reports `StateChangeReason` `Query cancelled by user`.
+- `Statistics` holds timings measured by athena-local: `QueryQueueTimeInMillis`
+  (submitted until sent to Trino), `EngineExecutionTimeInMillis` (from then until
+  finished, including parameter classification and the result upload) and
+  `TotalExecutionTimeInMillis` (their sum). `DataScannedInBytes` is always 0.
 
 ### Result files
 
@@ -189,7 +193,7 @@ Athena — values passed to SQL without any `?` are ignored.
 Messages above were measured against Athena (2026-09-14).
 
 Not implemented: every other operation, SigV4 verification, workgroups, result
-reuse, encryption settings, and the statistics fields (always zero). Query state is kept in
+reuse, and encryption settings. Query state is kept in
 memory, so it is lost when the container restarts.
 
 ## Caveats

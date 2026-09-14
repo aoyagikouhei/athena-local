@@ -26,6 +26,8 @@ pub struct Execution {
     pub state: State,
     pub state_change_reason: Option<String>,
     pub submitted_at: f64,
+    /// RUNNING になった（Trino に投げ始めた）時刻。止められて実行に進まなければ None。
+    pub started_at: Option<f64>,
     pub completed_at: Option<f64>,
     /// 成功したときだけ入る。
     pub result: Option<Arc<Outcome>>,
@@ -71,6 +73,7 @@ impl Store {
             state: State::Queued,
             state_change_reason: None,
             submitted_at: now(),
+            started_at: None,
             completed_at: None,
             result: None,
             cancel: Arc::default(),
@@ -87,6 +90,7 @@ impl Store {
         match self.lock().get_mut(id) {
             Some(execution) if execution.state == State::Queued => {
                 execution.state = State::Running;
+                execution.started_at = Some(now());
                 true
             }
             _ => false,
@@ -190,8 +194,11 @@ mod tests {
         assert_eq!(execution.catalog.as_deref(), Some("cat"));
         assert!(execution.result.is_none());
 
+        assert!(execution.started_at.is_none());
         assert!(store.mark_running("id"));
-        assert_eq!(store.get("id").unwrap().state, State::Running);
+        let running = store.get("id").unwrap();
+        assert_eq!(running.state, State::Running);
+        assert!(running.started_at.is_some());
 
         store.finish("id", Ok(Outcome::default()));
         let finished = store.get("id").unwrap();
