@@ -1,0 +1,107 @@
+# Changelog
+
+All notable changes to athena-local are recorded here. Versions match the
+`aoyagikouhei/athena-local` image tags on Docker Hub.
+
+Behaviour described as "measured" was compared against real Amazon Athena
+(engine version 3) on 2026-09-14.
+
+## [Unreleased]
+
+## [0.3.0] - 2026-09-14
+
+### Added
+
+- `StopQueryExecution`. A queued or running query becomes `CANCELLED` at once
+  (`StateChangeReason`: `Query cancelled by user`) and athena-local sends `DELETE`
+  to Trino's `nextUri`. Stopping a finished query succeeds and changes nothing.
+- Result files. With `ATHENA_LOCAL_RESULTS=s3`, a successful `SELECT` is written as
+  CSV to `<OutputLocation><id>.csv` on an S3-compatible store (for example MinIO)
+  before the query becomes `SUCCEEDED`. The CSV matches Athena byte for byte.
+  New settings: `ATHENA_LOCAL_RESULTS`, `ATHENA_LOCAL_OUTPUT_LOCATION`,
+  `AWS_ENDPOINT_URL_S3` (or `AWS_ENDPOINT_URL`), `AWS_ACCESS_KEY_ID`,
+  `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`. Writing is off by default.
+- `GetQueryExecution` returns `ResultConfiguration.OutputLocation` as the full
+  path of the file Athena would use (`<id>.csv` for `SELECT` / `UPDATE` /
+  `DELETE` / `MERGE`, `<id>` for `INSERT`, `tables/<id>` for CTAS, `<id>.txt`
+  for other DDL and `SHOW` / `DESCRIBE` / `EXPLAIN`).
+- `GetQueryExecution` returns `SubstatementType` (`SELECT`, `INSERT`,
+  `CREATE_TABLE_AS_SELECT`, `SHOW_TABLES`, ...) for the statement kinds that were
+  measured, and leaves it out for the rest.
+- `GetQueryExecution` returns `Status.AthenaError` for `FAILED` queries, with the
+  `ErrorCategory` / `ErrorType` Athena uses for each measured Trino error name.
+- `Statistics` carries real timings: `QueryQueueTimeInMillis`,
+  `EngineExecutionTimeInMillis` and `TotalExecutionTimeInMillis`.
+- `GetQueryResults` fills `ColumnInfo.Precision`, `Scale`, `CatalogName`,
+  `SchemaName` and `TableName` as Athena does.
+- Error responses carry `AthenaErrorCode`.
+
+### Changed
+
+These change what 0.2.0 returned. All of them follow measured Athena behaviour.
+
+- A syntax error makes `StartQueryExecution` fail with `InvalidRequestException`
+  (`MALFORMED_QUERY`) instead of creating a `FAILED` query. athena-local asks
+  Trino to `PREPARE` the statement first, which adds one round trip (about
+  10–30 ms).
+- `ColumnInfo.Type` is the base type name: `varchar(3)` is `varchar`,
+  `decimal(10, 2)` is `decimal`, `array(bigint)` is `array`, and `real` is
+  `float`. `CaseSensitive` is true for `varchar` and `char`.
+- `GetQueryResults` for DML and CTAS lists the `rows` (`bigint`) column in
+  `ColumnInfo`. DDL without a count returns no rows and no columns.
+- `GetQueryResults` for `SELECT` and `SHOW` returns `UpdateCount` `0`.
+- `StatementType`: `VALUES`, `EXPLAIN` and `VACUUM` are `DML`; `OPTIMIZE` is `DDL`.
+- An `OutputLocation` that is not `s3://bucket[/prefix]` is rejected with
+  `outputLocation is not a valid S3 path.` (`INVALID_INPUT`), even when results
+  are not written. 0.2.0 accepted and ignored it.
+- Error messages use Athena's wording: `QueryExecution <id> was not found`,
+  `Query has not yet finished. Current state: RUNNING`,
+  `Query did not finish successfully. Final query state: FAILED`, and
+  `Could not find results` for a cancelled query.
+
+### Fixed
+
+- `timestamp` values keep their precision (`timestamp(6)` returns six fractional
+  digits, `timestamp(0)` none). Trino rounded them to milliseconds because
+  athena-local did not send `X-Trino-Client-Capabilities: PARAMETRIC_DATETIME`.
+- `double` and `real` values use Java's notation (`1.0E20`, `1.0E-7`).
+- `varbinary` values are hex (`01 02`) instead of base64.
+- Map entries with numeric keys are ordered numerically (`{9=a, 10=b}`).
+
+## [0.2.0] - 2026-09-14
+
+### Added
+
+- `ExecutionParameters`. Each value is classified the way Athena does (an
+  expression without column references is used as-is, anything else becomes a
+  string literal) and the query runs as `EXECUTE IMMEDIATE ... USING`. Values
+  passed to SQL without `?` are ignored, as in Athena.
+- `TRINO_CATALOG_MAP` maps Athena catalog names that Trino cannot have, such as
+  `s3tablescatalog/<bucket>`, to a Trino catalog.
+
+### Changed
+
+- `array`, `map` and `row` values use Athena's notation (`[1, 2]`, `{k=1}`,
+  `{id=1, name=x}`) instead of JSON.
+
+### Fixed
+
+- `ExecutionParameters: null` is treated as no parameters instead of failing
+  with 400.
+
+## [0.1.0] - 2026-09-12
+
+### Added
+
+- First release: a local stand-in for the Athena API (`awsJson1.1`) that runs SQL
+  on Trino. Supports `StartQueryExecution`, `GetQueryExecution` and
+  `GetQueryResults`, with the header row on the first page of a `SELECT`,
+  `UpdateCount` for DML, and `MaxResults` / `NextToken` pagination.
+- SQL is passed to Trino unchanged; `QueryExecutionContext` becomes the
+  `X-Trino-Catalog` / `X-Trino-Schema` headers.
+- `linux/amd64` and `linux/arm64` images published on tag push.
+
+[Unreleased]: https://github.com/aoyagikouhei/athena-local/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/aoyagikouhei/athena-local/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/aoyagikouhei/athena-local/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/aoyagikouhei/athena-local/releases/tag/v0.1.0
