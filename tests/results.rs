@@ -1,5 +1,5 @@
 //! ResultConfiguration.OutputLocation: 結果 CSV を S3 互換ストレージに書き、GetQueryExecution にフルパスを返す。
-//! 置き場所・ファイル名・エラーの文言は 2026-09-14 に本番 Athena で実測したもの（「未実測」と書いたものを除く）。
+//! 置き場所・ファイル名・エラーの文言は 2026-09-14 に本番 Athena で実測したもの。
 
 mod common;
 
@@ -212,14 +212,11 @@ async fn 書くモードで出力先も既定も無ければ受け付けない()
 
     assert_eq!(code, 400);
     assert_eq!(error["__type"], "InvalidRequestException");
-    // 文言は本物のもの（未実測）。
-    assert!(
-        error["message"]
-            .as_str()
-            .unwrap()
-            .starts_with("No output location provided."),
-        "{error}"
+    assert_eq!(
+        error["message"],
+        "No output location provided. You did not provide an output location for  your query results. Either specify an S3 bucket location or enable Athena managed query results in your workgroup settings."
     );
+    assert_eq!(error["AthenaErrorCode"], "INVALID_INPUT");
     assert!(harness.trino_requests().is_empty(), "Trino には送らない");
 }
 

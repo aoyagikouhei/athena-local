@@ -13,7 +13,7 @@ use crate::athena::{
 use crate::config::{Config, ResultsMode};
 use crate::convert;
 use crate::handler::App;
-use crate::response::{invalid_request, invalid_request_with_code, ok, parse};
+use crate::response::{invalid_request_with_code, ok, parse};
 use crate::results::{self, ResultFile, ResultLocation};
 use crate::statement;
 use crate::store::{CancelOutcome, Execution, State};
@@ -21,8 +21,8 @@ use crate::trino::{Outcome, QueryError, Trino};
 
 const DEFAULT_MAX_RESULTS: usize = 1000;
 
-/// OutputLocation も既定も無いときの本物の文言（未実測）。
-const NO_OUTPUT_LOCATION: &str = "No output location provided. An output location is required either through the Workgroup result configuration setting or as an API input.";
+/// OutputLocation も既定も無いときの本物の文言（2026-09-14 実測。"for  your" の空白 2 つも本物のまま）。
+const NO_OUTPUT_LOCATION: &str = "No output location provided. You did not provide an output location for  your query results. Either specify an S3 bucket location or enable Athena managed query results in your workgroup settings.";
 
 pub fn start_query_execution(app: &App, body: &Bytes) -> Response {
     let request: StartQueryExecutionRequest = match parse(body) {
@@ -77,7 +77,12 @@ fn result_location(
         (Some(location), _) => location,
         (None, ResultsMode::S3(settings)) => match &settings.default_output_location {
             Some(location) => location.clone(),
-            None => return Err(Box::new(invalid_request(NO_OUTPUT_LOCATION))),
+            None => {
+                return Err(Box::new(invalid_request_with_code(
+                    NO_OUTPUT_LOCATION,
+                    "INVALID_INPUT",
+                )));
+            }
         },
         (None, ResultsMode::None) => return Ok(None),
     };

@@ -166,7 +166,8 @@ store's response in `StateChangeReason`; it is not retried.
 An `OutputLocation` that is not `s3://bucket[/prefix]` is rejected in either
 mode with `outputLocation is not a valid S3 path.` (`INVALID_INPUT`), as Athena
 does. With `ATHENA_LOCAL_RESULTS=s3` and no location at all,
-`StartQueryExecution` fails with Athena's `No output location provided. ...`.
+`StartQueryExecution` fails with Athena's `No output location provided. ...`
+message (`INVALID_INPUT`).
 
 ### `ExecutionParameters`
 
@@ -232,9 +233,9 @@ memory, so it is lost when the container restarts.
 - **A missing bucket fails the query.** Athena reported `SUCCEEDED` for a
   `SELECT` whose output bucket did not exist (measured). athena-local makes it
   `FAILED` so the mistake shows up locally.
-- **Unmeasured messages.** The `No output location provided` error and the
-  statement-to-file-name rule for `CTAS` written with `OR REPLACE`, `VALUES` and
-  `DESCRIBE` follow Athena's documented behaviour but were not measured.
+- **Unmeasured file names.** The file name for `CTAS` written with `OR REPLACE`,
+  `VALUES` and `DESCRIBE` follows the measured rule for similar statements but
+  was not measured itself.
 - **Plain HTTP only.** The clients are built without TLS, for both Trino and
   the S3-compatible store. To reach an HTTPS endpoint, add the `rustls` feature
   to `reqwest` in `Cargo.toml` (and CA certificates to the image).
