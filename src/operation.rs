@@ -1,4 +1,4 @@
-//! Athena の 3 オペレーション。実行は Trino に委ね、状態は Store に持つ。
+//! Athena のオペレーション。実行は Trino に委ね、状態は Store に持つ。
 
 use axum::body::Bytes;
 use axum::response::Response;
@@ -7,14 +7,15 @@ use uuid::Uuid;
 use crate::athena::{
     GetQueryExecutionRequest, GetQueryExecutionResponse, GetQueryResultsRequest,
     GetQueryResultsResponse, QueryExecution, QueryExecutionContext, StartQueryExecutionRequest,
-    StartQueryExecutionResponse, Statistics, Status,
+    StartQueryExecutionResponse, Statistics, Status, StopQueryExecutionRequest,
+    StopQueryExecutionResponse,
 };
 use crate::config::Config;
 use crate::convert;
 use crate::handler::App;
-use crate::response::{invalid_request, ok, parse};
+use crate::response::{invalid_request_with_code, ok, parse};
 use crate::statement;
-use crate::store::Execution;
+use crate::store::{CancelOutcome, Execution, State};
 use crate::trino::{Outcome, QueryError, Trino};
 
 const DEFAULT_MAX_RESULTS: usize = 1000;
@@ -54,11 +55,15 @@ fn spawn_query(app: App, id: String) {
         let Some(execution) = app.store.get(&id) else {
             return;
         };
-        app.store.mark_running(&id);
+        // 投入直後に止められていれば Trino には何も送らない。
+        if !app.store.mark_running(&id) {
+            return;
+        }
 
         let outcome = run(&app.trino, &app.config, &execution)
             .await
             .map_err(|error| error.to_string());
+        // 途中で止められていれば CANCELLED が先に書かれているので、finish は何もしない。
         app.store.finish(&id, outcome);
     });
 }
@@ -72,20 +77,24 @@ async fn run(trino: &Trino, config: &Config, execution: &Execution) -> Result<Ou
         .as_deref()
         .map(|catalog| config.trino_catalog(catalog));
     let database = execution.database.as_deref();
+    // 分類の問い合わせにも本体にも同じ取り消し要求を渡す。
+    let cancel = &execution.cancel;
 
     // 分類も本体と同じカタログ・スキーマで問い合わせ、関数の解決先を揃える。
     let mut bound = Vec::with_capacity(execution.execution_parameters.len());
     for value in &execution.execution_parameters {
         let probe = trino
-            .execute(&statement::probe_sql(value), catalog, database)
+            .execute(&statement::probe_sql(value), catalog, database, cancel)
             .await;
         bound.push(statement::bind(value, &probe));
     }
 
     let sql = statement::to_trino_sql(&execution.query, &bound);
-    match trino.execute(&sql, catalog, database).await {
+    match trino.execute(&sql, catalog, database, cancel).await {
         Err(error) if statement::is_unused_parameters(&error) => {
-            trino.execute(&execution.query, catalog, database).await
+            trino
+                .execute(&execution.query, catalog, database, cancel)
+                .await
         }
         result => result,
     }
@@ -116,14 +125,7 @@ pub fn get_query_results(app: &App, body: &Bytes) -> Response {
         return unknown_execution(&request.query_execution_id);
     };
     let Some(outcome) = execution.result else {
-        return invalid_request(format!(
-            "クエリが成功していません。state={}{}",
-            execution.state.as_str(),
-            execution
-                .state_change_reason
-                .map(|reason| format!(": {reason}"))
-                .unwrap_or_default()
-        ));
+        return not_succeeded(execution.state);
     };
 
     let rows = convert::all_rows(&outcome);
@@ -143,6 +145,46 @@ pub fn get_query_results(app: &App, body: &Bytes) -> Response {
         update_count: outcome.update_count,
         next_token: (end < rows.len()).then(|| end.to_string()),
     })
+}
+
+/// 状態は StopQueryExecution の中で同期に CANCELLED にする。
+/// 実行中のタスクは次のページ境界で取り消し要求を見て、Trino に DELETE を送る。
+pub fn stop_query_execution(app: &App, body: &Bytes) -> Response {
+    let request: StopQueryExecutionRequest = match parse(body) {
+        Ok(request) => request,
+        Err(response) => return *response,
+    };
+
+    match app.store.cancel(&request.query_execution_id) {
+        CancelOutcome::NotFound => unknown_execution(&request.query_execution_id),
+        // 終わったクエリを止めても成功で、何も変わらない（本物と同じ）。
+        CancelOutcome::Cancelled | CancelOutcome::AlreadyFinished => {
+            ok(&StopQueryExecutionResponse {})
+        }
+    }
+}
+
+/// 結果が無いときの GetQueryResults のエラー。文言とコードは 2026-09-14 に本番 Athena で実測したもの。
+fn not_succeeded(state: State) -> Response {
+    const INVALID_STATE: &str = "INVALID_QUERY_EXECUTION_STATE";
+    match state {
+        // 止めたクエリは FAILED と違い「結果が無い」と返る。
+        State::Cancelled => invalid_request_with_code("Could not find results", "RESULT_NOT_FOUND"),
+        State::Failed => invalid_request_with_code(
+            format!(
+                "Query did not finish successfully. Final query state: {}",
+                state.as_str()
+            ),
+            INVALID_STATE,
+        ),
+        _ => invalid_request_with_code(
+            format!(
+                "Query has not yet finished. Current state: {}",
+                state.as_str()
+            ),
+            INVALID_STATE,
+        ),
+    }
 }
 
 fn to_query_execution(id: &str, execution: &Execution) -> QueryExecution {
@@ -180,7 +222,10 @@ fn statement_type(query: &str) -> &'static str {
 }
 
 fn unknown_execution(id: &str) -> Response {
-    invalid_request(format!("QueryExecutionId が見つかりません: {id}"))
+    invalid_request_with_code(
+        format!("QueryExecution {id} was not found"),
+        "QUERY_EXECUTION_NOT_FOUND",
+    )
 }
 
 #[cfg(test)]

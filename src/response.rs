@@ -23,7 +23,19 @@ pub fn ok<T: Serialize>(body: &T) -> Response {
 
 /// SDK は __type（または x-amzn-errortype）でエラーの種類を判別する。
 pub fn error(code: &str, message: impl Into<String>) -> Response {
-    let body = json!({ "__type": code, "message": message.into() });
+    error_body(code, json!({ "__type": code, "message": message.into() }))
+}
+
+/// 本物の InvalidRequestException は、より細かい理由を AthenaErrorCode に載せる。
+pub fn invalid_request_with_code(message: impl Into<String>, athena_error_code: &str) -> Response {
+    let code = "InvalidRequestException";
+    error_body(
+        code,
+        json!({ "__type": code, "message": message.into(), "AthenaErrorCode": athena_error_code }),
+    )
+}
+
+fn error_body(code: &str, body: serde_json::Value) -> Response {
     let mut response = (
         StatusCode::BAD_REQUEST,
         [(header::CONTENT_TYPE, CONTENT_TYPE)],

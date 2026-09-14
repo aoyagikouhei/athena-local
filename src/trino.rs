@@ -1,4 +1,5 @@
 use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -34,6 +35,20 @@ pub struct QueryError {
     pub message: String,
 }
 
+/// 実行の取り消し要求。StopQueryExecution が立て、nextUri を辿る側がページ境界で見る。
+#[derive(Default, Debug)]
+pub struct Cancel(AtomicBool);
+
+impl Cancel {
+    pub fn request(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_requested(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
 /// 503 は「まだ結果が無い」の合図なので、この間隔で追従し直す。
 const RETRY_INTERVAL: Duration = Duration::from_millis(50);
 const MAX_RETRIES: usize = 200;
@@ -52,7 +67,13 @@ impl Trino {
         sql: &str,
         catalog: Option<&str>,
         schema: Option<&str>,
+        cancel: &Cancel,
     ) -> Result<Outcome, QueryError> {
+        // 分類の問い合わせの途中で止められたら、残りは Trino に送らない。
+        if cancel.is_requested() {
+            return Err(QueryError::cancelled());
+        }
+
         let mut statement = self.start(sql, catalog, schema).await?;
         let mut outcome = Outcome::default();
 
@@ -62,10 +83,10 @@ impl Trino {
             }
             outcome.absorb(&mut statement);
 
-            let Some(next_uri) = statement.next_uri.clone() else {
+            let Some(next_uri) = statement.next_uri.take() else {
                 return Ok(outcome);
             };
-            statement = self.follow(&next_uri).await?;
+            statement = self.follow(&next_uri, cancel).await?;
         }
     }
 
@@ -97,8 +118,14 @@ impl Trino {
         parse(response).await
     }
 
-    async fn follow(&self, uri: &str) -> Result<Statement, QueryError> {
+    async fn follow(&self, uri: &str, cancel: &Cancel) -> Result<Statement, QueryError> {
         for _ in 0..MAX_RETRIES {
+            // 取り消しはページ境界（503 の待ち直しを含む）で見る。進行中の long-poll は打ち切らない。
+            if cancel.is_requested() {
+                self.abort(uri).await;
+                return Err(QueryError::cancelled());
+            }
+
             let response =
                 self.http.get(uri).send().await.map_err(|e| {
                     QueryError::other(format!("trino からの取得に失敗しました: {e}"))
@@ -116,6 +143,12 @@ impl Trino {
         Err(QueryError::other(
             "trino が 503 を返し続けました".to_string(),
         ))
+    }
+
+    /// Trino の取り消しは nextUri（どのページのものでもよい）への DELETE。
+    /// 状態は StopQueryExecution が先に CANCELLED にしているので、届かなくても結果は見ない。
+    async fn abort(&self, uri: &str) {
+        let _ = self.http.delete(uri).send().await;
     }
 }
 
@@ -154,6 +187,11 @@ impl QueryError {
             name: None,
             message,
         }
+    }
+
+    /// 取り消されて途中でやめた。状態は先に CANCELLED で確定しているので、この値は表に出ない。
+    fn cancelled() -> Self {
+        Self::other("取り消されました".to_string())
     }
 }
 

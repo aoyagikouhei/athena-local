@@ -83,8 +83,9 @@ the catalog name the request used.
 | Operation | Notes |
 | --- | --- |
 | `StartQueryExecution` | Returns an id immediately; the query runs in the background. `ExecutionParameters` are supported (see below) |
-| `GetQueryExecution` | `QUEUED` → `RUNNING` → `SUCCEEDED` / `FAILED`. Trino errors land in `Status.StateChangeReason` |
+| `GetQueryExecution` | `QUEUED` → `RUNNING` → `SUCCEEDED` / `FAILED` / `CANCELLED`. Trino errors land in `Status.StateChangeReason` |
 | `GetQueryResults` | Paginated with `MaxResults` / `NextToken` |
+| `StopQueryExecution` | Marks a queued or running query `CANCELLED` immediately and sends `DELETE` to Trino's `nextUri`. Stopping a finished query succeeds and changes nothing |
 
 Behaviour that matches real Athena:
 
@@ -96,7 +97,17 @@ Behaviour that matches real Athena:
   (so `ARRAY['a, b']` reads `[a, b]`). The column's `typeSignature` from Trino
   tells a row from an array; without it the value falls back to JSON.
 - DML (`INSERT` / `UPDATE` / `DELETE` / `MERGE`) returns no rows and sets `UpdateCount`.
-- Failed queries make `GetQueryResults` return `InvalidRequestException`.
+- `GetQueryResults` on a query without results returns `InvalidRequestException`
+  with Athena's message and `AthenaErrorCode`:
+
+  | State | Message | `AthenaErrorCode` |
+  | --- | --- | --- |
+  | `QUEUED` / `RUNNING` | `Query has not yet finished. Current state: RUNNING` | `INVALID_QUERY_EXECUTION_STATE` |
+  | `FAILED` | `Query did not finish successfully. Final query state: FAILED` | `INVALID_QUERY_EXECUTION_STATE` |
+  | `CANCELLED` | `Could not find results` | `RESULT_NOT_FOUND` |
+
+  An unknown id returns `QueryExecution <id> was not found` (`QUERY_EXECUTION_NOT_FOUND`).
+- A stopped query reports `StateChangeReason` `Query cancelled by user`.
 
 ### `ExecutionParameters`
 
@@ -119,6 +130,8 @@ the original SQL, and `StatementType` is derived from it.
 
 A wrong number of values fails with `INVALID_PARAMETER_USAGE`, except that — like
 Athena — values passed to SQL without any `?` are ignored.
+
+Messages above were measured against Athena (2026-09-14).
 
 Not implemented: every other operation, SigV4 verification, workgroups, result
 reuse, writing results to S3 (`ResultConfiguration.OutputLocation` is accepted
@@ -151,6 +164,9 @@ memory, so it is lost when the container restarts.
   `X-Trino-Catalog` header, not the SQL, so a fully qualified name such as
   `"s3tablescatalog/my-bucket".db.users` still fails. Rely on
   `QueryExecutionContext` instead.
+- **Cancellation is checked between pages.** A stopped query is `CANCELLED`
+  at once, but the `DELETE` reaches Trino only when the current long poll to
+  `nextUri` returns (about a second at most).
 - **Plain HTTP only.** The client is built without TLS. To reach an HTTPS Trino,
   add the `rustls` feature to `reqwest` in `Cargo.toml`.
 

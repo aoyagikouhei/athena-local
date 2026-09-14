@@ -35,6 +35,16 @@ pub struct GetQueryExecutionRequest {
     pub query_execution_id: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct StopQueryExecutionRequest {
+    pub query_execution_id: String,
+}
+
+/// 本物は空のオブジェクト `{}` を返す。
+#[derive(Serialize)]
+pub struct StopQueryExecutionResponse {}
+
 #[derive(Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct GetQueryExecutionResponse {

@@ -12,7 +12,7 @@ use std::time::Duration;
 use athena_local::config::Config;
 use axum::Router;
 use axum::extract::State;
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
@@ -25,6 +25,9 @@ pub struct TrinoRequest {
     pub schema: Option<String>,
 }
 
+/// 終わらないクエリの 1 ページごとの待ち時間。無遅延だと実行側が偽 Trino を全速で叩き続ける。
+const ENDLESS_PAGE_INTERVAL: Duration = Duration::from_millis(20);
+
 /// Trino の偽物。SQL が routes に一致すればその応答を、
 /// しなければ 1 ページ目と（あれば）2 ページ目の応答を固定で返す。
 #[derive(Clone)]
@@ -33,12 +36,21 @@ struct FakeTrino {
     next: Option<Value>,
     routes: Arc<HashMap<String, Value>>,
     requests: Arc<Mutex<Vec<TrinoRequest>>>,
+    /// nextUri を返し続ける（終わらないクエリ）。
+    endless: bool,
+    /// 実際に立てたポートを指す nextUri。立てるときに決まる。
+    next_uri: String,
+    /// POST /v1/statement の応答を返すまでの待ち時間。
+    statement_delay: Option<Duration>,
+    /// nextUri への GET / DELETE を届いた順に `GET /next` の形で残す。
+    calls: Arc<Mutex<Vec<String>>>,
 }
 
 /// 立てた偽 Trino と athena-local のセット。
 pub struct Harness {
     pub athena_url: String,
     requests: Arc<Mutex<Vec<TrinoRequest>>>,
+    calls: Arc<Mutex<Vec<String>>>,
 }
 
 /// 偽 Trino の応答を組み立ててから立てる。
@@ -47,9 +59,23 @@ pub struct HarnessBuilder {
     next: Option<Value>,
     routes: HashMap<String, Value>,
     catalog_map: HashMap<String, String>,
+    endless: bool,
+    statement_delay: Option<Duration>,
 }
 
 impl HarnessBuilder {
+    /// 最初の応答に nextUri を付け、以降も nextUri だけを返し続ける（止めるまで終わらない）。
+    pub fn endless(mut self) -> Self {
+        self.endless = true;
+        self
+    }
+
+    /// POST /v1/statement を受けてから応答するまで待たせる。受けたことは待つ前に記録する。
+    pub fn statement_delay(mut self, delay: Duration) -> Self {
+        self.statement_delay = Some(delay);
+        self
+    }
+
     /// nextUri を辿らせる 2 ページ目の応答。
     pub fn next_page(mut self, next: Value) -> Self {
         self.next = Some(next);
@@ -73,11 +99,16 @@ impl HarnessBuilder {
 
     pub async fn start(self) -> Harness {
         let requests = Arc::new(Mutex::new(Vec::new()));
+        let calls = Arc::new(Mutex::new(Vec::new()));
         let trino_addr = spawn_trino(FakeTrino {
             first: self.first,
             next: self.next,
             routes: Arc::new(self.routes),
             requests: requests.clone(),
+            endless: self.endless,
+            next_uri: String::new(),
+            statement_delay: self.statement_delay,
+            calls: calls.clone(),
         })
         .await;
 
@@ -94,6 +125,7 @@ impl HarnessBuilder {
         Harness {
             athena_url: format!("http://{athena_addr}/"),
             requests,
+            calls,
         }
     }
 }
@@ -106,6 +138,8 @@ impl Harness {
             next: None,
             routes: HashMap::new(),
             catalog_map: HashMap::new(),
+            endless: false,
+            statement_delay: None,
         }
     }
 
@@ -132,6 +166,11 @@ impl Harness {
             .collect()
     }
 
+    /// nextUri への GET / DELETE（`GET /next` / `DELETE /next`）を届いた順に。
+    pub fn trino_calls(&self) -> Vec<String> {
+        self.calls.lock().expect("poisoned").clone()
+    }
+
     /// Athena のオペレーションを 1 つ呼ぶ。
     pub async fn call(&self, operation: &str, body: Value) -> (u16, Value) {
         let response = reqwest::Client::new()
@@ -149,15 +188,28 @@ impl Harness {
         (status, payload)
     }
 
-    /// クエリを投げ、QUEUED / RUNNING を抜けるまで待って最後の GetQueryExecution を返す。
-    pub async fn run_query(&self, request: Value) -> Value {
+    /// クエリを投げて実行 ID を返す（終わるのは待たない）。
+    pub async fn start_query(&self, request: Value) -> String {
         let (status, started) = self.call("StartQueryExecution", request).await;
         assert_eq!(status, 200, "StartQueryExecution が失敗した: {started}");
 
-        let id = started["QueryExecutionId"]
+        started["QueryExecutionId"]
             .as_str()
             .expect("QueryExecutionId が無い")
-            .to_string();
+            .to_string()
+    }
+
+    /// GetQueryExecution の QueryExecution.Status。
+    pub async fn status(&self, id: &str) -> Value {
+        let (_, execution) = self
+            .call("GetQueryExecution", json!({ "QueryExecutionId": id }))
+            .await;
+        execution["QueryExecution"]["Status"].clone()
+    }
+
+    /// クエリを投げ、QUEUED / RUNNING を抜けるまで待って最後の GetQueryExecution を返す。
+    pub async fn run_query(&self, request: Value) -> Value {
+        let id = self.start_query(request).await;
 
         for _ in 0..100 {
             let (_, execution) = self
@@ -175,6 +227,17 @@ impl Harness {
 
         panic!("クエリが終わらない");
     }
+}
+
+/// 条件が成り立つまで待つ。成り立たなければ what を添えて落ちる。
+pub async fn wait_for(what: &str, mut check: impl FnMut() -> bool) {
+    for _ in 0..200 {
+        if check() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("待っても起きなかった: {what}");
 }
 
 /// QueryExecution から実行 ID を取り出す。
@@ -211,13 +274,14 @@ async fn spawn_trino(mut fake: FakeTrino) -> SocketAddr {
         .expect("bind できない");
     let addr = listener.local_addr().expect("アドレスが取れない");
 
-    if fake.next.is_some() {
-        fake.first["nextUri"] = json!(format!("http://{addr}/next"));
+    if fake.next.is_some() || fake.endless {
+        fake.next_uri = format!("http://{addr}/next");
+        fake.first["nextUri"] = json!(fake.next_uri);
     }
 
     let router = Router::new()
         .route("/v1/statement", post(statement))
-        .route("/next", get(next_page))
+        .route("/next", get(next_page).delete(cancel_statement))
         .with_state(fake);
 
     tokio::spawn(async move {
@@ -251,11 +315,33 @@ async fn statement(
         schema: header("x-trino-schema"),
     });
 
+    if let Some(delay) = fake.statement_delay {
+        tokio::time::sleep(delay).await;
+    }
+
     axum::Json(response)
 }
 
 async fn next_page(State(fake): State<FakeTrino>) -> axum::Json<Value> {
+    fake.calls
+        .lock()
+        .expect("poisoned")
+        .push("GET /next".to_string());
+
+    if fake.endless {
+        tokio::time::sleep(ENDLESS_PAGE_INTERVAL).await;
+        return axum::Json(json!({ "nextUri": fake.next_uri }));
+    }
     axum::Json(fake.next.clone().unwrap_or(Value::Null))
+}
+
+/// Trino はクエリの取り消しに 204 を返す。
+async fn cancel_statement(State(fake): State<FakeTrino>) -> StatusCode {
+    fake.calls
+        .lock()
+        .expect("poisoned")
+        .push("DELETE /next".to_string());
+    StatusCode::NO_CONTENT
 }
 
 async fn spawn(router: Router) -> SocketAddr {
