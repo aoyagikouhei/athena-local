@@ -138,6 +138,12 @@ Behaviour that matches real Athena:
 
   An unknown id returns `QueryExecution <id> was not found` (`QUERY_EXECUTION_NOT_FOUND`).
 - A stopped query reports `StateChangeReason` `Query cancelled by user`.
+- A syntax error makes `StartQueryExecution` fail with `InvalidRequestException`
+  (`AthenaErrorCode` `MALFORMED_QUERY`) instead of creating a `FAILED` query, as
+  Athena does. The message is Trino's, with positions counted in the original SQL
+  (also when `ExecutionParameters` are given). athena-local asks Trino to `PREPARE`
+  the statement first, which parses without executing and adds one round trip
+  (about 10–20 ms).
 - `StatementType` and `SubstatementType` follow Athena: `SELECT` / `WITH` /
   `VALUES` are `DML` / `SELECT`, `EXPLAIN` is `DML` / `EXPLAIN`, `SHOW TABLES` is
   `UTILITY` / `SHOW_TABLES`, `CREATE TABLE ... AS SELECT` is `DDL` /
@@ -254,6 +260,11 @@ memory, so it is lost when the container restarts.
   `X-Trino-Catalog` header, not the SQL, so a fully qualified name such as
   `"s3tablescatalog/my-bucket".db.users` still fails. Rely on
   `QueryExecutionContext` instead.
+- **Syntax differs.** Trino-only syntax such as `CREATE OR REPLACE TABLE` passes
+  here but is a syntax error on Athena, and the `Expecting:` list in a syntax
+  error follows Trino's grammar. For an incomplete statement (`SELECT * FROM`)
+  Athena answers `Queries of this type are not supported`; athena-local returns
+  Trino's syntax error.
 - **Iceberg maintenance statements differ.** Athena's `OPTIMIZE ... REWRITE DATA`
   and `VACUUM` do not exist in Trino, which uses `ALTER TABLE ... EXECUTE optimize`
   and `ALTER TABLE ... EXECUTE expire_snapshots` instead.

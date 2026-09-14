@@ -32,7 +32,7 @@ pub(crate) async fn dispatch(State(app): State<App>, headers: HeaderMap, body: B
     };
 
     match operation.as_str() {
-        "StartQueryExecution" => operation::start_query_execution(&app, &body),
+        "StartQueryExecution" => operation::start_query_execution(&app, &body).await,
         "GetQueryExecution" => operation::get_query_execution(&app, &body),
         "GetQueryResults" => operation::get_query_results(&app, &body),
         "StopQueryExecution" => operation::stop_query_execution(&app, &body),

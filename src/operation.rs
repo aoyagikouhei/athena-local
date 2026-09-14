@@ -25,7 +25,7 @@ const DEFAULT_MAX_RESULTS: usize = 1000;
 /// OutputLocation も既定も無いときの本物の文言（2026-09-14 実測。"for  your" の空白 2 つも本物のまま）。
 const NO_OUTPUT_LOCATION: &str = "No output location provided. You did not provide an output location for  your query results. Either specify an S3 bucket location or enable Athena managed query results in your workgroup settings.";
 
-pub fn start_query_execution(app: &App, body: &Bytes) -> Response {
+pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
     let request: StartQueryExecutionRequest = match parse(body) {
         Ok(request) => request,
         Err(response) => return *response,
@@ -49,6 +49,12 @@ pub fn start_query_execution(app: &App, body: &Bytes) -> Response {
         Ok(location) => location,
         Err(response) => return *response,
     };
+
+    // 本物は構文エラーを StartQueryExecution で弾き、実行を作らない（ExecutionParameters があっても元の SQL で数える）。
+    // 文言は Trino のもの、コードは 2026-09-14 に実測した MALFORMED_QUERY。
+    if let Some(message) = app.trino.syntax_error(&request.query_string).await {
+        return invalid_request_with_code(message, "MALFORMED_QUERY");
+    }
 
     app.store.submit(
         &id,

@@ -26,6 +26,9 @@ pub struct TrinoRequest {
     pub client_capabilities: Option<String>,
 }
 
+/// athena-local が構文を確かめるときに付ける前置き（src/trino.rs と同じ）。
+const SYNTAX_CHECK_PREFIX: &str = "PREPARE athena_local_syntax_check FROM\n";
+
 /// 終わらないクエリの 1 ページごとの待ち時間。無遅延だと実行側が偽 Trino を全速で叩き続ける。
 const ENDLESS_PAGE_INTERVAL: Duration = Duration::from_millis(20);
 
@@ -45,6 +48,10 @@ struct FakeTrino {
     statement_delay: Option<Duration>,
     /// nextUri への GET / DELETE を届いた順に `GET /next` の形で残す。
     calls: Arc<Mutex<Vec<String>>>,
+    /// 構文の確認（PREPARE）で届いた元の SQL → 返す応答。無ければ成功を返す。
+    syntax_checks: Arc<HashMap<String, Value>>,
+    /// 構文の確認で届いた元の SQL を届いた順に。
+    checked: Arc<Mutex<Vec<String>>>,
 }
 
 /// 偽 S3 が受けた PUT。
@@ -74,6 +81,7 @@ pub struct Harness {
     requests: Arc<Mutex<Vec<TrinoRequest>>>,
     calls: Arc<Mutex<Vec<String>>>,
     puts: Arc<Mutex<Vec<S3Put>>>,
+    checked: Arc<Mutex<Vec<String>>>,
 }
 
 /// 偽 Trino の応答を組み立ててから立てる。
@@ -86,6 +94,7 @@ pub struct HarnessBuilder {
     statement_delay: Option<Duration>,
     /// Some なら ATHENA_LOCAL_RESULTS=s3 にして偽 S3 を立てる。
     s3: Option<S3Options>,
+    syntax_checks: HashMap<String, Value>,
 }
 
 struct S3Options {
@@ -95,6 +104,12 @@ struct S3Options {
 }
 
 impl HarnessBuilder {
+    /// この SQL の構文の確認（PREPARE）に返す応答。message は Trino と同じく前置きの分だけ行がずれた位置で書く。
+    pub fn syntax_check_response(mut self, sql: &str, response: Value) -> Self {
+        self.syntax_checks.insert(sql.to_string(), response);
+        self
+    }
+
     /// 結果 CSV を偽 S3 に書かせる（ATHENA_LOCAL_RESULTS=s3）。
     pub fn results_s3(mut self) -> Self {
         self.s3 = Some(S3Options {
@@ -163,6 +178,7 @@ impl HarnessBuilder {
     pub async fn start(self) -> Harness {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let calls = Arc::new(Mutex::new(Vec::new()));
+        let checked = Arc::new(Mutex::new(Vec::new()));
         let trino_addr = spawn_trino(FakeTrino {
             first: self.first,
             next: self.next,
@@ -172,6 +188,8 @@ impl HarnessBuilder {
             next_uri: String::new(),
             statement_delay: self.statement_delay,
             calls: calls.clone(),
+            syntax_checks: Arc::new(self.syntax_checks),
+            checked: checked.clone(),
         })
         .await;
 
@@ -211,6 +229,7 @@ impl HarnessBuilder {
             requests,
             calls,
             puts,
+            checked,
         }
     }
 }
@@ -226,6 +245,7 @@ impl Harness {
             endless: false,
             statement_delay: None,
             s3: None,
+            syntax_checks: HashMap::new(),
         }
     }
 
@@ -255,6 +275,11 @@ impl Harness {
     /// nextUri への GET / DELETE（`GET /next` / `DELETE /next`）を届いた順に。
     pub fn trino_calls(&self) -> Vec<String> {
         self.calls.lock().expect("poisoned").clone()
+    }
+
+    /// 構文の確認（PREPARE）で Trino に届いた元の SQL を届いた順に。trino_requests には入らない。
+    pub fn syntax_checks(&self) -> Vec<String> {
+        self.checked.lock().expect("poisoned").clone()
     }
 
     /// 偽 S3 が受けた PUT を届いた順に。
@@ -393,6 +418,20 @@ async fn statement(
             .and_then(|value| value.to_str().ok())
             .map(str::to_string)
     };
+
+    // 構文の確認は本体の実行とは別に記録し、遅らせもしない。
+    if let Some(original) = sql.strip_prefix(SYNTAX_CHECK_PREFIX) {
+        fake.checked
+            .lock()
+            .expect("poisoned")
+            .push(original.to_string());
+        return axum::Json(
+            fake.syntax_checks
+                .get(original)
+                .cloned()
+                .unwrap_or_else(|| json!({ "updateType": "PREPARE" })),
+        );
+    }
 
     let response = fake
         .routes

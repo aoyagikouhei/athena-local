@@ -51,6 +51,10 @@ impl Cancel {
     }
 }
 
+/// 構文だけを確かめるときに元の SQL の前に付ける。PREPARE は SQL を読むだけで実行しない。
+/// 改行で区切るので、エラーの位置は行番号が 1 つずれるだけになる。
+const SYNTAX_CHECK_PREFIX: &str = "PREPARE athena_local_syntax_check FROM\n";
+
 /// 503 は「まだ結果が無い」の合図なので、この間隔で追従し直す。
 const RETRY_INTERVAL: Duration = Duration::from_millis(50);
 const MAX_RETRIES: usize = 200;
@@ -150,6 +154,25 @@ impl Trino {
         ))
     }
 
+    /// 構文エラーなら、元の SQL の位置で数えたメッセージを返す。
+    /// 構文エラー以外の失敗（Trino に届かない、PREPARE できない文など）は None にして、実行に任せる。
+    pub async fn syntax_error(&self, sql: &str) -> Option<String> {
+        let never = Cancel::default();
+        let mut statement = self
+            .start(&format!("{SYNTAX_CHECK_PREFIX}{sql}"), None, None)
+            .await
+            .ok()?;
+
+        loop {
+            if let Some(error) = statement.error.take() {
+                return (error.error_name.as_deref() == Some("SYNTAX_ERROR"))
+                    .then(|| unshift_line(&error.message));
+            }
+            let next_uri = statement.next_uri.take()?;
+            statement = self.follow(&next_uri, &never).await.ok()?;
+        }
+    }
+
     /// Trino の取り消しは nextUri（どのページのものでもよい）への DELETE。
     /// 状態は StopQueryExecution が先に CANCELLED にしているので、届かなくても結果は見ない。
     async fn abort(&self, uri: &str) {
@@ -198,6 +221,19 @@ impl QueryError {
     /// 取り消されて途中でやめた。状態は先に CANCELLED で確定しているので、この値は表に出ない。
     fn cancelled() -> Self {
         Self::other("取り消されました".to_string())
+    }
+}
+
+/// SYNTAX_CHECK_PREFIX で 1 行ずれた `line N:` を元の行番号に戻す。
+fn unshift_line(message: &str) -> String {
+    let shifted = message
+        .strip_prefix("line ")
+        .and_then(|rest| rest.split_once(':'))
+        .and_then(|(line, rest)| Some((line.parse::<u32>().ok()?, rest)));
+
+    match shifted {
+        Some((line, rest)) if line > 1 => format!("line {}:{rest}", line - 1),
+        _ => message.to_string(),
     }
 }
 
@@ -263,5 +299,25 @@ impl StatementError {
             message: self.message,
             error_type: self.error_type,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn 構文を確かめたときの行番号を元の_sql_の行に戻す() {
+        assert_eq!(
+            unshift_line("line 2:1: mismatched input 'SELEC'. Expecting: 'ALTER'"),
+            "line 1:1: mismatched input 'SELEC'. Expecting: 'ALTER'"
+        );
+        assert_eq!(
+            unshift_line("line 3:6: mismatched input 'WHERE'"),
+            "line 2:6: mismatched input 'WHERE'"
+        );
+        // 位置の無いメッセージや 1 行目（前置きの中）はそのまま。
+        assert_eq!(unshift_line("Division by zero"), "Division by zero");
+        assert_eq!(unshift_line("line 1:9: x"), "line 1:9: x");
     }
 }
