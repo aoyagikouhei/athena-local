@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::failure::Failure;
 use crate::results::ResultLocation;
 use crate::trino::{Cancel, Outcome};
 
@@ -31,6 +32,8 @@ pub struct Execution {
     pub completed_at: Option<f64>,
     /// 成功したときだけ入る。
     pub result: Option<Arc<Outcome>>,
+    /// FAILED のときだけ入る。
+    pub failure: Option<Failure>,
     /// StopQueryExecution が立て、実行中のタスクが見る。
     pub cancel: Arc<Cancel>,
 }
@@ -76,6 +79,7 @@ impl Store {
             started_at: None,
             completed_at: None,
             result: None,
+            failure: None,
             cancel: Arc::default(),
         };
         self.lock().insert(id.to_string(), execution);
@@ -98,7 +102,7 @@ impl Store {
     }
 
     /// 終端状態からは何も書かない。先に CANCELLED になっていれば、あとから来た結果は捨てる。
-    pub fn finish(&self, id: &str, outcome: Result<Outcome, String>) {
+    pub fn finish(&self, id: &str, outcome: Result<Outcome, Failure>) {
         let mut executions = self.lock();
         let Some(execution) = executions.get_mut(id) else {
             return;
@@ -113,9 +117,10 @@ impl Store {
                 execution.state = State::Succeeded;
                 execution.result = Some(Arc::new(outcome));
             }
-            Err(message) => {
+            Err(failure) => {
                 execution.state = State::Failed;
-                execution.state_change_reason = Some(message);
+                execution.state_change_reason = Some(failure.reason.clone());
+                execution.failure = Some(failure);
             }
         }
     }
@@ -170,6 +175,15 @@ fn now() -> f64 {
 mod tests {
     use super::*;
 
+    fn user_failure(reason: &str) -> Failure {
+        Failure {
+            reason: reason.to_string(),
+            category: crate::failure::USER,
+            error_type: 1301,
+            retryable: false,
+        }
+    }
+
     fn submitted() -> Store {
         let store = Store::default();
         store.submit("id", "SELECT 1", Vec::new(), None, None, None);
@@ -211,7 +225,7 @@ mod tests {
     fn 失敗すると理由が残り結果は入らない() {
         let store = submitted();
 
-        store.finish("id", Err("TABLE_NOT_FOUND: t".to_string()));
+        store.finish("id", Err(user_failure("TABLE_NOT_FOUND: t")));
 
         let execution = store.get("id").unwrap();
         assert_eq!(execution.state, State::Failed);
@@ -219,6 +233,7 @@ mod tests {
             execution.state_change_reason.as_deref(),
             Some("TABLE_NOT_FOUND: t")
         );
+        assert_eq!(execution.failure, Some(user_failure("TABLE_NOT_FOUND: t")));
         assert!(execution.result.is_none());
     }
 
@@ -262,11 +277,12 @@ mod tests {
         store.cancel("id");
 
         store.finish("id", Ok(Outcome::default()));
-        store.finish("id", Err("late".to_string()));
+        store.finish("id", Err(user_failure("late")));
 
         let execution = store.get("id").unwrap();
         assert_eq!(execution.state, State::Cancelled);
         assert!(execution.result.is_none());
+        assert!(execution.failure.is_none(), "止めたクエリに失敗は残らない");
         assert_eq!(
             execution.state_change_reason.as_deref(),
             Some(CANCELLED_REASON)

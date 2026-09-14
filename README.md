@@ -139,6 +139,15 @@ Behaviour that matches real Athena:
   `CREATE_TABLE_AS_SELECT`, and so on. Trino spellings map to Athena's
   (`CREATE SCHEMA` is `CREATE_DATABASE`, `SHOW SCHEMAS` is `SHOW_DATABASES`).
   Statements whose `SubstatementType` was not measured leave the field out.
+- A `FAILED` query carries `Status.AthenaError` with the same `ErrorMessage` as
+  `StateChangeReason`. Trino's user errors are `ErrorCategory` 2 with the
+  `ErrorType` Athena uses for that error name (measured: `TABLE_NOT_FOUND` and
+  `SCHEMA_NOT_FOUND` 1301, `COLUMN_NOT_FOUND` 1006, `TYPE_MISMATCH` 1002,
+  `FUNCTION_NOT_FOUND` 1303, `DIVISION_BY_ZERO` 1001, `INVALID_CAST_ARGUMENT` 1100,
+  `NOT_SUPPORTED` 1200, and a few more), 1000 for names not measured, and
+  `Retryable` false. Other Trino errors are category 1 with `ErrorType` 200.
+  athena-local's own failures are category 1 and retryable: Trino unreachable is
+  100, a failed result upload is 401. Cancelled queries have no `AthenaError`.
 - `Statistics` holds timings measured by athena-local: `QueryQueueTimeInMillis`
   (submitted until sent to Trino), `EngineExecutionTimeInMillis` (from then until
   finished, including parameter classification and the result upload) and

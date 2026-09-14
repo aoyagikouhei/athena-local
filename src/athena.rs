@@ -89,6 +89,19 @@ pub struct Status {
     pub submission_date_time: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub completion_date_time: Option<f64>,
+    /// FAILED のときだけ。CANCELLED には付かない（本物と同じ）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub athena_error: Option<AthenaError>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct AthenaError {
+    /// 1 = SYSTEM、2 = USER、3 = OTHER。
+    pub error_category: i32,
+    pub error_type: i32,
+    pub retryable: bool,
+    pub error_message: String,
 }
 
 /// 時間は athena-local で測ったもの。スキャン量は課金の計算に使われると誤解を招くので 0 のまま。

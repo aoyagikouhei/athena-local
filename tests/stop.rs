@@ -42,6 +42,10 @@ async fn 実行中に止めるとすぐ_cancelled_になり_trino_に_delete_が
     assert_eq!(status["State"], "CANCELLED");
     assert_eq!(status["StateChangeReason"], "Query cancelled by user");
     assert!(status.get("CompletionDateTime").is_some());
+    assert!(
+        status.get("AthenaError").is_none(),
+        "本物も CANCELLED には付けない"
+    );
 
     wait_for("Trino に DELETE が届く", || {
         has_call(&harness, "DELETE /next")

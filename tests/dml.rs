@@ -176,3 +176,47 @@ async fn 未対応のオペレーションはエラーになる() {
             .contains("ListWorkGroups")
     );
 }
+
+#[tokio::test]
+async fn 失敗したクエリには_athena_error_が付き_成功したクエリには付かない() {
+    // 番号は本番 Athena で実測したもの（TABLE_NOT_FOUND は 1301）。
+    let harness =
+        Harness::builder(json!({ "columns": [{ "name": "n", "type": "bigint" }], "data": [[1]] }))
+            .route(
+                "SELECT * FROM no_such",
+                trino_error(
+                    "TABLE_NOT_FOUND",
+                    "line 1:15: Table 'iceberg.x.no_such' does not exist",
+                ),
+            )
+            .start()
+            .await;
+
+    let failed = harness
+        .run_query(json!({ "QueryString": "SELECT * FROM no_such" }))
+        .await;
+    let status = &failed["QueryExecution"]["Status"];
+    assert_eq!(status["State"], "FAILED");
+    assert_eq!(
+        status["AthenaError"],
+        json!({
+            "ErrorCategory": 2,
+            "ErrorType": 1301,
+            "Retryable": false,
+            "ErrorMessage": "TABLE_NOT_FOUND: line 1:15: Table 'iceberg.x.no_such' does not exist"
+        })
+    );
+    assert_eq!(
+        status["AthenaError"]["ErrorMessage"],
+        status["StateChangeReason"]
+    );
+
+    let succeeded = harness
+        .run_query(json!({ "QueryString": "SELECT n FROM t" }))
+        .await;
+    assert!(
+        succeeded["QueryExecution"]["Status"]
+            .get("AthenaError")
+            .is_none()
+    );
+}

@@ -4,6 +4,7 @@
 pub mod athena;
 pub mod config;
 mod convert;
+mod failure;
 mod handler;
 mod operation;
 mod response;

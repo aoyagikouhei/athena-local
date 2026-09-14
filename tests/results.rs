@@ -203,6 +203,10 @@ async fn 書き込みに失敗すると_failed_になり理由が残る() {
         "理由: {reason}"
     );
     assert_eq!(harness.s3_puts().len(), 1, "再試行しない");
+    // 本物には無い失敗なので、エラー一覧の「Failed to write query results to Amazon S3」を当てる。
+    assert_eq!(status["AthenaError"]["ErrorCategory"], 1);
+    assert_eq!(status["AthenaError"]["ErrorType"], 401);
+    assert_eq!(status["AthenaError"]["Retryable"], true);
 
     let (code, _) = harness
         .call(

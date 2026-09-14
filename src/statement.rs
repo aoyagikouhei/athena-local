@@ -80,6 +80,7 @@ mod tests {
     fn failed(name: &str, message: &str) -> Result<Outcome, QueryError> {
         Err(QueryError {
             name: Some(name.to_string()),
+            error_type: None,
             message: message.to_string(),
         })
     }
@@ -134,6 +135,7 @@ mod tests {
     fn 接続失敗など_error_name_の無い失敗はそのまま載る() {
         let probe = Err(QueryError {
             name: None,
+            error_type: None,
             message: "trino への接続に失敗しました".to_string(),
         });
         assert_eq!(bind("1", &probe), "1");
@@ -182,16 +184,19 @@ mod tests {
     fn 余剰パラメータのエラーだけを見分ける() {
         let unused = QueryError {
             name: Some("INVALID_PARAMETER_USAGE".to_string()),
+            error_type: None,
             message: "line 1:20: Incorrect number of parameters: expected 0 but found 1"
                 .to_string(),
         };
         let mismatch = QueryError {
             name: Some("INVALID_PARAMETER_USAGE".to_string()),
+            error_type: None,
             message: "line 1:20: Incorrect number of parameters: expected 1 but found 2"
                 .to_string(),
         };
         let other = QueryError {
             name: Some("SYNTAX_ERROR".to_string()),
+            error_type: None,
             message: "expected 0 but found 1".to_string(),
         };
 

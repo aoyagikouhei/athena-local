@@ -5,13 +5,14 @@ use axum::response::Response;
 use uuid::Uuid;
 
 use crate::athena::{
-    GetQueryExecutionRequest, GetQueryExecutionResponse, GetQueryResultsRequest,
+    AthenaError, GetQueryExecutionRequest, GetQueryExecutionResponse, GetQueryResultsRequest,
     GetQueryResultsResponse, QueryExecution, QueryExecutionContext, ResultConfiguration,
     StartQueryExecutionRequest, StartQueryExecutionResponse, Statistics, Status,
     StopQueryExecutionRequest, StopQueryExecutionResponse,
 };
 use crate::config::{Config, ResultsMode};
 use crate::convert;
+use crate::failure::Failure;
 use crate::handler::App;
 use crate::response::{invalid_request_with_code, ok, parse};
 use crate::results::{self, ResultFile, ResultLocation};
@@ -111,7 +112,7 @@ fn spawn_query(app: App, id: String) {
 
         let outcome = match run(&app.trino, &app.config, &execution).await {
             Ok(outcome) => write_result(&app, &execution, outcome).await,
-            Err(error) => Err(error.to_string()),
+            Err(error) => Err(Failure::from_query_error(&error)),
         };
         // 途中で止められていれば CANCELLED が先に書かれているので、finish は何もしない。
         app.store.finish(&id, outcome);
@@ -124,7 +125,7 @@ async fn write_result(
     app: &App,
     execution: &Execution,
     outcome: Outcome,
-) -> Result<Outcome, String> {
+) -> Result<Outcome, Failure> {
     let (Some(writer), Some(location)) = (&app.results, &execution.result_location) else {
         return Ok(outcome);
     };
@@ -137,7 +138,10 @@ async fn write_result(
         return Ok(outcome);
     }
 
-    writer.put(location, results::to_csv(&outcome)).await?;
+    writer
+        .put(location, results::to_csv(&outcome))
+        .await
+        .map_err(Failure::result_write)?;
     Ok(outcome)
 }
 
@@ -280,6 +284,12 @@ fn to_query_execution(id: &str, execution: &Execution) -> QueryExecution {
             state_change_reason: execution.state_change_reason.clone(),
             submission_date_time: execution.submitted_at,
             completion_date_time: execution.completed_at,
+            athena_error: execution.failure.as_ref().map(|failure| AthenaError {
+                error_category: failure.category,
+                error_type: failure.error_type,
+                retryable: failure.retryable,
+                error_message: failure.reason.clone(),
+            }),
         },
         statistics: statistics(
             execution.submitted_at,

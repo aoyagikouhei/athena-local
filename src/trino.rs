@@ -33,6 +33,8 @@ pub struct Column {
 pub struct QueryError {
     pub name: Option<String>,
     pub message: String,
+    /// Trino の errorType（USER_ERROR / INTERNAL_ERROR / INSUFFICIENT_RESOURCES / EXTERNAL）。接続失敗などは None。
+    pub error_type: Option<String>,
 }
 
 /// 実行の取り消し要求。StopQueryExecution が立て、nextUri を辿る側がページ境界で見る。
@@ -189,6 +191,7 @@ impl QueryError {
         Self {
             name: None,
             message,
+            error_type: None,
         }
     }
 
@@ -250,6 +253,7 @@ struct StatementColumn {
 struct StatementError {
     message: String,
     error_name: Option<String>,
+    error_type: Option<String>,
 }
 
 impl StatementError {
@@ -257,6 +261,7 @@ impl StatementError {
         QueryError {
             name: self.error_name,
             message: self.message,
+            error_type: self.error_type,
         }
     }
 }
