@@ -117,7 +117,9 @@ Behaviour that matches real Athena:
   `{1, x}` for an unnamed row. Strings inside are not quoted, exactly as in Athena
   (so `ARRAY['a, b']` reads `[a, b]`). The column's `typeSignature` from Trino
   tells a row from an array; without it the value falls back to JSON.
-- DML (`INSERT` / `UPDATE` / `DELETE` / `MERGE`) returns no rows and sets `UpdateCount`.
+- DML (`INSERT` / `UPDATE` / `DELETE` / `MERGE`) and CTAS return no rows, set
+  `UpdateCount`, and list a `rows` (`bigint`) column in `ColumnInfo`. DDL without a
+  count returns neither rows nor columns. Measured on Hive-format and Iceberg tables.
 - `SELECT` and `SHOW` return `UpdateCount` `0`; DDL leaves it out (Athena sends
   `null`, which SDKs read the same way).
 - `GetQueryResults` on a query without results returns `InvalidRequestException`
@@ -146,7 +148,8 @@ on the location makes no difference. The file name depends on the statement:
 | Statement | `OutputLocation` |
 | --- | --- |
 | `SELECT` / `WITH` / `VALUES` | `s3://bucket/prefix/<id>.csv` |
-| `INSERT` / `UPDATE` / `DELETE` / `MERGE` | `s3://bucket/prefix/<id>` |
+| `UPDATE` / `DELETE` / `MERGE` | `s3://bucket/prefix/<id>.csv` (nothing is written) |
+| `INSERT` | `s3://bucket/prefix/<id>` |
 | `CREATE TABLE ... AS SELECT` | `s3://bucket/prefix/tables/<id>` |
 | Other DDL, `SHOW`, `DESCRIBE`, ... | `s3://bucket/prefix/<id>.txt` |
 
@@ -231,9 +234,9 @@ memory, so it is lost when the container restarts.
   `X-Trino-Catalog` header, not the SQL, so a fully qualified name such as
   `"s3tablescatalog/my-bucket".db.users` still fails. Rely on
   `QueryExecutionContext` instead.
-- **DML column info.** For an `INSERT` into a Hive-format table, Athena's
-  `GetQueryResults` lists a `rows` (`bigint`) column alongside the empty rows;
-  athena-local lists no columns. Iceberg tables were not measured.
+- **Iceberg maintenance statements differ.** Athena's `OPTIMIZE ... REWRITE DATA`
+  and `VACUUM` do not exist in Trino, which uses `ALTER TABLE ... EXECUTE optimize`
+  and `ALTER TABLE ... EXECUTE expire_snapshots` instead.
 - **Cancellation is checked between pages.** A stopped query is `CANCELLED`
   at once, but the `DELETE` reaches Trino only when the current long poll to
   `nextUri` returns (about a second at most).
@@ -243,9 +246,8 @@ memory, so it is lost when the container restarts.
 - **A missing bucket fails the query.** Athena reported `SUCCEEDED` for a
   `SELECT` whose output bucket did not exist (measured). athena-local makes it
   `FAILED` so the mistake shows up locally.
-- **Unmeasured file names.** The file name for `CTAS` written with `OR REPLACE`,
-  `VALUES` and `DESCRIBE` follows the measured rule for similar statements but
-  was not measured itself.
+- **Unmeasured file names.** The file name for `CREATE OR REPLACE TABLE ... AS`
+  (Trino only) follows the measured rule for CTAS but was not measured.
 - **Plain HTTP only.** The clients are built without TLS, for both Trino and
   the S3-compatible store. To reach an HTTPS endpoint, add the `rustls` feature
   to `reqwest` in `Cargo.toml` (and CA certificates to the image).

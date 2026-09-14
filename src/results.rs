@@ -17,9 +17,10 @@ const SIGNATURE_EXPIRY: Duration = Duration::from_secs(60);
 /// 本物の Athena が OutputLocation に置くファイルの種類。文の先頭で決まる。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResultFile {
-    /// SELECT など。`<id>.csv` に結果を書く。
+    /// SELECT など。`<id>.csv` に結果を書く。UPDATE / DELETE / MERGE も名前はこれだが、結果は書かない
+    /// （本物も `.csv.metadata` だけを置く）。
     Csv,
-    /// INSERT / UPDATE / DELETE / MERGE。`<id>`（拡張子なし）。本物はその横に `-manifest.csv` を置く。
+    /// INSERT。`<id>`（拡張子なし）。
     Manifest,
     /// CREATE TABLE AS SELECT。`tables/<id>`。
     Table,
@@ -37,8 +38,8 @@ impl ResultFile {
         let word = |index: usize| words.get(index).map(String::as_str).unwrap_or_default();
 
         match word(0).trim_start_matches('(') {
-            "SELECT" | "WITH" | "VALUES" | "TABLE" => Self::Csv,
-            "INSERT" | "UPDATE" | "DELETE" | "MERGE" => Self::Manifest,
+            "SELECT" | "WITH" | "VALUES" | "TABLE" | "UPDATE" | "DELETE" | "MERGE" => Self::Csv,
+            "INSERT" => Self::Manifest,
             "CREATE" if is_create_table_as(&words) => Self::Table,
             _ => Self::Text,
         }
@@ -341,9 +342,11 @@ mod tests {
             ("(SELECT 1) UNION (SELECT 2)", ResultFile::Csv),
             ("VALUES 1", ResultFile::Csv),
             ("INSERT INTO t VALUES (1)", ResultFile::Manifest),
-            ("update t SET a = 1", ResultFile::Manifest),
-            ("DELETE FROM t", ResultFile::Manifest),
-            ("MERGE INTO t USING s ON t.id = s.id", ResultFile::Manifest),
+            // UPDATE / DELETE / MERGE は INSERT と違い .csv になる（Iceberg で実測）。
+            ("update t SET a = 1", ResultFile::Csv),
+            ("DELETE FROM t", ResultFile::Csv),
+            ("MERGE INTO t USING s ON t.id = s.id", ResultFile::Csv),
+            ("DESCRIBE t", ResultFile::Text),
             ("CREATE TABLE c AS SELECT 1 AS i", ResultFile::Table),
             (
                 "CREATE TABLE db.c WITH (format = 'PARQUET') AS SELECT 1 AS i",

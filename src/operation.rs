@@ -327,7 +327,8 @@ fn statement_type(query: &str) -> &'static str {
         .to_uppercase();
 
     match head.as_str() {
-        "SELECT" | "WITH" | "INSERT" | "UPDATE" | "DELETE" | "MERGE" => "DML",
+        // VALUES も本物は DML（SubstatementType は SELECT）。
+        "SELECT" | "WITH" | "VALUES" | "INSERT" | "UPDATE" | "DELETE" | "MERGE" => "DML",
         "CREATE" | "DROP" | "ALTER" => "DDL",
         _ => "UTILITY",
     }
@@ -409,6 +410,8 @@ mod tests {
         assert_eq!(statement_type("CREATE TABLE t AS SELECT 1"), "DDL");
         assert_eq!(statement_type("DROP TABLE t"), "DDL");
         assert_eq!(statement_type("SET SESSION x = 1"), "UTILITY");
+        assert_eq!(statement_type("VALUES 1"), "DML");
+        assert_eq!(statement_type("DESCRIBE t"), "UTILITY");
         assert_eq!(statement_type(""), "UTILITY");
     }
 }

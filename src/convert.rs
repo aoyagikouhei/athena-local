@@ -10,8 +10,8 @@ use crate::trino::Outcome;
 /// SELECT の 1 ページ目の先頭行は列名（本物の Athena と同じ）。
 /// ページングできるよう、ヘッダ行込みの一覧をまとめて作る。
 pub fn all_rows(outcome: &Outcome) -> Vec<Vec<Option<String>>> {
-    if outcome.update_count.is_some() {
-        // DML は行を返さず UpdateCount だけ。
+    // DML と CTAS は行を返さず UpdateCount だけ。列の無い DDL（Trino は columns: [] を返す）も行を返さない。
+    if outcome.update_count.is_some() || outcome.columns.is_empty() {
         return Vec::new();
     }
 
@@ -39,16 +39,12 @@ pub fn all_rows(outcome: &Outcome) -> Vec<Vec<Option<String>>> {
 }
 
 pub fn result_set(outcome: &Outcome, rows: &[Vec<Option<String>>]) -> ResultSet {
-    // DML の列（Trino が返す rows 列）は本物の Athena には無いので載せない。
-    let columns = match outcome.update_count {
-        Some(_) => Vec::new(),
-        None => outcome.columns.iter().map(to_column_info).collect(),
-    };
-
+    // DML と CTAS でも Trino の列（rows bigint）をそのまま載せる。本物の Athena も同じ列を返す
+    // （Hive 形式と Iceberg の INSERT / UPDATE / MERGE / DELETE / CTAS で 2026-09-14 に実測）。
     ResultSet {
         rows: rows.iter().map(|row| to_row(row)).collect(),
         result_set_metadata: ResultSetMetadata {
-            column_info: columns,
+            column_info: outcome.columns.iter().map(to_column_info).collect(),
         },
     }
 }
@@ -612,6 +608,12 @@ mod tests {
                 [Some("x".to_string()), Some("[1, 2]".to_string())],
             ]
         );
+    }
+
+    #[test]
+    fn 列の無い結果は列名行も作らない() {
+        // Trino は CREATE TABLE / DROP TABLE に columns: [] を返す。本物の Athena の Rows は空。
+        assert!(all_rows(&Outcome::default()).is_empty());
     }
 
     #[test]

@@ -32,13 +32,13 @@ async fn dml_は行を返さず_update_count_を返す() {
     assert_eq!(status, 200);
     assert_eq!(results["UpdateCount"], 3);
     assert!(results["ResultSet"]["Rows"].as_array().unwrap().is_empty());
-    assert!(
-        results["ResultSet"]["ResultSetMetadata"]["ColumnInfo"]
-            .as_array()
-            .unwrap()
-            .is_empty(),
-        "本物の Athena は DML で列情報を返さない"
-    );
+    // 本物の Athena も DML では rows (bigint) の列情報を返す（Hive 形式と Iceberg で実測）。
+    let columns = results["ResultSet"]["ResultSetMetadata"]["ColumnInfo"]
+        .as_array()
+        .unwrap();
+    assert_eq!(columns.len(), 1);
+    assert_eq!(columns[0]["Name"], "rows");
+    assert_eq!(columns[0]["Type"], "bigint");
 }
 
 #[tokio::test]
@@ -51,7 +51,7 @@ async fn ddl_は_statement_type_が_ddl_になり_件数の無い_ddl_は_update
     }))
     .route(
         "CREATE TABLE t (i int)",
-        json!({ "updateType": "CREATE TABLE" }),
+        json!({ "columns": [], "updateType": "CREATE TABLE" }),
     )
     .start()
     .await;
@@ -83,6 +83,11 @@ async fn ddl_は_statement_type_が_ddl_になり_件数の無い_ddl_は_update
     assert!(
         create_results.get("UpdateCount").is_none(),
         "{create_results}"
+    );
+    // 列も行も返さない（本物の Rows と ColumnInfo は空）。
+    assert_eq!(
+        create_results["ResultSet"],
+        json!({ "Rows": [], "ResultSetMetadata": { "ColumnInfo": [] } })
     );
 }
 

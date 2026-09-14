@@ -138,6 +138,15 @@ async fn dml_と_ddl_は何も書かず_ファイル名だけ本物に合わせ�
     let harness = Harness::builder(select_response())
         .route("INSERT INTO t VALUES (1)", dml_response())
         .route(
+            "UPDATE t SET name = 'x'",
+            json!({
+                "columns": [{ "name": "rows", "type": "bigint" }],
+                "data": [[1]],
+                "updateType": "UPDATE",
+                "updateCount": 1
+            }),
+        )
+        .route(
             "CREATE TABLE t (i int)",
             json!({ "updateType": "CREATE TABLE" }),
         )
@@ -152,6 +161,9 @@ async fn dml_と_ddl_は何も書かず_ファイル名だけ本物に合わせ�
     let create = harness
         .run_query(json!({ "QueryString": "CREATE TABLE t (i int)" }))
         .await;
+    let update = harness
+        .run_query(json!({ "QueryString": "UPDATE t SET name = 'x'" }))
+        .await;
 
     assert_eq!(insert["QueryExecution"]["Status"]["State"], "SUCCEEDED");
     assert_eq!(create["QueryExecution"]["Status"]["State"], "SUCCEEDED");
@@ -162,6 +174,11 @@ async fn dml_と_ddl_は何も書かず_ファイル名だけ本物に合わせ�
     assert_eq!(
         output_location(&create),
         format!("s3://results-bucket/athena/{}.txt", execution_id(&create))
+    );
+    // UPDATE / DELETE / MERGE は名前だけ .csv で、結果は書かない。
+    assert_eq!(
+        output_location(&update),
+        format!("s3://results-bucket/athena/{}.csv", execution_id(&update))
     );
     assert!(harness.s3_puts().is_empty());
 }
