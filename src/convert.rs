@@ -1,5 +1,7 @@
 //! Trino の結果を Athena の ResultSet に写す。
 
+use std::cmp::Ordering;
+
 use serde_json::Value;
 
 use crate::athena::{ColumnInfo, Datum, ResultSet, ResultSetMetadata, Row};
@@ -56,6 +58,7 @@ pub fn result_set(outcome: &Outcome, rows: &[Vec<Option<String>>]) -> ResultSet 
 fn to_var_char_value(value: &Value, signature: Option<&Value>) -> Option<String> {
     match value {
         Value::Null => None,
+        Value::String(text) if raw_type(signature) == Some("varbinary") => Some(varbinary(text)),
         Value::String(text) => Some(text.clone()),
         Value::Bool(flag) => Some(flag.to_string()),
         Value::Number(number) => Some(number.to_string()),
@@ -67,14 +70,26 @@ fn to_var_char_value(value: &Value, signature: Option<&Value>) -> Option<String>
     }
 }
 
+fn raw_type(signature: Option<&Value>) -> Option<&str> {
+    signature?.get("rawType")?.as_str()
+}
+
 /// 値の表記を決めるのに要る範囲の型。Trino の typeSignature から読む。
 enum ValueType {
     Array(Box<ValueType>),
-    /// 値の型。キーは JSON のオブジェクトキー（文字列）で届くので型は要らない。
-    Map(Box<ValueType>),
+    /// キーの並べ方と値の型。キーは JSON のオブジェクトキー（文字列）で届く。
+    Map(KeyOrder, Box<ValueType>),
     /// フィールド名と型。無名 row のフィールド名は None。
     Row(Vec<(Option<String>, ValueType)>),
+    /// Trino は base64 で返す。Athena は 16 進を空白で区切って返す。
+    Varbinary,
     Scalar,
+}
+
+/// map のキーの並べ方。Athena は数値のキーを数値の順に並べる（`{9=a, 10=b}`）。
+enum KeyOrder {
+    Numeric,
+    Text,
 }
 
 impl ValueType {
@@ -85,7 +100,11 @@ impl ValueType {
 
         match signature.get("rawType")?.as_str()? {
             "array" => Some(Self::Array(Box::new(type_argument(argument(0)?)?))),
-            "map" => Some(Self::Map(Box::new(type_argument(argument(1)?)?))),
+            "map" => Some(Self::Map(
+                key_order(argument(0)?),
+                Box::new(type_argument(argument(1)?)?),
+            )),
+            "varbinary" => Some(Self::Varbinary),
             "row" => arguments?
                 .iter()
                 .map(named_argument)
@@ -100,6 +119,21 @@ impl ValueType {
 /// 形が違えば value が型として読めず None になるので、kind は見ない。
 fn type_argument(argument: &Value) -> Option<ValueType> {
     ValueType::parse(argument.get("value")?)
+}
+
+/// map のキーの型から並べ方を決める。読めなければ文字列の順。
+fn key_order(argument: &Value) -> KeyOrder {
+    let raw_type = argument
+        .get("value")
+        .and_then(|value| value.get("rawType"))
+        .and_then(Value::as_str);
+
+    match raw_type {
+        Some("tinyint" | "smallint" | "integer" | "bigint" | "real" | "double" | "decimal") => {
+            KeyOrder::Numeric
+        }
+        _ => KeyOrder::Text,
+    }
 }
 
 /// row の引数 `{"kind": "NAMED_TYPE", "value": {"fieldName": {"name": ..}, "typeSignature": ..}}`。
@@ -119,19 +153,27 @@ fn named_argument(argument: &Value) -> Option<(Option<String>, ValueType)> {
 fn render(value: &Value, value_type: &ValueType) -> String {
     match (value_type, value) {
         (_, Value::Null) => "null".to_string(),
+        (ValueType::Varbinary, Value::String(text)) => varbinary(text),
         (_, Value::String(text)) => text.clone(),
         (ValueType::Array(element), Value::Array(items)) => {
             format!("[{}]", join(items.iter().map(|item| render(item, element))))
         }
-        // serde_json の Map はキー昇順に並ぶ（preserve_order は無効）。Athena の実測と同じ並び。
-        (ValueType::Map(element), Value::Object(entries)) => format!(
-            "{{{}}}",
-            join(
-                entries
-                    .iter()
-                    .map(|(key, item)| format!("{key}={}", render(item, element)))
+        // serde_json の Map はキーの文字列順に並ぶ（preserve_order は無効）。
+        // 文字列のキーはそのまま、数値のキーは数値の順に並べ直す。どちらも Athena の実測と同じ並び。
+        (ValueType::Map(order, element), Value::Object(entries)) => {
+            let mut entries: Vec<_> = entries.iter().collect();
+            if let KeyOrder::Numeric = order {
+                entries.sort_by(|(a, _), (b, _)| compare_numbers(a, b));
+            }
+            format!(
+                "{{{}}}",
+                join(
+                    entries
+                        .into_iter()
+                        .map(|(key, item)| format!("{key}={}", render(item, element)))
+                )
             )
-        ),
+        }
         (ValueType::Row(fields), Value::Array(items)) if fields.len() == items.len() => format!(
             "{{{}}}",
             join(
@@ -147,6 +189,60 @@ fn render(value: &Value, value_type: &ValueType) -> String {
         // 数値・真偽値と、型と値の形が合わないもの。
         (_, other) => other.to_string(),
     }
+}
+
+/// 数値として読めるキーを数値の順に。整数は精度を落とさないよう i128 で比べる。
+/// 読めないキーは後ろに文字列の順で置く（全順序にしておかないと sort が壊れる）。
+fn compare_numbers(a: &str, b: &str) -> Ordering {
+    if let (Ok(x), Ok(y)) = (a.parse::<i128>(), b.parse::<i128>()) {
+        return x.cmp(&y);
+    }
+    match (a.parse::<f64>(), b.parse::<f64>()) {
+        (Ok(x), Ok(y)) => x.total_cmp(&y).then_with(|| a.cmp(b)),
+        (Ok(_), Err(_)) => Ordering::Less,
+        (Err(_), Ok(_)) => Ordering::Greater,
+        (Err(_), Err(_)) => a.cmp(b),
+    }
+}
+
+/// base64 を 16 進に。読めなければ受け取ったまま返す。
+fn varbinary(text: &str) -> String {
+    match decode_base64(text) {
+        Some(bytes) => bytes
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<Vec<_>>()
+            .join(" "),
+        None => text.to_string(),
+    }
+}
+
+/// 標準の base64（`+` `/`、`=` 埋め）。依存を足すほどではないので自前で読む。
+fn decode_base64(text: &str) -> Option<Vec<u8>> {
+    let text = text.trim_end_matches('=');
+    let mut bytes = Vec::with_capacity(text.len() * 3 / 4);
+    let mut buffer = 0u32;
+    let mut bits = 0;
+
+    for c in text.bytes() {
+        let value = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        };
+        buffer = (buffer << 6) | u32::from(value);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            bytes.push((buffer >> bits) as u8);
+            buffer &= (1 << bits) - 1;
+        }
+    }
+
+    Some(bytes)
 }
 
 fn join(parts: impl Iterator<Item = String>) -> String {
@@ -243,6 +339,49 @@ mod tests {
             {"kind":"TYPE","value":{"rawType":"integer","arguments":[]}},
             {"kind":"TYPE","value":{"rawType":"varchar","arguments":[{"kind":"LONG","value":1}]}}]}"#;
         assert_eq!(format(r#"{"1":"v"}"#, signature), Some("{1=v}".into()));
+    }
+
+    #[test]
+    fn 数値キーの_map_は数値の順に並べる() {
+        // Trino からは JSON のキー（文字列）で届くので、そのままだと "10" が先になる。
+        let signature = r#"{"rawType":"map","arguments":[
+            {"kind":"TYPE","value":{"rawType":"integer","arguments":[]}},
+            {"kind":"TYPE","value":{"rawType":"varchar","arguments":[{"kind":"LONG","value":1}]}}]}"#;
+        assert_eq!(
+            format(r#"{"10":"b","9":"a"}"#, signature),
+            Some("{9=a, 10=b}".into())
+        );
+    }
+
+    #[test]
+    fn 数値として比べるときも読めないキーは後ろに文字列の順で置く() {
+        let mut keys = vec!["x", "10", "-1.5", "9", "a"];
+        keys.sort_by(|a, b| compare_numbers(a, b));
+        assert_eq!(keys, ["-1.5", "9", "10", "a", "x"]);
+    }
+
+    #[test]
+    fn varbinary_は_16_進を空白で区切る() {
+        let varbinary = r#"{"rawType":"varbinary","arguments":[]}"#;
+        // X'0102'。Trino は base64 の "AQI=" で返す。
+        assert_eq!(format(r#""AQI=""#, varbinary), Some("01 02".into()));
+        // 英字は小文字（Trino の表記。実測したのは数字だけ）。
+        assert_eq!(format(r#""/+8=""#, varbinary), Some("ff ef".into()));
+        assert_eq!(format(r#""""#, varbinary), Some("".into()));
+        // base64 として読めなければそのまま返す。
+        assert_eq!(
+            format(r#""not base64!""#, varbinary),
+            Some("not base64!".into())
+        );
+    }
+
+    #[test]
+    fn 配列の中の_varbinary_も_16_進にする() {
+        let varbinary = r#"{"rawType":"varbinary","arguments":[]}"#;
+        assert_eq!(
+            format(r#"["AQI=",null]"#, &array_of(varbinary)),
+            Some("[01 02, null]".into())
+        );
     }
 
     #[test]

@@ -155,11 +155,12 @@ memory, so it is lost when the container restarts.
   comment swallows the closing parenthesis. How Athena classifies those, or a
   bare `?`, has not been measured. Each parameter costs one extra round trip to
   Trino.
-- **`varbinary` values.** Trino returns them base64-encoded and athena-local
-  passes that through; Athena returns them as hex.
-- **Map key order.** Map entries are printed in ascending key order, compared as
-  strings. That matched Athena for the keys we measured; other key sets (for
-  example numeric keys `9` and `10`) were not verified.
+- **`varbinary` inside `array` / `map` / `row`.** Top-level `varbinary` values
+  are converted from Trino's base64 to Athena's `01 02` form (measured). The same
+  form is used inside composite values, which was not measured.
+- **Map key order.** Map entries are printed in ascending key order: numerically
+  for numeric key types (`{9=a, 10=b}`), as strings otherwise (`{j=2, k=1}`).
+  Both were measured against Athena; other key types were not.
 - **Catalog aliases cover the context only.** `TRINO_CATALOG_MAP` rewrites the
   `X-Trino-Catalog` header, not the SQL, so a fully qualified name such as
   `"s3tablescatalog/my-bucket".db.users` still fails. Rely on
