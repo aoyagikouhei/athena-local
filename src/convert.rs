@@ -61,7 +61,7 @@ fn to_var_char_value(value: &Value, signature: Option<&Value>) -> Option<String>
         Value::String(text) if raw_type(signature) == Some("varbinary") => Some(varbinary(text)),
         Value::String(text) => Some(text.clone()),
         Value::Bool(flag) => Some(flag.to_string()),
-        Value::Number(number) => Some(number.to_string()),
+        Value::Number(number) => Some(number_text(number)),
         other => Some(match signature.and_then(ValueType::parse) {
             Some(value_type) => render(other, &value_type),
             // row も array も JSON 配列で届くので、型が分からなければ見分けられない。
@@ -155,6 +155,7 @@ fn render(value: &Value, value_type: &ValueType) -> String {
         (_, Value::Null) => "null".to_string(),
         (ValueType::Varbinary, Value::String(text)) => varbinary(text),
         (_, Value::String(text)) => text.clone(),
+        (_, Value::Number(number)) => number_text(number),
         (ValueType::Array(element), Value::Array(items)) => {
             format!("[{}]", join(items.iter().map(|item| render(item, element))))
         }
@@ -189,6 +190,77 @@ fn render(value: &Value, value_type: &ValueType) -> String {
         // 数値・真偽値と、型と値の形が合わないもの。
         (_, other) => other.to_string(),
     }
+}
+
+/// 整数はそのまま、浮動小数点数（double / real）は Java の Double.toString と同じ表記にする。
+/// Athena の実測: `1.0E20`、`1.0E-7`、`0.30000000000000004`、`1.5`。
+/// NaN と Infinity は Trino が文字列で送ってくるので、ここには来ない。
+fn number_text(number: &serde_json::Number) -> String {
+    match number.as_f64() {
+        Some(value) if !(number.is_i64() || number.is_u64()) => java_double(value),
+        _ => number.to_string(),
+    }
+}
+
+/// Java の Double.toString: 1e-3 <= |x| < 1e7 は小数表記（小数部は最低 1 桁）、
+/// それ以外は `d.dddE<指数>`（指数に + は付けない）。桁は往復できる最短の桁で、Rust の `{:e}` と同じ。
+fn java_double(value: f64) -> String {
+    if value.is_nan() {
+        return "NaN".to_string();
+    }
+    if value.is_infinite() {
+        return if value > 0.0 { "Infinity" } else { "-Infinity" }.to_string();
+    }
+    let sign = if value.is_sign_negative() { "-" } else { "" };
+    if value == 0.0 {
+        return format!("{sign}0.0");
+    }
+
+    let magnitude = value.abs();
+    // 例: 3.0000000000000004e-1 → 桁 "30000000000000004"、指数 -1。
+    let scientific = format!("{magnitude:e}");
+    let (mantissa, exponent) = scientific
+        .split_once('e')
+        .expect("{:e} の表記には e が入る");
+    let exponent: i32 = exponent.parse().expect("{:e} の指数は整数");
+    let digits: String = mantissa.chars().filter(|c| *c != '.').collect();
+
+    let text = if (1e-3..1e7).contains(&magnitude) {
+        if exponent >= 0 {
+            let point = exponent as usize + 1;
+            let padded = format!("{digits:0<point$}");
+            let (integer, fraction) = padded.split_at(point);
+            format!(
+                "{integer}.{}",
+                if fraction.is_empty() { "0" } else { fraction }
+            )
+        } else {
+            format!("0.{}{digits}", "0".repeat((-exponent - 1) as usize))
+        }
+    } else {
+        let (first, rest) = digits.split_at(1);
+        format!(
+            "{first}.{}E{exponent}",
+            if rest.is_empty() { "0" } else { rest }
+        )
+    };
+
+    format!("{sign}{text}")
+}
+
+/// Trino に PARAMETRIC_DATETIME を伝えると、日時の型名に精度が付く（`timestamp(6)`）。
+/// Athena の ColumnInfo.Type は精度を付けない（実測: `timestamp` / `timestamp with time zone` / `time`）ので外す。
+fn athena_type_name(type_name: &str) -> String {
+    for prefix in ["timestamp(", "time("] {
+        if let Some(rest) = type_name.strip_prefix(prefix)
+            && let Some((precision, suffix)) = rest.split_once(')')
+            && !precision.is_empty()
+            && precision.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return format!("{}{suffix}", prefix.trim_end_matches('('));
+        }
+    }
+    type_name.to_string()
 }
 
 /// 数値として読めるキーを数値の順に。整数は精度を落とさないよう i128 で比べる。
@@ -264,7 +336,7 @@ fn to_column_info(column: &crate::trino::Column) -> ColumnInfo {
     ColumnInfo {
         name: column.name.clone(),
         label: column.name.clone(),
-        type_name: column.type_name.clone(),
+        type_name: athena_type_name(&column.type_name),
         nullable: "UNKNOWN".to_string(),
         case_sensitive: false,
     }
@@ -382,6 +454,65 @@ mod tests {
             format(r#"["AQI=",null]"#, &array_of(varbinary)),
             Some("[01 02, null]".into())
         );
+    }
+
+    #[test]
+    fn 浮動小数点数は_java_の表記にする() {
+        let double = r#"{"rawType":"double","arguments":[]}"#;
+        for (data, expected) in [
+            // Trino 482 が送ってくる JSON と、同じ値の Athena の表記（上 3 つは実測）。
+            ("1e+20", "1.0E20"),
+            ("1e-07", "1.0E-7"),
+            ("0.30000000000000004", "0.30000000000000004"),
+            // 以下は Java の Double.toString の規則から。
+            ("1.5", "1.5"),
+            ("100.0", "100.0"),
+            ("1234567.0", "1234567.0"),
+            ("1e7", "1.0E7"),
+            ("12345678.9", "1.23456789E7"),
+            ("0.001", "0.001"),
+            ("0.0001", "1.0E-4"),
+            ("-2.5e-10", "-2.5E-10"),
+            ("0.0", "0.0"),
+            ("-0.0", "-0.0"),
+        ] {
+            assert_eq!(format(data, double), Some(expected.into()), "{data}");
+        }
+    }
+
+    #[test]
+    fn 整数は桁を変えない() {
+        let bigint = r#"{"rawType":"bigint","arguments":[]}"#;
+        assert_eq!(
+            format("9223372036854775807", bigint),
+            Some("9223372036854775807".into())
+        );
+        assert_eq!(format("-1", bigint), Some("-1".into()));
+    }
+
+    #[test]
+    fn 配列の中の浮動小数点数も_java_の表記にする() {
+        let double = r#"{"rawType":"double","arguments":[]}"#;
+        assert_eq!(
+            format("[1e+20,0.5]", &array_of(double)),
+            Some("[1.0E20, 0.5]".into())
+        );
+    }
+
+    #[test]
+    fn 日時の型名からは精度を外す() {
+        for (trino, athena) in [
+            ("timestamp(6)", "timestamp"),
+            ("timestamp(0)", "timestamp"),
+            ("timestamp(3) with time zone", "timestamp with time zone"),
+            ("time(3)", "time"),
+            ("time(6) with time zone", "time with time zone"),
+            ("timestamp", "timestamp"),
+            ("varchar(4)", "varchar(4)"),
+            ("array(timestamp(6))", "array(timestamp(6))"),
+        ] {
+            assert_eq!(athena_type_name(trino), athena, "{trino}");
+        }
     }
 
     #[test]

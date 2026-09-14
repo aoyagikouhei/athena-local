@@ -99,7 +99,10 @@ impl Trino {
         let mut request = self
             .http
             .post(format!("{}/v1/statement", self.base_url))
-            .header("X-Trino-User", &self.user);
+            .header("X-Trino-User", &self.user)
+            // 付けないと Trino は timestamp を小数 3 桁に丸めて返す（timestamp(6) の .789123 が .789、
+            // timestamp(0) が .000 になる）。Athena は精度どおりに返す（2026-09-14 実測）。
+            .header("X-Trino-Client-Capabilities", "PARAMETRIC_DATETIME");
 
         // 未指定なら送らない。Trino 側は SQL 内の修飾名で解決する。
         if let Some(catalog) = catalog {

@@ -107,6 +107,11 @@ Behaviour that matches real Athena:
 
 - The first row of the first page of a `SELECT` result holds the column names.
 - Values are returned as strings (`Datum.VarCharValue`); NULL omits the field.
+- Timestamps keep their precision (`2020-01-01 12:34:56.789123` for
+  `timestamp(6)`, no fraction for `timestamp(0)`), while `ColumnInfo.Type` drops
+  it (`timestamp`, `timestamp with time zone`, `time`).
+- `double` and `real` values use Java's notation: `1.5`, `0.30000000000000004`,
+  `1.0E20`, `1.0E-7`.
 - `array`, `map` and `row` values use Athena's notation rather than JSON:
   `[1, 2, 3]`, `[a, null]`, `[[1], [2, 3]]`, `{k=1}`, `{id=1, name=x}`, and
   `{1, x}` for an unnamed row. Strings inside are not quoted, exactly as in Athena

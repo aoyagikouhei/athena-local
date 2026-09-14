@@ -23,6 +23,7 @@ pub struct TrinoRequest {
     pub sql: String,
     pub catalog: Option<String>,
     pub schema: Option<String>,
+    pub client_capabilities: Option<String>,
 }
 
 /// 終わらないクエリの 1 ページごとの待ち時間。無遅延だと実行側が偽 Trino を全速で叩き続ける。
@@ -403,6 +404,7 @@ async fn statement(
         sql,
         catalog: header("x-trino-catalog"),
         schema: header("x-trino-schema"),
+        client_capabilities: header("x-trino-client-capabilities"),
     });
 
     if let Some(delay) = fake.statement_delay {

@@ -169,3 +169,17 @@ async fn trino_が複数ページで返しても全行そろう() {
     assert_eq!(rows.len(), 4, "列名行 + データ 3 行");
     assert_eq!(rows[3]["Data"][0]["VarCharValue"], "3");
 }
+
+#[tokio::test]
+async fn 日時を精度どおりに受け取るよう_trino_に伝える() {
+    // 伝えないと Trino は timestamp を小数 3 桁に丸める。
+    let harness = Harness::start(select_response()).await;
+    harness
+        .run_query(json!({ "QueryString": "SELECT 1" }))
+        .await;
+
+    assert_eq!(
+        harness.trino_requests()[0].client_capabilities.as_deref(),
+        Some("PARAMETRIC_DATETIME")
+    );
+}
