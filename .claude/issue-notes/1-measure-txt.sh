@@ -7,7 +7,7 @@
 # 任意の環境変数:
 #   CATALOG  既定 AwsDataCatalog
 #   REGION   既定 ap-northeast-1
-#   OUT_DIR  既定 ./athena-txt-measurements
+#   OUT_DIR  既定 $HOME/athena-txt-measurements（実名が入るのでリポジトリの外に出す）
 #
 # 文ごとに次を保存する。
 #   <label>.execution.json  GetQueryExecution の応答（OutputLocation と状態）
@@ -23,7 +23,7 @@ set -uo pipefail
 TABLE=${TABLE:?TABLE に既存のテーブル名を設定してください}
 CATALOG=${CATALOG:-AwsDataCatalog}
 REGION=${REGION:-ap-northeast-1}
-OUT_DIR=${OUT_DIR:-./athena-txt-measurements}
+OUT_DIR=${OUT_DIR:-$HOME/athena-txt-measurements}
 
 mkdir -p "$OUT_DIR"
 echo "出力先: $OUT_DIR"
