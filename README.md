@@ -16,7 +16,7 @@ your app ──(aws-sdk-athena / awsJson1.1)──> athena-local ──(REST /v1
 ```yaml
 services:
   athena-local:
-    image: aoyagikouhei/athena-local:0.3.0
+    image: aoyagikouhei/athena-local:0.4.0
     environment:
       TRINO_URL: http://trino:8080
       # Defaults used when the request has no QueryExecutionContext.

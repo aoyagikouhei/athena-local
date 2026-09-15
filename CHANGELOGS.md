@@ -8,6 +8,8 @@ Behaviour described as "measured" was compared against real Amazon Athena
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-15
+
 ### Added
 
 - `TRINO_CATALOG_MAP` also applies to qualified names in the SQL. A double-quoted
@@ -111,7 +113,8 @@ These change what 0.2.0 returned. All of them follow measured Athena behaviour.
   `X-Trino-Catalog` / `X-Trino-Schema` headers.
 - `linux/amd64` and `linux/arm64` images published on tag push.
 
-[Unreleased]: https://github.com/aoyagikouhei/athena-local/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/aoyagikouhei/athena-local/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/aoyagikouhei/athena-local/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/aoyagikouhei/athena-local/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/aoyagikouhei/athena-local/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/aoyagikouhei/athena-local/releases/tag/v0.1.0
