@@ -79,9 +79,9 @@ startup. The store itself is not contacted until a query finishes, so the
 bucket may be created after athena-local starts.
 
 Catalog and schema are passed to Trino as `X-Trino-Catalog` / `X-Trino-Schema`
-headers. **Without `ExecutionParameters` the SQL string is never rewritten**, so
-write unqualified table names and let the context carry the catalog and database —
-that way the same SQL works against real Athena.
+headers. **Without `ExecutionParameters` the SQL string is not rewritten**, except
+for catalog aliases in qualified names (below). Unqualified table names with the
+context carrying the catalog and database remain the most portable form.
 
 Some Athena catalog names cannot exist in Trino. Reading S3 Tables through Athena
 always uses `s3tablescatalog/<bucket>`, and a Trino catalog name cannot contain
@@ -91,8 +91,20 @@ always uses `s3tablescatalog/<bucket>`, and a Trino catalog name cannot contain
 TRINO_CATALOG_MAP: s3tablescatalog/my-bucket=iceberg,AwsDataCatalog=hive
 ```
 
-The alias is applied to the name Trino receives only; `GetQueryExecution` reports
-the catalog name the request used.
+The alias is applied to the catalog header and to qualified names in the SQL. A
+double-quoted identifier that equals an alias and is followed by `.` is replaced
+with the Trino name, padded with spaces so that error positions still point at
+the same place in your SQL:
+
+```sql
+-- sent by the client
+SELECT * FROM "s3tablescatalog/my-bucket".db.users
+-- executed by Trino
+SELECT * FROM "iceberg"                  .db.users
+```
+
+String literals and comments are left alone. `GetQueryExecution` reports the
+query and the catalog name the request used.
 
 ## Supported API
 
@@ -259,13 +271,16 @@ memory, so it is lost when the container restarts.
 - **Map key order.** Map entries are printed in ascending key order: numerically
   for numeric key types (`{9=a, 10=b}`), as strings otherwise (`{j=2, k=1}`).
   Both were measured against Athena; other key types were not.
-- **Catalog aliases cover the context only.** `TRINO_CATALOG_MAP` rewrites the
-  `X-Trino-Catalog` header, not the SQL, so a fully qualified name such as
-  `"s3tablescatalog/my-bucket".db.users` still fails. Rely on
-  `QueryExecutionContext` instead. A name Trino can have, such as
-  `AwsDataCatalog`, needs no alias at all: call the Trino catalog
-  `awsdatacatalog` and qualified names resolve, since Trino lowercases unquoted
-  identifiers.
+- **Catalog aliases in SQL cover quoted names only.** A qualified name is rewritten
+  only when its catalog is a double-quoted identifier that equals an alias
+  exactly, including case. `AwsDataCatalog.db.users` (unquoted) and
+  `"S3TablesCatalog/my-bucket".db.users` (different case) are sent as written.
+  Whether Athena treats catalog names case-insensitively has not been measured.
+  A name Trino can have, such as `AwsDataCatalog`, needs no alias at all: call
+  the Trino catalog `awsdatacatalog` and qualified names resolve, quoted or not,
+  since Trino lowercases identifiers. Error messages name the Trino catalog
+  (`iceberg.db.users`), and when the Trino name is longer than the Athena name,
+  error positions after it shift.
 - **Syntax differs.** Trino-only syntax such as `CREATE OR REPLACE TABLE` passes
   here but is a syntax error on Athena, and the `Expecting:` list in a syntax
   error follows Trino's grammar. For an incomplete statement (`SELECT * FROM`)
@@ -301,7 +316,7 @@ docker build -t aoyagikouhei/athena-local:dev .
 The test suite drives the real router against a fake Trino and a fake S3
 in-process, so it covers the Athena wire shapes (header row, `UpdateCount`, pagination, error
 mapping), parameter classification, and the fact that SQL without parameters is
-passed through unchanged. CI runs `fmt`,
+passed through unchanged apart from catalog aliases. CI runs `fmt`,
 `clippy` and `test` on every push and pull request.
 
 Tagging a commit as `v*` publishes `linux/amd64` and `linux/arm64` images to

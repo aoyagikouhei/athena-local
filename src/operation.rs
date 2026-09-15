@@ -10,6 +10,7 @@ use crate::athena::{
     StartQueryExecutionRequest, StartQueryExecutionResponse, Statistics, Status,
     StopQueryExecutionRequest, StopQueryExecutionResponse,
 };
+use crate::catalog::alias_qualified_names;
 use crate::config::{Config, ResultsMode};
 use crate::convert;
 use crate::failure::Failure;
@@ -152,7 +153,7 @@ async fn write_result(
 }
 
 /// 値を分類して EXECUTE IMMEDIATE で包んで実行する。
-/// パラメータが無ければ分類は走らず、SQL はそのまま送られる（to_trino_sql が判断する）。
+/// パラメータが無ければ分類は走らず、SQL は修飾名に別名を当てただけで送られる（to_trino_sql が判断する）。
 async fn run(trino: &Trino, config: &Config, execution: &Execution) -> Result<Outcome, QueryError> {
     // Trino に送るのは別名を当てた名前。実行情報には受け取った名前が残る。
     let catalog = execution
@@ -172,12 +173,13 @@ async fn run(trino: &Trino, config: &Config, execution: &Execution) -> Result<Ou
         bound.push(statement::bind(value, &probe));
     }
 
-    let sql = statement::to_trino_sql(&execution.query, &bound);
+    // 修飾名のカタログにもヘッダと同じ別名を当てる。EXECUTE IMMEDIATE で文字列リテラルに包む前に当てるので、
+    // 包んだ後の引用符の二重化を考えなくてよい。構文チェックと GetQueryExecution の Query は受け取った SQL のまま。
+    let query = alias_qualified_names(&execution.query, &config.catalog_map);
+    let sql = statement::to_trino_sql(&query, &bound);
     match trino.execute(&sql, catalog, database, cancel).await {
         Err(error) if statement::is_unused_parameters(&error) => {
-            trino
-                .execute(&execution.query, catalog, database, cancel)
-                .await
+            trino.execute(&query, catalog, database, cancel).await
         }
         result => result,
     }

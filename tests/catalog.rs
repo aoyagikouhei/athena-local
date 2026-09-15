@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::Harness;
+use common::{Harness, trino_error};
 use serde_json::json;
 
 const S3_TABLES_CATALOG: &str = "s3tablescatalog/example-bucket";
@@ -88,5 +88,67 @@ async fn 別名に無いカタログと既定のカタログはそのまま送�
     assert_eq!(
         hive["QueryExecution"]["QueryExecutionContext"]["Catalog"],
         "hive"
+    );
+}
+
+/// `"s3tablescatalog/example-bucket"` を `"iceberg"` に置き換え、同じ文字数になるよう空白で埋めたもの。
+fn aliased_catalog() -> String {
+    let original = format!("\"{S3_TABLES_CATALOG}\"");
+    format!(
+        "\"iceberg\"{}",
+        " ".repeat(original.len() - "\"iceberg\"".len())
+    )
+}
+
+#[tokio::test]
+async fn 修飾名のカタログは別名にして送り_構文チェックと実行情報は受け取った_sql_のまま() {
+    let harness = Harness::builder(select_response())
+        .catalog_map(&[(S3_TABLES_CATALOG, "iceberg")])
+        .start()
+        .await;
+    let query = format!(r#"SELECT v FROM "{S3_TABLES_CATALOG}".my_schema.users"#);
+
+    let execution = harness.run_query(json!({ "QueryString": query })).await;
+
+    assert_eq!(execution["QueryExecution"]["Status"]["State"], "SUCCEEDED");
+    assert_eq!(
+        harness.trino_sqls(),
+        [format!(
+            "SELECT v FROM {}.my_schema.users",
+            aliased_catalog()
+        )]
+    );
+    assert_eq!(harness.syntax_checks(), [query.as_str()]);
+    assert_eq!(execution["QueryExecution"]["Query"], query);
+}
+
+#[tokio::test]
+async fn パラメータ付きでも別名を当ててから包み_投げ直す_sql_にも当てる() {
+    let aliased = format!("SELECT v FROM {}.my_schema.users", aliased_catalog());
+    let wrapped = format!("EXECUTE IMMEDIATE '{aliased}' USING 1");
+    let harness = Harness::builder(select_response())
+        .catalog_map(&[(S3_TABLES_CATALOG, "iceberg")])
+        .route(
+            &wrapped,
+            trino_error(
+                "INVALID_PARAMETER_USAGE",
+                "line 1:20: Incorrect number of parameters: expected 0 but found 1",
+            ),
+        )
+        .start()
+        .await;
+
+    let execution = harness
+        .run_query(json!({
+            "QueryString": format!(r#"SELECT v FROM "{S3_TABLES_CATALOG}".my_schema.users"#),
+            "ExecutionParameters": ["1"]
+        }))
+        .await;
+
+    assert_eq!(execution["QueryExecution"]["Status"]["State"], "SUCCEEDED");
+    assert_eq!(
+        harness.trino_sqls(),
+        ["SELECT (1)".to_string(), wrapped, aliased],
+        "分類 1 回 + 包んだ本体 + 値を捨てて投げ直した本体"
     );
 }

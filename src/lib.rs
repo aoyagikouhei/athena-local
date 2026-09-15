@@ -2,6 +2,7 @@
 //! バイナリは main.rs、組み立ては router() に置いてテストから使えるようにしている。
 
 pub mod athena;
+mod catalog;
 pub mod config;
 mod convert;
 mod failure;

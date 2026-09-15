@@ -8,6 +8,16 @@ Behaviour described as "measured" was compared against real Amazon Athena
 
 ## [Unreleased]
 
+### Added
+
+- `TRINO_CATALOG_MAP` also applies to qualified names in the SQL. A double-quoted
+  catalog that equals an alias and is followed by `.`, such as
+  `"s3tablescatalog/my-bucket".db.users`, is replaced with the Trino catalog and
+  padded with spaces so that error positions still match the submitted SQL.
+  String literals and comments are not touched, the syntax check still sees the
+  submitted SQL, and `GetQueryExecution` still returns it. Unquoted names are not
+  rewritten.
+
 ## [0.3.0] - 2026-09-14
 
 ### Added
