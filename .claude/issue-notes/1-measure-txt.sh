@@ -11,6 +11,8 @@
 #   PROBE_DDL 1 にすると CREATE TABLE / ALTER TABLE / DROP TABLE も測る。
 #             OUTPUT の下にテーブルを 1 つ作って消す。
 #
+# 実行ごとに $OUT_DIR/run-<日時>/ を作り、その中だけに書く。前の回の結果と混ざらない。
+#
 # 文ごとに次を保存する。
 #   <label>.execution.json   GetQueryExecution の応答
 #   <label>.results.json     GetQueryResults の応答（.txt と突き合わせるため）
@@ -31,11 +33,14 @@ REGION=${REGION:-ap-northeast-1}
 OUT_DIR=${OUT_DIR:-$HOME/athena-txt-measurements}
 PROBE_DDL=${PROBE_DDL:-0}
 
-mkdir -p "$OUT_DIR"
-SUMMARY="$OUT_DIR/summary.tsv"
+RUN_DIR="$OUT_DIR/run-$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$RUN_DIR"
+SUMMARY="$RUN_DIR/summary.tsv"
 printf 'label\tstate\text\tbytes\tmetadata_bytes\n' > "$SUMMARY"
-echo "出力先: $OUT_DIR"
+echo "出力先: $RUN_DIR"
 
+# ラベルを指定して 1 文を実行し、結果ファイルと付随ファイルを保存する。
+# 成功したときだけ 0 を返す。
 run() {
   local label=$1 sql=$2
   local id state loc ext size meta_size
@@ -44,9 +49,9 @@ run() {
     --query-string "$sql" \
     --query-execution-context "Catalog=$CATALOG,Database=$DB" \
     --result-configuration "OutputLocation=$OUTPUT" \
-    --query QueryExecutionId --output text 2> "$OUT_DIR/$label.start.err")
+    --query QueryExecutionId --output text 2> "$RUN_DIR/$label.start.err")
   if [ -z "${id:-}" ]; then
-    echo "== $label: 開始できませんでした。$OUT_DIR/$label.start.err を見てください"
+    echo "== $label: 開始できませんでした。$RUN_DIR/$label.start.err を見てください"
     printf '%s\tSTART_FAILED\t-\t-\t-\n' "$label" >> "$SUMMARY"
     return 1
   fi
@@ -59,27 +64,27 @@ run() {
   done
 
   aws athena get-query-execution --region "$REGION" --query-execution-id "$id" \
-    > "$OUT_DIR/$label.execution.json"
+    > "$RUN_DIR/$label.execution.json"
   aws athena get-query-results --region "$REGION" --query-execution-id "$id" \
-    > "$OUT_DIR/$label.results.json" 2> "$OUT_DIR/$label.results.err"
+    > "$RUN_DIR/$label.results.json" 2> "$RUN_DIR/$label.results.err"
 
   loc=$(python3 -c 'import json,sys
 d = json.load(open(sys.argv[1]))["QueryExecution"]
-print(d.get("ResultConfiguration", {}).get("OutputLocation", ""))' "$OUT_DIR/$label.execution.json")
+print(d.get("ResultConfiguration", {}).get("OutputLocation", ""))' "$RUN_DIR/$label.execution.json")
 
   ext="-"; size="-"; meta_size="-"
   if [ -n "$loc" ]; then
     ext=${loc##*/}; ext=${ext#*.}
-    aws s3 ls "$loc" > "$OUT_DIR/$label.ls.txt" 2>&1
-    aws s3 ls "$loc.metadata" >> "$OUT_DIR/$label.ls.txt" 2>&1
-    if aws s3 cp "$loc" "$OUT_DIR/$label.bytes" --quiet 2> "$OUT_DIR/$label.cp.err"; then
-      od -c "$OUT_DIR/$label.bytes" > "$OUT_DIR/$label.od.txt"
-      size=$(wc -c < "$OUT_DIR/$label.bytes")
+    aws s3 ls "$loc" > "$RUN_DIR/$label.ls.txt" 2>&1
+    aws s3 ls "$loc.metadata" >> "$RUN_DIR/$label.ls.txt" 2>&1
+    if aws s3 cp "$loc" "$RUN_DIR/$label.bytes" --quiet 2> "$RUN_DIR/$label.cp.err"; then
+      od -c "$RUN_DIR/$label.bytes" > "$RUN_DIR/$label.od.txt"
+      size=$(wc -c < "$RUN_DIR/$label.bytes")
     else
       size="none"
     fi
-    if aws s3 cp "$loc.metadata" "$OUT_DIR/$label.metadata.bytes" --quiet 2> /dev/null; then
-      meta_size=$(wc -c < "$OUT_DIR/$label.metadata.bytes")
+    if aws s3 cp "$loc.metadata" "$RUN_DIR/$label.metadata.bytes" --quiet 2> /dev/null; then
+      meta_size=$(wc -c < "$RUN_DIR/$label.metadata.bytes")
     else
       meta_size="none"
     fi
@@ -91,11 +96,16 @@ print(d.get("ResultConfiguration", {}).get("OutputLocation", ""))' "$OUT_DIR/$la
 }
 
 # まず指定のデータベースとテーブルが実在するかを確かめる。
-# ここが失敗すると、以降の SHOW や DESCRIBE はすべて Entity Not Found で落ちる。
+# ここが通らないと、以降の SHOW や DESCRIBE はすべて Entity Not Found で落ちる。
 if ! run show-tables "SHOW TABLES"; then
   echo
-  echo "SHOW TABLES が通りませんでした。DB と CATALOG を確かめてください。"
-  echo "詳しくは $OUT_DIR/show-tables.execution.json の StateChangeReason を見てください。"
+  echo "SHOW TABLES が通りませんでした。DB か CATALOG の指定が実在しません。"
+  echo "理由: $RUN_DIR/show-tables.execution.json の StateChangeReason"
+  # 選べるデータベースの一覧を取っておく。名前は端末に出さず、ファイルに置くだけ。
+  if run available-databases "SHOW DATABASES"; then
+    echo "選べるデータベースの一覧: $RUN_DIR/available-databases.bytes"
+    echo "その中の名前を DB に指定して、もう一度実行してください。"
+  fi
   exit 1
 fi
 
@@ -126,4 +136,4 @@ fi
 echo
 echo "完了しました。"
 echo "実名を含まない一覧: $SUMMARY"
-echo "中身のファイルは $OUT_DIR にあります。リポジトリには入れないでください。"
+echo "中身のファイルは $RUN_DIR にあります。リポジトリには入れないでください。"
