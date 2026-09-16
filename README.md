@@ -67,7 +67,7 @@ Any credentials work; requests are not verified.
 | `TRINO_CATALOG` | *(none)* | Default catalog when the request has no `QueryExecutionContext.Catalog` |
 | `TRINO_SCHEMA` | *(none)* | Default schema when the request has no `QueryExecutionContext.Database` |
 | `TRINO_CATALOG_MAP` | *(none)* | Catalog aliases: `<athena name>=<trino name>`, comma separated. A malformed value stops the server at startup |
-| `ATHENA_LOCAL_RESULTS` | `none` | `s3` writes each `SELECT` result as CSV to `OutputLocation`. `none` writes nothing |
+| `ATHENA_LOCAL_RESULTS` | `none` | `s3` writes results to `OutputLocation`: a `SELECT` as CSV, DDL and `SHOW` as text. `none` writes nothing |
 | `ATHENA_LOCAL_OUTPUT_LOCATION` | *(none)* | With `s3`: `s3://bucket/prefix` used when the request has no `ResultConfiguration.OutputLocation` (stands in for the workgroup default) |
 | `AWS_ENDPOINT_URL_S3` | *(none)* | With `s3`: the S3-compatible store, `http://` only. Falls back to `AWS_ENDPOINT_URL` |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | *(none)* | With `s3`: credentials for the store |
@@ -207,9 +207,23 @@ that state. The format matches Athena byte for byte:
 - Values use the same notation as `GetQueryResults`.
 - A query with no rows writes just the header line.
 
+DDL, `SHOW` and `DESCRIBE` write `<id>.txt` the same way (measured 2026-09-16).
+The file holds the rows `GetQueryResults` returns, joined with `\n`:
+
+- No header line, unlike the CSV, and no trailing newline.
+- A statement that returns no rows writes an empty file, `CREATE TABLE` for
+  example.
+- Columns are joined with a tab. Athena itself returns one already joined,
+  space-padded string per row; Trino returns the columns separately, so the
+  padding is not reproduced.
+- `DROP TABLE` writes a single newline on Athena, which returns two empty rows
+  for zero columns. athena-local writes an empty file.
+
 The object is uploaded with a presigned `PUT` (path-style), so any
-S3-compatible store works. A failed upload makes the query `FAILED` with the
-store's response in `StateChangeReason`; it is not retried.
+S3-compatible store works; it is not retried. A failed CSV upload makes the
+query `FAILED` with the store's response in `StateChangeReason`. A failed
+`<id>.txt` upload leaves the query `SUCCEEDED` and logs one line instead: the
+statement has already run on Trino, and DDL cannot be undone.
 
 An `OutputLocation` that is not `s3://bucket[/prefix]` is rejected in either
 mode with `outputLocation is not a valid S3 path.` (`INVALID_INPUT`), as Athena
@@ -292,9 +306,13 @@ memory, so it is lost when the container restarts.
 - **Cancellation is checked between pages.** A stopped query is `CANCELLED`
   at once, but the `DELETE` reaches Trino only when the current long poll to
   `nextUri` returns (about a second at most).
-- **Only the `SELECT` CSV is written.** Athena also writes `<id>.csv.metadata`,
-  a manifest for DML and CTAS, and a `.txt` for DDL and `SHOW`. athena-local
-  writes none of those; `OutputLocation` still names the file Athena would use.
+- **Companion files are not written.** Athena writes `<id>.csv.metadata` next to
+  a result and a manifest for DML and CTAS. athena-local writes neither;
+  `OutputLocation` still names the file Athena would use.
+- **A failed query writes nothing.** On Athena it depends on the statement: a
+  failed `SHOW` writes `<id>.txt` holding `FAILED: ` and the reason, while a
+  failed `ALTER TABLE` writes no file at all (measured 2026-09-16).
+  athena-local writes nothing in either case.
 - **A missing bucket fails the query.** Athena reported `SUCCEEDED` for a
   `SELECT` whose output bucket did not exist (measured). athena-local makes it
   `FAILED` so the mistake shows up locally.
