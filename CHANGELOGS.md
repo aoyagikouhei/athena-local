@@ -23,6 +23,17 @@ later name the date they were measured on.
 - A failed `<id>.txt` upload leaves the query `SUCCEEDED` and logs one line,
   unlike the CSV, which still makes the query `FAILED`. The statement has
   already run on Trino by then, and DDL cannot be undone.
+- `GetWorkGroup` is supported, so awswrangler and Grafana can run queries at
+  all: both call it before a query and read fields out of the response without
+  checking that they are there. Any workgroup name is accepted and echoed back,
+  and the configuration is the same for every name, since athena-local has no
+  workgroups. `Configuration.ResultConfiguration` is always present, holding
+  `OutputLocation` when `ATHENA_LOCAL_OUTPUT_LOCATION` is set and `{}` when it
+  is not. `CreationTime` and `EnableMinimumEncryptionConfiguration` are left
+  out; see Caveats. Measured against Athena on 2026-09-17.
+- `StartQueryExecution` now keeps the `WorkGroup` it was given, and
+  `GetQueryExecution` reports that name instead of always saying `primary`.
+  Omitting it still means `primary`.
 
 ## [0.4.0] - 2026-09-15
 

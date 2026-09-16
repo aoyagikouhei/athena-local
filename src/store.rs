@@ -24,6 +24,8 @@ pub struct Execution {
     pub database: Option<String>,
     /// 結果の置き場所。OutputLocation（またはその既定）が無ければ None。
     pub result_location: Option<ResultLocation>,
+    /// GetQueryExecution がそのまま返す名前。既定は operation.rs 側で当てる。
+    pub work_group: String,
     pub state: State,
     pub state_change_reason: Option<String>,
     pub submitted_at: f64,
@@ -57,22 +59,35 @@ pub enum CancelOutcome {
     NotFound,
 }
 
+/// Store::submit にまとめて渡す投入時の情報。引数の数を抑えるための入れ物
+/// （クレート内の他の層と違い、あえて athena.rs 型は使わない）。
+pub struct Submission {
+    pub query: String,
+    /// StartQueryExecution の ExecutionParameters(加工前)。
+    pub execution_parameters: Vec<String>,
+    pub catalog: Option<String>,
+    pub database: Option<String>,
+    pub result_location: Option<ResultLocation>,
+    pub work_group: String,
+}
+
 impl Store {
-    pub fn submit(
-        &self,
-        id: &str,
-        query: &str,
-        execution_parameters: Vec<String>,
-        catalog: Option<String>,
-        database: Option<String>,
-        result_location: Option<ResultLocation>,
-    ) {
-        let execution = Execution {
-            query: query.to_string(),
+    pub fn submit(&self, id: &str, submission: Submission) {
+        let Submission {
+            query,
             execution_parameters,
             catalog,
             database,
             result_location,
+            work_group,
+        } = submission;
+        let execution = Execution {
+            query,
+            execution_parameters,
+            catalog,
+            database,
+            result_location,
+            work_group,
             state: State::Queued,
             state_change_reason: None,
             submitted_at: now(),
@@ -186,7 +201,17 @@ mod tests {
 
     fn submitted() -> Store {
         let store = Store::default();
-        store.submit("id", "SELECT 1", Vec::new(), None, None, None);
+        store.submit(
+            "id",
+            Submission {
+                query: "SELECT 1".to_string(),
+                execution_parameters: Vec::new(),
+                catalog: None,
+                database: None,
+                result_location: None,
+                work_group: "primary".to_string(),
+            },
+        );
         store
     }
 
@@ -195,11 +220,14 @@ mod tests {
         let store = Store::default();
         store.submit(
             "id",
-            "SELECT ?",
-            vec!["1".into()],
-            Some("cat".into()),
-            Some("db".into()),
-            None,
+            Submission {
+                query: "SELECT ?".to_string(),
+                execution_parameters: vec!["1".into()],
+                catalog: Some("cat".into()),
+                database: Some("db".into()),
+                result_location: None,
+                work_group: "primary".to_string(),
+            },
         );
 
         let execution = store.get("id").expect("登録されていない");
