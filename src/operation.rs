@@ -126,8 +126,10 @@ fn spawn_query(app: App, id: String) {
     });
 }
 
-/// 結果 CSV を置いてから結果を返す。SUCCEEDED にするのは書き終わってからにする
-/// （クライアントは SUCCEEDED を見た直後に S3 を読みに行く）。書けなければ FAILED。
+/// 結果を置いてから結果を返す。SUCCEEDED にするのは書き終わってからにする
+/// （クライアントは SUCCEEDED を見た直後に S3 を読みに行く）。
+/// .csv（SELECT）は書けなければ FAILED。.txt（DDL / SHOW など）は書けなくても SUCCEEDED のまま
+/// （Trino では既に実行し終えており、本物の Athena も補助ファイルの書き込みでは失敗にしない）。
 async fn write_result(
     app: &App,
     execution: &Execution,
@@ -136,20 +138,28 @@ async fn write_result(
     let (Some(writer), Some(location)) = (&app.results, &execution.result_location) else {
         return Ok(outcome);
     };
-    // 置くのは SELECT の結果だけ。DML / DDL が置くファイル（manifest や .txt）は作らない。
+    // 書くのは SELECT の結果（.csv、更新件数が無いとき）と DDL / SHOW（.txt）だけ。
+    // DML / CTAS が置くファイル（manifest や tables/<id>）は作らない。
     // 途中で止められていれば書かない（CANCELLED の本物も何も置かない）。
-    if location.file != ResultFile::Csv
-        || outcome.update_count.is_some()
-        || execution.cancel.is_requested()
-    {
+    let should_write = location.file == ResultFile::Text
+        || (location.file == ResultFile::Csv && outcome.update_count.is_none());
+    if !should_write || execution.cancel.is_requested() {
         return Ok(outcome);
     }
 
-    writer
-        .put(location, results::to_csv(&outcome))
-        .await
-        .map_err(Failure::result_write)?;
-    Ok(outcome)
+    let body = match location.file {
+        ResultFile::Csv => results::to_csv(&outcome),
+        _ => results::to_text(&outcome),
+    };
+
+    match writer.put(location, body).await {
+        Ok(()) => Ok(outcome),
+        Err(reason) if location.file == ResultFile::Text => {
+            eprintln!("結果ファイル（.txt）の書き込みに失敗しました。無視します: {reason}");
+            Ok(outcome)
+        }
+        Err(reason) => Err(Failure::result_write(reason)),
+    }
 }
 
 /// 値を分類して EXECUTE IMMEDIATE で包んで実行する。

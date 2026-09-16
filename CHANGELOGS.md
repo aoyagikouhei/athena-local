@@ -4,9 +4,25 @@ All notable changes to athena-local are recorded here. Versions match the
 `aoyagikouhei/athena-local` image tags on Docker Hub.
 
 Behaviour described as "measured" was compared against real Amazon Athena
-(engine version 3) on 2026-09-14.
+(engine version 3). The first round was measured on 2026-09-14; entries added
+later name the date they were measured on.
 
 ## [Unreleased]
+
+### Added
+
+- DDL, `SHOW` and `DESCRIBE` results are written to `<id>.txt` with
+  `ATHENA_LOCAL_RESULTS=s3`, so clients that read the result file rather than
+  `GetQueryResults` work. PyAthena's pandas and arrow cursors are the ones that
+  need it. The file holds the rows `GetQueryResults` returns, joined with `\n`,
+  with no header line and no trailing newline; a statement that returns no rows
+  writes an empty file. Measured against Athena on 2026-09-16.
+- Columns in `<id>.txt` are joined with a tab. Athena returns one already
+  joined, space-padded string per row, which Trino's separate columns cannot
+  reproduce, so the padding is left out.
+- A failed `<id>.txt` upload leaves the query `SUCCEEDED` and logs one line,
+  unlike the CSV, which still makes the query `FAILED`. The statement has
+  already run on Trino by then, and DDL cannot be undone.
 
 ## [0.4.0] - 2026-09-15
 

@@ -40,9 +40,8 @@
   - Rust：aws-sdk-athena 1.97.0 の `src/operation/start_query_execution.rs:73-77` で付け、aws-smithy-runtime 1.14.0 の `src/client/orchestrator.rs` ではリトライのループ（312 行）より前のフック（231 行）で呼ばれる（確認済み）。
   - Python：botocore 1.43.94 の `handlers.py:286-294` を `before-parameter-build` に登録している（`handlers.py:1555`、確認済み）。
 
-### 終わった実行情報の破棄
+### 終わった実行情報の破棄（#4）
 
-- [ ] issue を立てる
 - [ ] 件数か経過時間による保持期限で破棄する
 - 困る場面：長く動かし続ける環境。実行情報は結果の全行ごとメモリに残り、消える仕組みが無い（`Store`）。
 - メモ：#3 のトークンの対応表も同じく残り続けるので、一緒に破棄する。本物の保持期間は未実測。
@@ -68,7 +67,7 @@
 - [ ] 実装する
 - 使うクライアント：dbt-athena が `awsdatacatalog` 以外のカタログを使うとき（未再確認）。
 
-### `<id>.csv.metadata`
+### `<id>.csv.metadata` と `<id>.txt.metadata`（#5）
 
 - [ ] 書くか、README に回避策を書く
 - 使うクライアント：JDBC の既定の結果取得 `ResultFetcher=auto`（ドキュメントと jar の調査のみ）。
@@ -83,6 +82,12 @@
   - PyAthena の `unload=True`：場所が無いと `ProgrammingError`（`pyathena/result_set.py:657-659`、確認済み）。
   - awswrangler の `unload_approach=True`（未再確認）。
 - メモ：awswrangler の CTAS 方式は、Athena の書き方の CTAS（`external_location`、`format = 'PARQUET'`）を投げ（`athena/_utils.py:842-863`、確認済み）、一時テーブルを Glue の API で消す（`athena/_read.py:709`、確認済み）。Athena の API だけでは完結しない。
+
+### 失敗したクエリの結果ファイル（#6）
+
+- [ ] 実測してから、失敗したときにも書く
+- 本物は失敗したクエリにも `.txt` を置き、`FAILED: ` に続けて理由を入れる。2026-09-16 に実測。
+- `SELECT` の失敗と、取り消したときの扱いは未実測。
 
 ### ListQueryExecutions、BatchGetQueryExecution
 
