@@ -57,6 +57,16 @@ impl ResultFile {
             Self::Text => format!("{id}.txt"),
         }
     }
+
+    /// PUT に付ける Content-Type。Text は 2026-09-16 実測（本物は octet-stream で、
+    /// binary と application に割れていた。多数派を採る）。Csv は 0.3.0 からの値で実測していない。
+    /// Manifest と Table は athena-local が書き込まないので、網羅のためだけの値。
+    fn content_type(self) -> &'static str {
+        match self {
+            Self::Csv => "text/csv",
+            Self::Text | Self::Manifest | Self::Table => "binary/octet-stream",
+        }
+    }
 }
 
 /// `CREATE [OR REPLACE] TABLE ... AS SELECT | WITH | (`。words は大文字にした単語の並び。
@@ -146,6 +156,24 @@ pub fn to_csv(outcome: &Outcome) -> Vec<u8> {
     csv.into_bytes()
 }
 
+/// 本物と同じ書式: GetQueryResults の行（先頭の列名行は除く）を `\t` で連結し、`\n` でつなぐ。
+/// NULL は空文字（CSV と違い引用符は付けない）。末尾に改行は付けない。行が無ければ空。
+/// 値の表記（複合型・double・varbinary など）は to_csv と同じ。
+pub fn to_text(outcome: &Outcome) -> Vec<u8> {
+    convert::all_rows(outcome)
+        .into_iter()
+        .skip(1)
+        .map(|row| {
+            row.into_iter()
+                .map(|cell| cell.unwrap_or_default())
+                .collect::<Vec<String>>()
+                .join("\t")
+        })
+        .collect::<Vec<String>>()
+        .join("\n")
+        .into_bytes()
+}
+
 /// S3 互換ストレージへの PUT。署名は rusty-s3 で URL に載せ、送るのは TLS なしの reqwest。
 pub struct ResultWriter {
     http: reqwest::Client,
@@ -184,7 +212,7 @@ impl ResultWriter {
         let response = self
             .http
             .put(url)
-            .header(CONTENT_TYPE, "text/csv")
+            .header(CONTENT_TYPE, location.file.content_type())
             .body(body)
             .send()
             .await
@@ -224,12 +252,15 @@ mod tests {
         String::from_utf8(to_csv(outcome)).expect("UTF-8 でない")
     }
 
-    #[test]
-    fn 実測した_csv_と同じバイト列になる() {
-        // 本番 Athena に投げたクエリ（抜粋）:
-        //   SELECT 1 AS i, 1.5 AS d, 'it''s' AS s, 'a"b' AS q, 'x' || chr(10) || 'y' AS nl,
-        //          CAST(NULL AS varchar) AS n, '' AS empty, true AS b, ARRAY[1,2] AS a, ...
-        // 入力は同じ値を Trino が返す形、期待値は Athena が置いた <id>.csv そのもの。
+    fn text(outcome: &Outcome) -> String {
+        String::from_utf8(to_text(outcome)).expect("UTF-8 でない")
+    }
+
+    /// 本番 Athena に投げたクエリ（抜粋）:
+    ///   SELECT 1 AS i, 1.5 AS d, 'it''s' AS s, 'a"b' AS q, 'x' || chr(10) || 'y' AS nl,
+    ///          CAST(NULL AS varchar) AS n, '' AS empty, true AS b, ARRAY[1,2] AS a, ...
+    /// to_csv と to_text の両方で、複合型を含む値の表記を確かめるのに使う。
+    fn 全型を含む_outcome() -> Outcome {
         let integer = scalar("integer");
         let varchar = scalar("varchar");
         let array_integer =
@@ -246,7 +277,7 @@ mod tests {
             {"kind":"NAMED_TYPE","value":{"fieldName":{"name":"id"},"typeSignature":{"rawType":"integer","arguments":[]}}},
             {"kind":"NAMED_TYPE","value":{"fieldName":{"name":"name"},"typeSignature":{"rawType":"varchar","arguments":[]}}}]}"#;
 
-        let outcome = Outcome {
+        Outcome {
             columns: vec![
                 column("i", "integer", &integer),
                 column("d", "double", &scalar("double")),
@@ -275,7 +306,13 @@ mod tests {
                 .expect("行が JSON でない"),
             ],
             update_count: None,
-        };
+        }
+    }
+
+    #[test]
+    fn 実測した_csv_と同じバイト列になる() {
+        // 入力は同じ値を Trino が返す形、期待値は Athena が置いた <id>.csv そのもの。
+        let outcome = 全型を含む_outcome();
 
         assert_eq!(
             csv(&outcome),
@@ -283,6 +320,80 @@ mod tests {
              \"1\",\"1.5\",\"it's\",\"a\"\"b\",\"x\ny\",,\"\",\"true\",\"[1, 2]\",\"[p, q, null]\",\"{k=1}\",\
              \"{9=a, 10=b}\",\"2020-01-01\",\"2020-01-01 12:34:56.789\",\"01 02\",\"{id=1, name=x}\",\"日本語\"\n"
         );
+    }
+
+    #[test]
+    fn to_text_は複合型を含め_to_csv_と同じ表記で_引用符もヘッダも無い() {
+        // csv の引用符・エスケープ・列名行を取り除いた形と一致するはず。
+        let outcome = 全型を含む_outcome();
+
+        assert_eq!(
+            text(&outcome),
+            "1\t1.5\tit's\ta\"b\tx\ny\t\t\ttrue\t[1, 2]\t[p, q, null]\t{k=1}\t{9=a, 10=b}\t\
+             2020-01-01\t2020-01-01 12:34:56.789\t01 02\t{id=1, name=x}\t日本語"
+        );
+    }
+
+    #[test]
+    fn to_text_は複数行をタブと改行で連結し_末尾に改行を付けない() {
+        let outcome = Outcome {
+            columns: vec![
+                column("i", "integer", &scalar("integer")),
+                column("s", "varchar", &scalar("varchar")),
+            ],
+            rows: vec![
+                vec![Value::from(1), Value::from("a")],
+                vec![Value::from(2), Value::from("b")],
+            ],
+            update_count: None,
+        };
+
+        let result = text(&outcome);
+        assert_eq!(result, "1\ta\n2\tb");
+        assert!(
+            !result.ends_with('\n'),
+            "末尾に改行が付いている: {result:?}"
+        );
+    }
+
+    #[test]
+    fn to_text_は列名の行を入れない() {
+        let outcome = Outcome {
+            columns: vec![column("x", "integer", &scalar("integer"))],
+            rows: vec![vec![Value::from(1)]],
+            update_count: None,
+        };
+
+        assert_eq!(text(&outcome), "1");
+    }
+
+    #[test]
+    fn to_text_は_null_を空文字にする() {
+        let outcome = Outcome {
+            columns: vec![
+                column("a", "integer", &scalar("integer")),
+                column("b", "integer", &scalar("integer")),
+                column("c", "integer", &scalar("integer")),
+            ],
+            rows: vec![vec![Value::from(1), Value::Null, Value::from(3)]],
+            update_count: None,
+        };
+
+        assert_eq!(text(&outcome), "1\t\t3");
+    }
+
+    #[test]
+    fn to_text_は行が無ければ空になる() {
+        // CREATE TABLE や CREATE DATABASE のように列が無い DDL。
+        let ddl = Outcome::default();
+        assert_eq!(to_text(&ddl), Vec::<u8>::new());
+
+        // DML / CTAS は update_count がある。
+        let dml = Outcome {
+            update_count: Some(1),
+            ..Outcome::default()
+        };
+        assert_eq!(to_text(&dml), Vec::<u8>::new());
     }
 
     #[test]

@@ -27,6 +27,13 @@ fn dml_response() -> Value {
     })
 }
 
+fn show_response() -> Value {
+    json!({
+        "columns": [{ "name": "table_name", "type": "varchar" }],
+        "data": [["orders"], ["users"]]
+    })
+}
+
 fn output_location(execution: &Value) -> &str {
     execution["QueryExecution"]["ResultConfiguration"]["OutputLocation"]
         .as_str()
@@ -134,7 +141,7 @@ async fn 既定の出力先を使い_末尾スラッシュが無くても同じ�
 }
 
 #[tokio::test]
-async fn dml_と_ddl_は何も書かず_ファイル名だけ本物に合わせて返す() {
+async fn dml_と_ctas_は何も書かず_ddl_は_0_バイトの_txt_を書く() {
     let harness = Harness::builder(select_response())
         .route("INSERT INTO t VALUES (1)", dml_response())
         .route(
@@ -150,6 +157,15 @@ async fn dml_と_ddl_は何も書かず_ファイル名だけ本物に合わせ�
             "CREATE TABLE t (i int)",
             json!({ "updateType": "CREATE TABLE" }),
         )
+        .route(
+            "CREATE TABLE t2 AS SELECT 1",
+            json!({
+                "columns": [{ "name": "rows", "type": "bigint" }],
+                "data": [[1]],
+                "updateType": "CREATE TABLE",
+                "updateCount": 1
+            }),
+        )
         .results_s3()
         .default_output_location("s3://results-bucket/athena/")
         .start()
@@ -164,9 +180,13 @@ async fn dml_と_ddl_は何も書かず_ファイル名だけ本物に合わせ�
     let update = harness
         .run_query(json!({ "QueryString": "UPDATE t SET name = 'x'" }))
         .await;
+    let ctas = harness
+        .run_query(json!({ "QueryString": "CREATE TABLE t2 AS SELECT 1" }))
+        .await;
 
     assert_eq!(insert["QueryExecution"]["Status"]["State"], "SUCCEEDED");
     assert_eq!(create["QueryExecution"]["Status"]["State"], "SUCCEEDED");
+    assert_eq!(ctas["QueryExecution"]["Status"]["State"], "SUCCEEDED");
     assert_eq!(
         output_location(&insert),
         format!("s3://results-bucket/athena/{}", execution_id(&insert))
@@ -180,7 +200,94 @@ async fn dml_と_ddl_は何も書かず_ファイル名だけ本物に合わせ�
         output_location(&update),
         format!("s3://results-bucket/athena/{}.csv", execution_id(&update))
     );
-    assert!(harness.s3_puts().is_empty());
+    assert_eq!(
+        output_location(&ctas),
+        format!("s3://results-bucket/athena/tables/{}", execution_id(&ctas))
+    );
+
+    // 列も行も無い DDL（CREATE TABLE t (i int)）だけが 0 バイトの .txt を書く。
+    // DML（INSERT・UPDATE）と CTAS は何も置かない。
+    assert_eq!(
+        harness.s3_puts(),
+        [S3Put {
+            bucket: "results-bucket".to_string(),
+            key: format!("athena/{}.txt", execution_id(&create)),
+            body: String::new(),
+            content_type: Some("binary/octet-stream".to_string()),
+            presigned: true,
+        }]
+    );
+}
+
+#[tokio::test]
+async fn show_の結果を_txt_で書く() {
+    let harness = Harness::builder(select_response())
+        .route("SHOW TABLES IN db", show_response())
+        .results_s3()
+        .start()
+        .await;
+
+    let execution = harness
+        .run_query(json!({
+            "QueryString": "SHOW TABLES IN db",
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+        }))
+        .await;
+    let id = execution_id(&execution);
+
+    assert_eq!(execution["QueryExecution"]["Status"]["State"], "SUCCEEDED");
+    assert_eq!(
+        output_location(&execution),
+        format!("s3://results-bucket/athena/{id}.txt")
+    );
+    // GetQueryResults の行を列名無しでタブ・改行連結したもの（先頭に見出しは無い）。
+    assert_eq!(
+        harness.s3_puts(),
+        [S3Put {
+            bucket: "results-bucket".to_string(),
+            key: format!("athena/{id}.txt"),
+            body: "orders\nusers".to_string(),
+            content_type: Some("binary/octet-stream".to_string()),
+            presigned: true,
+        }]
+    );
+}
+
+#[tokio::test]
+async fn txt_の書き込みに失敗しても_succeeded_のままになる() {
+    let harness = Harness::builder(select_response())
+        .route(
+            "CREATE TABLE t (i int)",
+            json!({ "updateType": "CREATE TABLE" }),
+        )
+        .results_s3()
+        .s3_status(500)
+        .start()
+        .await;
+
+    let execution = harness
+        .run_query(json!({
+            "QueryString": "CREATE TABLE t (i int)",
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+        }))
+        .await;
+
+    assert_eq!(execution["QueryExecution"]["Status"]["State"], "SUCCEEDED");
+    assert!(
+        execution["QueryExecution"]["Status"]
+            .get("StateChangeReason")
+            .is_none(),
+        "{execution}"
+    );
+    assert_eq!(harness.s3_puts().len(), 1, "書き込みは試みる");
+
+    let (code, results) = harness
+        .call(
+            "GetQueryResults",
+            json!({ "QueryExecutionId": execution_id(&execution) }),
+        )
+        .await;
+    assert_eq!(code, 200, "{results}");
 }
 
 #[tokio::test]
