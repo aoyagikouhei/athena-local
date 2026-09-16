@@ -25,13 +25,6 @@
   - `WorkGroup.Configuration.EngineVersion.EffectiveEngineVersion`：Grafana が nil チェックなしで参照し、無いと panic（`api.go:309-314`、確認済み）。
 - メモ：`ATHENA_LOCAL_OUTPUT_LOCATION` を `Configuration.ResultConfiguration.OutputLocation` に反映すると、awswrangler が既定のバケットを作りに行く経路を避けられる（`athena/_utils.py:68-88`、確認済み）。
 
-### DDL と SHOW の結果ファイル `<id>.txt`（#1）
-
-- [ ] 実装する
-- 困るクライアント
-  - PyAthena の `PandasCursor` と `ArrowCursor`：場所が `.txt` で終わると `HeadObject` を送り、ファイルが無いと `OperationalError` になる（`pyathena/result_set.py:639-655`、`pyathena/pandas/result_set.py:492-512`、`pyathena/arrow/result_set.py:269-294`、確認済み）。
-  - JDBC も `.txt` の平文を扱うクラスを持つ（jar の調査のみ）。
-
 ### ClientRequestToken による冪等性（#3）
 
 - [ ] 実装する
