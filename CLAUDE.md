@@ -60,6 +60,7 @@ CI（`.github/workflows/ci.yml`）は `fmt --check`、`clippy -D warnings`、`te
 - **SQL の本文は書き換えない。** 必要なら全体を包む（`EXECUTE IMMEDIATE`）か、別のクエリを投げる（構文チェックの `PREPARE`、パラメータ分類の `SELECT (<値>)`）。Athena と Trino の書き方の違い（小数リテラルの型、DDL、`OPTIMIZE` / `VACUUM`）は変換せず、README の Caveats に回避策を書く。例外は `TRINO_CATALOG_MAP` の別名を引用符付きの修飾名に当てる置換（`catalog.rs`）だけ。Trino には `/` を含むカタログ名を作れず、S3 Tables の修飾名はほかに通す方法が無いので、汎用ツールとして入れた（2026-09-15）。この置換の条件は広げない。引用符の無い名前や大文字小文字の違う名前は、Trino 側のカタログ名を合わせる回避策を README に書いてある。
 - 挙動を変えたら README.md（Supported API／Caveats）と CHANGELOGS.md の `[Unreleased]` も更新する。CHANGELOG のバージョンは Docker Hub のイメージタグと一致させ、README の compose 例のタグも合わせる。
 - コメント、テスト名（日本語の文）、エラーメッセージ、コミットメッセージ（「〜する」で終わる一行）は日本語。README と CHANGELOG は英語。
+- **ユーザーへの返答は常に日本語で書く。** 途中の状況報告、質問、最終報告、コマンドの説明もすべて日本語。英語は README・CHANGELOG の本文とコード中の識別子だけ。
 - 大きな `Response` を `Result` で返すときは `Box<Response>` にする（`clippy::result_large_err` 対策）。
 - HTTP クライアントは TLS 無しでビルドしている（`reqwest` は `default-features = false`）。Trino にも S3 にも `http://` だけでつなぐ。
 - Rust edition 2024（let chains を使っている）。Docker のビルドイメージは `rust:1.98`。
