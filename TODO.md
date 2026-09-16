@@ -13,18 +13,6 @@
 
 ## 1. 既定の使い方で困るもの
 
-### GetWorkGroup（#2）
-
-- [ ] 実装する
-- 困るクライアント
-  - awswrangler：`read_sql_query` と `start_query_execution` の既定は `workgroup="primary"` で、既定で呼ぶ（`athena/_read.py:961`、`athena/_executions.py:38`、確認済み）。
-  - Grafana：クエリを流すたびに呼ぶ（`pkg/athena/api/api.go:95`、確認済み）。
-  - dbt-athena：`work_group` を設定し、`skip_workgroup_check` が false のとき（`dbt/adapters/athena/impl.py:353`、`360-361`、確認済み）。
-- 応答で直接読まれる項目。欠けていると落ちる。
-  - `WorkGroup.Configuration.EnforceWorkGroupConfiguration`：awswrangler が添字で読み、無いと `KeyError`（`athena/_utils.py:166-168`、確認済み）。
-  - `WorkGroup.Configuration.EngineVersion.EffectiveEngineVersion`：Grafana が nil チェックなしで参照し、無いと panic（`api.go:309-314`、確認済み）。
-- メモ：`ATHENA_LOCAL_OUTPUT_LOCATION` を `Configuration.ResultConfiguration.OutputLocation` に反映すると、awswrangler が既定のバケットを作りに行く経路を避けられる（`athena/_utils.py:68-88`、確認済み）。
-
 ### ClientRequestToken による冪等性（#3）
 
 - [ ] 実装する
@@ -98,13 +86,11 @@
 
 ### StartQueryExecution
 
-- [ ] 指定された `WorkGroup` を無視している。#2 と一緒に決める
 - [ ] API 定義の制約を検査していない。`QueryString` の長さ、`ExecutionParameters` の最少 1 件、ID の形など。本物のエラーは未実測
 - `ResultReuseConfiguration` と、`ResultConfiguration` の暗号化の設定は無視している。README に記載済み。Grafana は `ResultReuseConfiguration` を送ってくる（`api.go:102`、確認済み）
 
 ### GetQueryExecution
 
-- [ ] `WorkGroup` が常に `primary`
 - [ ] `ExecutionParameters` を返さない
 - [ ] `EngineVersion` を返さない
 - [ ] `Statistics` のうち `DataManifestLocation`、`QueryPlanningTimeInMillis`、`ServicePreProcessingTimeInMillis`、`ServiceProcessingTimeInMillis`、`ResultReuseInformation`、`DpuCount` を返さない

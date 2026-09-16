@@ -36,6 +36,7 @@ pub(crate) async fn dispatch(State(app): State<App>, headers: HeaderMap, body: B
         "GetQueryExecution" => operation::get_query_execution(&app, &body),
         "GetQueryResults" => operation::get_query_results(&app, &body),
         "StopQueryExecution" => operation::stop_query_execution(&app, &body),
+        "GetWorkGroup" => operation::get_work_group(&app, &body),
         other => invalid_request(format!("未対応のオペレーションです: {other}")),
     }
 }

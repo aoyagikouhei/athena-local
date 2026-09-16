@@ -68,7 +68,7 @@ Any credentials work; requests are not verified.
 | `TRINO_SCHEMA` | *(none)* | Default schema when the request has no `QueryExecutionContext.Database` |
 | `TRINO_CATALOG_MAP` | *(none)* | Catalog aliases: `<athena name>=<trino name>`, comma separated. A malformed value stops the server at startup |
 | `ATHENA_LOCAL_RESULTS` | `none` | `s3` writes results to `OutputLocation`: a `SELECT` as CSV, DDL and `SHOW` as text. `none` writes nothing |
-| `ATHENA_LOCAL_OUTPUT_LOCATION` | *(none)* | With `s3`: `s3://bucket/prefix` used when the request has no `ResultConfiguration.OutputLocation` (stands in for the workgroup default) |
+| `ATHENA_LOCAL_OUTPUT_LOCATION` | *(none)* | With `s3`: `s3://bucket/prefix` used when the request has no `ResultConfiguration.OutputLocation` (stands in for the workgroup default). `GetWorkGroup` also reports it as `Configuration.ResultConfiguration.OutputLocation` |
 | `AWS_ENDPOINT_URL_S3` | *(none)* | With `s3`: the S3-compatible store, `http://` only. Falls back to `AWS_ENDPOINT_URL` |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | *(none)* | With `s3`: credentials for the store |
 | `AWS_REGION` | `us-east-1` | With `s3`: region used for signing |
@@ -114,6 +114,7 @@ query and the catalog name the request used.
 | `GetQueryExecution` | `QUEUED` → `RUNNING` → `SUCCEEDED` / `FAILED` / `CANCELLED`. Trino errors land in `Status.StateChangeReason` |
 | `GetQueryResults` | Paginated with `MaxResults` / `NextToken` |
 | `StopQueryExecution` | Marks a queued or running query `CANCELLED` immediately and sends `DELETE` to Trino's `nextUri`. Stopping a finished query succeeds and changes nothing |
+| `GetWorkGroup` | Accepts any workgroup name and returns the same configuration for all of them. `Configuration.ResultConfiguration.OutputLocation` reflects `ATHENA_LOCAL_OUTPUT_LOCATION` when it is set |
 
 Behaviour that matches real Athena:
 
@@ -255,9 +256,10 @@ Athena — values passed to SQL without any `?` are ignored.
 
 Messages above were measured against Athena (2026-09-14).
 
-Not implemented: every other operation, SigV4 verification, workgroups, result
-reuse, and encryption settings. Query state is kept in
-memory, so it is lost when the container restarts.
+Not implemented: every other operation, SigV4 verification, creating, listing,
+updating and deleting workgroups (`GetWorkGroup` itself is supported), enforcing
+workgroup settings such as scan limits, result reuse, and encryption settings.
+Query state is kept in memory, so it is lost when the container restarts.
 
 ## Caveats
 
@@ -318,6 +320,23 @@ memory, so it is lost when the container restarts.
   `FAILED` so the mistake shows up locally.
 - **Unmeasured file names.** The file name for `CREATE OR REPLACE TABLE ... AS`
   (Trino only) follows the measured rule for CTAS but was not measured.
+- **Any workgroup name is accepted.** `GetWorkGroup` never fails because of the
+  name: it echoes the name back and returns the same `Configuration` every time,
+  because athena-local has no workgroups to look up. Real Athena answers a name
+  that does not exist with HTTP 400, `InvalidRequestException`, the message
+  `WorkGroup is not found.` and `AthenaErrorCode: INVALID_INPUT`;
+  `StartQueryExecution` fails the same way (measured 2026-09-17). Per-workgroup
+  settings are not reproduced.
+- **awswrangler reaches real AWS when no output location is set.** If neither
+  the call nor `ATHENA_LOCAL_OUTPUT_LOCATION` supplies one, awswrangler resolves
+  the location itself: it calls STS and creates a bucket named
+  `aws-athena-query-results-{account}-{region}`, its own documented fallback.
+  Those calls go to real AWS unless `AWS_ENDPOINT_URL` covers every service, not
+  just Athena. Set `ATHENA_LOCAL_OUTPUT_LOCATION` to keep the run local.
+- **`GetWorkGroup` omits two fields Athena returns.** `CreationTime` is left out
+  because athena-local has no workgroup that was ever created, so any value
+  would be invented; `EnableMinimumEncryptionConfiguration` is left out because
+  its value was not measured. No client reads either one (measured 2026-09-17).
 - **Plain HTTP only.** The clients are built without TLS, for both Trino and
   the S3-compatible store. To reach an HTTPS endpoint, add the `rustls` feature
   to `reqwest` in `Cargo.toml` (and CA certificates to the image).

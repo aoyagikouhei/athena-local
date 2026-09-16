@@ -5,10 +5,11 @@ use axum::response::Response;
 use uuid::Uuid;
 
 use crate::athena::{
-    AthenaError, GetQueryExecutionRequest, GetQueryExecutionResponse, GetQueryResultsRequest,
-    GetQueryResultsResponse, QueryExecution, QueryExecutionContext, ResultConfiguration,
-    StartQueryExecutionRequest, StartQueryExecutionResponse, Statistics, Status,
-    StopQueryExecutionRequest, StopQueryExecutionResponse,
+    AthenaError, EngineVersion, GetQueryExecutionRequest, GetQueryExecutionResponse,
+    GetQueryResultsRequest, GetQueryResultsResponse, GetWorkGroupRequest, GetWorkGroupResponse,
+    QueryExecution, QueryExecutionContext, ResultConfiguration, StartQueryExecutionRequest,
+    StartQueryExecutionResponse, Statistics, Status, StopQueryExecutionRequest,
+    StopQueryExecutionResponse, WorkGroup, WorkGroupConfiguration,
 };
 use crate::catalog::alias_qualified_names;
 use crate::config::{Config, ResultsMode};
@@ -18,10 +19,14 @@ use crate::handler::App;
 use crate::response::{invalid_request_with_code, ok, parse};
 use crate::results::{self, ResultFile, ResultLocation};
 use crate::statement;
-use crate::store::{CancelOutcome, Execution, State};
+use crate::store::{CancelOutcome, Execution, State, Submission};
 use crate::trino::{Outcome, QueryError, Trino};
 
 const DEFAULT_MAX_RESULTS: usize = 1000;
+
+/// StartQueryExecution で WorkGroup が省略されたときの既定名。
+/// GetWorkGroup では使わない（WorkGroup は必須項目で、無ければ parse が弾く）。
+const DEFAULT_WORK_GROUP: &str = "primary";
 
 /// OutputLocation も既定も無いときの本物の文言（2026-09-14 実測。"for  your" の空白 2 つも本物のまま）。
 const NO_OUTPUT_LOCATION: &str = "No output location provided. You did not provide an output location for  your query results. Either specify an S3 bucket location or enable Athena managed query results in your workgroup settings.";
@@ -57,13 +62,20 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
         return invalid_request_with_code(message, "MALFORMED_QUERY");
     }
 
+    let work_group = request
+        .work_group
+        .unwrap_or_else(|| DEFAULT_WORK_GROUP.to_string());
+
     app.store.submit(
         &id,
-        &request.query_string,
-        request.execution_parameters.unwrap_or_default(),
-        catalog,
-        database,
-        result_location,
+        Submission {
+            query: request.query_string,
+            execution_parameters: request.execution_parameters.unwrap_or_default(),
+            catalog,
+            database,
+            result_location,
+            work_group,
+        },
     );
     spawn_query(app.clone(), id.clone());
 
@@ -210,6 +222,41 @@ pub fn get_query_execution(app: &App, body: &Bytes) -> Response {
     })
 }
 
+/// Trino にも Store にも問い合わせない。athena-local にワークグループの実体が無く、
+/// 名前だけをそのまま返して、Configuration は固定値にする。本物と違い、存在しない名前でもエラーにしない。
+/// State/Configuration の値は 2026-09-17 に本番 Athena で実測したもの
+/// (EnableMinimumEncryptionConfiguration は値が採れず、CreationTime は実体が無いのでどちらも省く)。
+pub fn get_work_group(app: &App, body: &Bytes) -> Response {
+    let request: GetWorkGroupRequest = match parse(body) {
+        Ok(request) => request,
+        Err(response) => return *response,
+    };
+
+    // GetWorkGroup の応答にも StartQueryExecution と同じ既定の出力先を反映する
+    // (ATHENA_LOCAL_OUTPUT_LOCATION。README:71、config.rs の S3Settings.default_output_location と同じ値)。
+    let output_location = match &app.config.results {
+        ResultsMode::S3(settings) => settings.default_output_location.clone(),
+        ResultsMode::None => None,
+    };
+
+    ok(&GetWorkGroupResponse {
+        work_group: WorkGroup {
+            name: request.work_group,
+            state: "ENABLED".to_string(),
+            configuration: WorkGroupConfiguration {
+                result_configuration: ResultConfiguration { output_location },
+                enforce_work_group_configuration: false,
+                publish_cloud_watch_metrics_enabled: false,
+                requester_pays_enabled: false,
+                engine_version: EngineVersion {
+                    selected_engine_version: "AUTO".to_string(),
+                    effective_engine_version: "Athena engine version 3".to_string(),
+                },
+            },
+        },
+    })
+}
+
 pub fn get_query_results(app: &App, body: &Bytes) -> Response {
     let request: GetQueryResultsRequest = match parse(body) {
         Ok(request) => request,
@@ -314,7 +361,7 @@ fn to_query_execution(id: &str, execution: &Execution) -> QueryExecution {
             execution.started_at,
             execution.completed_at,
         ),
-        work_group: "primary".to_string(),
+        work_group: execution.work_group.clone(),
     }
 }
 

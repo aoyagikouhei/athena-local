@@ -15,6 +15,9 @@ pub struct StartQueryExecutionRequest {
     /// OutputLocation だけを使う（暗号化などの設定は受け取って無視する）。
     #[serde(default)]
     pub result_configuration: Option<ResultConfiguration>,
+    /// 省略時は operation.rs の DEFAULT_WORK_GROUP を既定にする。
+    #[serde(default)]
+    pub work_group: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, Default)]
@@ -179,4 +182,43 @@ pub struct ColumnInfo {
     pub table_name: String,
     pub precision: i64,
     pub scale: i64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct GetWorkGroupRequest {
+    pub work_group: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct GetWorkGroupResponse {
+    pub work_group: WorkGroup,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct WorkGroup {
+    pub name: String,
+    pub state: String,
+    pub configuration: WorkGroupConfiguration,
+}
+
+/// athena-local にワークグループの実体は無く、値は operation.rs で実測して直書きする。
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct WorkGroupConfiguration {
+    /// 出力先が無くても本物はキーごと省かず空のオブジェクトを返す。そのため Option にしない。
+    pub result_configuration: ResultConfiguration,
+    pub enforce_work_group_configuration: bool,
+    pub publish_cloud_watch_metrics_enabled: bool,
+    pub requester_pays_enabled: bool,
+    pub engine_version: EngineVersion,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct EngineVersion {
+    pub selected_engine_version: String,
+    pub effective_engine_version: String,
 }
