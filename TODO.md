@@ -38,10 +38,17 @@
   - JDBC のテーブル一覧（jar の調査とリリースノートのみ）。
 - メモ：Trino に `SHOW` や `information_schema` の別のクエリを投げれば組み立てられ、SQL の本文を書き換えない方針と両立する。`TableType` やパラメータの値は実測する。
 
-### ListDataCatalogs、ListWorkGroups
+### ListWorkGroups（#9）
 
 - [ ] 実装する
-- 使うクライアント：Grafana の設定画面（`api.go:241`、`290`、確認済み）。JDBC も ListDataCatalogs を参照する（jar の調査のみ）。
+- 使うクライアント：Grafana の設定画面（`api.go:290` の `Workgroups`、確認済み）。**`NextToken` を辿って全件取るループになっている**ので、返さなければ 1 ページで終わる。
+- メモ：応答の形は #2 の実測で一部分かっている（`Name`／`State`／`Description`／`CreationTime`／`EngineVersion` の 5 つ。`IdentityCenterApplicationArn` は返らなかった）。`NextToken` とページングは未実測。
+
+### ListDataCatalogs
+
+- [ ] 実装する
+- 使うクライアント：Grafana の設定画面（`api.go:241` の `DataCatalogs`、確認済み）。こちらも `NextToken` を辿る。JDBC も参照する（jar の調査のみ）。
+- メモ：カタログ名は `TRINO_CATALOG_MAP` の別名に関わるので、#9 とは別に扱う。
 
 ### GetDataCatalog
 
