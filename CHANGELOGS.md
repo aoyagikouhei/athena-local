@@ -48,9 +48,9 @@ later name the date they were measured on.
   and an error that carries `AthenaErrorCode` now also carries `ErrorCode`
   with the same value. Real Athena always returns this shape (measured for
   `IDEMPOTENT_PARAMETER_MISMATCH` and `WorkGroup is not found.`), so this is
-  a bug fix, not a behaviour change from athena-local's point of view. SDKs
-  read JSON object keys case-insensitively, so this does not affect ordinary
-  clients. Errors without an `AthenaErrorCode` (a request that fails to
+  a bug fix, not a behaviour change from athena-local's point of view. The AWS
+  SDKs read both `message` and `Message` (botocore and smithy-rs each check
+  the two spellings explicitly), so this does not affect ordinary clients. Errors without an `AthenaErrorCode` (a request that fails to
   parse, an unsupported operation, `InternalServerException`) keep only
   `Message`; whether real Athena adds `ErrorCode` there too has not been
   measured. Measured against Athena on 2026-09-17.

@@ -33,6 +33,10 @@ async fn 同じトークンで2回呼ぶと同じ_id_が返り_trino_への本�
     assert_eq!(harness.syntax_checks().len(), 2);
 }
 
+/// 2 本の呼び出しは同じランタイム上で await の境目（構文チェックの HTTP 往復）ごとに
+/// 交互に進むので、両方が構文チェックを抜けてから submit に並ぶ経路を踏む。ただし OS の
+/// 同時性を強制しているわけではない。二重実行を防ぐのは Store::submit が判定と登録を
+/// 1 ロック内で終える設計そのもので、このテストはその設計の結果を固定する。
 #[tokio::test]
 async fn 同時に2回呼んでも実行は1本だけになる() {
     let harness = Harness::start(select_response()).await;
