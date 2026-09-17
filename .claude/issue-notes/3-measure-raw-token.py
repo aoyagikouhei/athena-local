@@ -23,6 +23,7 @@ IAM ロールなど）でそのまま読む。見つからなければ <out_json
 """
 
 import json
+import time
 import sys
 import urllib.error
 import urllib.request
@@ -72,28 +73,36 @@ def main() -> None:
             headers=dict(prepared.headers),
             method="POST",
         )
-        try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                resp_body = resp.read().decode("utf-8", "replace")
-                result["outcome"] = "success"
-                result["status"] = resp.status
-                result["headers"] = dict(resp.headers.items())
+        # 名前解決の一時的な失敗（3 回目の実測で omit の 1 件だけ gaierror になった）に備え、
+        # HTTP エラー以外の送信失敗は 2 秒あけて 3 回まで試す。
+        for attempt in range(3):
+            try:
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    resp_body = resp.read().decode("utf-8", "replace")
+                    result["outcome"] = "success"
+                    result["status"] = resp.status
+                    result["headers"] = dict(resp.headers.items())
+                    result["body"] = resp_body
+                    try:
+                        result["query_execution_id"] = json.loads(resp_body).get(
+                            "QueryExecutionId", ""
+                        )
+                    except Exception:
+                        pass
+                break
+            except urllib.error.HTTPError as e:
+                resp_body = e.read().decode("utf-8", "replace")
+                result["outcome"] = "error"
+                result["status"] = e.code
+                result["headers"] = dict(e.headers.items()) if e.headers else {}
                 result["body"] = resp_body
-                try:
-                    result["query_execution_id"] = json.loads(resp_body).get(
-                        "QueryExecutionId", ""
-                    )
-                except Exception:
-                    pass
-        except urllib.error.HTTPError as e:
-            resp_body = e.read().decode("utf-8", "replace")
-            result["outcome"] = "error"
-            result["status"] = e.code
-            result["headers"] = dict(e.headers.items()) if e.headers else {}
-            result["body"] = resp_body
-        except Exception as e:
-            result["outcome"] = "exception"
-            result["exception"] = repr(e)
+                break
+            except Exception as e:
+                result["outcome"] = "exception"
+                result["exception"] = repr(e)
+                result["attempts"] = attempt + 1
+                if attempt < 2:
+                    time.sleep(2)
 
     with open(out_json, "w") as f:
         json.dump(result, f)

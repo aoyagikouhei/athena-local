@@ -352,9 +352,13 @@ Query state is kept in memory, so it is lost when the container restarts.
 - **`ClientRequestToken` is not normalized or length-checked.** The value is
   used verbatim as a map key: case, leading/trailing whitespace and non-ASCII
   characters are all significant, and no minimum or maximum length is enforced.
-  Whether real Athena normalizes it has not been measured. The token → id
-  mapping is kept in memory for the life of the process (see #4) and its
-  lifetime beyond 60 seconds has not been measured.
+  Whether real Athena normalizes it has not been measured. `Database` and
+  `OutputLocation` are compared as sent, before `TRINO_SCHEMA` or
+  `ATHENA_LOCAL_OUTPUT_LOCATION` fills them in, so a retry that spells out the
+  default a first call left out is `IDEMPOTENT_PARAMETER_MISMATCH`; whether
+  real Athena does the same has not been measured. The token → id mapping is
+  kept in memory for the life of the process (see #4) and its lifetime beyond
+  60 seconds has not been measured.
 - **Error body key casing.** Error responses use `Message` (capital M), and an
   error that carries `AthenaErrorCode` also carries `ErrorCode` with the same
   value; both match real Athena (measured for `IDEMPOTENT_PARAMETER_MISMATCH`

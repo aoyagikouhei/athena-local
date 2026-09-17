@@ -107,6 +107,15 @@ async fn 同じトークンで_database_か_output_location_を変えても衝�
                 "ResultConfiguration": { "OutputLocation": "s3://b/y/" },
             }),
         ),
+        // 既定を当てる前の生の値で比べるので、省略と明示は別物（本物の扱いは未実測）。
+        (
+            "database_omitted_then_given",
+            json!({ "QueryString": "SELECT 1" }),
+            json!({
+                "QueryString": "SELECT 1",
+                "QueryExecutionContext": { "Database": "db1" },
+            }),
+        ),
     ] {
         let harness = Harness::start(select_response()).await;
         let same_token = token(name);
