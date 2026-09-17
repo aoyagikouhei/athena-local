@@ -35,6 +35,19 @@ later name the date they were measured on.
   `GetQueryExecution` reports that name instead of always saying `primary`.
   Omitting it still means `primary`.
 
+### Changed
+
+- Error response bodies now use `Message` (capital M) instead of `message`,
+  and an error that carries `AthenaErrorCode` now also carries `ErrorCode`
+  with the same value. Real Athena always returns this shape (measured for
+  `IDEMPOTENT_PARAMETER_MISMATCH` and `WorkGroup is not found.`), so this is
+  a bug fix, not a behaviour change from athena-local's point of view. SDKs
+  read JSON object keys case-insensitively, so this does not affect ordinary
+  clients. Errors without an `AthenaErrorCode` (a request that fails to
+  parse, an unsupported operation, `InternalServerException`) keep only
+  `Message`; whether real Athena adds `ErrorCode` there too has not been
+  measured. Measured against Athena on 2026-09-17.
+
 ## [0.4.0] - 2026-09-15
 
 ### Added

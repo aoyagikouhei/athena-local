@@ -35,7 +35,7 @@ async fn 構文エラーは開始時に_400_で弾き_本体は_trino_に送ら�
     assert_eq!(error["__type"], "InvalidRequestException");
     assert_eq!(error["AthenaErrorCode"], "MALFORMED_QUERY");
     assert_eq!(
-        error["message"],
+        error["Message"],
         format!("line 1:1: mismatched input 'SELEC'. {EXPECTING}")
     );
     assert_eq!(harness.syntax_checks(), ["SELEC 1"]);
@@ -55,7 +55,7 @@ async fn 複数行の文でも元の_sql_の行で数える() {
         .await;
 
     assert_eq!(code, 400);
-    assert_eq!(error["message"], "line 2:6: mismatched input 'WHERE'");
+    assert_eq!(error["Message"], "line 2:6: mismatched input 'WHERE'");
 }
 
 #[tokio::test]
@@ -77,7 +77,7 @@ async fn パラメータ付きでも値を当てる前の_sql_で確かめる() 
 
     assert_eq!(code, 400);
     assert_eq!(
-        error["message"],
+        error["Message"],
         format!("line 1:1: mismatched input 'SELEC'. {EXPECTING}")
     );
     assert_eq!(harness.syntax_checks(), ["SELEC ?"]);

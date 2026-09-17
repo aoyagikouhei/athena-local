@@ -22,16 +22,28 @@ pub fn ok<T: Serialize>(body: &T) -> Response {
 }
 
 /// SDK は __type（または x-amzn-errortype）でエラーの種類を判別する。
+///
+/// 本文のキーは `Message`（M が大文字。2026-09-17 実測）。この経路（パース失敗・
+/// 未対応オペレーション・InternalServerException など AthenaErrorCode が無いもの）の
+/// 本物の応答は未実測なので、`ErrorCode` は付けない（推測で埋めない）。
 pub fn error(code: &str, message: impl Into<String>) -> Response {
-    error_body(code, json!({ "__type": code, "message": message.into() }))
+    error_body(code, json!({ "__type": code, "Message": message.into() }))
 }
 
 /// 本物の InvalidRequestException は、より細かい理由を AthenaErrorCode に載せる。
+///
+/// 本文は `{"__type","AthenaErrorCode","ErrorCode","Message"}` の 4 キー（2026-09-17
+/// 実測。`ErrorCode` は `AthenaErrorCode` と同じ値で別に付く）。
 pub fn invalid_request_with_code(message: impl Into<String>, athena_error_code: &str) -> Response {
     let code = "InvalidRequestException";
     error_body(
         code,
-        json!({ "__type": code, "message": message.into(), "AthenaErrorCode": athena_error_code }),
+        json!({
+            "__type": code,
+            "AthenaErrorCode": athena_error_code,
+            "ErrorCode": athena_error_code,
+            "Message": message.into(),
+        }),
     )
 }
 

@@ -340,6 +340,13 @@ Query state is kept in memory, so it is lost when the container restarts.
 - **Plain HTTP only.** The clients are built without TLS, for both Trino and
   the S3-compatible store. To reach an HTTPS endpoint, add the `rustls` feature
   to `reqwest` in `Cargo.toml` (and CA certificates to the image).
+- **Error body key casing.** Error responses use `Message` (capital M), and an
+  error that carries `AthenaErrorCode` also carries `ErrorCode` with the same
+  value; both match real Athena (measured for `IDEMPOTENT_PARAMETER_MISMATCH`
+  and `WorkGroup is not found.`). Errors without an `AthenaErrorCode` (a
+  request that fails to parse, an unsupported operation,
+  `InternalServerException`) keep only `Message`; whether real Athena adds
+  `ErrorCode` there too has not been measured.
 
 ## Development
 

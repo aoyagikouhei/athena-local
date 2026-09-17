@@ -120,7 +120,7 @@ async fn trino_のエラーは_failed_と理由になる() {
 
     assert_eq!(code, 400);
     assert_eq!(error["__type"], "InvalidRequestException");
-    assert!(error["message"].as_str().unwrap().contains("FAILED"));
+    assert!(error["Message"].as_str().unwrap().contains("FAILED"));
 }
 
 #[tokio::test]
@@ -170,11 +170,46 @@ async fn 未対応のオペレーションはエラーになる() {
     assert_eq!(code, 400);
     assert_eq!(error["__type"], "InvalidRequestException");
     assert!(
-        error["message"]
+        error["Message"]
             .as_str()
             .unwrap()
             .contains("ListWorkGroups")
     );
+    // AthenaErrorCode の無い経路（未対応オペレーション）は ErrorCode を持たない。
+    // 本物の形は未実測なので、実測済みの Message にだけ揃える。
+    let mut keys: Vec<&str> = error
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort();
+    assert_eq!(keys, ["Message", "__type"]);
+}
+
+#[tokio::test]
+async fn エラー本文は_type_と_athena_error_code_と_error_code_と_message_の_4_つを持つ() {
+    // 2026-09-17 実測: AthenaErrorCode の付くエラーは本物の Athena で常にこの 4 キーだった。
+    let harness = Harness::start(json!({ "columns": [], "data": [] })).await;
+
+    let (code, error) = harness
+        .call(
+            "StopQueryExecution",
+            json!({ "QueryExecutionId": "no-such-id" }),
+        )
+        .await;
+
+    assert_eq!(code, 400);
+    let mut keys: Vec<&str> = error
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort();
+    assert_eq!(keys, ["AthenaErrorCode", "ErrorCode", "Message", "__type"]);
+    assert_eq!(error["ErrorCode"], error["AthenaErrorCode"]);
+    assert_eq!(error["AthenaErrorCode"], "QUERY_EXECUTION_NOT_FOUND");
 }
 
 #[tokio::test]

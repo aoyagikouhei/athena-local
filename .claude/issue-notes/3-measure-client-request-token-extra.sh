@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 本物の Athena で、1回目の実測（3-measure-client-request-token.sh）で測れなかった3項目
+# 本物の Athena で、1回目の実測（3-measure-client-request-token.sh）で測れなかった4項目
 # だけを測る補助スクリプト（issue #3）。
 #
 # 1回目の実測でわかったこと（.claude/issue-notes/3.md の「実測の結果」参照）:
@@ -8,13 +8,16 @@
 #   - 「実行中」の再送と CANCELLED の後の再送は、既定の LONG_QUERY_SQL
 #     （UNNEST(sequence(1, 5000)) 同士の CROSS JOIN、2500万行）が速すぎて、2回目を
 #     投げる前や stop-query-execution を送る前に SUCCEEDED になってしまい、測れなかった。
+#   - WorkGroup を変えたときの衝突は、実在する別ワークグループ（WORKGROUP2）が無く
+#     skip された。
 #
-# このスクリプトはこの2点だけをやり直す。それ以外（パラメータ不一致・構文エラーの
-# トークン使い回し・SUCCEEDED / FAILED の後の再送・トークンの有効期間）は1回目で測れて
-# いるので、ここでは測らない。
+# このスクリプトはこの3点だけをやり直す。それ以外（QueryString / Database /
+# OutputLocation の衝突・構文エラーのトークン使い回し・SUCCEEDED / FAILED の後の再送・
+# トークンの有効期間）は1回目で測れているので、ここでは測らない。
 #
 # 使い方:
 #   DB=<データベース名> OUTPUT=s3://<バケット>/<プレフィックス>/ \
+#     WORKGROUP2=<実在する別WG名> \
 #     bash 3-measure-client-request-token-extra.sh
 #
 # 必須の環境変数（どちらか片方でも無ければ、何も実行せず使い方を出して終了する）:
@@ -24,7 +27,10 @@
 # 任意の環境変数:
 #   REGION          既定 ap-northeast-1
 #   WORKGROUP       既定 primary
-#   QUERY_BASELINE  軽い基準クエリ（トークンの長さ境界の測定に使う）。既定 "SELECT 1"
+#   WORKGROUP2      WorkGroup を変えたときの衝突（項目(d)）を測るための、実在する別の
+#                    ワークグループ名。省略するとその項目だけ skip する
+#   QUERY_BASELINE  軽い基準クエリ（トークンの長さ境界・WorkGroup 差分の測定に使う）。
+#                    既定 "SELECT 1"
 #   LONG_QUERY_SQL  「実行中」の再送と CANCELLED の後の再送に使う、重いクエリ。既定は
 #                    UNNEST(sequence(1, 30000)) 同士の CROSS JOIN（9億行を数えるだけ）で、
 #                    S3 上のテーブルは一切スキャンしない（スキャン量0バイト = Athena の
@@ -64,6 +70,12 @@
 #   比較（このとき1回目の State を記録） → 1回目を stop-query-execution で取り消す →
 #   CANCELLED を確認してから3回目を投げて ID を比較。CANCELLED にならなかったら、
 #   その旨だけ summary に書いて3回目は投げない。
+#   (d) WorkGroup を変えたときの衝突（WORKGROUP2 が要る。省略時は skip）。新しいトークンで
+#       QUERY_BASELINE を WorkGroup=WORKGROUP（既定 primary）で投げて成功させ、同じ
+#       トークン・同じパラメータで WorkGroup だけ WORKGROUP2 に変えて再送する。本体
+#       スクリプトの項目2（diff-*）と同じ形で、エラーになれば HTTP ステータス・__type・
+#       Message・ErrorCode・AthenaErrorCode を --debug のワイヤから採り、成功すれば ID が
+#       同じかを記録する。summary の行名は diff-WorkGroup。
 #
 # 保存するファイル（すべて $RUN_DIR の中）。
 #   raw-token-omit.json / .stdout.txt / .stderr.txt（成功時はさらに raw-token-omit-state.json）
@@ -71,6 +83,7 @@
 #   raw-token-len-<31|32|128|129>.json / .stdout.txt / .stderr.txt
 #   running-first / running-second / running-first-state                       項目(c)
 #   cancelled-first / cancelled-stop / cancelled-third                          項目(b)
+#   diff-workgroup-base / diff-workgroup-changed（エラー時はさらに .wire.txt）    項目(d)
 #   summary.txt                                    実名を含まない要約。そのまま貼れる。
 #
 # 課金について: トークンの長さ境界は「SELECT 1」相当、CANCELLED・実行中の再送は
@@ -95,6 +108,7 @@ fi
 
 REGION=${REGION:-ap-northeast-1}
 WORKGROUP=${WORKGROUP:-primary}
+WORKGROUP2=${WORKGROUP2:-}
 QUERY_BASELINE=${QUERY_BASELINE:-"SELECT 1"}
 LONG_QUERY_SQL=${LONG_QUERY_SQL:-"SELECT count(*) FROM UNNEST(sequence(1, 30000)) AS a(x) CROSS JOIN UNNEST(sequence(1, 30000)) AS b(y)"}
 POLL_TIMEOUT=${POLL_TIMEOUT:-180}
@@ -113,13 +127,14 @@ SUMMARY="$RUN_DIR/summary.txt"
 : > "$SUMMARY"
 echo "出力先: $RUN_DIR"
 
-# 実名（DB・OUTPUT・WORKGROUP、12桁のアカウント ID らしき数列）を summary に書く前に
-# プレースホルダへ置き換える。
+# 実名（DB・OUTPUT・WORKGROUP・WORKGROUP2、12桁のアカウント ID らしき数列）を summary に
+# 書く前にプレースホルダへ置き換える。
 mask() {
   local s=$1
   [ -n "$DB" ] && s=${s//$DB/<DB>}
   [ -n "$OUTPUT" ] && s=${s//$OUTPUT/<OUTPUT>}
   [ -n "$WORKGROUP" ] && s=${s//$WORKGROUP/<WORKGROUP>}
+  [ -n "$WORKGROUP2" ] && s=${s//$WORKGROUP2/<WORKGROUP2>}
   printf '%s' "$s" | sed -E 's/[0-9]{12}/<ACCOUNT_ID>/g'
 }
 
@@ -167,18 +182,20 @@ report_wire_error() {
   local label=$1 prefix=$2
   local wire="$RUN_DIR/$label.wire.txt"
   if [ -s "$wire" ]; then
-    local http_status errortype dunder_type athena_error_code message
+    local http_status errortype dunder_type athena_error_code error_code message
     http_status=$(grep -oE '"[A-Z]+ / HTTP/[0-9.]+" [0-9]{3}' "$wire" | grep -oE '[0-9]{3}$' | head -1)
     errortype=$(grep -oE "'x-amzn-errortype':[[:space:]]*'[^']*'" "$wire" | head -1 | sed -E "s/.*:[[:space:]]*'([^']*)'/\1/")
     dunder_type=$(grep -oiE '"__type"[[:space:]]*:[[:space:]]*"[^"]*"' "$wire" | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)"/\1/')
     athena_error_code=$(grep -oiE '"AthenaErrorCode"[[:space:]]*:[[:space:]]*"[^"]*"' "$wire" | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)"/\1/')
+    error_code=$(grep -oiE '"ErrorCode"[[:space:]]*:[[:space:]]*"[^"]*"' "$wire" | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)"/\1/')
     message=$(grep -oiE '"[Mm]essage"[[:space:]]*:[[:space:]]*"[^"]*"' "$wire" | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)"/\1/')
     {
       printf '[%s] HTTP ステータス = %s\n' "$prefix" "${http_status:-(採取できず)}"
       printf '[%s] x-amzn-errortype ヘッダ = %s\n' "$prefix" "${errortype:-(採取できず)}"
       printf '[%s] __type = %s\n' "$prefix" "${dunder_type:-(採取できず)}"
       printf '[%s] AthenaErrorCode = %s\n' "$prefix" "${athena_error_code:-(無し)}"
-      printf '[%s] message = %s\n' "$prefix" "$(mask "${message:-(採取できず)}")"
+      printf '[%s] ErrorCode = %s\n' "$prefix" "${error_code:-(無し)}"
+      printf '[%s] Message/message = %s\n' "$prefix" "$(mask "${message:-(採取できず)}")"
     } >> "$SUMMARY"
   else
     printf '[%s] --debug からのワイヤ形式の採取に失敗（ログ形式差の可能性）\n' "$prefix" >> "$SUMMARY"
@@ -473,11 +490,55 @@ else
   fi
 fi
 
+# ---- (d) WorkGroup を変えたときの衝突 --------------------------------------------------
+
+if [ -n "$WORKGROUP2" ]; then
+  echo "== diff-workgroup: 実行します"
+  token=$(gen_token)
+  sqe_plain diff-workgroup-base --client-request-token "$token" \
+    --query-string "$QUERY_BASELINE" \
+    --query-execution-context "Database=$DB" \
+    --result-configuration "OutputLocation=$OUTPUT" \
+    --work-group "$WORKGROUP"
+  if [ $? -ne 0 ]; then
+    err_line=$(extract_cli_error_line "$RUN_DIR/diff-workgroup-base.stderr.txt")
+    printf '[diff-WorkGroup] 基準呼び出し自体が失敗したため skip。CLI エラー = %s\n' "$(mask "$err_line")" >> "$SUMMARY"
+  else
+    base_id=$(extract_id "$RUN_DIR/diff-workgroup-base.stdout.json")
+
+    sqe_plain diff-workgroup-changed --client-request-token "$token" \
+      --query-string "$QUERY_BASELINE" \
+      --query-execution-context "Database=$DB" \
+      --result-configuration "OutputLocation=$OUTPUT" \
+      --work-group "$WORKGROUP2"
+    if [ $? -eq 0 ]; then
+      changed_id=$(extract_id "$RUN_DIR/diff-workgroup-changed.stdout.json")
+      if [ -n "$changed_id" ] && [ "$base_id" = "$changed_id" ]; then
+        printf '[diff-WorkGroup] WorkGroup を変えても成功し、QueryExecutionId は同じだった（不一致は検出されなかった）\n' >> "$SUMMARY"
+      else
+        printf '[diff-WorkGroup] WorkGroup を変えると成功したが、QueryExecutionId は違った（不一致エラーにはならなかった）\n' >> "$SUMMARY"
+      fi
+    else
+      err_line=$(extract_cli_error_line "$RUN_DIR/diff-workgroup-changed.stderr.txt")
+      printf '[diff-WorkGroup] WorkGroup を変えると CLI エラー = %s\n' "$(mask "$err_line")" >> "$SUMMARY"
+      sqe_wire diff-workgroup-changed --client-request-token "$token" \
+        --query-string "$QUERY_BASELINE" \
+        --query-execution-context "Database=$DB" \
+        --result-configuration "OutputLocation=$OUTPUT" \
+        --work-group "$WORKGROUP2"
+      report_wire_error diff-workgroup-changed diff-WorkGroup
+    fi
+  fi
+else
+  echo "== diff-workgroup: skip (WORKGROUP2 が未設定)"
+  printf '[diff-WorkGroup] skip (WORKGROUP2 が未設定)\n' >> "$SUMMARY"
+fi
+
 echo
 echo "完了しました。"
 echo "実名を含まない要約: $SUMMARY"
 echo "中身のファイルは $RUN_DIR にあります。リポジトリには入れないでください。"
 
-# 実行例:
-#   DB=your_db OUTPUT=s3://your-bucket/prefix/ \
+# 実行例（実在する別ワークグループがあれば WORKGROUP2 も渡すと項目(d)も測れる）:
+#   WORKGROUP2=analytics DB=your_db OUTPUT=s3://your-bucket/prefix/ \
 #     bash 3-measure-client-request-token-extra.sh
