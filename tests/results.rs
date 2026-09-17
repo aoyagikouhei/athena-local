@@ -69,7 +69,7 @@ async fn select_の結果を_csv_で書き_フルパスを返す() {
         [S3Put {
             bucket: "results-bucket".to_string(),
             key: format!("athena/{id}.csv"),
-            body: "\"id\",\"name\"\n\"1\",\"it's \"\"x\"\"\"\n\"2\",\n".to_string(),
+            body: b"\"id\",\"name\"\n\"1\",\"it's \"\"x\"\"\"\n\"2\",\n".to_vec(),
             content_type: Some("text/csv".to_string()),
             presigned: true,
         }]
@@ -212,7 +212,7 @@ async fn dml_と_ctas_は何も書かず_ddl_は_0_バイトの_txt_を書く() 
         [S3Put {
             bucket: "results-bucket".to_string(),
             key: format!("athena/{}.txt", execution_id(&create)),
-            body: String::new(),
+            body: Vec::new(),
             content_type: Some("binary/octet-stream".to_string()),
             presigned: true,
         }]
@@ -246,7 +246,7 @@ async fn show_の結果を_txt_で書く() {
         [S3Put {
             bucket: "results-bucket".to_string(),
             key: format!("athena/{id}.txt"),
-            body: "orders\nusers".to_string(),
+            body: b"orders\nusers".to_vec(),
             content_type: Some("binary/octet-stream".to_string()),
             presigned: true,
         }]

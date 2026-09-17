@@ -305,7 +305,7 @@ mod tests {
                 )
                 .expect("行が JSON でない"),
             ],
-            update_count: None,
+            ..Outcome::default()
         }
     }
 
@@ -345,7 +345,7 @@ mod tests {
                 vec![Value::from(1), Value::from("a")],
                 vec![Value::from(2), Value::from("b")],
             ],
-            update_count: None,
+            ..Outcome::default()
         };
 
         let result = text(&outcome);
@@ -361,7 +361,7 @@ mod tests {
         let outcome = Outcome {
             columns: vec![column("x", "integer", &scalar("integer"))],
             rows: vec![vec![Value::from(1)]],
-            update_count: None,
+            ..Outcome::default()
         };
 
         assert_eq!(text(&outcome), "1");
@@ -376,7 +376,7 @@ mod tests {
                 column("c", "integer", &scalar("integer")),
             ],
             rows: vec![vec![Value::from(1), Value::Null, Value::from(3)]],
-            update_count: None,
+            ..Outcome::default()
         };
 
         assert_eq!(text(&outcome), "1\t\t3");

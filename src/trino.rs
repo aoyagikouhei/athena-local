@@ -18,6 +18,10 @@ pub struct Outcome {
     pub rows: Vec<Vec<serde_json::Value>>,
     /// DML なら更新件数。SELECT では None。
     pub update_count: Option<i64>,
+    /// Trino のクエリ ID。`.metadata` の先頭に載せる。
+    pub id: Option<String>,
+    /// Trino の updateType。DML と DDL で入る。
+    pub update_type: Option<String>,
 }
 
 pub struct Column {
@@ -196,6 +200,15 @@ impl Outcome {
                 .collect();
         }
 
+        if let Some(id) = statement.id.take() {
+            self.id = Some(id);
+        }
+
+        // 下の data の判定がまだ statement.update_type を見るので、take() せずに写す。
+        if statement.update_type.is_some() {
+            self.update_type = statement.update_type.clone();
+        }
+
         if let Some(update_count) = statement.update_count {
             self.update_count = Some(update_count);
         }
@@ -267,6 +280,7 @@ async fn parse(response: reqwest::Response) -> Result<Statement, QueryError> {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Statement {
+    id: Option<String>,
     next_uri: Option<String>,
     columns: Option<Vec<StatementColumn>>,
     data: Option<Vec<Vec<serde_json::Value>>>,
@@ -319,5 +333,33 @@ mod tests {
         // 位置の無いメッセージや 1 行目（前置きの中）はそのまま。
         assert_eq!(unshift_line("Division by zero"), "Division by zero");
         assert_eq!(unshift_line("line 1:9: x"), "line 1:9: x");
+    }
+
+    #[test]
+    fn trino_の_id_と_updatetype_を_outcome_に写す() {
+        // Trino が UPDATE に返すページ。更新件数は data（列 rows）にも載るが行としては扱わない。
+        let mut statement: Statement = serde_json::from_str(
+            r#"{
+                "id": "20260917_000000_00000_local",
+                "updateType": "UPDATE",
+                "updateCount": 3,
+                "columns": [{"name": "rows", "type": "bigint"}],
+                "data": [[3]]
+            }"#,
+        )
+        .expect("Statement を読めない");
+
+        let mut outcome = Outcome::default();
+        outcome.absorb(&mut statement);
+
+        assert_eq!(outcome.id.as_deref(), Some("20260917_000000_00000_local"));
+        assert_eq!(outcome.update_type.as_deref(), Some("UPDATE"));
+        assert_eq!(outcome.update_count, Some(3));
+        assert_eq!(outcome.columns.len(), 1);
+        assert!(
+            outcome.rows.is_empty(),
+            "updateType のある data を行にしている: {:?}",
+            outcome.rows
+        );
     }
 }

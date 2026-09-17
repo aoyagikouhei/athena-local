@@ -812,7 +812,7 @@ mod tests {
                 Value::from("x"),
                 serde_json::from_str("[1,2]").unwrap(),
             ]],
-            update_count: None,
+            ..Outcome::default()
         };
 
         assert_eq!(
