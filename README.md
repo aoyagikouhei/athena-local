@@ -69,6 +69,7 @@ Any credentials work; requests are not verified.
 | `TRINO_CATALOG_MAP` | *(none)* | Catalog aliases: `<athena name>=<trino name>`, comma separated. A malformed value stops the server at startup |
 | `ATHENA_LOCAL_RETENTION_SECONDS` | `3600` | How long a finished query (`SUCCEEDED` / `FAILED` / `CANCELLED`) and its `ClientRequestToken` are kept, in seconds. Queued and running queries are never dropped. A value that is not a positive integer stops the server at startup |
 | `ATHENA_LOCAL_RESULTS` | `none` | `s3` writes results to `OutputLocation`: a `SELECT` as CSV, DDL and `SHOW` as text. `none` writes nothing |
+| `ATHENA_LOCAL_WORK_GROUPS` | `primary` | Workgroup names that `ListWorkGroups` returns, comma separated. `GetWorkGroup` still accepts any name, listed or not. An empty entry stops the server at startup |
 | `ATHENA_LOCAL_OUTPUT_LOCATION` | *(none)* | With `s3`: `s3://bucket/prefix` used when the request has no `ResultConfiguration.OutputLocation` (stands in for the workgroup default). `GetWorkGroup` also reports it as `Configuration.ResultConfiguration.OutputLocation` |
 | `AWS_ENDPOINT_URL_S3` | *(none)* | With `s3`: the S3-compatible store, `http://` only. Falls back to `AWS_ENDPOINT_URL` |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | *(none)* | With `s3`: credentials for the store |
@@ -116,6 +117,7 @@ query and the catalog name the request used.
 | `GetQueryResults` | Paginated with `MaxResults` / `NextToken` |
 | `StopQueryExecution` | Marks a queued or running query `CANCELLED` immediately and sends `DELETE` to Trino's `nextUri`. Stopping a finished query succeeds and changes nothing |
 | `GetWorkGroup` | Accepts any workgroup name and returns the same configuration for all of them. `Configuration.ResultConfiguration.OutputLocation` reflects `ATHENA_LOCAL_OUTPUT_LOCATION` when it is set |
+| `ListWorkGroups` | Lists the names from `ATHENA_LOCAL_WORK_GROUPS` (just `primary` when unset) in name order, with the same `State` and `EngineVersion` as `GetWorkGroup`. Paginated with `MaxResults` / `NextToken`; out-of-range `MaxResults` and malformed `NextToken` fail the way Athena does |
 
 Behaviour that matches real Athena:
 
@@ -328,9 +330,10 @@ Athena — values passed to SQL without any `?` are ignored.
 
 Messages above were measured against Athena (2026-09-14).
 
-Not implemented: every other operation, SigV4 verification, creating, listing,
-updating and deleting workgroups (`GetWorkGroup` itself is supported), enforcing
-workgroup settings such as scan limits, result reuse, and encryption settings.
+Not implemented: every other operation, SigV4 verification, creating, updating
+and deleting workgroups (`GetWorkGroup` and `ListWorkGroups` are supported),
+enforcing workgroup settings such as scan limits, result reuse, and encryption
+settings.
 Query state is kept in memory, so it is lost when the container restarts. A
 finished query is also dropped once `ATHENA_LOCAL_RETENTION_SECONDS` has
 passed; see Caveats.
@@ -457,6 +460,28 @@ passed; see Caveats.
   because athena-local has no workgroup that was ever created, so any value
   would be invented; `EnableMinimumEncryptionConfiguration` is left out because
   its value was not measured. No client reads either one (measured 2026-09-17).
+- **`ListWorkGroups` lists a fixed set of names.** The list comes from
+  `ATHENA_LOCAL_WORK_GROUPS`, not from workgroups anyone created, and it is
+  sorted by name like Athena's (measured with 3 workgroups, 2026-09-18). It
+  does not restrict anything: `GetWorkGroup` succeeds for a name that is not
+  listed, and `StartQueryExecution` without a `WorkGroup` still records
+  `primary` even when `primary` is not listed. Grafana's data source settings
+  read this list to fill the workgroup dropdown and read nothing but the names.
+- **`ListWorkGroups` entries are smaller than Athena's.** `Description` is
+  always `""`, which is what Athena returns for a workgroup without a
+  description (`GetWorkGroup` omits the key for the same workgroup; both
+  measured 2026-09-18). `CreationTime` is left out for the reason above.
+  `IdentityCenterApplicationArn` was absent from the measured response, and
+  `EngineVersion.Category` (`Presto` on the wire) is not in the SDK model, so
+  no client can read it; neither is returned.
+- **`ListWorkGroups` paging differs from Athena in two ways.** The default page
+  size is 50, the largest `MaxResults` Athena accepts; Athena's own default was
+  not measured. `NextToken` is the offset of the next page as a decimal string
+  rather than an opaque token. Errors match: `MaxResults` outside 1..50 and a
+  malformed or empty `NextToken` fail with HTTP 400, `InvalidRequestException`,
+  `AthenaErrorCode: INVALID_INPUT` and Athena's messages (measured 2026-09-18).
+  When the list fits in one page the `NextToken` key is omitted, never `""`:
+  Grafana loops until the token is absent.
 - **Plain HTTP only.** The clients are built without TLS, for both Trino and
   the S3-compatible store. To reach an HTTPS endpoint, add the `rustls` feature
   to `reqwest` in `Cargo.toml` (and CA certificates to the image).

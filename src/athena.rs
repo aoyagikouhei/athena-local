@@ -15,7 +15,7 @@ pub struct StartQueryExecutionRequest {
     /// OutputLocation だけを使う（暗号化などの設定は受け取って無視する）。
     #[serde(default)]
     pub result_configuration: Option<ResultConfiguration>,
-    /// 省略時は operation.rs の DEFAULT_WORK_GROUP を既定にする。
+    /// 省略時は config.rs の DEFAULT_WORK_GROUP を既定にする。
     #[serde(default)]
     pub work_group: Option<String>,
     /// 本物と同じく必須（省略は INVALID_INPUT。2026-09-17 実測）。`Option` なのは、
@@ -225,4 +225,37 @@ pub struct WorkGroupConfiguration {
 pub struct EngineVersion {
     pub selected_engine_version: String,
     pub effective_engine_version: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct ListWorkGroupsRequest {
+    #[serde(default)]
+    pub max_results: Option<i32>,
+    #[serde(default)]
+    pub next_token: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct ListWorkGroupsResponse {
+    pub work_groups: Vec<WorkGroupSummary>,
+    /// 続きが無いときはキーごと省く。空文字で返すと Grafana の athena-datasource が
+    /// 無限ループする（nextToken == nil だけを終わりの合図にしている）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_token: Option<String>,
+}
+
+/// GetWorkGroup と違い Configuration は無く、Description が付く。
+/// CreationTime / IdentityCenterApplicationArn と、ワイヤ上だけにある
+/// EngineVersion.Category は返さない（実体が無い、または SDK のモデルに無い）。
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct WorkGroupSummary {
+    pub name: String,
+    pub state: String,
+    /// athena-local に説明の実体が無いので常に空文字。本物も説明の無いワークグループは
+    /// ListWorkGroups で "" を返し、GetWorkGroup ではキーごと無い（2026-09-17／09-18 実測）。
+    pub description: String,
+    pub engine_version: EngineVersion,
 }

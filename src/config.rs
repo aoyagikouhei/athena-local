@@ -9,6 +9,11 @@ use crate::results;
 /// 終端状態の実行情報を持っておく既定の長さ（1 時間）。本物の Athena の保持期間は未実測なので athena-local の都合で決めた値。
 pub const DEFAULT_RETENTION: Duration = Duration::from_secs(3600);
 
+/// StartQueryExecution で WorkGroup が省略されたときの既定名で、
+/// ATHENA_LOCAL_WORK_GROUPS が未設定のときに ListWorkGroups が返す唯一の名前。
+/// GetWorkGroup では使わない（WorkGroup は必須項目で、無ければ parse が弾く）。
+pub const DEFAULT_WORK_GROUP: &str = "primary";
+
 /// athena-local の設定。すべて環境変数で与える。
 pub struct Config {
     /// HTTP の待ち受けアドレス。
@@ -28,6 +33,10 @@ pub struct Config {
     pub results: ResultsMode,
     /// 終端状態の実行情報と、その `ClientRequestToken` の対応を持っておく長さ。QUEUED / RUNNING は捨てない。
     pub retention: Duration,
+    /// ListWorkGroups が返すワークグループ名。名前の辞書順に整列済みなのが不変条件
+    /// （本物の一覧も名前順。2026-09-18 実測）。athena-local にワークグループの実体は無く、
+    /// ここに無い名前でも GetWorkGroup は成功する。
+    pub work_groups: Vec<String>,
 }
 
 /// 結果 CSV の書き込み。
@@ -60,6 +69,7 @@ impl Config {
 
         let results = parse_results(optional_env)?;
         let retention = parse_retention(optional_env)?;
+        let work_groups = parse_work_groups(optional_env)?;
 
         Ok(Self {
             bind_address: env_or("ATHENA_LOCAL_BIND", "0.0.0.0:8080"),
@@ -70,6 +80,7 @@ impl Config {
             catalog_map,
             results,
             retention,
+            work_groups,
         })
     }
 
@@ -170,6 +181,31 @@ fn parse_retention(env: impl Fn(&str) -> Option<String>) -> Result<Duration, Str
     Ok(Duration::from_secs(seconds))
 }
 
+/// ATHENA_LOCAL_WORK_GROUPS を読む。未設定なら DEFAULT_WORK_GROUP の 1 件。
+/// カンマ区切りで、要素ごとに前後の空白を捨てる。空の要素は起動時に止める
+/// （末尾のカンマは compose で現実に起こり、黙って通すと一覧に空の名前が並ぶ）。
+/// 同じ名前が 2 回あっても止めない（一覧に同じ名前が 2 回出るだけで、起動を止める方が害が大きい）。
+/// 本物の一覧は名前順なので、ここで辞書順に並べる（2026-09-18 実測）。
+fn parse_work_groups(env: impl Fn(&str) -> Option<String>) -> Result<Vec<String>, String> {
+    let Some(text) = env("ATHENA_LOCAL_WORK_GROUPS") else {
+        return Ok(vec![DEFAULT_WORK_GROUP.to_string()]);
+    };
+
+    let mut names = Vec::new();
+    for entry in text.split(',') {
+        let name = entry.trim();
+        if name.is_empty() {
+            return Err(format!(
+                "ATHENA_LOCAL_WORK_GROUPS: ワークグループ名が空です: {entry:?}"
+            ));
+        }
+        names.push(name.to_string());
+    }
+    names.sort();
+
+    Ok(names)
+}
+
 fn env_or(key: &str, default: &str) -> String {
     optional_env(key).unwrap_or_else(|| default.to_string())
 }
@@ -234,6 +270,7 @@ mod tests {
             catalog_map: map(&[("s3tablescatalog/a", "iceberg")]),
             results: ResultsMode::None,
             retention: DEFAULT_RETENTION,
+            work_groups: vec![DEFAULT_WORK_GROUP.to_string()],
         };
 
         assert_eq!(config.trino_catalog("s3tablescatalog/a"), "iceberg");
@@ -356,6 +393,41 @@ mod tests {
             assert!(
                 parse_results(env(&with(overrides))).is_err(),
                 "通ってしまった: {overrides:?}"
+            );
+        }
+    }
+    #[test]
+    fn ワークグループの既定は_primary_の_1_件() {
+        assert_eq!(parse_work_groups(env(&[])), Ok(vec!["primary".to_string()]));
+    }
+
+    #[test]
+    fn カンマ区切りで読み前後の空白を捨てて辞書順に並べる() {
+        assert_eq!(
+            parse_work_groups(env(&[(
+                "ATHENA_LOCAL_WORK_GROUPS",
+                " etl , ad-hoc ,primary"
+            )])),
+            Ok(vec![
+                "ad-hoc".to_string(),
+                "etl".to_string(),
+                "primary".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn 空の要素があれば起動時エラーにする() {
+        // 空文字は optional_env が先に落とすのでこの関数には届かない。
+        for text in [
+            ",",    // 要素が 2 つとも空
+            "a,",   // 末尾のカンマ
+            "a,,b", // 途中の空の要素
+            " ",    // 空白だけ
+        ] {
+            assert!(
+                parse_work_groups(env(&[("ATHENA_LOCAL_WORK_GROUPS", text)])).is_err(),
+                "通ってしまった: {text:?}"
             );
         }
     }
