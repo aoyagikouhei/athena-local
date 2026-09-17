@@ -22,17 +22,11 @@
   - JDBC のテーブル一覧（jar の調査とリリースノートのみ）。
 - メモ：Trino に `SHOW` や `information_schema` の別のクエリを投げれば組み立てられ、SQL の本文を書き換えない方針と両立する。`TableType` やパラメータの値は実測する。
 
-### ListWorkGroups（#9）
-
-- [ ] 実装する
-- 使うクライアント：Grafana の設定画面（`api.go:290` の `Workgroups`、確認済み）。**`NextToken` を辿って全件取るループになっている**ので、返さなければ 1 ページで終わる。
-- メモ：応答の形は #2 の実測で一部分かっている（`Name`／`State`／`Description`／`CreationTime`／`EngineVersion` の 5 つ。`IdentityCenterApplicationArn` は返らなかった）。`NextToken` とページングは未実測。
-
 ### ListDataCatalogs
 
 - [ ] 実装する
 - 使うクライアント：Grafana の設定画面（`api.go:241` の `DataCatalogs`、確認済み）。こちらも `NextToken` を辿る。JDBC も参照する（jar の調査のみ）。
-- メモ：カタログ名は `TRINO_CATALOG_MAP` の別名に関わるので、#9 とは別に扱う。
+- メモ：カタログ名は `TRINO_CATALOG_MAP` の別名に関わるので、ワークグループの一覧（#9 で対応済み）とは別に扱う。
 
 ### GetDataCatalog
 
@@ -77,7 +71,8 @@
 ### GetQueryResults
 
 - [ ] `MaxResults` に上限の 1000 が無い
-- [ ] 形の崩れた `NextToken` を渡すと、エラーにならずに先頭の行から読み直す
+- [ ] 形の崩れた `NextToken` を渡すと、エラーにならずに先頭の行から読み直す。`ListWorkGroups`（#9）は実測どおり `MaxResults` の範囲外と不正な `NextToken` を `InvalidRequestException` / `INVALID_INPUT` で弾くので、2 つのオペレーションで検証が揃っていない
+- [ ] `MaxResults` に文字列など型の違う値を渡すと、本物は `SerializationException`（`AthenaErrorCode` 無し、`STRING_VALUE can not be converted to an Integer`。#9 で `ListWorkGroups` に対して実測）を返すが、athena-local は全オペレーション共通の `parse` が `InvalidRequestException` にする
 - [ ] `QueryResultType` の `DATA_MANIFEST` を無視している
 - [ ] `ColumnInfo.Nullable` が常に `UNKNOWN`。本物の値は未実測
 

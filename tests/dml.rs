@@ -165,7 +165,7 @@ async fn 知らない実行_id_はエラーになる() {
 async fn 未対応のオペレーションはエラーになる() {
     let harness = Harness::start(json!({ "columns": [], "data": [] })).await;
 
-    let (code, error) = harness.call("ListWorkGroups", json!({})).await;
+    let (code, error) = harness.call("CreateWorkGroup", json!({})).await;
 
     assert_eq!(code, 400);
     assert_eq!(error["__type"], "InvalidRequestException");
@@ -173,7 +173,7 @@ async fn 未対応のオペレーションはエラーになる() {
         error["Message"]
             .as_str()
             .unwrap()
-            .contains("ListWorkGroups")
+            .contains("CreateWorkGroup")
     );
     // AthenaErrorCode の無い経路（未対応オペレーション）は ErrorCode を持たない。
     // 本物の形は未実測なので、実測済みの Message にだけ揃える。

@@ -9,7 +9,9 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use athena_local::config::{Config, DEFAULT_RETENTION, ResultsMode, S3Settings};
+use athena_local::config::{
+    Config, DEFAULT_RETENTION, DEFAULT_WORK_GROUP, ResultsMode, S3Settings,
+};
 use axum::Router;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -100,6 +102,8 @@ pub struct HarnessBuilder {
     s3: Option<S3Options>,
     syntax_checks: HashMap<String, Value>,
     retention: Duration,
+    /// ATHENA_LOCAL_WORK_GROUPS にあたる名前。parse_work_groups を通らないので整列済みで渡す。
+    work_groups: Vec<String>,
 }
 
 struct S3Options {
@@ -178,6 +182,15 @@ impl HarnessBuilder {
         self
     }
 
+    /// athena-local の ATHENA_LOCAL_WORK_GROUPS にあたるワークグループ名。
+    /// Config を直に組み立てるので parse_work_groups を通らない。
+    /// Config.work_groups は整列済みが不変条件なので、辞書順に並べて渡すこと
+    /// （並べ替えの責務は config.rs のユニットテストが持つ）。
+    pub fn work_groups(mut self, names: &[&str]) -> Self {
+        self.work_groups = names.iter().map(|name| name.to_string()).collect();
+        self
+    }
+
     /// athena-local の TRINO_CATALOG_MAP にあたる別名。
     pub fn catalog_map(mut self, pairs: &[(&str, &str)]) -> Self {
         self.catalog_map = pairs
@@ -234,6 +247,7 @@ impl HarnessBuilder {
             catalog_map: self.catalog_map,
             results,
             retention: self.retention,
+            work_groups: self.work_groups,
         };
         let athena_addr = spawn(athena_local::router(config)).await;
 
@@ -260,6 +274,7 @@ impl Harness {
             s3: None,
             syntax_checks: HashMap::new(),
             retention: DEFAULT_RETENTION,
+            work_groups: vec![DEFAULT_WORK_GROUP.to_string()],
         }
     }
 

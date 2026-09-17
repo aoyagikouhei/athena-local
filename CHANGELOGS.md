@@ -58,6 +58,14 @@ later name the date they were measured on.
   `OutputLocation` when `ATHENA_LOCAL_OUTPUT_LOCATION` is set and `{}` when it
   is not. `CreationTime` and `EnableMinimumEncryptionConfiguration` are left
   out; see Caveats. Measured against Athena on 2026-09-17.
+- `ListWorkGroups` is supported, so the workgroup dropdown in Grafana's data
+  source settings can be filled in. The names come from the new
+  `ATHENA_LOCAL_WORK_GROUPS` variable (comma separated, `primary` when unset)
+  and are returned in name order with the same `State` and `EngineVersion` as
+  `GetWorkGroup`. `MaxResults` / `NextToken` paging is supported; `MaxResults`
+  outside 1..50 and a malformed or empty `NextToken` fail with the messages
+  Athena returns. `Description` is always `""`, and `CreationTime` is left out;
+  see Caveats. Measured against Athena on 2026-09-18.
 - `StartQueryExecution` now keeps the `WorkGroup` it was given, and
   `GetQueryExecution` reports that name instead of always saying `primary`.
   Omitting it still means `primary`.
