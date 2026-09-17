@@ -86,7 +86,53 @@
 
 - [ ] この節の差分のうち README に書いていないものを Caveats に書く
 
-## 3. 当面やらないもの
+## 3. 未実測の一覧
+
+各 issue の実装で「本物の Athena で測っていない」まま残した挙動。次に本物の Athena を叩ける機会に、まとめて測る。測ったら README の Caveats の「未実測」を書き換え、ここから消す。出典は `.claude/issue-notes/<番号>.md`。
+
+### 結果ファイル（#1、#5、#6）
+
+- [ ] `.txt` 本体の Content-Type が `binary/octet-stream` と `application/octet-stream` に割れる条件（DESCRIBE は `application/`、SHOW TABLES は `binary/` だった）。athena-local は `binary/octet-stream` 固定
+- [ ] `ALTER TABLE` が成功したときの `.txt` の中身
+- [ ] `DROP TABLE` の `.txt`（本物は改行 1 バイト、athena-local は 0 バイト）と、本物が置く 41 バイトの `.metadata`（athena-local は置かない）
+- [ ] 失敗した `EXPLAIN`、`CREATE TABLE` の重複、Hive テーブルへの `ALTER TABLE` 失敗の結果ファイル
+- [ ] `.metadata` の `timestamp with time zone`／`time with time zone`／`interval year to month`／`uuid`／`ipaddress` の Precision／Scale／CaseSensitive（field 7／8／10）の有無。**推測で実装している**
+- [ ] `MERGE` の `.metadata` が UPDATE／DELETE と同じ形か
+- [ ] 更新件数 0 の DML（`DELETE ... WHERE false` など）で本物が更新件数の field 3 を出すか（athena-local は `18 00` を書く）
+- [ ] 暗号化系の SHOW（本物の `.txt.metadata` が base64 の暗号化バイト列）。athena-local は素の protobuf
+- [ ] 失敗時の `GetQueryResults` が本物は文ごとに割れる（空の ResultSet／`INVALID_QUERY_EXECUTION_STATE`／`RESULT_NOT_FOUND`）。athena-local は常に `INVALID_QUERY_EXECUTION_STATE`
+
+### ClientRequestToken と保持期限（#3、#4）
+
+- [ ] `Catalog` の差が冪等性の衝突（`IDEMPOTENT_PARAMETER_MISMATCH`）になるか（`WorkGroup` は実測済み）
+- [ ] 本物がトークンを正規化するか（前後の空白、`"`、`\`、大文字小文字）
+- [ ] トークン長の制約（32〜128）がバイト数か文字数か（ASCII でしか測っていない）
+- [ ] トークンの検証と他の検証エラー（`OutputLocation` 無し等）の優先順位
+- [ ] トークン対応表と実行情報の本物の保持期間（60 秒を超えることまでは実測。既定の 1 時間は athena-local 独自の値）
+- [ ] 期限切れのトークンを再送すると本物で新しい ID になるか、期限切れの ID の `GetQueryExecution` が `QUERY_EXECUTION_NOT_FOUND` か、`StopQueryExecution` が 400 か
+- [ ] `Database`／`OutputLocation` の「省略」と「既定と同じ値の明示」を本物が別物として扱うか
+
+### ワークグループ（#2、#9）
+
+- [ ] `Configuration.EnableMinimumEncryptionConfiguration` の値（キーの存在だけ確認）
+- [ ] 出力先が設定されたワークグループの `GetWorkGroup` の `ResultConfiguration` の形
+- [ ] `GetWorkGroup` の実測値（`EnforceWorkGroupConfiguration=false` 等）が工場出荷時の既定か、コンソールで変えた後の値か
+- [ ] `ListWorkGroups` の `MaxResults` 未指定時の既定ページサイズ（athena-local は 50）
+- [ ] `ListWorkGroups` の順序が名前順であること（3 件だけの根拠）
+- [ ] `MaxResults` と `NextToken` が同時に不正なときの検証の順序と文言（`2 validation errors detected` になるか）
+
+### エラー応答
+
+- [ ] `x-amzn-errortype` ヘッダ。#2、#3、#9 の実測で本物の応答に見つからなかったが、athena-local は送り続けている
+- [ ] `AthenaErrorCode` の無い経路（パース失敗・未対応オペレーション・`InternalServerException`）の本文の形（「2. 実装済みオペレーションの細かい差分」にも記載）
+
+### 実クライアントでの疎通
+
+- [ ] dbt-athena で `work_group` を設定して 1 回通す（#2 の人間検証リスト。Grafana は #9 で実施済み）
+- [ ] `ATHENA_LOCAL_RESULTS=s3` と保持期限の組み合わせ（捨てた後も結果 CSV は残る想定だが未確認）
+- [ ] 長時間運用でメモリが実際に頭打ちになるか（保持期限による破棄の実効性）
+
+## 4. 当面やらないもの
 
 - dbt-athena への対応：テーブルやスキーマの情報を Glue の API から取るので、Athena の API を増やしても動かない。Glue の代役が別に要る（未再確認）。
 - Spark 系：ノートブック、セッション、計算の API。
