@@ -245,7 +245,9 @@ The file holds the rows `GetQueryResults` returns, joined with `\n`:
   for zero columns. athena-local writes an empty file.
 
 The object is uploaded with a presigned `PUT` (path-style), so any
-S3-compatible store works; it is not retried. `<id>.csv` and the `.metadata`
+S3-compatible store works; it is not retried, and a `PUT` that gets no response
+within 30 seconds is given up on so the query still reaches a final state
+(the limit is fixed and has no environment variable). `<id>.csv` and the `.metadata`
 companions are sent as `application/octet-stream` and `<id>.txt` as
 `binary/octet-stream`, as Athena does (measured 2026-09-17). A failed CSV
 upload makes the query `FAILED` with the store's response in

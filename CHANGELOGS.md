@@ -111,6 +111,15 @@ later name the date they were measured on.
   2026-09-17 in five of six result files); `text/csv` had been athena-local's
   own unmeasured guess since 0.3.0. `<id>.txt` keeps `binary/octet-stream`, and
   the new `.metadata` companions are `application/octet-stream` too.
+- A result file upload now gives up after 30 seconds instead of waiting for
+  the store forever. An S3-compatible store that accepts the connection but
+  never answers used to leave the query `RUNNING` until the TCP timeout, which
+  also held back queries on their way to `FAILED`. The timeout applies to every
+  result file (`<id>.csv`, `<id>.txt`, the `.metadata` companions and the
+  failure `<id>.txt`), is fixed and has no environment variable, and a `PUT`
+  that hits it is treated like any other failed upload: the CSV makes the query
+  `FAILED`, while `<id>.txt` and `.metadata` leave it `SUCCEEDED` with one log
+  line. Athena has no matching behaviour, so the limit is athena-local's own.
 - Error response bodies now use `Message` (capital M) instead of `message`,
   and an error that carries `AthenaErrorCode` now also carries `ErrorCode`
   with the same value. Real Athena always returns this shape (measured for

@@ -9,6 +9,10 @@ use crate::results;
 /// 終端状態の実行情報を持っておく既定の長さ（1 時間）。本物の Athena の保持期間は未実測なので athena-local の都合で決めた値。
 pub const DEFAULT_RETENTION: Duration = Duration::from_secs(3600);
 
+/// 結果ファイルの PUT を諦めるまでの時間（30 秒）。応答しない S3 でクエリが RUNNING のまま止まらないようにする。
+/// 本物の Athena には無い事象なので athena-local の都合で決めた値。
+pub const DEFAULT_S3_PUT_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// StartQueryExecution で WorkGroup が省略されたときの既定名で、
 /// ATHENA_LOCAL_WORK_GROUPS が未設定のときに ListWorkGroups が返す唯一の名前。
 /// GetWorkGroup では使わない（WorkGroup は必須項目で、無ければ parse が弾く）。
@@ -56,6 +60,8 @@ pub struct S3Settings {
     pub region: String,
     /// リクエストに OutputLocation が無いときの既定（本物の workgroup の既定の代わり）。
     pub default_output_location: Option<String>,
+    /// PUT 1 本を諦めるまでの時間。環境変数では変えられず、常に DEFAULT_S3_PUT_TIMEOUT（テストだけ短くする）。
+    pub put_timeout: Duration,
 }
 
 impl Config {
@@ -160,6 +166,7 @@ fn parse_results(env: impl Fn(&str) -> Option<String>) -> Result<ResultsMode, St
         secret_access_key: required("AWS_SECRET_ACCESS_KEY")?,
         region: env("AWS_REGION").unwrap_or_else(|| "us-east-1".to_string()),
         default_output_location,
+        put_timeout: DEFAULT_S3_PUT_TIMEOUT,
     }))
 }
 
