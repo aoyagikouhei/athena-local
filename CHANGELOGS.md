@@ -33,12 +33,11 @@ later name the date they were measured on.
   that reads the result file rather than `GetQueryResults` can see why it
   failed. It holds `FAILED: ` followed by `StateChangeReason`, with no trailing
   newline, and is sent as `application/octet-stream`; no `.metadata` companion
-  is written.
-  `SELECT`, DML and CTAS write nothing, and neither does a cancelled query. The
-  upload happens before the query becomes `FAILED`, and an upload that fails
-  logs one line and leaves the state and the reason unchanged. Measured against
-  Athena on 2026-09-17; Athena writes the file for fewer statements, see
-  Caveats.
+  is written. `SELECT`, DML and CTAS write nothing, and neither does a
+  cancelled query. The upload happens before the query becomes `FAILED`, and an
+  upload that fails logs one line and leaves the state and the reason
+  unchanged. Measured against Athena on 2026-09-17; Athena writes the file for
+  fewer statements, see Caveats.
 - DDL, `SHOW` and `DESCRIBE` results are written to `<id>.txt` with
   `ATHENA_LOCAL_RESULTS=s3`, so clients that read the result file rather than
   `GetQueryResults` work. PyAthena's pandas and arrow cursors are the ones that
