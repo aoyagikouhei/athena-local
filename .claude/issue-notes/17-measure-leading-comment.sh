@@ -65,6 +65,11 @@
 #   <label>.metadata.head.json / .metadata.head.err  .metadata の head-object
 #   <label>.keys.txt            OutputLocation の周辺で <id> を含む key の一覧（CTAS/INSERT のみ）
 #
+# metadata_query_id の列は、.metadata（protobuf）の先頭 field 1 に入っているクエリ ID の
+# 「形」だけを出す（trino / uuid）。本物は DESCRIBE と SHOW CREATE TABLE だけを
+# QueryExecutionId（uuid）にし、それ以外はエンジンのクエリ ID（trino）にする。先頭コメントを
+# 飛ばすかどうかでこの分岐の入り方が変わるので、値ではなく形の変化を見る。
+#
 # 最後に summary.tsv（機械可読）と summary.txt（そのまま貼れる整形済み）を作る。
 # 実名は summary には出さない（DB 名・テーブル名は note に混じらないよう置換している）。
 
@@ -84,7 +89,7 @@ PROBE_DDL=${PROBE_DDL:-0}
 RUN_DIR="$OUT_DIR/run-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$RUN_DIR"
 SUMMARY="$RUN_DIR/summary.tsv"
-printf 'label\tstate\tstatement_type\tsubstatement_type\text\tbytes\tmetadata_bytes\tcontent_type\tmetadata_content_type\tupdate_count\tnote\n' > "$SUMMARY"
+printf 'label\tstate\tstatement_type\tsubstatement_type\text\tbytes\tmetadata_bytes\tcontent_type\tmetadata_content_type\tupdate_count\tmetadata_query_id\tnote\n' > "$SUMMARY"
 echo "出力先: $RUN_DIR"
 
 # StartQueryExecution を実際に呼んだ回数（再試行も含む）。summary.txt の冒頭に出す。
@@ -238,6 +243,37 @@ except Exception:
     print("-")' "$1"
 }
 
+# .metadata（protobuf）の先頭 field 1 に入っているクエリ ID の「形」を返す。
+# Trino のクエリ ID は 20260918_083012_00001_abcde の形、Athena の QueryExecutionId は UUID。
+# どちらが入るかは文の種類で変わる（src/operation.rs の metadata_query_id）ので、
+# 先頭コメントを付けた DESCRIBE / SHOW CREATE TABLE でこれが変わるかどうかを見る。
+# 値そのものは実名ではないが、念のため形だけ（trino / uuid / other）を summary に出す。
+metadata_query_id_shape() {
+  [ -s "$1" ] || { echo "-"; return; }
+  python3 -c 'import re, sys
+try:
+    b = open(sys.argv[1], "rb").read()
+except Exception:
+    print("-"); sys.exit(0)
+# protobuf: field 1, wire type 2 (length-delimited) => tag byte 0x0a, then a varint length.
+if not b or b[0] != 0x0A:
+    print("no-field1"); sys.exit(0)
+i, shift, length = 1, 0, 0
+while i < len(b):
+    byte = b[i]; i += 1
+    length |= (byte & 0x7F) << shift
+    if not byte & 0x80:
+        break
+    shift += 7
+value = b[i:i + length].decode("utf-8", "replace")
+if re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", value):
+    print("uuid")
+elif re.fullmatch(r"\d{8}_\d{6}_\d{5}_\w+", value):
+    print("trino")
+else:
+    print("other(len=%d)" % len(value))' "$1"
+}
+
 # OutputLocation の周辺を一覧し、<id> を含む key を全部書き出す。件数を返す（標準出力）。
 # 5-measure-metadata.sh の list_keys をそのまま流用（CTAS / INSERT 用）。
 list_keys() {
@@ -313,7 +349,7 @@ start_query_retry() {
 skip() {
   local label=$1 note=$2
   echo "== $label: 未測定（$note）"
-  printf '%s\tSKIPPED\t-\t-\t-\t-\t-\t-\t-\t-\t%s\n' "$label" "$(sanitize "$note")" >> "$SUMMARY"
+  printf '%s\tSKIPPED\t-\t-\t-\t-\t-\t-\t-\t-\t-\t%s\n' "$label" "$(sanitize "$note")" >> "$SUMMARY"
 }
 
 # ラベルを指定して 1 文を実行し、終端状態まで待って StatementType 等を採取する。
@@ -322,7 +358,7 @@ skip() {
 # ほとんどは戻り値を見ない。
 run() {
   local label=$1 sql=$2 want_keys=${3:-}
-  local id state stype sstype loc ext size meta_size ctype mctype ucount note keys
+  local id state stype sstype loc ext size meta_size ctype mctype ucount note keys mqid
 
   id=$(start_query_retry "$label" "$sql")
   if [ -z "${id:-}" ]; then
@@ -331,7 +367,7 @@ run() {
       note="$note; CLI が送信前に拒否した可能性"
     fi
     echo "== $label: 開始できませんでした（試行 $LAST_ATTEMPTS 回）。$RUN_DIR/$label.start.err を見てください"
-    printf '%s\tSTART_FAILED\t-\t-\t-\t-\t-\t-\t-\t-\t%s\n' "$label" "$(sanitize "$note")" >> "$SUMMARY"
+    printf '%s\tSTART_FAILED\t-\t-\t-\t-\t-\t-\t-\t-\t-\t%s\n' "$label" "$(sanitize "$note")" >> "$SUMMARY"
     return 1
   fi
 
@@ -346,7 +382,7 @@ run() {
   IFS=$'\t' read -r stype sstype loc < <(read_execution_fields "$RUN_DIR/$label.execution.json")
   ucount=$(read_update_count "$RUN_DIR/$label.results.json")
 
-  ext="-"; size="none"; meta_size="none"; ctype="-"; mctype="-"; keys="-"
+  ext="-"; size="none"; meta_size="none"; ctype="-"; mctype="-"; keys="-"; mqid="-"
   if [ -n "$loc" ]; then
     # 末尾のファイル名に . があれば拡張子、無ければ（CTAS の tables/<id> など）none。
     ext=${loc##*/}
@@ -366,6 +402,7 @@ run() {
     if fetch "$loc.metadata" "$RUN_DIR/$label.metadata.bytes" "$RUN_DIR/$label.metadata.cp.err"; then
       od -tx1c "$RUN_DIR/$label.metadata.bytes" > "$RUN_DIR/$label.metadata.od.txt"
       meta_size=$(wc -c < "$RUN_DIR/$label.metadata.bytes")
+      mqid=$(metadata_query_id_shape "$RUN_DIR/$label.metadata.bytes")
     fi
     if head_object "$loc.metadata" "$RUN_DIR/$label.metadata.head.json" "$RUN_DIR/$label.metadata.head.err"; then
       mctype=$(content_type_of "$RUN_DIR/$label.metadata.head.json")
@@ -384,9 +421,9 @@ run() {
     note="$note; keys=$keys"
   fi
 
-  echo "== $label  state=$state  stype=$stype  sstype=$sstype  ext=$ext  bytes=$size  metadata=$meta_size  ct=$ctype  meta_ct=$mctype  update_count=$ucount"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$label" "$state" "$stype" "$sstype" "$ext" "$size" "$meta_size" "$ctype" "$mctype" "$ucount" "$(sanitize "$note")" >> "$SUMMARY"
+  echo "== $label  state=$state  stype=$stype  sstype=$sstype  ext=$ext  bytes=$size  metadata=$meta_size  ct=$ctype  meta_ct=$mctype  update_count=$ucount  meta_query_id=$mqid"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$label" "$state" "$stype" "$sstype" "$ext" "$size" "$meta_size" "$ctype" "$mctype" "$ucount" "$mqid" "$(sanitize "$note")" >> "$SUMMARY"
   [ "$state" = SUCCEEDED ]
 }
 
@@ -425,6 +462,14 @@ if [ -z "$TABLE" ]; then
 else
   run a-line-describe $'-- c\nDESCRIBE '"$TABLE"
 fi
+if [ -z "$TABLE" ]; then
+  skip a-line-show-create "このデータベースにテーブルが無いため SHOW CREATE TABLE を測れない"
+else
+  # .metadata の先頭のクエリ ID は DESCRIBE と SHOW CREATE TABLE だけが QueryExecutionId で、
+  # それ以外は Trino の ID（2026-09-17 実測）。先頭コメントを飛ばすとこの分岐の入り方が変わるので、
+  # word(1) まで見る唯一の分岐である SHOW CREATE TABLE も測る。
+  run a-line-show-create $'-- c\nSHOW CREATE TABLE '"$TABLE"
+fi
 run a-line-explain    $'-- c\nEXPLAIN SELECT 1'
 run a-line-create-db  $'-- c\nCREATE DATABASE IF NOT EXISTS athena_local_probe_17'
 run a-line-drop-db    $'-- c\nDROP DATABASE IF EXISTS athena_local_probe_17'
@@ -432,6 +477,11 @@ run a-line-drop-db    $'-- c\nDROP DATABASE IF EXISTS athena_local_probe_17'
 # B. ブロックコメント /* */ が先頭。
 run b-block-select    '/* c */ SELECT 1'
 run b-block-show      '/* c */ SHOW TABLES'
+if [ -z "$TABLE" ]; then
+  skip b-block-show-create "このデータベースにテーブルが無いため SHOW CREATE TABLE を測れない"
+else
+  run b-block-show-create "/* c */ SHOW CREATE TABLE $TABLE"
+fi
 run b-block-create-db '/* c */ CREATE DATABASE IF NOT EXISTS athena_local_probe_17'
 run b-block-drop-db   '/* c */ DROP DATABASE IF EXISTS athena_local_probe_17'
 
@@ -503,7 +553,7 @@ with open(sys.argv[1], newline="") as f:
             "substatement_type={substatement_type} ext={ext} bytes={bytes} "
             "metadata_bytes={metadata_bytes} content_type={content_type} "
             "metadata_content_type={metadata_content_type} update_count={update_count} "
-            "note={note}".format(**row)
+            "metadata_query_id={metadata_query_id} note={note}".format(**row)
         )
 PYEOF
     echo
