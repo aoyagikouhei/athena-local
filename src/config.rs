@@ -1,9 +1,13 @@
 use std::collections::HashMap;
 use std::env;
+use std::time::Duration;
 
 use reqwest::Url;
 
 use crate::results;
+
+/// 終端状態の実行情報を持っておく既定の長さ（1 時間）。本物の Athena の保持期間は未実測なので athena-local の都合で決めた値。
+pub const DEFAULT_RETENTION: Duration = Duration::from_secs(3600);
 
 /// athena-local の設定。すべて環境変数で与える。
 pub struct Config {
