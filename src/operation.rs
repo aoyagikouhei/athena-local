@@ -34,9 +34,22 @@ const NO_OUTPUT_LOCATION: &str = "No output location provided. You did not provi
 /// 同じ ClientRequestToken の再送で衝突したときの文言（2026-09-17 実測）。
 const IDEMPOTENT_MISMATCH: &str = "Idempotent parameters do not match";
 
+/// ClientRequestToken が無い（キーが無い）ときの文言（2026-09-17、4 回目の実測）。
+const TOKEN_MISSING: &str = "clientRequestToken is null or empty";
+
+/// ClientRequestToken が 32 文字未満（空文字を含む）のときの文言（2026-09-17、3 回目の実測）。
+const TOKEN_TOO_SHORT: &str = "1 validation error detected: Value at 'clientRequestToken' failed to satisfy constraint: Member must have length greater than or equal to 32";
+
+/// ClientRequestToken が 128 文字を超えるときの文言（2026-09-17、3 回目の実測）。
+const TOKEN_TOO_LONG: &str = "1 validation error detected: Value at 'clientRequestToken' failed to satisfy constraint: Member must have length less than or equal to 128";
+
 pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
     let request: StartQueryExecutionRequest = match parse(body) {
         Ok(request) => request,
+        Err(response) => return *response,
+    };
+    let token = match client_request_token(&request) {
+        Ok(token) => token,
         Err(response) => return *response,
     };
 
@@ -77,7 +90,7 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
             database,
             result_location,
             work_group,
-            token: request.client_request_token,
+            token,
             fingerprint,
         },
     );
@@ -103,6 +116,34 @@ fn submit_response(app: &App, id: String, outcome: SubmitOutcome) -> Response {
             invalid_request_with_code(IDEMPOTENT_MISMATCH, "IDEMPOTENT_PARAMETER_MISMATCH")
         }
     }
+}
+
+/// ClientRequestToken を検証する（2026-09-17 実測、判断 2・11）。本物と同じく必須で、
+/// 長さは 32 以上 128 以下。文字数は chars().count()（本物がバイトか文字かは ASCII でしか
+/// 測っていない。README 参照）。
+fn client_request_token(request: &StartQueryExecutionRequest) -> Result<String, Box<Response>> {
+    let Some(token) = request.client_request_token.clone() else {
+        return Err(Box::new(invalid_request_with_code(
+            TOKEN_MISSING,
+            "INVALID_INPUT",
+        )));
+    };
+
+    let length = token.chars().count();
+    if length < 32 {
+        return Err(Box::new(invalid_request_with_code(
+            TOKEN_TOO_SHORT,
+            "INVALID_INPUT",
+        )));
+    }
+    if length > 128 {
+        return Err(Box::new(invalid_request_with_code(
+            TOKEN_TOO_LONG,
+            "INVALID_INPUT",
+        )));
+    }
+
+    Ok(token)
 }
 
 /// QueryExecutionContext の既定値と、冪等化用のフィンガープリント（既定を当てる前の生の値）を組む。

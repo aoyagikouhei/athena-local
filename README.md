@@ -110,7 +110,7 @@ query and the catalog name the request used.
 
 | Operation | Notes |
 | --- | --- |
-| `StartQueryExecution` | Returns an id immediately; the query runs in the background. `ExecutionParameters` are supported (see below). `ClientRequestToken` makes retries idempotent (see below) |
+| `StartQueryExecution` | Returns an id immediately; the query runs in the background. `ExecutionParameters` are supported (see below). `ClientRequestToken` is required and makes retries idempotent (see below) |
 | `GetQueryExecution` | `QUEUED` → `RUNNING` → `SUCCEEDED` / `FAILED` / `CANCELLED`. Trino errors land in `Status.StateChangeReason` |
 | `GetQueryResults` | Paginated with `MaxResults` / `NextToken` |
 | `StopQueryExecution` | Marks a queued or running query `CANCELLED` immediately and sends `DELETE` to Trino's `nextUri`. Stopping a finished query succeeds and changes nothing |
@@ -185,6 +185,14 @@ Behaviour that matches real Athena:
   `IDEMPOTENT_PARAMETER_MISMATCH` and `Message`
   `Idempotent parameters do not match`. `ExecutionParameters` and `WorkGroup` are
   not compared. `Catalog` has not been measured. Measured 2026-09-17.
+- `ClientRequestToken` is required. Omitting it (no key at all) fails with
+  `InvalidRequestException` / `AthenaErrorCode` and `ErrorCode` `INVALID_INPUT`
+  and `Message` `clientRequestToken is null or empty`. Its length must be
+  between 32 and 128 characters (an empty string gets the "too short" message,
+  not the "missing" one); outside that range the same error shape is used with
+  `Message` `1 validation error detected: Value at 'clientRequestToken' failed
+  to satisfy constraint: Member must have length greater than or equal to 32`
+  (or `less than or equal to 128`). Measured 2026-09-17.
 
 ### Result files
 
@@ -349,16 +357,22 @@ Query state is kept in memory, so it is lost when the container restarts.
 - **Plain HTTP only.** The clients are built without TLS, for both Trino and
   the S3-compatible store. To reach an HTTPS endpoint, add the `rustls` feature
   to `reqwest` in `Cargo.toml` (and CA certificates to the image).
-- **`ClientRequestToken` is not normalized or length-checked.** The value is
-  used verbatim as a map key: case, leading/trailing whitespace and non-ASCII
-  characters are all significant, and no minimum or maximum length is enforced.
-  Whether real Athena normalizes it has not been measured. `Database` and
-  `OutputLocation` are compared as sent, before `TRINO_SCHEMA` or
-  `ATHENA_LOCAL_OUTPUT_LOCATION` fills them in, so a retry that spells out the
-  default a first call left out is `IDEMPOTENT_PARAMETER_MISMATCH`; whether
-  real Athena does the same has not been measured. The token → id mapping is
-  kept in memory for the life of the process (see #4) and its lifetime beyond
-  60 seconds has not been measured.
+- **`ClientRequestToken` is required and not normalized.** Omitting it, or
+  sending one shorter than 32 or longer than 128 characters, fails with
+  `INVALID_INPUT` (see Supported API above); the length is counted with
+  `chars().count()`, which was only measured with ASCII input, so whether real
+  Athena counts bytes or characters for non-ASCII tokens is unknown. A token
+  that passes validation is used verbatim as a map key: case, leading/trailing
+  whitespace and non-ASCII characters are all significant. Whether real Athena
+  normalizes it has not been measured. `Database` and `OutputLocation` are
+  compared as sent, before `TRINO_SCHEMA` or `ATHENA_LOCAL_OUTPUT_LOCATION`
+  fills them in, so a retry that spells out the default a first call left out
+  is `IDEMPOTENT_PARAMETER_MISMATCH`; whether real Athena does the same has
+  not been measured. The token → id mapping is kept in memory for the life of
+  the process (see #4) and its lifetime beyond 60 seconds has not been
+  measured. **Raw HTTP / curl clients must supply their own token** — the AWS
+  CLI and SDKs add one automatically, but a request built by hand needs to set
+  `ClientRequestToken` itself (measured).
 - **Error body key casing.** Error responses use `Message` (capital M), and an
   error that carries `AthenaErrorCode` also carries `ErrorCode` with the same
   value; both match real Athena (measured for `IDEMPOTENT_PARAMETER_MISMATCH`

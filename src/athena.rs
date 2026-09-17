@@ -18,7 +18,8 @@ pub struct StartQueryExecutionRequest {
     /// 省略時は operation.rs の DEFAULT_WORK_GROUP を既定にする。
     #[serde(default)]
     pub work_group: Option<String>,
-    /// 同じトークンの再送に同じ ID を返す。省略時は冪等化しない（フェーズ 3 で必須にする）。
+    /// 本物と同じく必須（省略は INVALID_INPUT。2026-09-17 実測）。`Option` なのは、
+    /// serde の欠落エラーではなく operation.rs が実測した文言で自前のエラーを返すため。
     #[serde(default)]
     pub client_request_token: Option<String>,
 }

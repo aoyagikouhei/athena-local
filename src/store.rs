@@ -103,14 +103,13 @@ pub struct Submission {
     pub database: Option<String>,
     pub result_location: Option<ResultLocation>,
     pub work_group: String,
-    /// ClientRequestToken。無ければ冪等化しない（毎回新規実行）。
-    pub token: Option<String>,
+    /// ClientRequestToken。operation.rs が必須項目として検証済みなので常に有効な値。
+    pub token: String,
     pub fingerprint: Fingerprint,
 }
 
 impl Store {
-    /// 1 回のロックの中で判定する。token が None なら今までどおり無条件に登録して Created。
-    /// token が Some なら: 対応表に無ければ登録して Created、あってフィンガープリントが
+    /// 1 回のロックの中で判定する。対応表に無ければ登録して Created、あってフィンガープリントが
     /// 一致すれば何も登録せず Existing(既存の id)、一致しなければ Conflict。
     pub fn submit(&self, id: &str, submission: Submission) -> SubmitOutcome {
         let Submission {
@@ -126,9 +125,7 @@ impl Store {
 
         let mut inner = self.lock();
 
-        if let Some(token) = &token
-            && let Some(claim) = inner.tokens.get(token)
-        {
+        if let Some(claim) = inner.tokens.get(&token) {
             return if claim.fingerprint == fingerprint {
                 SubmitOutcome::Existing(claim.id.clone())
             } else {
@@ -153,15 +150,13 @@ impl Store {
             cancel: Arc::default(),
         };
         inner.executions.insert(id.to_string(), execution);
-        if let Some(token) = token {
-            inner.tokens.insert(
-                token,
-                Claim {
-                    fingerprint,
-                    id: id.to_string(),
-                },
-            );
-        }
+        inner.tokens.insert(
+            token,
+            Claim {
+                fingerprint,
+                id: id.to_string(),
+            },
+        );
         SubmitOutcome::Created
     }
 
@@ -272,6 +267,11 @@ mod tests {
         }
     }
 
+    /// テストごとに別の値にする 32 文字以上の固定トークン。
+    fn test_token(name: &str) -> String {
+        format!("token-{name}-0123456789abcdef0123456789")
+    }
+
     fn submitted() -> Store {
         let store = Store::default();
         store.submit(
@@ -283,7 +283,7 @@ mod tests {
                 database: None,
                 result_location: None,
                 work_group: "primary".to_string(),
-                token: None,
+                token: test_token("submitted"),
                 fingerprint: fingerprint("SELECT 1"),
             },
         );
@@ -302,7 +302,7 @@ mod tests {
                 database: Some("db".into()),
                 result_location: None,
                 work_group: "primary".to_string(),
-                token: None,
+                token: test_token("progress"),
                 fingerprint: fingerprint("SELECT ?"),
             },
         );
@@ -429,7 +429,7 @@ mod tests {
             database: None,
             result_location: None,
             work_group: "primary".to_string(),
-            token: Some(token.to_string()),
+            token: token.to_string(),
             fingerprint: fingerprint(query),
         }
     }
@@ -463,31 +463,5 @@ mod tests {
             SubmitOutcome::Conflict
         );
         assert!(store.get("id2").is_none());
-    }
-
-    #[test]
-    fn submit_はトークンが無ければ毎回_created() {
-        let store = Store::default();
-        let no_token = |query: &str| Submission {
-            query: query.to_string(),
-            execution_parameters: Vec::new(),
-            catalog: None,
-            database: None,
-            result_location: None,
-            work_group: "primary".to_string(),
-            token: None,
-            fingerprint: fingerprint(query),
-        };
-
-        assert_eq!(
-            store.submit("id1", no_token("SELECT 1")),
-            SubmitOutcome::Created
-        );
-        assert_eq!(
-            store.submit("id2", no_token("SELECT 1")),
-            SubmitOutcome::Created
-        );
-        assert!(store.get("id1").is_some());
-        assert!(store.get("id2").is_some());
     }
 }

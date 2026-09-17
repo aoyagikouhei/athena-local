@@ -16,6 +16,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post, put};
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
+use uuid::Uuid;
 
 /// Trino が受け取ったリクエスト。ヘッダの受け渡しを検証するために記録する。
 #[derive(Clone, Debug, PartialEq)]
@@ -287,8 +288,25 @@ impl Harness {
         self.puts.lock().expect("poisoned").clone()
     }
 
-    /// Athena のオペレーションを 1 つ呼ぶ。
-    pub async fn call(&self, operation: &str, body: Value) -> (u16, Value) {
+    /// Athena のオペレーションを 1 つ呼ぶ。SDK と同じく、StartQueryExecution で
+    /// ClientRequestToken を指定しなければ、呼び出しごとに UUID を入れてから送る。
+    /// トークンを付けずに送りたいテストは call_raw を使う。
+    pub async fn call(&self, operation: &str, mut body: Value) -> (u16, Value) {
+        if operation == "StartQueryExecution"
+            && let Some(object) = body.as_object_mut()
+            && !object.contains_key("ClientRequestToken")
+        {
+            object.insert(
+                "ClientRequestToken".to_string(),
+                Value::String(Uuid::new_v4().to_string()),
+            );
+        }
+
+        self.call_raw(operation, body).await
+    }
+
+    /// call からトークンの自動挿入を除いたもの。トークン無しの挙動を確かめるテスト用。
+    pub async fn call_raw(&self, operation: &str, body: Value) -> (u16, Value) {
         let response = reqwest::Client::new()
             .post(&self.athena_url)
             .header("X-Amz-Target", format!("AmazonAthena.{operation}"))

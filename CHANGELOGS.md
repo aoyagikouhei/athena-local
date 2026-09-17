@@ -40,9 +40,7 @@ later name the date they were measured on.
   retry whose `QueryString`, `QueryExecutionContext.Database` or
   `ResultConfiguration.OutputLocation` differs instead fails with
   `IDEMPOTENT_PARAMETER_MISMATCH`. `ExecutionParameters` and `WorkGroup` are not
-  compared. The token is not normalized or length-checked, and requests without
-  one still run as a new execution every time (unchanged for now). Measured
-  against Athena on 2026-09-17.
+  compared. The token is not normalized. Measured against Athena on 2026-09-17.
 
 ### Changed
 
@@ -56,6 +54,11 @@ later name the date they were measured on.
   parse, an unsupported operation, `InternalServerException`) keep only
   `Message`; whether real Athena adds `ErrorCode` there too has not been
   measured. Measured against Athena on 2026-09-17.
+- **Breaking:** `StartQueryExecution` now requires `ClientRequestToken`; a
+  request without one fails with `INVALID_INPUT`, and the length must be
+  between 32 and 128 characters. This does not affect the AWS CLI or SDKs,
+  which already add a token automatically; a raw HTTP client now needs to add
+  one itself. Measured against Athena on 2026-09-17.
 
 ## [0.4.0] - 2026-09-15
 

@@ -193,8 +193,9 @@ async fn 同じトークンで_execution_parameters_か_work_group_を変えて�
 
 #[tokio::test]
 async fn トークンの表記の違いは正規化しない() {
-    let long_a = "a".repeat(300);
-    let long_b = "b".repeat(300);
+    // 128 は長さ検証の上限（このテストの主眼は正規化の有無で、長さ検証は別テストで固定する）。
+    let long_a = "a".repeat(128);
+    let long_b = "b".repeat(128);
     let cases: Vec<(&str, String, String)> = vec![
         (
             "大文字小文字",
@@ -228,18 +229,57 @@ async fn トークンの表記の違いは正規化しない() {
     }
 }
 
-/// フェーズ 3 で「エラーになる」に書き換える。このフェーズではトークンが無ければ今までどおり。
+/// 判断 2（4 回目の実測）。call_raw で送らないと Harness::call が UUID を自動で入れてしまう。
 #[tokio::test]
-async fn トークンが無ければ今までどおり別の実行になる() {
+async fn トークンが無ければ_invalid_input_になる() {
     let harness = Harness::start(select_response()).await;
 
-    let id1 = harness
-        .start_query(json!({ "QueryString": "SELECT 1" }))
-        .await;
-    let id2 = harness
-        .start_query(json!({ "QueryString": "SELECT 1" }))
+    let (status, error) = harness
+        .call_raw("StartQueryExecution", json!({ "QueryString": "SELECT 1" }))
         .await;
 
-    assert_ne!(id1, id2);
-    assert_eq!(harness.trino_sqls().len(), 2);
+    assert_eq!(status, 400);
+    assert_eq!(error["__type"], "InvalidRequestException");
+    assert_eq!(error["AthenaErrorCode"], "INVALID_INPUT");
+    assert_eq!(error["ErrorCode"], "INVALID_INPUT");
+    assert_eq!(error["Message"], "clientRequestToken is null or empty");
+    // 検証はクエリの処理より前に行われる。
+    assert!(harness.trino_requests().is_empty());
+    assert!(harness.syntax_checks().is_empty());
+}
+
+/// 判断 11（3 回目の実測）。32 未満（空文字含む）と 128 超は 400、32 と 128 は成功。
+#[tokio::test]
+async fn トークンの長さは_32_以上_128_以下() {
+    const TOO_SHORT: &str = "1 validation error detected: Value at 'clientRequestToken' failed to satisfy constraint: Member must have length greater than or equal to 32";
+    const TOO_LONG: &str = "1 validation error detected: Value at 'clientRequestToken' failed to satisfy constraint: Member must have length less than or equal to 128";
+
+    for (name, len, expected_message) in [
+        ("空文字", 0usize, Some(TOO_SHORT)),
+        ("31文字", 31, Some(TOO_SHORT)),
+        ("32文字", 32, None),
+        ("128文字", 128, None),
+        ("129文字", 129, Some(TOO_LONG)),
+    ] {
+        let harness = Harness::start(select_response()).await;
+        let value = "a".repeat(len);
+
+        let (status, body) = harness
+            .call(
+                "StartQueryExecution",
+                json!({ "QueryString": "SELECT 1", "ClientRequestToken": value }),
+            )
+            .await;
+
+        match expected_message {
+            None => assert_eq!(status, 200, "{name}: {body}"),
+            Some(message) => {
+                assert_eq!(status, 400, "{name}: {body}");
+                assert_eq!(body["__type"], "InvalidRequestException", "{name}");
+                assert_eq!(body["AthenaErrorCode"], "INVALID_INPUT", "{name}");
+                assert_eq!(body["ErrorCode"], "INVALID_INPUT", "{name}");
+                assert_eq!(body["Message"], message, "{name}");
+            }
+        }
+    }
 }
