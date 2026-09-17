@@ -264,6 +264,60 @@ mod tests {
     }
 
     #[test]
+    fn 未実測の型は同じ系統の型と同じフィールドを出す() {
+        // 本物では未実測の 2 つの型（README の Caveats に「同じ系統の型と同じに書く」と書いてある）。
+        // 期待値は手計算。timestamp with time zone は timestamp と同じく 7 / 8 / 10 を出し、
+        // interval year to month は interval day to second と同じく 10 だけを出す。
+        let columns = vec![
+            column("ts", "timestamp with time zone", 3, 0, false),
+            column("iv", "interval year to month", 0, 0, false),
+        ];
+
+        let actual = to_metadata("q1", None, None, &columns);
+
+        // `timestamp with time zone` は 24 バイト（0x18）なので列 message は
+        // 6 + 4 + 4 + 26 + 2 + 2 + 2 + 2 = 48 = 0x30。
+        // `interval year to month` は 22 バイト（0x16）で 6 + 4 + 4 + 24 + 2 + 2 = 42 = 0x2a
+        // （実測した `interval day to second` の列と同じ長さ・同じ形）。
+        let expected = hex("0a02 7131
+             2230
+               0a04 68697665
+               2202 7473
+               2a02 7473
+               3218 74696d657374616d7020776974682074696d65207a6f6e65
+               3803 4000 4803 5000
+             222a
+               0a04 68697665
+               2202 6976
+               2a02 6976
+               3216 696e74657276616c207965617220746f206d6f6e7468
+               4803 5000");
+        assert_eq!(hex_of(&actual), hex_of(&expected));
+    }
+
+    #[test]
+    fn 更新件数が_0_でも_field_3_を書く() {
+        // 0 件の更新（`DELETE ... WHERE false`）は本物で未実測。README の Caveats に書いた
+        // 「athena-local は 0 を書く」という契約を固定する（proto3 の既定値の省略はしない）。
+        let columns = vec![column("rows", "bigint", 19, 0, false)];
+
+        let actual = to_metadata("q1", Some("DELETE"), Some(0), &columns);
+
+        // 期待値は手計算。field 2 は `DELETE` の 6 バイト、field 3 は 0 でも 18 00 を書く。
+        // 列 `rows bigint` は 6 + 6 + 6 + 8 + 2 + 2 + 2 + 2 = 34 = 0x22。
+        let expected = hex("0a02 7131
+             1206 44454c455445
+             1800
+             2222
+               0a04 68697665
+               2204 726f7773
+               2a04 726f7773
+               3206 626967696e74
+               3813 4000 4803 5000");
+        assert_eq!(hex_of(&actual), hex_of(&expected));
+    }
+
+    #[test]
     fn 列名の長さは文字数ではなくバイト数で数える() {
         // 期待値は手計算。`日本語` は UTF-8 で 9 バイト（e697a5 e69cac e8aa9e）なので長さ前置は 09。
         // 列 message = CatalogName 6 + Name 11 + Label 11 + Type 9 + 7 の 2 + 8 の 2 + 9 の 2

@@ -132,19 +132,24 @@ async fn 既定の出力先を使い_末尾スラッシュが無くても同じ�
         .await;
     let other = execution_id(&execution);
 
-    // 付随ファイルも合わせて 4 件。置き場所を見たいので本体（.csv）だけを集める。
+    // 付随ファイルも合わせて 4 件。どのバケットのどのキーに置いたかを順に全件見る
+    // （付随ファイルが本体と別のバケットに落ちても気づけるように）。
     let puts = harness.s3_puts();
     assert_eq!(puts.len(), 4, "{puts:?}");
-    let bodies: Vec<(&str, &str)> = puts
+    let places: Vec<(&str, &str)> = puts
         .iter()
-        .filter(|put| put.key.ends_with(".csv"))
         .map(|put| (put.bucket.as_str(), put.key.as_str()))
         .collect();
     assert_eq!(
-        bodies,
+        places,
         [
             ("results-bucket", format!("prefix/{id}.csv").as_str()),
+            (
+                "results-bucket",
+                format!("prefix/{id}.csv.metadata").as_str()
+            ),
             ("other-bucket", format!("{other}.csv").as_str()),
+            ("other-bucket", format!("{other}.csv.metadata").as_str()),
         ]
     );
 }

@@ -15,12 +15,14 @@ later name the date they were measured on.
   `ATHENA_LOCAL_RESULTS=s3`, so Athena JDBC 3.x works with its default
   `ResultFetcher=auto`, which reads the result and the metadata straight from
   S3 rather than calling `GetQueryResults` (versions before 3.5.1 fail with
-  `NoSuchKey` when a DDL statement has no metadata file). The names follow the
-  result file: `<id>.csv.metadata`, `<id>.txt.metadata`, `<id>.metadata` for
-  `INSERT` and `tables/<id>.metadata` for CTAS. It is written for every
-  statement that has columns, including a `SELECT` returning no rows; DML and
-  CTAS write the companion file only, and DDL without columns, failed queries
-  and cancelled queries write nothing. The content is the protobuf Athena
+  `NoSuchKey` when a DDL statement has no metadata file; athena-local writes
+  none for column-less DDL either, so those statements still fail there, while
+  3.8.1 logs the 404 at INFO level and carries on, measured 2026-09-17). The
+  names follow the result file: `<id>.csv.metadata`, `<id>.txt.metadata`,
+  `<id>.metadata` for `INSERT` and `tables/<id>.metadata` for CTAS. It is
+  written for every statement that has columns, including a `SELECT` returning
+  no rows; DML and CTAS write the companion file only, and DDL without columns,
+  failed queries and cancelled queries write nothing. The content is the protobuf Athena
   writes: the query id, the `updateType` and update count for DML and CTAS, and
   one message per column with the same values as the `ColumnInfo` of
   `GetQueryResults`. A failed upload leaves the query `SUCCEEDED` and logs one

@@ -94,6 +94,38 @@ async fn 最初の応答を待っている間に止めても_応答が来たら_
 }
 
 #[tokio::test]
+async fn 取り消したクエリは結果も_metadata_も置かない() {
+    // 偽 Trino の応答を遅らせ、1 ページ応答が届く前に止める。
+    let harness = Harness::builder(json!({
+        "columns": [{ "name": "n", "type": "bigint" }],
+        "data": [[1]]
+    }))
+    .results_s3()
+    .statement_delay(Duration::from_millis(200))
+    .start()
+    .await;
+    let id = harness
+        .start_query(json!({
+            "QueryString": "SELECT count(*) FROM big",
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+        }))
+        .await;
+    wait_for("Trino がクエリを受ける", || {
+        harness.trino_requests().len() == 1
+    })
+    .await;
+
+    let (code, _) = stop(&harness, &id).await;
+    assert_eq!(code, 200);
+    assert_eq!(harness.status(&id).await["State"], "CANCELLED");
+
+    // 遅れて届いた応答を受け取っても、本体も付随ファイルも置かない（本物も置かない）。
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(harness.status(&id).await["State"], "CANCELLED");
+    assert!(harness.s3_puts().is_empty(), "{:?}", harness.s3_puts());
+}
+
+#[tokio::test]
 async fn 終わったクエリを止めても_200_で状態も結果も変わらない() {
     let harness = Harness::start(json!({
         "columns": [{ "name": "n", "type": "bigint" }],

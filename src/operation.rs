@@ -264,7 +264,8 @@ async fn write_result(
         }
     }
 
-    // 列が無い文（CREATE TABLE など）には本物も付随ファイルを置かない。
+    // 列が無い文（CREATE TABLE、CREATE / DROP DATABASE）には本物も付随ファイルを置かない。
+    // DROP TABLE だけは本物が列なしの 41 バイトを置くが、athena-local は置かない（README の Caveats）。
     if !outcome.columns.is_empty() {
         write_metadata(writer, location, &execution.query, id, &outcome).await;
     }

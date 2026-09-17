@@ -265,8 +265,11 @@ plus `.metadata` is written next to it, as Athena does (measured 2026-09-17):
 `tables/<id>.metadata` for CTAS. Athena JDBC 3.x is the client that needs it:
 its default `ResultFetcher=auto` reads the result and the metadata straight
 from S3 instead of calling `GetQueryResults`, and versions before 3.5.1 fail
-with `NoSuchKey` when a DDL statement has no metadata file. PyAthena,
-awswrangler and dbt-athena do not read it.
+with `NoSuchKey` when a DDL statement has no metadata file. athena-local writes
+no companion file for column-less DDL either, so those statements still fail on
+versions before 3.5.1; 3.8.1 logs the missing file (a 404) at INFO level and
+carries on (measured 2026-09-17). PyAthena, awswrangler and dbt-athena do not
+read it.
 
 The file is written for every statement that has columns: `SELECT` (also when
 it returns no rows), `SHOW` / `DESCRIBE` / `EXPLAIN`, DML (`INSERT` / `UPDATE`
@@ -380,7 +383,10 @@ passed; see Caveats.
 - **`DROP TABLE` gets no companion file.** Athena writes a 41-byte `.metadata`
   holding only the query id and `DROP TABLE` for it (measured 2026-09-17).
   athena-local writes a companion file only for statements that have columns,
-  and `DROP TABLE` has none, so it writes nothing.
+  and `DROP TABLE` has none, so it writes nothing. Athena JDBC 3.8.1 logs the
+  missing file (a 404) at INFO level and carries on; versions before 3.5.1 fail
+  with `NoSuchKey` here, as they do for any column-less DDL (measured
+  2026-09-17).
 - **Unmeasured `.metadata` details.** The update count of a DML statement that
   changes no rows (`DELETE ... WHERE false`) was not measured; athena-local
   writes `0`. `MERGE` was not measured either and is written like `UPDATE` /

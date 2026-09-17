@@ -106,6 +106,8 @@ async fn select_は_csv_の隣に_csv_metadata_を置く() {
     // 本体を置いてから付随ファイルを置く。
     assert_eq!(puts[0].key, format!("athena/{id}.csv"));
     assert_eq!(puts[1].key, format!("athena/{id}.csv.metadata"));
+    // 付随ファイルは本体と同じバケットに置く。
+    assert_eq!(puts[1].bucket, "results-bucket");
     // 本体も付随ファイルも application/octet-stream（2026-09-17 実測）。
     assert_eq!(
         puts[0].content_type.as_deref(),
@@ -215,6 +217,49 @@ async fn describe_の_metadata_は先頭が実行_id_になる() {
                0a04 68697665
                2209 646174615f74797065
                2a09 646174615f74797065
+               3207 76617263686172
+               38ffffffff07 4000 4803 5001",
+            execution_id_field(&id)
+        ))
+    );
+}
+
+#[tokio::test]
+async fn show_create_table_の_metadata_も先頭が実行_id_になる() {
+    let harness = Harness::builder(select_response())
+        .route(
+            "SHOW CREATE TABLE t",
+            json!({
+                "columns": [{ "name": "Create Table", "type": "varchar" }],
+                "data": [["CREATE TABLE t (id integer)"]]
+            }),
+        )
+        .results_s3()
+        .start()
+        .await;
+
+    let execution = harness
+        .run_query(json!({
+            "QueryString": "SHOW CREATE TABLE t",
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+        }))
+        .await;
+    let id = execution_id(&execution);
+
+    let puts = harness.s3_puts();
+    assert_eq!(puts.len(), 2, "{puts:?}");
+    assert_eq!(puts[1].key, format!("athena/{id}.txt.metadata"));
+
+    // DESCRIBE と並んで field 1 が QueryExecutionId になるもう 1 つの文（2026-09-17 実測）。
+    // 列 `Create Table varchar` は 6 + 14 + 14 + 9 + 6 + 2 + 2 + 2 = 55 = 0x37。
+    assert_eq!(
+        hex_of(&puts[1].body),
+        hex(&format!(
+            "{}
+             2237
+               0a04 68697665
+               220c 437265617465205461626c65
+               2a0c 437265617465205461626c65
                3207 76617263686172
                38ffffffff07 4000 4803 5001",
             execution_id_field(&id)
