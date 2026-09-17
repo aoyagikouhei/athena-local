@@ -125,7 +125,7 @@ async fn 知らない_id_は止められない() {
 
     assert_eq!(code, 400);
     assert_eq!(error["__type"], "InvalidRequestException");
-    assert_eq!(error["message"], "QueryExecution no-such-id was not found");
+    assert_eq!(error["Message"], "QueryExecution no-such-id was not found");
     assert_eq!(error["AthenaErrorCode"], "QUERY_EXECUTION_NOT_FOUND");
 }
 
@@ -145,7 +145,7 @@ async fn 結果取得のエラーは実行中と止めたあとで文言が変�
         .await;
     assert_eq!(code, 400);
     assert_eq!(
-        running["message"],
+        running["Message"],
         "Query has not yet finished. Current state: RUNNING"
     );
     assert_eq!(running["AthenaErrorCode"], "INVALID_QUERY_EXECUTION_STATE");
@@ -157,7 +157,7 @@ async fn 結果取得のエラーは実行中と止めたあとで文言が変�
         .await;
     assert_eq!(code, 400);
     assert_eq!(cancelled["__type"], "InvalidRequestException");
-    assert_eq!(cancelled["message"], "Could not find results");
+    assert_eq!(cancelled["Message"], "Could not find results");
     assert_eq!(cancelled["AthenaErrorCode"], "RESULT_NOT_FOUND");
 }
 
@@ -181,7 +181,7 @@ async fn 失敗したクエリの結果取得は最終状態を返し理由は�
 
     assert_eq!(code, 400);
     assert_eq!(
-        error["message"],
+        error["Message"],
         "Query did not finish successfully. Final query state: FAILED"
     );
     assert_eq!(error["AthenaErrorCode"], "INVALID_QUERY_EXECUTION_STATE");

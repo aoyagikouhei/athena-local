@@ -12,7 +12,14 @@ pub const CANCELLED_REASON: &str = "Query cancelled by user";
 /// 実行中・実行済みクエリの置き場。プロセスが死ねば消える（本物の永続性は模さない）。
 #[derive(Clone, Default)]
 pub struct Store {
-    executions: Arc<Mutex<HashMap<String, Execution>>>,
+    inner: Arc<Mutex<Inner>>,
+}
+
+#[derive(Default)]
+struct Inner {
+    executions: HashMap<String, Execution>,
+    /// ClientRequestToken → その 1 回目の登録内容。フィンガープリントはここにだけ持つ。
+    tokens: HashMap<String, Claim>,
 }
 
 #[derive(Clone)]
@@ -59,6 +66,33 @@ pub enum CancelOutcome {
     NotFound,
 }
 
+/// 同じ ClientRequestToken の再送かどうかを決める値。本物が比較する 3 つだけを持つ
+/// （2026-09-17 実測: ExecutionParameters と WorkGroup は比較されない。Catalog は未実測）。
+/// id を焼き込む前・既定を当てる前の生の値で比べる。
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Fingerprint {
+    pub query: String,
+    pub database: Option<String>,
+    pub output_location: Option<String>,
+}
+
+/// tokens の値。フィンガープリントはここにだけ持つ（Execution には持たせない）。
+struct Claim {
+    fingerprint: Fingerprint,
+    id: String,
+}
+
+/// Store::submit の結果。
+#[derive(Debug, PartialEq, Eq)]
+pub enum SubmitOutcome {
+    /// 新しい実行を登録した。
+    Created,
+    /// 同じトークン・同じフィンガープリントの再送。新しい実行は作らず、既存の id を返す。
+    Existing(String),
+    /// 同じトークンでフィンガープリントが違う。
+    Conflict,
+}
+
 /// Store::submit にまとめて渡す投入時の情報。引数の数を抑えるための入れ物
 /// （クレート内の他の層と違い、あえて athena.rs 型は使わない）。
 pub struct Submission {
@@ -69,10 +103,15 @@ pub struct Submission {
     pub database: Option<String>,
     pub result_location: Option<ResultLocation>,
     pub work_group: String,
+    /// ClientRequestToken。operation.rs が必須項目として検証済みなので常に有効な値。
+    pub token: String,
+    pub fingerprint: Fingerprint,
 }
 
 impl Store {
-    pub fn submit(&self, id: &str, submission: Submission) {
+    /// 1 回のロックの中で判定する。対応表に無ければ登録して Created、あってフィンガープリントが
+    /// 一致すれば何も登録せず Existing(既存の id)、一致しなければ Conflict。
+    pub fn submit(&self, id: &str, submission: Submission) -> SubmitOutcome {
         let Submission {
             query,
             execution_parameters,
@@ -80,7 +119,20 @@ impl Store {
             database,
             result_location,
             work_group,
+            token,
+            fingerprint,
         } = submission;
+
+        let mut inner = self.lock();
+
+        if let Some(claim) = inner.tokens.get(&token) {
+            return if claim.fingerprint == fingerprint {
+                SubmitOutcome::Existing(claim.id.clone())
+            } else {
+                SubmitOutcome::Conflict
+            };
+        }
+
         let execution = Execution {
             query,
             execution_parameters,
@@ -97,16 +149,24 @@ impl Store {
             failure: None,
             cancel: Arc::default(),
         };
-        self.lock().insert(id.to_string(), execution);
+        inner.executions.insert(id.to_string(), execution);
+        inner.tokens.insert(
+            token,
+            Claim {
+                fingerprint,
+                id: id.to_string(),
+            },
+        );
+        SubmitOutcome::Created
     }
 
     pub fn get(&self, id: &str) -> Option<Execution> {
-        self.lock().get(id).cloned()
+        self.lock().executions.get(id).cloned()
     }
 
     /// QUEUED からだけ進める。先に止められていれば false（呼び出し側は Trino に何も送らない）。
     pub fn mark_running(&self, id: &str) -> bool {
-        match self.lock().get_mut(id) {
+        match self.lock().executions.get_mut(id) {
             Some(execution) if execution.state == State::Queued => {
                 execution.state = State::Running;
                 execution.started_at = Some(now());
@@ -118,8 +178,8 @@ impl Store {
 
     /// 終端状態からは何も書かない。先に CANCELLED になっていれば、あとから来た結果は捨てる。
     pub fn finish(&self, id: &str, outcome: Result<Outcome, Failure>) {
-        let mut executions = self.lock();
-        let Some(execution) = executions.get_mut(id) else {
+        let mut inner = self.lock();
+        let Some(execution) = inner.executions.get_mut(id) else {
             return;
         };
         if execution.state.is_terminal() {
@@ -142,8 +202,8 @@ impl Store {
 
     /// 状態はここで同期に CANCELLED にする。Trino への DELETE は実行中のタスクが送る。
     pub fn cancel(&self, id: &str) -> CancelOutcome {
-        let mut executions = self.lock();
-        let Some(execution) = executions.get_mut(id) else {
+        let mut inner = self.lock();
+        let Some(execution) = inner.executions.get_mut(id) else {
             return CancelOutcome::NotFound;
         };
         if execution.state.is_terminal() {
@@ -157,8 +217,8 @@ impl Store {
         CancelOutcome::Cancelled
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Execution>> {
-        self.executions.lock().expect("store poisoned")
+    fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
+        self.inner.lock().expect("store poisoned")
     }
 }
 
@@ -199,6 +259,19 @@ mod tests {
         }
     }
 
+    fn fingerprint(query: &str) -> Fingerprint {
+        Fingerprint {
+            query: query.to_string(),
+            database: None,
+            output_location: None,
+        }
+    }
+
+    /// テストごとに別の値にする 32 文字以上の固定トークン。
+    fn test_token(name: &str) -> String {
+        format!("token-{name}-0123456789abcdef0123456789")
+    }
+
     fn submitted() -> Store {
         let store = Store::default();
         store.submit(
@@ -210,6 +283,8 @@ mod tests {
                 database: None,
                 result_location: None,
                 work_group: "primary".to_string(),
+                token: test_token("submitted"),
+                fingerprint: fingerprint("SELECT 1"),
             },
         );
         store
@@ -227,6 +302,8 @@ mod tests {
                 database: Some("db".into()),
                 result_location: None,
                 work_group: "primary".to_string(),
+                token: test_token("progress"),
+                fingerprint: fingerprint("SELECT ?"),
             },
         );
 
@@ -342,5 +419,49 @@ mod tests {
     #[test]
     fn 知らない_id_は止められない() {
         assert_eq!(Store::default().cancel("missing"), CancelOutcome::NotFound);
+    }
+
+    fn submission_with_token(query: &str, token: &str) -> Submission {
+        Submission {
+            query: query.to_string(),
+            execution_parameters: Vec::new(),
+            catalog: None,
+            database: None,
+            result_location: None,
+            work_group: "primary".to_string(),
+            token: token.to_string(),
+            fingerprint: fingerprint(query),
+        }
+    }
+
+    #[test]
+    fn submit_は同じトークンなら既存の_id_を返す() {
+        let store = Store::default();
+        assert_eq!(
+            store.submit("id1", submission_with_token("SELECT 1", "tok")),
+            SubmitOutcome::Created
+        );
+
+        assert_eq!(
+            store.submit("id2", submission_with_token("SELECT 1", "tok")),
+            SubmitOutcome::Existing("id1".to_string())
+        );
+        // 新しい実行は登録されない。
+        assert!(store.get("id2").is_none());
+    }
+
+    #[test]
+    fn submit_はフィンガープリントが違えば_conflict() {
+        let store = Store::default();
+        assert_eq!(
+            store.submit("id1", submission_with_token("SELECT 1", "tok")),
+            SubmitOutcome::Created
+        );
+
+        assert_eq!(
+            store.submit("id2", submission_with_token("SELECT 2", "tok")),
+            SubmitOutcome::Conflict
+        );
+        assert!(store.get("id2").is_none());
     }
 }

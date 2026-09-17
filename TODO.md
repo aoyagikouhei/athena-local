@@ -13,14 +13,6 @@
 
 ## 1. 既定の使い方で困るもの
 
-### ClientRequestToken による冪等性（#3）
-
-- [ ] 実装する
-- 困る場面：応答が途中で失われて SDK がリトライすると、`INSERT` などが二重に実行される。
-- SDK はトークンを一度だけ付け、リトライでは同じ値を送る。
-  - Rust：aws-sdk-athena 1.97.0 の `src/operation/start_query_execution.rs:73-77` で付け、aws-smithy-runtime 1.14.0 の `src/client/orchestrator.rs` ではリトライのループ（312 行）より前のフック（231 行）で呼ばれる（確認済み）。
-  - Python：botocore 1.43.94 の `handlers.py:286-294` を `before-parameter-build` に登録している（`handlers.py:1555`、確認済み）。
-
 ### 終わった実行情報の破棄（#4）
 
 - [ ] 件数か経過時間による保持期限で破棄する

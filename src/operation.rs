@@ -19,7 +19,7 @@ use crate::handler::App;
 use crate::response::{invalid_request_with_code, ok, parse};
 use crate::results::{self, ResultFile, ResultLocation};
 use crate::statement;
-use crate::store::{CancelOutcome, Execution, State, Submission};
+use crate::store::{CancelOutcome, Execution, Fingerprint, State, Submission, SubmitOutcome};
 use crate::trino::{Outcome, QueryError, Trino};
 
 const DEFAULT_MAX_RESULTS: usize = 1000;
@@ -31,20 +31,35 @@ const DEFAULT_WORK_GROUP: &str = "primary";
 /// OutputLocation も既定も無いときの本物の文言（2026-09-14 実測。"for  your" の空白 2 つも本物のまま）。
 const NO_OUTPUT_LOCATION: &str = "No output location provided. You did not provide an output location for  your query results. Either specify an S3 bucket location or enable Athena managed query results in your workgroup settings.";
 
+/// 同じ ClientRequestToken の再送で衝突したときの文言（2026-09-17 実測）。
+const IDEMPOTENT_MISMATCH: &str = "Idempotent parameters do not match";
+
+/// ClientRequestToken が無い（キーが無い）ときの文言（2026-09-17、4 回目の実測）。
+const TOKEN_MISSING: &str = "clientRequestToken is null or empty";
+
+/// ClientRequestToken が 32 文字未満（空文字を含む）のときの文言（2026-09-17、3 回目の実測）。
+const TOKEN_TOO_SHORT: &str = "1 validation error detected: Value at 'clientRequestToken' failed to satisfy constraint: Member must have length greater than or equal to 32";
+
+/// ClientRequestToken が 128 文字を超えるときの文言（2026-09-17、3 回目の実測）。
+const TOKEN_TOO_LONG: &str = "1 validation error detected: Value at 'clientRequestToken' failed to satisfy constraint: Member must have length less than or equal to 128";
+
 pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
     let request: StartQueryExecutionRequest = match parse(body) {
         Ok(request) => request,
         Err(response) => return *response,
     };
+    let token = match client_request_token(&request) {
+        Ok(token) => token,
+        Err(response) => return *response,
+    };
 
     let context = request.query_execution_context.unwrap_or_default();
-    let catalog = context
-        .catalog
-        .or_else(|| app.config.default_catalog.clone());
-    let database = context
-        .database
-        .or_else(|| app.config.default_database.clone());
-
+    let (catalog, database, fingerprint) = context_defaults(
+        app,
+        context,
+        &request.query_string,
+        &request.result_configuration,
+    );
     let id = Uuid::new_v4().to_string();
     let result_location = match result_location(
         app,
@@ -66,7 +81,7 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
         .work_group
         .unwrap_or_else(|| DEFAULT_WORK_GROUP.to_string());
 
-    app.store.submit(
+    let outcome = app.store.submit(
         &id,
         Submission {
             query: request.query_string,
@@ -75,13 +90,83 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
             database,
             result_location,
             work_group,
+            token,
+            fingerprint,
         },
     );
-    spawn_query(app.clone(), id.clone());
 
-    ok(&StartQueryExecutionResponse {
-        query_execution_id: id,
-    })
+    submit_response(app, id, outcome)
+}
+
+/// submit の結果を応答に変換する。Created のときだけ実行を始める。
+/// Existing で spawn_query を呼んでも mark_running の「QUEUED からだけ進める」ガードが
+/// 二重実行を弾く（ミューテーション確認で実測）が、既存の実行に手を触れないのが本物の意味。
+fn submit_response(app: &App, id: String, outcome: SubmitOutcome) -> Response {
+    match outcome {
+        SubmitOutcome::Created => {
+            spawn_query(app.clone(), id.clone());
+            ok(&StartQueryExecutionResponse {
+                query_execution_id: id,
+            })
+        }
+        SubmitOutcome::Existing(existing) => ok(&StartQueryExecutionResponse {
+            query_execution_id: existing,
+        }),
+        SubmitOutcome::Conflict => {
+            invalid_request_with_code(IDEMPOTENT_MISMATCH, "IDEMPOTENT_PARAMETER_MISMATCH")
+        }
+    }
+}
+
+/// ClientRequestToken を検証する（2026-09-17 実測、判断 2・11）。本物と同じく必須で、
+/// 長さは 32 以上 128 以下。文字数は chars().count()（本物がバイトか文字かは ASCII でしか
+/// 測っていない。README 参照）。
+fn client_request_token(request: &StartQueryExecutionRequest) -> Result<String, Box<Response>> {
+    let Some(token) = request.client_request_token.clone() else {
+        return Err(Box::new(invalid_request_with_code(
+            TOKEN_MISSING,
+            "INVALID_INPUT",
+        )));
+    };
+
+    let length = token.chars().count();
+    if length < 32 {
+        return Err(Box::new(invalid_request_with_code(
+            TOKEN_TOO_SHORT,
+            "INVALID_INPUT",
+        )));
+    }
+    if length > 128 {
+        return Err(Box::new(invalid_request_with_code(
+            TOKEN_TOO_LONG,
+            "INVALID_INPUT",
+        )));
+    }
+
+    Ok(token)
+}
+
+/// QueryExecutionContext の既定値と、冪等化用のフィンガープリント（既定を当てる前の生の値）を組む。
+fn context_defaults(
+    app: &App,
+    context: QueryExecutionContext,
+    query_string: &str,
+    result_configuration: &Option<ResultConfiguration>,
+) -> (Option<String>, Option<String>, Fingerprint) {
+    let fingerprint = Fingerprint {
+        query: query_string.to_string(),
+        database: context.database.clone(),
+        output_location: result_configuration
+            .as_ref()
+            .and_then(|configuration| configuration.output_location.clone()),
+    };
+    let catalog = context
+        .catalog
+        .or_else(|| app.config.default_catalog.clone());
+    let database = context
+        .database
+        .or_else(|| app.config.default_database.clone());
+    (catalog, database, fingerprint)
 }
 
 /// OutputLocation から結果の置き場所を決める。本物と同じく s3:// の形でない値は受け付けない

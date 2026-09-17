@@ -341,7 +341,7 @@ async fn 書くモードで出力先も既定も無ければ受け付けない()
     assert_eq!(code, 400);
     assert_eq!(error["__type"], "InvalidRequestException");
     assert_eq!(
-        error["message"],
+        error["Message"],
         "No output location provided. You did not provide an output location for  your query results. Either specify an S3 bucket location or enable Athena managed query results in your workgroup settings."
     );
     assert_eq!(error["AthenaErrorCode"], "INVALID_INPUT");
@@ -365,7 +365,7 @@ async fn s3_の形でない出力先はどちらのモードでも受け付け�
             .await;
 
         assert_eq!(code, 400);
-        assert_eq!(error["message"], "outputLocation is not a valid S3 path.");
+        assert_eq!(error["Message"], "outputLocation is not a valid S3 path.");
         assert_eq!(error["AthenaErrorCode"], "INVALID_INPUT");
         assert!(harness.trino_requests().is_empty());
     }

@@ -34,6 +34,31 @@ later name the date they were measured on.
 - `StartQueryExecution` now keeps the `WorkGroup` it was given, and
   `GetQueryExecution` reports that name instead of always saying `primary`.
   Omitting it still means `primary`.
+- `StartQueryExecution` accepts `ClientRequestToken` and makes retries
+  idempotent: a retry with the same token returns the same `QueryExecutionId`
+  regardless of the first query's state, and does not run the query again. A
+  retry whose `QueryString`, `QueryExecutionContext.Database` or
+  `ResultConfiguration.OutputLocation` differs instead fails with
+  `IDEMPOTENT_PARAMETER_MISMATCH`. `ExecutionParameters` and `WorkGroup` are not
+  compared. The token is not normalized. Measured against Athena on 2026-09-17.
+
+### Changed
+
+- Error response bodies now use `Message` (capital M) instead of `message`,
+  and an error that carries `AthenaErrorCode` now also carries `ErrorCode`
+  with the same value. Real Athena always returns this shape (measured for
+  `IDEMPOTENT_PARAMETER_MISMATCH` and `WorkGroup is not found.`), so this is
+  a bug fix, not a behaviour change from athena-local's point of view. The AWS
+  SDKs read both `message` and `Message` (botocore and smithy-rs each check
+  the two spellings explicitly), so this does not affect ordinary clients. Errors without an `AthenaErrorCode` (a request that fails to
+  parse, an unsupported operation, `InternalServerException`) keep only
+  `Message`; whether real Athena adds `ErrorCode` there too has not been
+  measured. Measured against Athena on 2026-09-17.
+- **Breaking:** `StartQueryExecution` now requires `ClientRequestToken`; a
+  request without one fails with `INVALID_INPUT`, and the length must be
+  between 32 and 128 characters. This does not affect the AWS CLI or SDKs,
+  which already add a token automatically; a raw HTTP client now needs to add
+  one itself. Measured against Athena on 2026-09-17.
 
 ## [0.4.0] - 2026-09-15
 
