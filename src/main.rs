@@ -10,11 +10,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let listener = TcpListener::bind(&config.bind_address).await?;
 
     println!(
-        "athena-local listening on {} (trino: {}, default catalog/schema: {}/{})",
+        "athena-local listening on {} (trino: {}, default catalog/schema: {}/{}, retention: {}s)",
         config.bind_address,
         config.trino_url,
         config.default_catalog.as_deref().unwrap_or("-"),
-        config.default_database.as_deref().unwrap_or("-")
+        config.default_database.as_deref().unwrap_or("-"),
+        config.retention.as_secs()
     );
     match &config.results {
         ResultsMode::None => println!("results: not written (ATHENA_LOCAL_RESULTS=none)"),

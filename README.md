@@ -67,6 +67,7 @@ Any credentials work; requests are not verified.
 | `TRINO_CATALOG` | *(none)* | Default catalog when the request has no `QueryExecutionContext.Catalog` |
 | `TRINO_SCHEMA` | *(none)* | Default schema when the request has no `QueryExecutionContext.Database` |
 | `TRINO_CATALOG_MAP` | *(none)* | Catalog aliases: `<athena name>=<trino name>`, comma separated. A malformed value stops the server at startup |
+| `ATHENA_LOCAL_RETENTION_SECONDS` | `3600` | How long a finished query (`SUCCEEDED` / `FAILED` / `CANCELLED`) and its `ClientRequestToken` are kept, in seconds. Queued and running queries are never dropped. A value that is not a positive integer stops the server at startup |
 | `ATHENA_LOCAL_RESULTS` | `none` | `s3` writes results to `OutputLocation`: a `SELECT` as CSV, DDL and `SHOW` as text. `none` writes nothing |
 | `ATHENA_LOCAL_OUTPUT_LOCATION` | *(none)* | With `s3`: `s3://bucket/prefix` used when the request has no `ResultConfiguration.OutputLocation` (stands in for the workgroup default). `GetWorkGroup` also reports it as `Configuration.ResultConfiguration.OutputLocation` |
 | `AWS_ENDPOINT_URL_S3` | *(none)* | With `s3`: the S3-compatible store, `http://` only. Falls back to `AWS_ENDPOINT_URL` |
@@ -276,7 +277,9 @@ Messages above were measured against Athena (2026-09-14).
 Not implemented: every other operation, SigV4 verification, creating, listing,
 updating and deleting workgroups (`GetWorkGroup` itself is supported), enforcing
 workgroup settings such as scan limits, result reuse, and encryption settings.
-Query state is kept in memory, so it is lost when the container restarts.
+Query state is kept in memory, so it is lost when the container restarts. A
+finished query is also dropped once `ATHENA_LOCAL_RETENTION_SECONDS` has
+passed; see Caveats.
 
 ## Caveats
 
@@ -368,11 +371,28 @@ Query state is kept in memory, so it is lost when the container restarts.
   compared as sent, before `TRINO_SCHEMA` or `ATHENA_LOCAL_OUTPUT_LOCATION`
   fills them in, so a retry that spells out the default a first call left out
   is `IDEMPOTENT_PARAMETER_MISMATCH`; whether real Athena does the same has
-  not been measured. The token → id mapping is kept in memory for the life of
-  the process (see #4) and its lifetime beyond 60 seconds has not been
-  measured. **Raw HTTP / curl clients must supply their own token** — the AWS
-  CLI and SDKs add one automatically, but a request built by hand needs to set
+  not been measured. The token → id mapping is kept in memory until the
+  execution it points at is dropped (`ATHENA_LOCAL_RETENTION_SECONDS`), and
+  real Athena's token lifetime beyond 60 seconds has not been measured.
+  **Raw HTTP / curl clients must supply their own token** — the AWS CLI and
+  SDKs add one automatically, but a request built by hand needs to set
   `ClientRequestToken` itself (measured).
+- **Finished queries are dropped after a retention period.** A query that has
+  reached `SUCCEEDED`, `FAILED` or `CANCELLED` is kept for
+  `ATHENA_LOCAL_RETENTION_SECONDS` (one hour by default) and then dropped,
+  together with the `ClientRequestToken` that points at it; queued and running
+  queries are never dropped. Real Athena's retention period has not been
+  measured beyond 60 seconds, so one hour is athena-local's own number. Once a
+  query is dropped, `GetQueryExecution`, `GetQueryResults` and
+  `StopQueryExecution` treat its id like an unknown one and fail with
+  `QUERY_EXECUTION_NOT_FOUND`; what real Athena returns for an expired id has
+  not been measured. `StopQueryExecution` therefore changes from succeeding on
+  a finished query to failing once the period has passed. Resending the same
+  `ClientRequestToken` after that starts a new query with a new
+  `QueryExecutionId`; how real Athena treats an expired token has not been
+  measured. Dropping happens whenever an API call touches the store, not on a
+  timer, so nothing is swept while the server is idle; memory is still bounded
+  by the queries that finished within the period.
 - **Error body key casing.** Error responses use `Message` (capital M), and an
   error that carries `AthenaErrorCode` also carries `ErrorCode` with the same
   value; both match real Athena (measured for `IDEMPOTENT_PARAMETER_MISMATCH`

@@ -9,7 +9,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use athena_local::config::{Config, ResultsMode, S3Settings};
+use athena_local::config::{Config, DEFAULT_RETENTION, ResultsMode, S3Settings};
 use axum::Router;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -96,6 +96,7 @@ pub struct HarnessBuilder {
     /// Some なら ATHENA_LOCAL_RESULTS=s3 にして偽 S3 を立てる。
     s3: Option<S3Options>,
     syntax_checks: HashMap<String, Value>,
+    retention: Duration,
 }
 
 struct S3Options {
@@ -167,6 +168,13 @@ impl HarnessBuilder {
         self
     }
 
+    /// athena-local の ATHENA_LOCAL_RETENTION_SECONDS にあたる保持期限。
+    /// 環境変数では作れないミリ秒の期限をテストからだけ作れる。
+    pub fn retention(mut self, retention: Duration) -> Self {
+        self.retention = retention;
+        self
+    }
+
     /// athena-local の TRINO_CATALOG_MAP にあたる別名。
     pub fn catalog_map(mut self, pairs: &[(&str, &str)]) -> Self {
         self.catalog_map = pairs
@@ -222,6 +230,7 @@ impl HarnessBuilder {
             default_database: Some("default_schema".to_string()),
             catalog_map: self.catalog_map,
             results,
+            retention: self.retention,
         };
         let athena_addr = spawn(athena_local::router(config)).await;
 
@@ -247,6 +256,7 @@ impl Harness {
             statement_delay: None,
             s3: None,
             syntax_checks: HashMap::new(),
+            retention: DEFAULT_RETENTION,
         }
     }
 
