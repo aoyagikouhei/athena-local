@@ -227,7 +227,11 @@ pub struct ResultWriter {
 impl ResultWriter {
     pub fn new(settings: &S3Settings) -> Self {
         Self {
-            http: reqwest::Client::new(),
+            // タイムアウトが無いと、応答しない S3 への PUT が返らずクエリが終端状態にならない。
+            http: reqwest::Client::builder()
+                .timeout(settings.put_timeout)
+                .build()
+                .expect("HTTP クライアントを作れません"),
             endpoint: settings.endpoint.clone(),
             credentials: Credentials::new(
                 settings.access_key_id.clone(),

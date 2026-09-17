@@ -432,3 +432,32 @@ async fn 書かないモードでもフルパスは返し_出力先が無けれ�
             .is_none()
     );
 }
+
+#[tokio::test]
+async fn 応答しない_s3_には_put_を諦めて_failed_になる() {
+    // 偽 S3 は 5 秒黙るが、PUT は 100ms で諦める。タイムアウトが無いとクエリは RUNNING のまま残る。
+    let harness = Harness::builder(select_response())
+        .results_s3()
+        .s3_delay(Duration::from_secs(5))
+        .s3_put_timeout(Duration::from_millis(100))
+        .start()
+        .await;
+
+    let execution = harness
+        .run_query(select_with_output("s3://results-bucket/athena/"))
+        .await;
+    let status = &execution["QueryExecution"]["Status"];
+
+    assert_eq!(status["State"], "FAILED");
+    let reason = status["StateChangeReason"].as_str().unwrap();
+    assert!(
+        reason.contains("s3://results-bucket/athena/")
+            && reason.contains("結果を書き込めませんでした"),
+        "理由: {reason}"
+    );
+    assert_eq!(
+        harness.s3_puts().len(),
+        1,
+        "再試行せず、.metadata も試みない"
+    );
+}

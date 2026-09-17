@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use athena_local::config::{
-    Config, DEFAULT_RETENTION, DEFAULT_WORK_GROUP, ResultsMode, S3Settings,
+    Config, DEFAULT_RETENTION, DEFAULT_S3_PUT_TIMEOUT, DEFAULT_WORK_GROUP, ResultsMode, S3Settings,
 };
 use axum::Router;
 use axum::extract::{Path, Query, State};
@@ -110,6 +110,7 @@ struct S3Options {
     default_output_location: Option<String>,
     status: StatusCode,
     delay: Option<Duration>,
+    put_timeout: Duration,
 }
 
 impl HarnessBuilder {
@@ -125,6 +126,7 @@ impl HarnessBuilder {
             default_output_location: None,
             status: StatusCode::OK,
             delay: None,
+            put_timeout: DEFAULT_S3_PUT_TIMEOUT,
         });
         self
     }
@@ -144,6 +146,12 @@ impl HarnessBuilder {
     /// 偽 S3 が PUT を受けてから応答するまで待たせる。results_s3 のあとに呼ぶ。
     pub fn s3_delay(mut self, delay: Duration) -> Self {
         self.s3_options().delay = Some(delay);
+        self
+    }
+
+    /// PUT を諦めるまでの時間（本体の既定は DEFAULT_S3_PUT_TIMEOUT）。テストを待たせないために短くする。
+    pub fn s3_put_timeout(mut self, timeout: Duration) -> Self {
+        self.s3_options().put_timeout = timeout;
         self
     }
 
@@ -233,6 +241,7 @@ impl HarnessBuilder {
                     secret_access_key: "test-secret".to_string(),
                     region: "us-east-1".to_string(),
                     default_output_location: options.default_output_location,
+                    put_timeout: options.put_timeout,
                 })
             }
             None => ResultsMode::None,
