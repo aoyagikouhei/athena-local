@@ -7,6 +7,7 @@ pub mod config;
 mod convert;
 mod failure;
 mod handler;
+mod metadata;
 mod operation;
 mod response;
 mod results;
