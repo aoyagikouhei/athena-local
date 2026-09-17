@@ -386,13 +386,16 @@ passed; see Caveats.
   query is dropped, `GetQueryExecution`, `GetQueryResults` and
   `StopQueryExecution` treat its id like an unknown one and fail with
   `QUERY_EXECUTION_NOT_FOUND`; what real Athena returns for an expired id has
-  not been measured. `StopQueryExecution` therefore changes from succeeding on
-  a finished query to failing once the period has passed. Resending the same
-  `ClientRequestToken` after that starts a new query with a new
-  `QueryExecutionId`; how real Athena treats an expired token has not been
-  measured. Dropping happens whenever an API call touches the store, not on a
-  timer, so nothing is swept while the server is idle; memory is still bounded
-  by the queries that finished within the period.
+  not been measured. The period counts from completion and reading the query
+  does not extend it, so a client that pages through `GetQueryResults` for
+  longer than the period loses the rest of the result. `StopQueryExecution`
+  therefore changes from succeeding on a finished query to failing once the
+  period has passed. Resending the same `ClientRequestToken` after that starts
+  a new query with a new `QueryExecutionId`, so an `INSERT` or CTAS retried
+  after the period runs again; how real Athena treats an expired token has not
+  been measured. Dropping happens whenever an API call touches the store, not
+  on a timer, so nothing is swept while the server is idle; memory is still
+  bounded by the queries that finished within the period.
 - **Error body key casing.** Error responses use `Message` (capital M), and an
   error that carries `AthenaErrorCode` also carries `ErrorCode` with the same
   value; both match real Athena (measured for `IDEMPOTENT_PARAMETER_MISMATCH`

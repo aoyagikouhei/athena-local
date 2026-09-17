@@ -51,7 +51,9 @@ later name the date they were measured on.
   like an unknown one and fail with `QUERY_EXECUTION_NOT_FOUND`
   (`StopQueryExecution` still succeeds on a finished query until the period
   passes, and fails after it), and resending the same `ClientRequestToken`
-  starts a new query with a new `QueryExecutionId`. Dropping happens whenever
+  starts a new query with a new `QueryExecutionId`, so an `INSERT` or CTAS
+  retried after the period runs again. The period counts from completion and
+  is not extended by reading the query. Dropping happens whenever
   an API call touches the store, not on a timer, so nothing is swept while the
   server is idle. New setting: `ATHENA_LOCAL_RETENTION_SECONDS` (default
   `3600`, one hour); a value that is not a positive integer stops the server at
