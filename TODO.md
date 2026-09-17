@@ -49,12 +49,6 @@
   - awswrangler の `unload_approach=True`（未再確認）。
 - メモ：awswrangler の CTAS 方式は、Athena の書き方の CTAS（`external_location`、`format = 'PARQUET'`）を投げ（`athena/_utils.py:842-863`、確認済み）、一時テーブルを Glue の API で消す（`athena/_read.py:709`、確認済み）。Athena の API だけでは完結しない。
 
-### 失敗したクエリの結果ファイル（#6）
-
-- [ ] 実測してから、失敗したときにも書く
-- 本物は失敗したクエリにも `.txt` を置き、`FAILED: ` に続けて理由を入れる。2026-09-16 に実測。
-- `SELECT` の失敗と、取り消したときの扱いは未実測。
-
 ### ListQueryExecutions、BatchGetQueryExecution
 
 - [ ] 実装する

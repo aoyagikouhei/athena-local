@@ -22,11 +22,22 @@ later name the date they were measured on.
   `<id>.metadata` for `INSERT` and `tables/<id>.metadata` for CTAS. It is
   written for every statement that has columns, including a `SELECT` returning
   no rows; DML and CTAS write the companion file only, and DDL without columns,
-  failed queries and cancelled queries write nothing. The content is the protobuf Athena
-  writes: the query id, the `updateType` and update count for DML and CTAS, and
-  one message per column with the same values as the `ColumnInfo` of
-  `GetQueryResults`. A failed upload leaves the query `SUCCEEDED` and logs one
-  line, like `<id>.txt`. Measured against Athena on 2026-09-17.
+  failed queries and cancelled queries write no companion file. The content is
+  the protobuf Athena writes: the query id, the `updateType` and update count
+  for DML and CTAS, and one message per column with the same values as the
+  `ColumnInfo` of `GetQueryResults`. A failed upload leaves the query
+  `SUCCEEDED` and logs one line, like `<id>.txt`. Measured against Athena on
+  2026-09-17.
+- A failed query now writes its result file too, for the statements whose
+  result file is `<id>.txt` (DDL, `SHOW`, `DESCRIBE`, `EXPLAIN`), so a client
+  that reads the result file rather than `GetQueryResults` can see why it
+  failed. It holds `FAILED: ` followed by `StateChangeReason`, with no trailing
+  newline, and is sent as `application/octet-stream`; no `.metadata` companion
+  is written. `SELECT`, DML and CTAS write nothing, and neither does a
+  cancelled query. The upload happens before the query becomes `FAILED`, and an
+  upload that fails logs one line and leaves the state and the reason
+  unchanged. Measured against Athena on 2026-09-17; Athena writes the file for
+  fewer statements, see Caveats.
 - DDL, `SHOW` and `DESCRIBE` results are written to `<id>.txt` with
   `ATHENA_LOCAL_RESULTS=s3`, so clients that read the result file rather than
   `GetQueryResults` work. PyAthena's pandas and arrow cursors are the ones that

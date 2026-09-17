@@ -217,7 +217,12 @@ fn spawn_query(app: App, id: String) {
 
         let outcome = match run(&app.trino, &app.config, &execution).await {
             Ok(outcome) => write_result(&app, &execution, &id, outcome).await,
-            Err(error) => Err(Failure::from_query_error(&error)),
+            Err(error) => {
+                let failure = Failure::from_query_error(&error);
+                // FAILED にする前に置く（クライアントは FAILED を見た直後に S3 を読みに行く）。
+                write_failure(&app, &execution, &failure).await;
+                Err(failure)
+            }
         };
         // 途中で止められていれば CANCELLED が先に書かれているので、finish は何もしない。
         app.store.finish(&id, outcome);
@@ -270,6 +275,29 @@ async fn write_result(
         write_metadata(writer, location, &execution.query, id, &outcome).await;
     }
     Ok(outcome)
+}
+
+/// 失敗の理由を結果ファイルに置く。中身は `FAILED: ` + StateChangeReason で末尾に改行は付けない
+/// （本物は StateChangeReason そのものを置き、その文言自体が `FAILED: ` で始まる。2026-09-17 実測）。
+/// 置くのは `<id>.txt` の文（DDL / SHOW など）だけで、`.metadata` は置かない（実測）。
+/// 書けなくても FAILED と StateChangeReason は Trino のエラーのまま（`.txt` / `.metadata` と同じ扱い）。
+/// `.csv` の PUT が失敗して FAILED になる経路（`write_result`）はここを通らない。
+async fn write_failure(app: &App, execution: &Execution, failure: &Failure) {
+    let (Some(writer), Some(location)) = (&app.results, &execution.result_location) else {
+        return;
+    };
+    // 途中で止められていれば何も書かない（write_result と同じ。CANCELLED の本物も何も置かない）。
+    if execution.cancel.is_requested() {
+        return;
+    }
+    let Some(location) = location.failed() else {
+        return;
+    };
+
+    let body = format!("FAILED: {}", failure.reason).into_bytes();
+    if let Err(reason) = writer.put(&location, body).await {
+        eprintln!("失敗の理由のファイル（.txt）の書き込みに失敗しました。無視します: {reason}");
+    }
 }
 
 /// 付随ファイル `.metadata` を組み立てて置く。書けなくても実行は成功のまま（補助ファイルなので握りつぶす）。
@@ -501,7 +529,7 @@ fn to_query_execution(id: &str, execution: &Execution) -> QueryExecution {
 }
 
 /// 投入 → 実行開始 → 完了の時刻から時間を出す。まだ来ていない区切りの時間は 0。
-/// 実行時間には、パラメータの分類の問い合わせと結果ファイルと `.metadata` の書き込みも入る
+/// 実行時間には、パラメータの分類の問い合わせと結果ファイルと `.metadata` と失敗の理由の書き込みも入る
 /// （どれも外を待つ時間）。
 /// ミリ秒に丸めてから引くので、待ち時間 + 実行時間 = 全体 が必ず成り立つ。
 fn statistics(submitted_at: f64, started_at: Option<f64>, completed_at: Option<f64>) -> Statistics {

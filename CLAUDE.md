@@ -30,6 +30,7 @@ CI（`.github/workflows/ci.yml`）は `fmt --check`、`clippy -D warnings`、`te
    - `start_query_execution`: 文脈（カタログ／スキーマ）に既定値を当てる → `OutputLocation` を検証 → `Trino::syntax_error` で構文を確かめる（`PREPARE athena_local_syntax_check FROM\n<sql>` を送り、1 行ずれたエラー位置を元に戻す）→ `Store::submit` → `spawn_query` でバックグラウンド実行して、ID をすぐ返す。
    - `spawn_query` → `run`: `ExecutionParameters` の値ごとに `SELECT (<値>)` を Trino に投げて分類し（`statement::bind`）、`EXECUTE IMMEDIATE '<sql>' USING ...` で実行する。包む前に `catalog::alias_qualified_names` で修飾名のカタログに別名を当てる。パラメータが無く、別名に一致する修飾名も無ければ SQL は一切書き換えない（テストで保証している不変条件）。`?` の無い SQL に値が渡されたときのエラーでは、別名を当てただけの SQL で再実行する。
    - `write_result`: 本体（CSV / TXT）を置き、列があれば `.metadata` を置いてから `SUCCEEDED` にする（クライアントは SUCCEEDED を見た直後に S3 を読むため）。本体を置くのは `ResultFile::Csv` で更新件数が無いときと `ResultFile::Text` のときで、取り消されていないときだけ。DML と CTAS は本体を置かず `.metadata` だけを置く。本体の PUT が失敗したら `.metadata` は試みない。
+   - `write_failure`: 失敗（`run` が `Err`）したときに、`ResultFile::Text` の文だけ `<id>.txt` に `FAILED: ` + `StateChangeReason` を置く。`.metadata` は置かない。取り消されていれば何も置かない。書けなくても FAILED と理由は Trino のエラーのまま。置き場所と Content-Type は `ResultLocation::failed`（`ResultFile::FailedText`。Content-Type だけ成功時と違う）。
 3. `store.rs` — 実行状態をメモリの `HashMap` で持つ。`finish` は終端状態では何もしないので、先に `CANCELLED` になったクエリにあとから届いた結果は捨てられる。
 4. `trino.rs` — Trino クライアント。`nextUri` を辿ってページを `Outcome` にまとめる（503 は待って再試行、DML の `data` は行として扱わない）。timestamp の精度を保つため `X-Trino-Client-Capabilities: PARAMETRIC_DATETIME` を必ず付ける。
 
