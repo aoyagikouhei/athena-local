@@ -20,9 +20,10 @@ pub enum ResultFile {
     /// SELECT など。`<id>.csv` に結果を書く。UPDATE / DELETE / MERGE も名前はこれだが、結果は書かない
     /// （本物も `.csv.metadata` だけを置く。2026-09-17 実測）。
     Csv,
-    /// INSERT。`<id>`（拡張子なし）。
+    /// INSERT と Iceberg の CTAS。`<id>`（拡張子なし）。
+    /// Iceberg の CTAS に `tables/` が付かないことは 2026-09-17 実測。
     Manifest,
-    /// CREATE TABLE AS SELECT。`tables/<id>`。
+    /// Hive の CREATE TABLE AS SELECT。`tables/<id>`（2026-09-14 実測）。
     Table,
     /// それ以外の DDL と SHOW など。`<id>.txt`。
     Text,
@@ -50,6 +51,8 @@ impl ResultFile {
             "INSERT" => Self::Manifest,
             // Athena の OPTIMIZE は CTAS と同じ扱い（Trino には無い文なので実行はできない）。
             "OPTIMIZE" => Self::Table,
+            // CTAS の `tables/` はテーブルの形式で変わる。Iceberg は INSERT と同じ `<id>`。
+            "CREATE" if is_create_table_as(&words) && is_iceberg_table(query) => Self::Manifest,
             "CREATE" if is_create_table_as(&words) => Self::Table,
             _ => Self::Text,
         }
@@ -96,6 +99,14 @@ pub(crate) fn is_create_table_as(words: &[String]) -> bool {
                 || pair[1].starts_with("WITH")
                 || pair[1].starts_with('('))
     })
+}
+
+/// `WITH (table_type = 'ICEBERG')` が付いているか。Athena の Iceberg テーブルの CTAS は
+/// `tables/` を付けず、INSERT と同じ `<id>` になる（2026-09-17 実測）。空白と大文字小文字は
+/// 問わない。文字列リテラルとコメントの中は見分けない（先頭のキーワードで文を分けるのと同じ粗さ）。
+fn is_iceberg_table(query: &str) -> bool {
+    let squeezed: String = query.to_uppercase().split_whitespace().collect();
+    squeezed.contains("TABLE_TYPE='ICEBERG'")
 }
 
 /// 1 実行ぶんの置き場所。
@@ -474,7 +485,7 @@ mod tests {
         assert_eq!(key(ResultFile::Csv), "p/id.csv.metadata");
         assert_eq!(key(ResultFile::Text), "p/id.txt.metadata");
         assert_eq!(key(ResultFile::Manifest), "p/id.metadata");
-        // `tables/` は Hive の CTAS の実測。Iceberg では付かなかった（#12）。
+        // `tables/` は Hive の CTAS の実測。Iceberg では付かない（is_iceberg_table）。
         assert_eq!(key(ResultFile::Table), "p/tables/id.metadata");
     }
 
@@ -549,5 +560,29 @@ mod tests {
         ] {
             assert_eq!(ResultFile::of(query), file, "{query:?}");
         }
+    }
+
+    #[test]
+    fn iceberg_の_ctas_だけ_tables_を付けない() {
+        // 2026-09-17 実測。Iceberg の CTAS は tables/ が付かず、INSERT と同じ `<id>` になる。
+        for query in [
+            "CREATE TABLE c WITH (table_type = 'ICEBERG') AS SELECT 1 AS i",
+            "CREATE TABLE c WITH (table_type='ICEBERG',location='s3://b/p') AS SELECT 1 AS i",
+            "create or replace table c with (table_type = 'iceberg') as (select 1)",
+        ] {
+            assert_eq!(ResultFile::of(query), ResultFile::Manifest, "{query:?}");
+        }
+        // 形式を指定しない CTAS と Hive の CTAS は tables/<id> のまま（2026-09-14 実測）。
+        for query in [
+            "CREATE TABLE c AS SELECT 1 AS i",
+            "CREATE TABLE c WITH (format = 'PARQUET') AS SELECT 1 AS i",
+        ] {
+            assert_eq!(ResultFile::of(query), ResultFile::Table, "{query:?}");
+        }
+        // CTAS でなければ table_type があっても .txt のまま。
+        assert_eq!(
+            ResultFile::of("CREATE TABLE c (i int) WITH (table_type = 'ICEBERG')"),
+            ResultFile::Text
+        );
     }
 }

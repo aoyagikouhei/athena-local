@@ -19,8 +19,9 @@ later name the date they were measured on.
   none for column-less DDL either, so those statements still fail there, while
   3.8.1 logs the 404 at INFO level and carries on, measured 2026-09-17). The
   names follow the result file: `<id>.csv.metadata`, `<id>.txt.metadata`,
-  `<id>.metadata` for `INSERT` and `tables/<id>.metadata` for CTAS. It is
-  written for every statement that has columns, including a `SELECT` returning
+  `<id>.metadata` for `INSERT` and an Iceberg CTAS, and `tables/<id>.metadata`
+  for a Hive CTAS. It is written for every statement that has columns,
+  including a `SELECT` returning
   no rows; DML and CTAS write the companion file only, and DDL without columns,
   failed queries and cancelled queries write no companion file. The content is
   the protobuf Athena writes: the query id, the `updateType` and update count
@@ -98,6 +99,13 @@ later name the date they were measured on.
 
 ### Changed
 
+- A CTAS on an Iceberg table now reports `s3://bucket/prefix/<id>` as its
+  `OutputLocation`, like `INSERT`, instead of
+  `s3://bucket/prefix/tables/<id>`, and its `.metadata` companion moves with
+  it. Athena adds the `tables/` part for Hive tables only: the same CTAS with
+  `table_type = 'ICEBERG'` came back without it (measured 2026-09-17). A
+  statement counts as Iceberg when `table_type = 'ICEBERG'` appears in it,
+  ignoring case and spacing; see Caveats for what that misses.
 - `<id>.csv` is now uploaded as `application/octet-stream` instead of
   `text/csv`. Athena sends `application/octet-stream` for it (measured on
   2026-09-17 in five of six result files); `text/csv` had been athena-local's
