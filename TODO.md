@@ -39,12 +39,6 @@
 - [ ] 実装する
 - 使うクライアント：dbt-athena が `awsdatacatalog` 以外のカタログを使うとき（未再確認）。
 
-### `<id>.csv.metadata` と `<id>.txt.metadata`（#5）
-
-- [ ] 書くか、README に回避策を書く
-- 使うクライアント：JDBC の既定の結果取得 `ResultFetcher=auto`（ドキュメントと jar の調査のみ）。
-- 回避策の候補：接続設定を `ResultFetcher=GetQueryResults` にする（ドキュメントのみで、試していない）。
-
 ### DataManifestLocation、マニフェスト、UNLOAD
 
 - [ ] README に回避策を書く。awswrangler は `ctas_approach=False` で使う

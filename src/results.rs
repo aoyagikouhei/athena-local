@@ -18,7 +18,7 @@ const SIGNATURE_EXPIRY: Duration = Duration::from_secs(60);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResultFile {
     /// SELECT など。`<id>.csv` に結果を書く。UPDATE / DELETE / MERGE も名前はこれだが、結果は書かない
-    /// （本物も `.csv.metadata` だけを置く）。
+    /// （本物も `.csv.metadata` だけを置く。2026-09-17 実測）。
     Csv,
     /// INSERT。`<id>`（拡張子なし）。
     Manifest,
@@ -26,6 +26,9 @@ pub enum ResultFile {
     Table,
     /// それ以外の DDL と SHOW など。`<id>.txt`。
     Text,
+    /// 結果ファイルの隣に置く付随ファイル `<結果ファイル名>.metadata`。
+    /// `of` は返さない（文の種類では決まらない）。キーは `ResultLocation::metadata` だけが作る。
+    Metadata,
 }
 
 impl ResultFile {
@@ -55,15 +58,17 @@ impl ResultFile {
             Self::Manifest => id.to_string(),
             Self::Table => format!("tables/{id}"),
             Self::Text => format!("{id}.txt"),
+            Self::Metadata => unreachable!("付随ファイルのキーは ResultLocation::metadata が作る"),
         }
     }
 
     /// PUT に付ける Content-Type。Text は 2026-09-16 実測（本物は octet-stream で、
-    /// binary と application に割れていた。多数派を採る）。Csv は 0.3.0 からの値で実測していない。
-    /// Manifest と Table は athena-local が書き込まないので、網羅のためだけの値。
+    /// binary と application に割れていた。多数派を採る）。Csv と Metadata は 2026-09-17 実測
+    /// （6 件中 5 件が application/octet-stream。Csv の `text/csv` は 0.3.0 からの未実測の値だった）。
+    /// Manifest と Table は athena-local が本体を書き込まないので、網羅のためだけの値。
     fn content_type(self) -> &'static str {
         match self {
-            Self::Csv => "text/csv",
+            Self::Csv | Self::Metadata => "application/octet-stream",
             Self::Text | Self::Manifest | Self::Table => "binary/octet-stream",
         }
     }
@@ -105,6 +110,15 @@ impl ResultLocation {
             key: format!("{prefix}{}", file.path(id)),
             file,
         })
+    }
+
+    /// 結果ファイルの隣に置く付随ファイル `<結果ファイル名>.metadata` の置き場所。
+    pub fn metadata(&self) -> Self {
+        Self {
+            bucket: self.bucket.clone(),
+            key: format!("{}.metadata", self.key),
+            file: ResultFile::Metadata,
+        }
     }
 
     /// GetQueryExecution の ResultConfiguration.OutputLocation に返すフルパス。
@@ -305,7 +319,7 @@ mod tests {
                 )
                 .expect("行が JSON でない"),
             ],
-            update_count: None,
+            ..Outcome::default()
         }
     }
 
@@ -345,7 +359,7 @@ mod tests {
                 vec![Value::from(1), Value::from("a")],
                 vec![Value::from(2), Value::from("b")],
             ],
-            update_count: None,
+            ..Outcome::default()
         };
 
         let result = text(&outcome);
@@ -361,7 +375,7 @@ mod tests {
         let outcome = Outcome {
             columns: vec![column("x", "integer", &scalar("integer"))],
             rows: vec![vec![Value::from(1)]],
-            update_count: None,
+            ..Outcome::default()
         };
 
         assert_eq!(text(&outcome), "1");
@@ -376,7 +390,7 @@ mod tests {
                 column("c", "integer", &scalar("integer")),
             ],
             rows: vec![vec![Value::from(1), Value::Null, Value::from(3)]],
-            update_count: None,
+            ..Outcome::default()
         };
 
         assert_eq!(text(&outcome), "1\t\t3");
@@ -430,6 +444,21 @@ mod tests {
         assert_eq!(uri(ResultFile::Manifest), "s3://bucket/p/id");
         assert_eq!(uri(ResultFile::Table), "s3://bucket/p/tables/id");
         assert_eq!(uri(ResultFile::Text), "s3://bucket/p/id.txt");
+    }
+
+    #[test]
+    fn 付随ファイルのキーは本体のキーに_metadata_を足したもの() {
+        let key = |file| {
+            ResultLocation::new("s3://bucket/p/", "id", file)
+                .unwrap()
+                .metadata()
+                .key
+        };
+        assert_eq!(key(ResultFile::Csv), "p/id.csv.metadata");
+        assert_eq!(key(ResultFile::Text), "p/id.txt.metadata");
+        assert_eq!(key(ResultFile::Manifest), "p/id.metadata");
+        // `tables/` は Hive の CTAS の実測。Iceberg では付かなかった（#12）。
+        assert_eq!(key(ResultFile::Table), "p/tables/id.metadata");
     }
 
     #[test]

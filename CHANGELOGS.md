@@ -11,6 +11,22 @@ later name the date they were measured on.
 
 ### Added
 
+- A companion `.metadata` file is written next to the result file with
+  `ATHENA_LOCAL_RESULTS=s3`, so Athena JDBC 3.x works with its default
+  `ResultFetcher=auto`, which reads the result and the metadata straight from
+  S3 rather than calling `GetQueryResults` (versions before 3.5.1 fail with
+  `NoSuchKey` when a DDL statement has no metadata file; athena-local writes
+  none for column-less DDL either, so those statements still fail there, while
+  3.8.1 logs the 404 at INFO level and carries on, measured 2026-09-17). The
+  names follow the result file: `<id>.csv.metadata`, `<id>.txt.metadata`,
+  `<id>.metadata` for `INSERT` and `tables/<id>.metadata` for CTAS. It is
+  written for every statement that has columns, including a `SELECT` returning
+  no rows; DML and CTAS write the companion file only, and DDL without columns,
+  failed queries and cancelled queries write nothing. The content is the protobuf Athena
+  writes: the query id, the `updateType` and update count for DML and CTAS, and
+  one message per column with the same values as the `ColumnInfo` of
+  `GetQueryResults`. A failed upload leaves the query `SUCCEEDED` and logs one
+  line, like `<id>.txt`. Measured against Athena on 2026-09-17.
 - DDL, `SHOW` and `DESCRIBE` results are written to `<id>.txt` with
   `ATHENA_LOCAL_RESULTS=s3`, so clients that read the result file rather than
   `GetQueryResults` work. PyAthena's pandas and arrow cursors are the ones that
@@ -63,6 +79,11 @@ later name the date they were measured on.
 
 ### Changed
 
+- `<id>.csv` is now uploaded as `application/octet-stream` instead of
+  `text/csv`. Athena sends `application/octet-stream` for it (measured on
+  2026-09-17 in five of six result files); `text/csv` had been athena-local's
+  own unmeasured guess since 0.3.0. `<id>.txt` keeps `binary/octet-stream`, and
+  the new `.metadata` companions are `application/octet-stream` too.
 - Error response bodies now use `Message` (capital M) instead of `message`,
   and an error that carries `AthenaErrorCode` now also carries `ErrorCode`
   with the same value. Real Athena always returns this shape (measured for

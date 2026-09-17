@@ -33,6 +33,9 @@ const SYNTAX_CHECK_PREFIX: &str = "PREPARE athena_local_syntax_check FROM\n";
 /// 終わらないクエリの 1 ページごとの待ち時間。無遅延だと実行側が偽 Trino を全速で叩き続ける。
 const ENDLESS_PAGE_INTERVAL: Duration = Duration::from_millis(20);
 
+/// 偽 Trino が応答に載せるクエリ ID。本物の Trino は `/v1/statement` の応答に必ず `id` を載せる。
+pub const TRINO_QUERY_ID: &str = "20260917_000000_00000_local";
+
 /// Trino の偽物。SQL が routes に一致すればその応答を、
 /// しなければ 1 ページ目と（あれば）2 ページ目の応答を固定で返す。
 #[derive(Clone)]
@@ -61,7 +64,7 @@ pub struct S3Put {
     pub bucket: String,
     /// パーセントエンコードを戻したキー。
     pub key: String,
-    pub body: String,
+    pub body: Vec<u8>,
     pub content_type: Option<String>,
     /// 署名付き URL（クエリ文字列の X-Amz-Signature）で来たか。署名の中身は見ない。
     pub presigned: bool,
@@ -478,7 +481,7 @@ async fn statement(
         tokio::time::sleep(delay).await;
     }
 
-    axum::Json(response)
+    axum::Json(with_query_id(response))
 }
 
 async fn next_page(State(fake): State<FakeTrino>) -> axum::Json<Value> {
@@ -489,9 +492,19 @@ async fn next_page(State(fake): State<FakeTrino>) -> axum::Json<Value> {
 
     if fake.endless {
         tokio::time::sleep(ENDLESS_PAGE_INTERVAL).await;
-        return axum::Json(json!({ "nextUri": fake.next_uri }));
+        return axum::Json(with_query_id(json!({ "nextUri": fake.next_uri })));
     }
-    axum::Json(fake.next.clone().unwrap_or(Value::Null))
+    axum::Json(with_query_id(fake.next.clone().unwrap_or(Value::Null)))
+}
+
+/// 本物の Trino は全ページの応答に同じ `id` を載せる。テストごとに書かなくて済むよう既定値を補う。
+fn with_query_id(mut response: Value) -> Value {
+    if let Some(object) = response.as_object_mut()
+        && !object.contains_key("id")
+    {
+        object.insert("id".to_string(), json!(TRINO_QUERY_ID));
+    }
+    response
 }
 
 /// Trino はクエリの取り消しに 204 を返す。
@@ -514,12 +527,13 @@ async fn put_object(
     Path((bucket, key)): Path<(String, String)>,
     Query(query): Query<HashMap<String, String>>,
     headers: HeaderMap,
-    body: String,
+    // String のエクストラクタは非 UTF-8 の body を 400 で弾くので、バイト列のまま受ける。
+    body: axum::body::Bytes,
 ) -> (StatusCode, &'static str) {
     fake.puts.lock().expect("poisoned").push(S3Put {
         bucket,
         key,
-        body,
+        body: body.to_vec(),
         content_type: headers
             .get("content-type")
             .and_then(|value| value.to_str().ok())

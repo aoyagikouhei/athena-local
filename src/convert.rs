@@ -44,9 +44,15 @@ pub fn result_set(outcome: &Outcome, rows: &[Vec<Option<String>>]) -> ResultSet 
     ResultSet {
         rows: rows.iter().map(|row| to_row(row)).collect(),
         result_set_metadata: ResultSetMetadata {
-            column_info: outcome.columns.iter().map(to_column_info).collect(),
+            column_info: column_infos(outcome),
         },
     }
+}
+
+/// Trino の列から Athena の ColumnInfo を作る唯一の入口。
+/// GetQueryResults の ResultSetMetadata も結果の `.metadata` もここを通す。
+pub(crate) fn column_infos(outcome: &Outcome) -> Vec<ColumnInfo> {
+    outcome.columns.iter().map(to_column_info).collect()
 }
 
 /// Athena は値をすべて文字列で返す。NULL は Datum ごと空にする。
@@ -812,7 +818,7 @@ mod tests {
                 Value::from("x"),
                 serde_json::from_str("[1,2]").unwrap(),
             ]],
-            update_count: None,
+            ..Outcome::default()
         };
 
         assert_eq!(
