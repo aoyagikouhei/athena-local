@@ -150,7 +150,7 @@ Behaviour that matches real Athena:
   | State | Message | `AthenaErrorCode` |
   | --- | --- | --- |
   | `QUEUED` / `RUNNING` | `Query has not yet finished. Current state: RUNNING` | `INVALID_QUERY_EXECUTION_STATE` |
-  | `FAILED` | `Query did not finish successfully. Final query state: FAILED` | `INVALID_QUERY_EXECUTION_STATE` |
+  | `FAILED` | `Query did not finish successfully. Final query state: FAILED` | `INVALID_QUERY_EXECUTION_STATE` (see Caveats) |
   | `CANCELLED` | `Could not find results` | `RESULT_NOT_FOUND` |
 
   An unknown id returns `QueryExecution <id> was not found` (`QUERY_EXECUTION_NOT_FOUND`).
@@ -251,6 +251,17 @@ upload makes the query `FAILED` with the store's response in
 and DDL cannot be undone. When the result file itself fails to upload, no
 companion file is attempted.
 
+A failed query writes a result file too, but only for the statements whose
+result file is `<id>.txt` (DDL, `SHOW`, `DESCRIBE`, `EXPLAIN`), so a client that
+reads the result file can see why it failed. The file holds `FAILED: ` followed
+by `StateChangeReason`, with no trailing newline, and is sent as
+`application/octet-stream` rather than the `binary/octet-stream` of a successful
+`<id>.txt`; no `.metadata` companion is written. `SELECT`, DML and CTAS write
+nothing, and neither does a cancelled query. The upload happens before the query
+becomes `FAILED`, so a client may read the file as soon as it sees that state;
+an upload that fails logs one line and leaves the state and the reason
+unchanged. Athena writes such a file for fewer statements; see Caveats.
+
 An `OutputLocation` that is not `s3://bucket[/prefix]` is rejected in either
 mode with `outputLocation is not a valid S3 path.` (`INVALID_INPUT`), as Athena
 does. With `ATHENA_LOCAL_RESULTS=s3` and no location at all,
@@ -276,7 +287,8 @@ it returns no rows), `SHOW` / `DESCRIBE` / `EXPLAIN`, DML (`INSERT` / `UPDATE`
 / `DELETE` / `MERGE`) and CTAS. DML and CTAS write the companion file only and
 no result file of their own, as on Athena. DDL without columns
 (`CREATE DATABASE`, `DROP DATABASE`, `CREATE TABLE`), a failed query and a
-cancelled query write nothing, also as on Athena.
+cancelled query write no companion file, also as on Athena; a failed statement
+may still write its own `<id>.txt` (see Result files above).
 
 The content is protobuf. There is no official schema; the field numbers are the
 ones [burtcorp/athena-jdbc's `AthenaMetaDataParser`](https://github.com/burtcorp/athena-jdbc/blob/master/src/main/java/io/burt/athena/result/AthenaMetaDataParser.java)
@@ -393,10 +405,33 @@ passed; see Caveats.
   `DELETE`. Columns of type `timestamp with time zone`, `time with time zone`
   and `interval year to month` were not measured and are written like
   `timestamp` / `time` and `interval day to second`.
-- **A failed query writes nothing.** On Athena it depends on the statement: a
-  failed `SHOW` writes `<id>.txt` holding `FAILED: ` and the reason, while a
-  failed `ALTER TABLE` writes no file at all (measured 2026-09-16).
-  athena-local writes nothing in either case.
+- **A failed query writes a result file for more statements than Athena.** On
+  Athena it depends on the engine behind the statement: DDL that runs through
+  Hive writes `<id>.txt` holding the reason (`SHOW TABLES`, `DROP TABLE` and
+  `CREATE DATABASE`, measured 2026-09-17), while statements that run on the
+  query engine write no file at all, namely `SELECT`, `INSERT`, `UPDATE`,
+  `DELETE` and CTAS (measured 2026-09-17) and `ALTER TABLE` on an Iceberg table
+  (measured 2026-09-16 and 2026-09-17). athena-local runs everything through
+  Trino and cannot tell the two apart, so it writes the file for every statement
+  whose result file is `<id>.txt`. A failed `EXPLAIN` was not measured.
+- **The failed result file does not match `StateChangeReason`.** On Athena the
+  file is `StateChangeReason` byte for byte, and that text starts with
+  `FAILED: ` because it comes from Hive (`FAILED: SemanticException
+  [Error 10001]: Table not found ...`, measured 2026-09-17). athena-local's
+  reason comes from Trino instead (`TABLE_NOT_FOUND: line 1:15: ...`), so it
+  prefixes `FAILED: ` to mark the file as a failure, which makes the file longer
+  than `StateChangeReason` by exactly that prefix.
+- **`SHOW COLUMNS` and `DESCRIBE` on a missing table fail later than on Athena.**
+  Athena rejects them in `StartQueryExecution` with `InvalidRequestException`
+  (`AthenaErrorCode` `INVALID_INPUT`, message `Entity Not Found`) and creates no
+  execution at all (measured 2026-09-17). athena-local accepts the call, the
+  query becomes `FAILED`, and it writes `<id>.txt` as described above.
+- **`GetQueryResults` on a failed query always fails.** On Athena the answer
+  depends on the statement: DDL that runs through Hive returns HTTP 200 with an
+  empty `ResultSet` whose `ResultSetMetadata` is null, `SELECT`, DML and CTAS
+  return `INVALID_QUERY_EXECUTION_STATE`, and `ALTER TABLE` on an Iceberg table
+  returns `RESULT_NOT_FOUND` (measured 2026-09-17). athena-local always returns
+  `INVALID_QUERY_EXECUTION_STATE`.
 - **A missing bucket fails the query.** Athena reported `SUCCEEDED` for a
   `SELECT` whose output bucket did not exist (measured). athena-local makes it
   `FAILED` so the mistake shows up locally.
