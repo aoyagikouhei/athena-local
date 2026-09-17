@@ -126,6 +126,28 @@ async fn max_results_でページングされ_next_token_を辿ると続きが�
 }
 
 #[tokio::test]
+async fn max_results_を省くと_50_件ずつ返す() {
+    // 本物の既定ページサイズは未実測。botocore の上限に合わせた 50 を固定する。
+    let names_51: Vec<String> = (1..=51).map(|n| format!("wg-{n:02}")).collect();
+    let harness = Harness::builder(empty_response())
+        .work_groups(&names_51.iter().map(String::as_str).collect::<Vec<_>>())
+        .start()
+        .await;
+
+    let (status, first) = harness.call("ListWorkGroups", json!({})).await;
+
+    assert_eq!(status, 200);
+    assert_eq!(names(&first), names_51[..50]);
+    assert_eq!(first["NextToken"], "50");
+
+    let (_, second) = harness
+        .call("ListWorkGroups", json!({ "NextToken": "50" }))
+        .await;
+    assert_eq!(names(&second), names_51[50..]);
+    assert!(second.get("NextToken").is_none());
+}
+
+#[tokio::test]
 async fn max_results_が範囲外ならエラーにする() {
     // 2026-09-18 実測（51 は CLI、0 と -1 は生 HTTP）。
     const TOO_SMALL: &str = "1 validation error detected: Value at 'maxResults' failed to satisfy constraint: Member must have value greater than or equal to 1";

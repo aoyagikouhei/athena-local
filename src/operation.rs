@@ -468,7 +468,7 @@ pub fn list_work_groups(app: &App, body: &Bytes) -> Response {
             return invalid_request_with_code(NEXT_TOKEN_EMPTY, "INVALID_INPUT");
         }
         // 発行するのは 1 <= end < len の 10 進なので、それ以外は本物と同じく弾く
-        // （"0" や先頭ゼロも通るが、返すページは正当なので厳密化しない）。
+        // （"0"、先頭ゼロ、"+2" も通るが、返すページは正当なので厳密化しない）。
         Some(token) => match token.parse::<usize>().ok().filter(|o| *o < names.len()) {
             Some(offset) => offset,
             None => {
