@@ -212,7 +212,8 @@ on the location makes no difference. The file name depends on the statement:
 | `SELECT` / `WITH` / `VALUES` | `s3://bucket/prefix/<id>.csv` |
 | `UPDATE` / `DELETE` / `MERGE` | `s3://bucket/prefix/<id>.csv` (only the `.metadata` companion is written) |
 | `INSERT` | `s3://bucket/prefix/<id>` (only the `.metadata` companion is written) |
-| `CREATE TABLE ... AS SELECT` | `s3://bucket/prefix/tables/<id>` (only the `.metadata` companion is written) |
+| `CREATE TABLE ... AS SELECT` (Hive) | `s3://bucket/prefix/tables/<id>` (only the `.metadata` companion is written) |
+| `CREATE TABLE ... AS SELECT` (`table_type = 'ICEBERG'`) | `s3://bucket/prefix/<id>` (only the `.metadata` companion is written) |
 | Other DDL, `SHOW`, `DESCRIBE`, ... | `s3://bucket/prefix/<id>.txt` |
 
 With `ATHENA_LOCAL_RESULTS=s3`, a successful `SELECT` writes the CSV there
@@ -274,9 +275,10 @@ message (`INVALID_INPUT`).
 
 With `ATHENA_LOCAL_RESULTS=s3`, a companion file named after the result file
 plus `.metadata` is written next to it, as Athena does (measured 2026-09-17):
-`<id>.csv.metadata`, `<id>.txt.metadata`, `<id>.metadata` for `INSERT` and
-`tables/<id>.metadata` for CTAS. Athena JDBC 3.x is the client that needs it:
-its default `ResultFetcher=auto` reads the result and the metadata straight
+`<id>.csv.metadata`, `<id>.txt.metadata`, `<id>.metadata` for `INSERT` and an
+Iceberg CTAS, and `tables/<id>.metadata` for a Hive CTAS. Athena JDBC 3.x is
+the client that needs it: its default `ResultFetcher=auto` reads the result and
+the metadata straight
 from S3 instead of calling `GetQueryResults`, and versions before 3.5.1 fail
 with `NoSuchKey` when a DDL statement has no metadata file. athena-local writes
 no companion file for column-less DDL either, so those statements still fail on
@@ -440,9 +442,10 @@ passed; see Caveats.
   `FAILED` so the mistake shows up locally.
 - **Unmeasured file names.** The file name for `CREATE OR REPLACE TABLE ... AS`
   (Trino only) follows the measured rule for CTAS but was not measured. A CTAS
-  on an Iceberg table produced an `OutputLocation` without the `tables/` part on
-  Athena (measured 2026-09-17); athena-local keeps `tables/<id>`, which is what
-  was measured for Hive tables. See issue #12.
+  counts as Iceberg when `table_type = 'ICEBERG'` appears anywhere in the
+  statement (case and spacing are ignored), so that text inside a string
+  literal or a comment counts too, and a table whose format comes from
+  somewhere else than the `WITH` clause is treated as Hive.
 - **Any workgroup name is accepted.** `GetWorkGroup` never fails because of the
   name: it echoes the name back and returns the same `Configuration` every time,
   because athena-local has no workgroups to look up. Real Athena answers a name
