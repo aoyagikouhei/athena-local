@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::failure::Failure;
 use crate::results::ResultLocation;
@@ -10,16 +10,35 @@ use crate::trino::{Cancel, Outcome};
 pub const CANCELLED_REASON: &str = "Query cancelled by user";
 
 /// 実行中・実行済みクエリの置き場。プロセスが死ねば消える（本物の永続性は模さない）。
-#[derive(Clone, Default)]
+/// 終端状態のものは保持期限を過ぎると捨てる（`Inner::sweep`）。
+#[derive(Clone)]
 pub struct Store {
     inner: Arc<Mutex<Inner>>,
 }
 
-#[derive(Default)]
 struct Inner {
     executions: HashMap<String, Execution>,
     /// ClientRequestToken → その 1 回目の登録内容。フィンガープリントはここにだけ持つ。
+    /// 書くのは `submit`、消すのは `sweep` だけ。
     tokens: HashMap<String, Claim>,
+    /// 終端状態の実行情報を持っておく秒数（`completed_at` と同じ単位）。
+    retention: f64,
+}
+
+impl Inner {
+    /// 期限切れの終端状態の実行と、その ClientRequestToken を捨てる。
+    /// completed_at が None（QUEUED / RUNNING）は捨てない。テストからは時刻を渡して直接呼ぶ。
+    fn sweep(&mut self, now: f64) {
+        let retention = self.retention;
+        self.executions.retain(|_, execution| {
+            execution
+                .completed_at
+                .is_none_or(|completed_at| now - completed_at < retention)
+        });
+        let executions = &self.executions;
+        self.tokens
+            .retain(|_, claim| executions.contains_key(&claim.id));
+    }
 }
 
 #[derive(Clone)]
@@ -109,6 +128,17 @@ pub struct Submission {
 }
 
 impl Store {
+    /// 保持期限は終端状態になってから（`completed_at` から）の経過時間。
+    pub fn new(retention: Duration) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(Inner {
+                executions: HashMap::new(),
+                tokens: HashMap::new(),
+                retention: retention.as_secs_f64(),
+            })),
+        }
+    }
+
     /// 1 回のロックの中で判定する。対応表に無ければ登録して Created、あってフィンガープリントが
     /// 一致すれば何も登録せず Existing(既存の id)、一致しなければ Conflict。
     pub fn submit(&self, id: &str, submission: Submission) -> SubmitOutcome {
@@ -217,8 +247,11 @@ impl Store {
         CancelOutcome::Cancelled
     }
 
+    /// ロックを取り、続けて期限切れを捨てる。公開メソッドはすべてここを通る。
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
-        self.inner.lock().expect("store poisoned")
+        let mut inner = self.inner.lock().expect("store poisoned");
+        inner.sweep(now());
+        inner
     }
 }
 
@@ -250,6 +283,8 @@ fn now() -> f64 {
 mod tests {
     use super::*;
 
+    use crate::config::DEFAULT_RETENTION;
+
     fn user_failure(reason: &str) -> Failure {
         Failure {
             reason: reason.to_string(),
@@ -272,8 +307,23 @@ mod tests {
         format!("token-{name}-0123456789abcdef0123456789")
     }
 
+    /// 掃除が起きない長さの期限を持つ Store。
+    fn store() -> Store {
+        Store::new(DEFAULT_RETENTION)
+    }
+
+    /// 時刻を指定して掃除する（本番は lock() が now() で呼ぶ）。
+    fn sweep_at(store: &Store, now: f64) {
+        store.inner.lock().expect("store poisoned").sweep(now);
+    }
+
+    /// 保持期限の秒数。境界の計算に使う（リテラルの 3600 を増やさない）。
+    fn retention_seconds() -> f64 {
+        DEFAULT_RETENTION.as_secs_f64()
+    }
+
     fn submitted() -> Store {
-        let store = Store::default();
+        let store = store();
         store.submit(
             "id",
             Submission {
@@ -292,7 +342,7 @@ mod tests {
 
     #[test]
     fn 投入から成功までの状態が進む() {
-        let store = Store::default();
+        let store = store();
         store.submit(
             "id",
             Submission {
@@ -344,7 +394,7 @@ mod tests {
 
     #[test]
     fn 知らない_id_は取れない() {
-        let store = Store::default();
+        let store = store();
         assert!(store.get("missing").is_none());
     }
 
@@ -418,7 +468,7 @@ mod tests {
 
     #[test]
     fn 知らない_id_は止められない() {
-        assert_eq!(Store::default().cancel("missing"), CancelOutcome::NotFound);
+        assert_eq!(store().cancel("missing"), CancelOutcome::NotFound);
     }
 
     fn submission_with_token(query: &str, token: &str) -> Submission {
@@ -436,7 +486,7 @@ mod tests {
 
     #[test]
     fn submit_は同じトークンなら既存の_id_を返す() {
-        let store = Store::default();
+        let store = store();
         assert_eq!(
             store.submit("id1", submission_with_token("SELECT 1", "tok")),
             SubmitOutcome::Created
@@ -452,7 +502,7 @@ mod tests {
 
     #[test]
     fn submit_はフィンガープリントが違えば_conflict() {
-        let store = Store::default();
+        let store = store();
         assert_eq!(
             store.submit("id1", submission_with_token("SELECT 1", "tok")),
             SubmitOutcome::Created
@@ -463,5 +513,102 @@ mod tests {
             SubmitOutcome::Conflict
         );
         assert!(store.get("id2").is_none());
+    }
+
+    #[test]
+    fn ロックを取ると期限切れの実行が消える() {
+        let store = Store::new(Duration::ZERO);
+        store.submit("id", submission_with_token("SELECT 1", &test_token("zero")));
+        store.finish("id", Ok(Outcome::default()));
+
+        // sweep_at を呼ばない。lock() が掃除を駆動していなければ残ってしまう。
+        assert!(store.get("id").is_none());
+    }
+
+    #[test]
+    fn 終わった実行は保持期限を過ぎると消える() {
+        let store = submitted();
+        store.finish("id", Ok(Outcome::default()));
+        let completed = store
+            .get("id")
+            .unwrap()
+            .completed_at
+            .expect("完了時刻が無い");
+
+        sweep_at(&store, completed + retention_seconds() + 1.0);
+
+        assert!(store.get("id").is_none());
+    }
+
+    #[test]
+    fn 保持期限ちょうどで消える() {
+        let store = submitted();
+        store.finish("id", Ok(Outcome::default()));
+        let completed = store
+            .get("id")
+            .unwrap()
+            .completed_at
+            .expect("完了時刻が無い");
+
+        sweep_at(&store, completed + retention_seconds());
+
+        assert!(store.get("id").is_none());
+    }
+
+    #[test]
+    fn 保持期限の手前では消えない() {
+        let store = submitted();
+        store.finish("id", Ok(Outcome::default()));
+        let completed = store
+            .get("id")
+            .unwrap()
+            .completed_at
+            .expect("完了時刻が無い");
+
+        sweep_at(&store, completed + retention_seconds() - 1.0);
+
+        assert!(store.get("id").is_some());
+    }
+
+    #[test]
+    fn 実行中の実行は保持期限を過ぎても消えない() {
+        let store = submitted();
+
+        sweep_at(&store, now() + 1e9);
+        assert!(store.get("id").is_some(), "QUEUED は捨てない");
+
+        store.mark_running("id");
+        sweep_at(&store, now() + 1e9);
+        assert!(store.get("id").is_some(), "RUNNING は捨てない");
+    }
+
+    #[test]
+    fn 捨てた実行のトークンも消えるので同じトークンで新しい実行になる() {
+        let store = store();
+        let token = test_token("expired");
+        assert_eq!(
+            store.submit("id1", submission_with_token("SELECT 1", &token)),
+            SubmitOutcome::Created
+        );
+        store.finish("id1", Ok(Outcome::default()));
+        let completed = store
+            .get("id1")
+            .unwrap()
+            .completed_at
+            .expect("完了時刻が無い");
+
+        // 掃除の前は同じトークンの再送。
+        assert_eq!(
+            store.submit("id2", submission_with_token("SELECT 1", &token)),
+            SubmitOutcome::Existing("id1".to_string())
+        );
+
+        sweep_at(&store, completed + retention_seconds() + 1.0);
+
+        assert_eq!(
+            store.submit("id2", submission_with_token("SELECT 1", &token)),
+            SubmitOutcome::Created
+        );
+        assert!(store.get("id2").is_some());
     }
 }

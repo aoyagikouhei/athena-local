@@ -1,9 +1,13 @@
 use std::collections::HashMap;
 use std::env;
+use std::time::Duration;
 
 use reqwest::Url;
 
 use crate::results;
+
+/// 終端状態の実行情報を持っておく既定の長さ（1 時間）。本物の Athena の保持期間は未実測なので athena-local の都合で決めた値。
+pub const DEFAULT_RETENTION: Duration = Duration::from_secs(3600);
 
 /// athena-local の設定。すべて環境変数で与える。
 pub struct Config {
@@ -22,6 +26,8 @@ pub struct Config {
     pub catalog_map: HashMap<String, String>,
     /// 結果 CSV を OutputLocation に書くか。
     pub results: ResultsMode,
+    /// 終端状態の実行情報と、その `ClientRequestToken` の対応を持っておく長さ。QUEUED / RUNNING は捨てない。
+    pub retention: Duration,
 }
 
 /// 結果 CSV の書き込み。
@@ -53,6 +59,7 @@ impl Config {
         };
 
         let results = parse_results(optional_env)?;
+        let retention = parse_retention(optional_env)?;
 
         Ok(Self {
             bind_address: env_or("ATHENA_LOCAL_BIND", "0.0.0.0:8080"),
@@ -62,6 +69,7 @@ impl Config {
             default_database: optional_env("TRINO_SCHEMA"),
             catalog_map,
             results,
+            retention,
         })
     }
 
@@ -144,6 +152,24 @@ fn parse_results(env: impl Fn(&str) -> Option<String>) -> Result<ResultsMode, St
     }))
 }
 
+/// ATHENA_LOCAL_RETENTION_SECONDS を読む。未設定なら既定。空文字は optional_env が未設定として落とす。
+/// 数として読めない値と 0 は起動時に止める（0 を「無期限」と読んだ設定で全クエリが直後に消えるのを防ぐ）。
+fn parse_retention(env: impl Fn(&str) -> Option<String>) -> Result<Duration, String> {
+    let Some(text) = env("ATHENA_LOCAL_RETENTION_SECONDS") else {
+        return Ok(DEFAULT_RETENTION);
+    };
+    let seconds: u64 = text.parse().map_err(|_| {
+        format!("ATHENA_LOCAL_RETENTION_SECONDS: 1 以上の整数（秒）を指定してください: {text:?}")
+    })?;
+    if seconds == 0 {
+        return Err(
+            "ATHENA_LOCAL_RETENTION_SECONDS: 0 は指定できません（無期限にしたいなら大きな値を入れてください）"
+                .to_string(),
+        );
+    }
+    Ok(Duration::from_secs(seconds))
+}
+
 fn env_or(key: &str, default: &str) -> String {
     optional_env(key).unwrap_or_else(|| default.to_string())
 }
@@ -207,6 +233,7 @@ mod tests {
             default_database: None,
             catalog_map: map(&[("s3tablescatalog/a", "iceberg")]),
             results: ResultsMode::None,
+            retention: DEFAULT_RETENTION,
         };
 
         assert_eq!(config.trino_catalog("s3tablescatalog/a"), "iceberg");
@@ -282,6 +309,37 @@ mod tests {
             ])),
             "http://common:9000/"
         );
+    }
+
+    #[test]
+    fn 保持期限の既定は_1_時間() {
+        assert_eq!(parse_retention(env(&[])), Ok(DEFAULT_RETENTION));
+        assert_eq!(DEFAULT_RETENTION, Duration::from_secs(3600));
+    }
+
+    #[test]
+    fn 保持期限は秒の整数で読む() {
+        assert_eq!(
+            parse_retention(env(&[("ATHENA_LOCAL_RETENTION_SECONDS", "60")])),
+            Ok(Duration::from_secs(60))
+        );
+    }
+
+    #[test]
+    fn 保持期限が数として読めないか_0_なら起動時エラーにする() {
+        // 空文字は optional_env が先に落とすのでこの関数には届かない。
+        for text in [
+            "0",    // 0 は「無期限」の読み違えを起動時に止める
+            "abc",  // 数でない
+            "-1",   // 負の数
+            "3.5",  // 小数
+            " 60 ", // trim しない
+        ] {
+            assert!(
+                parse_retention(env(&[("ATHENA_LOCAL_RETENTION_SECONDS", text)])).is_err(),
+                "通ってしまった: {text:?}"
+            );
+        }
     }
 
     #[test]

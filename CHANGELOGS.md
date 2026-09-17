@@ -41,6 +41,25 @@ later name the date they were measured on.
   `ResultConfiguration.OutputLocation` differs instead fails with
   `IDEMPOTENT_PARAMETER_MISMATCH`. `ExecutionParameters` and `WorkGroup` are not
   compared. The token is not normalized. Measured against Athena on 2026-09-17.
+- A finished query is dropped after a retention period, so a long-running
+  server no longer keeps every execution, result set and `ClientRequestToken`
+  in memory forever. A query that has reached `SUCCEEDED`, `FAILED` or
+  `CANCELLED` is kept for `ATHENA_LOCAL_RETENTION_SECONDS` after it finished
+  and is then dropped together with the token that points at it; queued and
+  running queries are never dropped. Once a query is dropped,
+  `GetQueryExecution`, `GetQueryResults` and `StopQueryExecution` treat its id
+  like an unknown one and fail with `QUERY_EXECUTION_NOT_FOUND`
+  (`StopQueryExecution` still succeeds on a finished query until the period
+  passes, and fails after it), and resending the same `ClientRequestToken`
+  starts a new query with a new `QueryExecutionId`, so an `INSERT` or CTAS
+  retried after the period runs again. The period counts from completion and
+  is not extended by reading the query. Dropping happens whenever
+  an API call touches the store, not on a timer, so nothing is swept while the
+  server is idle. New setting: `ATHENA_LOCAL_RETENTION_SECONDS` (default
+  `3600`, one hour); a value that is not a positive integer stops the server at
+  startup, and there is no "keep forever" value, so use a large number instead.
+  Real Athena's retention period has not been measured; 3600 is athena-local's
+  own number.
 
 ### Changed
 

@@ -28,7 +28,7 @@ use crate::trino::Trino;
 /// Athena API を受けるルータ。awsJson1.1 なのでパスは / だけ。
 pub fn router(config: Config) -> Router {
     let app = App {
-        store: Store::default(),
+        store: Store::new(config.retention),
         trino: Arc::new(Trino::new(&config.trino_url, &config.trino_user)),
         results: match &config.results {
             ResultsMode::S3(settings) => Some(Arc::new(ResultWriter::new(settings))),
