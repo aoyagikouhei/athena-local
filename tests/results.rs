@@ -64,16 +64,20 @@ async fn select_の結果を_csv_で書き_フルパスを返す() {
         output_location(&execution),
         format!("s3://results-bucket/athena/{id}.csv")
     );
+    // 本体の隣に付随ファイル `.csv.metadata` も置く（中身は tests/metadata.rs が見る）。
+    let puts = harness.s3_puts();
+    assert_eq!(puts.len(), 2, "{puts:?}");
     assert_eq!(
-        harness.s3_puts(),
-        [S3Put {
+        puts[0],
+        S3Put {
             bucket: "results-bucket".to_string(),
             key: format!("athena/{id}.csv"),
             body: b"\"id\",\"name\"\n\"1\",\"it's \"\"x\"\"\"\n\"2\",\n".to_vec(),
-            content_type: Some("text/csv".to_string()),
+            content_type: Some("application/octet-stream".to_string()),
             presigned: true,
-        }]
+        }
     );
+    assert_eq!(puts[1].key, format!("athena/{id}.csv.metadata"));
 }
 
 #[tokio::test]
@@ -128,20 +132,25 @@ async fn 既定の出力先を使い_末尾スラッシュが無くても同じ�
         .await;
     let other = execution_id(&execution);
 
+    // 付随ファイルも合わせて 4 件。置き場所を見たいので本体（.csv）だけを集める。
     let puts = harness.s3_puts();
-    assert_eq!(puts.len(), 2);
+    assert_eq!(puts.len(), 4, "{puts:?}");
+    let bodies: Vec<(&str, &str)> = puts
+        .iter()
+        .filter(|put| put.key.ends_with(".csv"))
+        .map(|put| (put.bucket.as_str(), put.key.as_str()))
+        .collect();
     assert_eq!(
-        (puts[0].bucket.as_str(), puts[0].key.as_str()),
-        ("results-bucket", format!("prefix/{id}.csv").as_str())
-    );
-    assert_eq!(
-        (puts[1].bucket.as_str(), puts[1].key.as_str()),
-        ("other-bucket", format!("{other}.csv").as_str())
+        bodies,
+        [
+            ("results-bucket", format!("prefix/{id}.csv").as_str()),
+            ("other-bucket", format!("{other}.csv").as_str()),
+        ]
     );
 }
 
 #[tokio::test]
-async fn dml_と_ctas_は何も書かず_ddl_は_0_バイトの_txt_を書く() {
+async fn dml_と_ctas_は_metadata_だけを置き_ddl_は_0_バイトの_txt_を書く() {
     let harness = Harness::builder(select_response())
         .route("INSERT INTO t VALUES (1)", dml_response())
         .route(
@@ -205,17 +214,28 @@ async fn dml_と_ctas_は何も書かず_ddl_は_0_バイトの_txt_を書く() 
         format!("s3://results-bucket/athena/tables/{}", execution_id(&ctas))
     );
 
-    // 列も行も無い DDL（CREATE TABLE t (i int)）だけが 0 バイトの .txt を書く。
-    // DML（INSERT・UPDATE）と CTAS は何も置かない。
+    // 列も行も無い DDL（CREATE TABLE t (i int)）だけが 0 バイトの .txt を書く（列が無いので付随ファイルは無し）。
+    // DML（INSERT・UPDATE）と CTAS は本体を置かず、付随ファイルだけを 1 件ずつ置く
+    // （中身は tests/metadata.rs が見る）。
+    let keys: Vec<String> = harness.s3_puts().into_iter().map(|put| put.key).collect();
     assert_eq!(
-        harness.s3_puts(),
-        [S3Put {
+        keys,
+        [
+            format!("athena/{}.metadata", execution_id(&insert)),
+            format!("athena/{}.txt", execution_id(&create)),
+            format!("athena/{}.csv.metadata", execution_id(&update)),
+            format!("athena/tables/{}.metadata", execution_id(&ctas)),
+        ]
+    );
+    assert_eq!(
+        harness.s3_puts()[1],
+        S3Put {
             bucket: "results-bucket".to_string(),
             key: format!("athena/{}.txt", execution_id(&create)),
             body: Vec::new(),
             content_type: Some("binary/octet-stream".to_string()),
             presigned: true,
-        }]
+        }
     );
 }
 
@@ -241,16 +261,19 @@ async fn show_の結果を_txt_で書く() {
         format!("s3://results-bucket/athena/{id}.txt")
     );
     // GetQueryResults の行を列名無しでタブ・改行連結したもの（先頭に見出しは無い）。
+    let puts = harness.s3_puts();
+    assert_eq!(puts.len(), 2, "{puts:?}");
     assert_eq!(
-        harness.s3_puts(),
-        [S3Put {
+        puts[0],
+        S3Put {
             bucket: "results-bucket".to_string(),
             key: format!("athena/{id}.txt"),
             body: b"orders\nusers".to_vec(),
             content_type: Some("binary/octet-stream".to_string()),
             presigned: true,
-        }]
+        }
     );
+    assert_eq!(puts[1].key, format!("athena/{id}.txt.metadata"));
 }
 
 #[tokio::test]
@@ -309,7 +332,11 @@ async fn 書き込みに失敗すると_failed_になり理由が残る() {
         reason.contains("s3://results-bucket/athena/") && reason.contains("500"),
         "理由: {reason}"
     );
-    assert_eq!(harness.s3_puts().len(), 1, "再試行しない");
+    assert_eq!(
+        harness.s3_puts().len(),
+        1,
+        "再試行せず、.metadata も試みない"
+    );
     // 本物には無い失敗なので、エラー一覧の「Failed to write query results to Amazon S3」を当てる。
     assert_eq!(status["AthenaError"]["ErrorCategory"], 1);
     assert_eq!(status["AthenaError"]["ErrorType"], 401);

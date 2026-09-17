@@ -12,8 +12,6 @@ const NULLABLE_UNKNOWN: u64 = 3;
 
 /// 結果ファイルの隣に置く `.metadata` の中身を作る。
 /// top-level は field 1 クエリ ID、2 updateType、3 更新件数、4 列（繰り返し）の順。
-// フェーズ 3 で operation::write_result から呼ぶ。
-#[allow(dead_code)]
 pub(crate) fn to_metadata(
     query_id: &str,
     update_type: Option<&str>,

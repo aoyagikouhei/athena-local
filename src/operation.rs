@@ -16,6 +16,7 @@ use crate::config::{Config, ResultsMode};
 use crate::convert;
 use crate::failure::Failure;
 use crate::handler::App;
+use crate::metadata;
 use crate::response::{invalid_request_with_code, ok, parse};
 use crate::results::{self, ResultFile, ResultLocation};
 use crate::statement;
@@ -215,7 +216,7 @@ fn spawn_query(app: App, id: String) {
         }
 
         let outcome = match run(&app.trino, &app.config, &execution).await {
-            Ok(outcome) => write_result(&app, &execution, outcome).await,
+            Ok(outcome) => write_result(&app, &execution, &id, outcome).await,
             Err(error) => Err(Failure::from_query_error(&error)),
         };
         // 途中で止められていれば CANCELLED が先に書かれているので、finish は何もしない。
@@ -223,39 +224,87 @@ fn spawn_query(app: App, id: String) {
     });
 }
 
-/// 結果を置いてから結果を返す。SUCCEEDED にするのは書き終わってからにする
-/// （クライアントは SUCCEEDED を見た直後に S3 を読みに行く）。
+/// 本体と付随ファイル `.metadata` の両方を置いてから結果を返す。SUCCEEDED にするのは
+/// 書き終わってからにする（クライアントは SUCCEEDED を見た直後に S3 を読みに行く）。
 /// .csv（SELECT）は書けなければ FAILED。.txt（DDL / SHOW など）は書けなくても SUCCEEDED のまま
 /// （Trino では既に実行し終えており、本物の Athena も補助ファイルの書き込みでは失敗にしない）。
+/// `.metadata` は列がある文に置き、書けなくても SUCCEEDED のまま。
+/// DML と CTAS は本体を置かず `.metadata` だけを置く（2026-09-17 実測）。
 async fn write_result(
     app: &App,
     execution: &Execution,
+    id: &str,
     outcome: Outcome,
 ) -> Result<Outcome, Failure> {
     let (Some(writer), Some(location)) = (&app.results, &execution.result_location) else {
         return Ok(outcome);
     };
-    // 書くのは SELECT の結果（.csv、更新件数が無いとき）と DDL / SHOW（.txt）だけ。
-    // DML / CTAS が置くファイル（manifest や tables/<id>）は作らない。
-    // 途中で止められていれば書かない（CANCELLED の本物も何も置かない）。
-    let should_write = location.file == ResultFile::Text
-        || (location.file == ResultFile::Csv && outcome.update_count.is_none());
-    if !should_write || execution.cancel.is_requested() {
+    // 途中で止められていれば何も書かない（CANCELLED の本物も何も置かない）。
+    if execution.cancel.is_requested() {
         return Ok(outcome);
     }
 
-    let body = match location.file {
-        ResultFile::Csv => results::to_csv(&outcome),
-        _ => results::to_text(&outcome),
-    };
-
-    match writer.put(location, body).await {
-        Ok(()) => Ok(outcome),
-        Err(reason) if location.file == ResultFile::Text => {
-            eprintln!("結果ファイル（.txt）の書き込みに失敗しました。無視します: {reason}");
-            Ok(outcome)
+    // 本体を書くのは SELECT の結果（.csv、更新件数が無いとき）と DDL / SHOW（.txt）だけ。
+    // DML / CTAS が置くファイル（manifest や tables/<id>）は作らない。
+    let should_write = location.file == ResultFile::Text
+        || (location.file == ResultFile::Csv && outcome.update_count.is_none());
+    if should_write {
+        let body = match location.file {
+            ResultFile::Csv => results::to_csv(&outcome),
+            _ => results::to_text(&outcome),
+        };
+        match writer.put(location, body).await {
+            Ok(()) => {}
+            // 本体が書けなかったら付随ファイルは試みない。
+            Err(reason) if location.file == ResultFile::Text => {
+                eprintln!("結果ファイル（.txt）の書き込みに失敗しました。無視します: {reason}");
+                return Ok(outcome);
+            }
+            Err(reason) => return Err(Failure::result_write(reason)),
         }
-        Err(reason) => Err(Failure::result_write(reason)),
+    }
+
+    // 列が無い文（CREATE TABLE など）には本物も付随ファイルを置かない。
+    if !outcome.columns.is_empty() {
+        write_metadata(writer, location, &execution.query, id, &outcome).await;
+    }
+    Ok(outcome)
+}
+
+/// 付随ファイル `.metadata` を組み立てて置く。書けなくても実行は成功のまま（補助ファイルなので握りつぶす）。
+async fn write_metadata(
+    writer: &results::ResultWriter,
+    location: &ResultLocation,
+    query: &str,
+    id: &str,
+    outcome: &Outcome,
+) {
+    let body = metadata::to_metadata(
+        metadata_query_id(query, id, outcome.id.as_deref()),
+        outcome.update_type.as_deref(),
+        // update_count（SELECT を Some(0) にする関数）は使わない。本物は SELECT に field 3 を置かない。
+        outcome.update_count,
+        &convert::column_infos(outcome),
+    );
+    if let Err(reason) = writer.put(&location.metadata(), body).await {
+        eprintln!("付随ファイル（.metadata）の書き込みに失敗しました。無視します: {reason}");
+    }
+}
+
+/// `.metadata` の先頭（field 1）に載せるクエリ ID。2026-09-17 実測では DESCRIBE と
+/// SHOW CREATE TABLE だけが QueryExecutionId で、SELECT・DML・CTAS・EXPLAIN・DROP TABLE は
+/// エンジン（Trino）のクエリ ID だった。
+fn metadata_query_id<'a>(
+    query: &str,
+    execution_id: &'a str,
+    engine_id: Option<&'a str>,
+) -> &'a str {
+    let words = words(query);
+    let word = |index: usize| words.get(index).map(String::as_str).unwrap_or_default();
+
+    match (word(0), word(1)) {
+        ("DESCRIBE" | "DESC", _) | ("SHOW", "CREATE") => execution_id,
+        _ => engine_id.unwrap_or(execution_id),
     }
 }
 
@@ -451,7 +500,8 @@ fn to_query_execution(id: &str, execution: &Execution) -> QueryExecution {
 }
 
 /// 投入 → 実行開始 → 完了の時刻から時間を出す。まだ来ていない区切りの時間は 0。
-/// 実行時間には、パラメータの分類の問い合わせと結果 CSV の書き込みも入る（どれも外を待つ時間）。
+/// 実行時間には、パラメータの分類の問い合わせと結果ファイルと `.metadata` の書き込みも入る
+/// （どれも外を待つ時間）。
 /// ミリ秒に丸めてから引くので、待ち時間 + 実行時間 = 全体 が必ず成り立つ。
 fn statistics(submitted_at: f64, started_at: Option<f64>, completed_at: Option<f64>) -> Statistics {
     let millis = |seconds: f64| (seconds * 1000.0).round() as i64;

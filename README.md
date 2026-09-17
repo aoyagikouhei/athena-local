@@ -141,6 +141,9 @@ Behaviour that matches real Athena:
   count returns neither rows nor columns. Measured on Hive-format and Iceberg tables.
 - `SELECT` and `SHOW` return `UpdateCount` `0`; DDL leaves it out (Athena sends
   `null`, which SDKs read the same way).
+- Every statement that has columns gets a companion `.metadata` file next to its
+  result file with `ATHENA_LOCAL_RESULTS=s3`, the protobuf sidecar Athena JDBC
+  3.x reads by default. See Result files below.
 - `GetQueryResults` on a query without results returns `InvalidRequestException`
   with Athena's message and `AthenaErrorCode`:
 
@@ -205,9 +208,9 @@ on the location makes no difference. The file name depends on the statement:
 | Statement | `OutputLocation` |
 | --- | --- |
 | `SELECT` / `WITH` / `VALUES` | `s3://bucket/prefix/<id>.csv` |
-| `UPDATE` / `DELETE` / `MERGE` | `s3://bucket/prefix/<id>.csv` (nothing is written) |
-| `INSERT` | `s3://bucket/prefix/<id>` |
-| `CREATE TABLE ... AS SELECT` | `s3://bucket/prefix/tables/<id>` |
+| `UPDATE` / `DELETE` / `MERGE` | `s3://bucket/prefix/<id>.csv` (only the `.metadata` companion is written) |
+| `INSERT` | `s3://bucket/prefix/<id>` (only the `.metadata` companion is written) |
+| `CREATE TABLE ... AS SELECT` | `s3://bucket/prefix/tables/<id>` (only the `.metadata` companion is written) |
 | Other DDL, `SHOW`, `DESCRIBE`, ... | `s3://bucket/prefix/<id>.txt` |
 
 With `ATHENA_LOCAL_RESULTS=s3`, a successful `SELECT` writes the CSV there
@@ -239,16 +242,52 @@ The file holds the rows `GetQueryResults` returns, joined with `\n`:
   for zero columns. athena-local writes an empty file.
 
 The object is uploaded with a presigned `PUT` (path-style), so any
-S3-compatible store works; it is not retried. A failed CSV upload makes the
-query `FAILED` with the store's response in `StateChangeReason`. A failed
-`<id>.txt` upload leaves the query `SUCCEEDED` and logs one line instead: the
-statement has already run on Trino, and DDL cannot be undone.
+S3-compatible store works; it is not retried. `<id>.csv` and the `.metadata`
+companions are sent as `application/octet-stream` and `<id>.txt` as
+`binary/octet-stream`, as Athena does (measured 2026-09-17). A failed CSV
+upload makes the query `FAILED` with the store's response in
+`StateChangeReason`. A failed `<id>.txt` or `.metadata` upload leaves the query
+`SUCCEEDED` and logs one line instead: the statement has already run on Trino,
+and DDL cannot be undone. When the result file itself fails to upload, no
+companion file is attempted.
 
 An `OutputLocation` that is not `s3://bucket[/prefix]` is rejected in either
 mode with `outputLocation is not a valid S3 path.` (`INVALID_INPUT`), as Athena
 does. With `ATHENA_LOCAL_RESULTS=s3` and no location at all,
 `StartQueryExecution` fails with Athena's `No output location provided. ...`
 message (`INVALID_INPUT`).
+
+### Companion `.metadata` files
+
+With `ATHENA_LOCAL_RESULTS=s3`, a companion file named after the result file
+plus `.metadata` is written next to it, as Athena does (measured 2026-09-17):
+`<id>.csv.metadata`, `<id>.txt.metadata`, `<id>.metadata` for `INSERT` and
+`tables/<id>.metadata` for CTAS. Athena JDBC 3.x is the client that needs it:
+its default `ResultFetcher=auto` reads the result and the metadata straight
+from S3 instead of calling `GetQueryResults`, and versions before 3.5.1 fail
+with `NoSuchKey` when a DDL statement has no metadata file. PyAthena,
+awswrangler and dbt-athena do not read it.
+
+The file is written for every statement that has columns: `SELECT` (also when
+it returns no rows), `SHOW` / `DESCRIBE` / `EXPLAIN`, DML (`INSERT` / `UPDATE`
+/ `DELETE` / `MERGE`) and CTAS. DML and CTAS write the companion file only and
+no result file of their own, as on Athena. DDL without columns
+(`CREATE DATABASE`, `DROP DATABASE`, `CREATE TABLE`), a failed query and a
+cancelled query write nothing, also as on Athena.
+
+The content is protobuf. There is no official schema; the field numbers are the
+ones [burtcorp/athena-jdbc's `AthenaMetaDataParser`](https://github.com/burtcorp/athena-jdbc/blob/master/src/main/java/io/burt/athena/result/AthenaMetaDataParser.java)
+reads:
+
+- the query id first, and for DML and CTAS the Trino `updateType` (`INSERT`,
+  `UPDATE`, `DELETE`, `CREATE TABLE`) and the update count;
+- then one message per column carrying the same values as the `ColumnInfo` of
+  `GetQueryResults`: `CatalogName`, `Name`, `Label`, `Type`, `Precision`,
+  `Scale`, `Nullable`, `CaseSensitive`.
+
+The query id follows Athena's own split: `SELECT`, DML, CTAS, `EXPLAIN` and the
+`SHOW` statements carry the engine's query id (Trino's here, Athena's engine id
+there), while `DESCRIBE` and `SHOW CREATE TABLE` carry the `QueryExecutionId`.
 
 ### `ExecutionParameters`
 
@@ -328,9 +367,26 @@ passed; see Caveats.
 - **Cancellation is checked between pages.** A stopped query is `CANCELLED`
   at once, but the `DELETE` reaches Trino only when the current long poll to
   `nextUri` returns (about a second at most).
-- **Companion files are not written.** Athena writes `<id>.csv.metadata` next to
-  a result and a manifest for DML and CTAS. athena-local writes neither;
-  `OutputLocation` still names the file Athena would use.
+- **Manifests are not written.** Athena writes a manifest (`<id>-manifest.csv`)
+  next to the result of DML and CTAS. athena-local writes none; `OutputLocation`
+  still names the file Athena would use. The `.metadata` companion is written
+  (see Result files above).
+- **`SHOW` metadata is not the opaque form Athena writes.** For `SHOW TABLES`,
+  `SHOW DATABASES`, `SHOW COLUMNS`, `SHOW PARTITIONS` and `SHOW TBLPROPERTIES`,
+  real Athena writes a base64 blob that does not decode as protobuf and is
+  presumably encrypted (measured 2026-09-17). athena-local writes the same plain
+  protobuf it writes for every other statement, so a client that parses it sees
+  the columns instead of failing.
+- **`DROP TABLE` gets no companion file.** Athena writes a 41-byte `.metadata`
+  holding only the query id and `DROP TABLE` for it (measured 2026-09-17).
+  athena-local writes a companion file only for statements that have columns,
+  and `DROP TABLE` has none, so it writes nothing.
+- **Unmeasured `.metadata` details.** The update count of a DML statement that
+  changes no rows (`DELETE ... WHERE false`) was not measured; athena-local
+  writes `0`. `MERGE` was not measured either and is written like `UPDATE` /
+  `DELETE`. Columns of type `timestamp with time zone`, `time with time zone`
+  and `interval year to month` were not measured and are written like
+  `timestamp` / `time` and `interval day to second`.
 - **A failed query writes nothing.** On Athena it depends on the statement: a
   failed `SHOW` writes `<id>.txt` holding `FAILED: ` and the reason, while a
   failed `ALTER TABLE` writes no file at all (measured 2026-09-16).
@@ -339,7 +395,10 @@ passed; see Caveats.
   `SELECT` whose output bucket did not exist (measured). athena-local makes it
   `FAILED` so the mistake shows up locally.
 - **Unmeasured file names.** The file name for `CREATE OR REPLACE TABLE ... AS`
-  (Trino only) follows the measured rule for CTAS but was not measured.
+  (Trino only) follows the measured rule for CTAS but was not measured. A CTAS
+  on an Iceberg table produced an `OutputLocation` without the `tables/` part on
+  Athena (measured 2026-09-17); athena-local keeps `tables/<id>`, which is what
+  was measured for Hive tables. See issue #12.
 - **Any workgroup name is accepted.** `GetWorkGroup` never fails because of the
   name: it echoes the name back and returns the same `Configuration` every time,
   because athena-local has no workgroups to look up. Real Athena answers a name
