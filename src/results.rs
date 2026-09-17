@@ -29,6 +29,9 @@ pub enum ResultFile {
     /// 結果ファイルの隣に置く付随ファイル `<結果ファイル名>.metadata`。
     /// `of` は返さない（文の種類では決まらない）。キーは `ResultLocation::metadata` だけが作る。
     Metadata,
+    /// 失敗した文に置く `<id>.txt`。パスは Text と同じで Content-Type だけが違う（2026-09-17 実測）。
+    /// `of` は返さない（文の種類では決まらない）。キーは `ResultLocation::failed` だけが作る。
+    FailedText,
 }
 
 impl ResultFile {
@@ -59,6 +62,7 @@ impl ResultFile {
             Self::Table => format!("tables/{id}"),
             Self::Text => format!("{id}.txt"),
             Self::Metadata => unreachable!("付随ファイルのキーは ResultLocation::metadata が作る"),
+            Self::FailedText => unreachable!("失敗したときのキーは ResultLocation::failed が作る"),
         }
     }
 
@@ -66,9 +70,11 @@ impl ResultFile {
     /// binary と application に割れていた。多数派を採る）。Csv と Metadata は 2026-09-17 実測
     /// （6 件中 5 件が application/octet-stream。Csv の `text/csv` は 0.3.0 からの未実測の値だった）。
     /// Manifest と Table は athena-local が本体を書き込まないので、網羅のためだけの値。
+    /// FailedText は 2026-09-17 実測（失敗した SHOW TABLES / DROP TABLE / CREATE DATABASE の
+    /// 3 件とも application/octet-stream で、成功した `.txt` とは違った）。
     fn content_type(self) -> &'static str {
         match self {
-            Self::Csv | Self::Metadata => "application/octet-stream",
+            Self::Csv | Self::Metadata | Self::FailedText => "application/octet-stream",
             Self::Text | Self::Manifest | Self::Table => "binary/octet-stream",
         }
     }
@@ -119,6 +125,17 @@ impl ResultLocation {
             key: format!("{}.metadata", self.key),
             file: ResultFile::Metadata,
         }
+    }
+
+    /// 失敗したときに結果ファイルを置く場所。`<id>.txt` の文だけ Some
+    /// （`.csv` / `<id>` / `tables/<id>` の文は本物も何も置かない。2026-09-17 実測）。
+    /// キーは成功時と同じ。
+    pub fn failed(&self) -> Option<Self> {
+        (self.file == ResultFile::Text).then(|| Self {
+            bucket: self.bucket.clone(),
+            key: self.key.clone(),
+            file: ResultFile::FailedText,
+        })
     }
 
     /// GetQueryExecution の ResultConfiguration.OutputLocation に返すフルパス。
@@ -459,6 +476,30 @@ mod tests {
         assert_eq!(key(ResultFile::Manifest), "p/id.metadata");
         // `tables/` は Hive の CTAS の実測。Iceberg では付かなかった（#12）。
         assert_eq!(key(ResultFile::Table), "p/tables/id.metadata");
+    }
+
+    #[test]
+    fn 失敗ファイルの置き場所は_txt_の文だけにあり_キーは成功時と同じ() {
+        let location = ResultLocation::new("s3://bucket/p/", "id", ResultFile::Text).unwrap();
+        let failed = location.failed().expect("txt の文には置き場所がある");
+        assert_eq!(failed.bucket, location.bucket);
+        assert_eq!(failed.key, location.key);
+        assert_eq!(failed.file, ResultFile::FailedText);
+
+        // `.csv` / `<id>` / `tables/<id>` の文は本物も失敗時に何も置かない。
+        for file in [ResultFile::Csv, ResultFile::Manifest, ResultFile::Table] {
+            let location = ResultLocation::new("s3://bucket/p/", "id", file).unwrap();
+            assert_eq!(location.failed(), None, "{file:?}");
+        }
+    }
+
+    #[test]
+    fn 失敗ファイルの_content_type_は成功時の_txt_と違う() {
+        assert_eq!(
+            ResultFile::FailedText.content_type(),
+            "application/octet-stream"
+        );
+        assert_eq!(ResultFile::Text.content_type(), "binary/octet-stream");
     }
 
     #[test]

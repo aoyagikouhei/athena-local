@@ -126,6 +126,39 @@ async fn 取り消したクエリは結果も_metadata_も置かない() {
 }
 
 #[tokio::test]
+async fn 取り消した_show_は失敗の理由のファイルも置かない() {
+    // 1 ページ応答（statement_delay）では run が Ok を返して write_failure を通らないので、
+    // ページ境界で取り消して Err の枝に入れる。
+    let harness = Harness::builder(first_page())
+        .endless()
+        .results_s3()
+        .start()
+        .await;
+    let id = harness
+        .start_query(json!({
+            "QueryString": "SHOW TABLES IN db",
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+        }))
+        .await;
+    wait_for("nextUri を辿り始める", || {
+        has_call(&harness, "GET /next")
+    })
+    .await;
+
+    let (code, _) = stop(&harness, &id).await;
+    assert_eq!(code, 200);
+    wait_for("Trino に DELETE が届く", || {
+        has_call(&harness, "DELETE /next")
+    })
+    .await;
+
+    // 取り消しは失敗として戻ってくるが、失敗の理由のファイルも置かない（本物も何も置かない）。
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(harness.status(&id).await["State"], "CANCELLED");
+    assert!(harness.s3_puts().is_empty(), "{:?}", harness.s3_puts());
+}
+
+#[tokio::test]
 async fn 終わったクエリを止めても_200_で状態も結果も変わらない() {
     let harness = Harness::start(json!({
         "columns": [{ "name": "n", "type": "bigint" }],
