@@ -110,7 +110,7 @@ query and the catalog name the request used.
 
 | Operation | Notes |
 | --- | --- |
-| `StartQueryExecution` | Returns an id immediately; the query runs in the background. `ExecutionParameters` are supported (see below) |
+| `StartQueryExecution` | Returns an id immediately; the query runs in the background. `ExecutionParameters` are supported (see below). `ClientRequestToken` makes retries idempotent (see below) |
 | `GetQueryExecution` | `QUEUED` → `RUNNING` → `SUCCEEDED` / `FAILED` / `CANCELLED`. Trino errors land in `Status.StateChangeReason` |
 | `GetQueryResults` | Paginated with `MaxResults` / `NextToken` |
 | `StopQueryExecution` | Marks a queued or running query `CANCELLED` immediately and sends `DELETE` to Trino's `nextUri`. Stopping a finished query succeeds and changes nothing |
@@ -176,6 +176,15 @@ Behaviour that matches real Athena:
   (submitted until sent to Trino), `EngineExecutionTimeInMillis` (from then until
   finished, including parameter classification and the result upload) and
   `TotalExecutionTimeInMillis` (their sum). `DataScannedInBytes` is always 0.
+- A `StartQueryExecution` retry with the same `ClientRequestToken` returns the
+  same `QueryExecutionId` no matter what state the first query is in (queued,
+  running, `SUCCEEDED`, `FAILED` or `CANCELLED`), and does not run the query
+  again. A retry whose `QueryString`, `QueryExecutionContext.Database` or
+  `ResultConfiguration.OutputLocation` differs from the first call instead fails
+  with `InvalidRequestException` / `AthenaErrorCode` and `ErrorCode`
+  `IDEMPOTENT_PARAMETER_MISMATCH` and `Message`
+  `Idempotent parameters do not match`. `ExecutionParameters` and `WorkGroup` are
+  not compared. `Catalog` has not been measured. Measured 2026-09-17.
 
 ### Result files
 
@@ -340,6 +349,12 @@ Query state is kept in memory, so it is lost when the container restarts.
 - **Plain HTTP only.** The clients are built without TLS, for both Trino and
   the S3-compatible store. To reach an HTTPS endpoint, add the `rustls` feature
   to `reqwest` in `Cargo.toml` (and CA certificates to the image).
+- **`ClientRequestToken` is not normalized or length-checked.** The value is
+  used verbatim as a map key: case, leading/trailing whitespace and non-ASCII
+  characters are all significant, and no minimum or maximum length is enforced.
+  Whether real Athena normalizes it has not been measured. The token → id
+  mapping is kept in memory for the life of the process (see #4) and its
+  lifetime beyond 60 seconds has not been measured.
 - **Error body key casing.** Error responses use `Message` (capital M), and an
   error that carries `AthenaErrorCode` also carries `ErrorCode` with the same
   value; both match real Athena (measured for `IDEMPOTENT_PARAMETER_MISMATCH`

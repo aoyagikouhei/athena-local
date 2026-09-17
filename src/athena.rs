@@ -18,6 +18,9 @@ pub struct StartQueryExecutionRequest {
     /// 省略時は operation.rs の DEFAULT_WORK_GROUP を既定にする。
     #[serde(default)]
     pub work_group: Option<String>,
+    /// 同じトークンの再送に同じ ID を返す。省略時は冪等化しない（フェーズ 3 で必須にする）。
+    #[serde(default)]
+    pub client_request_token: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, Default)]

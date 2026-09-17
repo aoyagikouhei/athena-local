@@ -39,12 +39,17 @@
 #                    本体スクリプトより長め）
 #   OUT_DIR         既定 $HOME/athena-client-request-token-measurements
 #                    （本体スクリプトと同じ場所。実名が入るのでリポジトリの外に出す）
+#   ONLY_RAW        1 にすると、生 HTTP の項目 (a)（トークン無し・空文字・長さの境界の
+#                    6件）だけを実行して終わる。(b)(c)(d)（実行中／CANCELLED の再送、
+#                    WorkGroup の差分）は再実行しない。項目 (a) だけをやり直したいとき用
 #
-# python3 + botocore が要る（トークンの長さ境界・トークン無しの節だけ）。まず `uv`
-# （このリポジトリの外で使われているツール）があれば `uv run --with botocore python3` で
-# 都度 botocore 入りの環境を作って動かす。`uv` が無く、システムの python3 にも botocore が
-# 無ければ、$RUN_DIR に venv を作って botocore を入れる。それも失敗したら、その節だけ
-# skip して summary に「未測定」と書く。
+# python3 + botocore が要る（項目 (a) だけ）。「使えるか」は実際に import できるかで判断
+# する（コマンドが存在するかどうかでは判断しない）。候補を順に試す: (1) システムの
+# python3、(2) `uv --version` の出力が `uv <数字>` で始まる場合だけ
+# `uv run --with botocore python3`（**このホストには `uv` という名前の、astral の uv
+# とは無関係な独自コマンドがあり、名前だけで判断すると誤動作する**ため、必ず実際に
+# import できるかまで確かめる）、(3) $RUN_DIR に venv を作って `pip install botocore`。
+# どれも失敗したら項目 (a) を丸ごと skip し、試した候補と失敗理由を summary に書く。
 #
 # 実行ごとに $OUT_DIR/run-<日時>-extra/ を作り、その中だけに書く。本体スクリプトの
 # run-<日時>/ とは混ざらない。
@@ -143,24 +148,51 @@ mask() {
 trap 'rm -f "$RUN_DIR"/.tmp-*; rm -rf "$RUN_DIR"/.venv-botocore' EXIT
 
 # ---- python + botocore の実行方法を決める（生 HTTP の項目 (a) だけに要る） -----------
+#
+# 「使えるか」は実際に `<候補> -c "import botocore..."` を通して確かめる（コマンドが
+# 存在するかどうかでは判断しない）。候補は順に: (a) システムの python3、(b) `uv`
+# （`uv --version` の出力が `uv <数字>` で始まるときだけ。**このホストには `uv` という
+# 名前の、astral の uv とは無関係な独自コマンドがあり、名前だけで判断すると誤動作する**
+# ため）、(c) $RUN_DIR に作る venv。どれも使えなければ、項目 (a) は skip し、試した候補
+# と失敗理由を summary に書く。
 
 PY_RUNNER=()
-if command -v uv >/dev/null 2>&1; then
-  PY_RUNNER=(uv run --with botocore python3)
-  echo "python 実行方法: uv run --with botocore python3"
-elif python3 -c "import botocore.session, botocore.auth, botocore.awsrequest" >/dev/null 2>&1; then
+PY_RUNNER_LOG=()
+if python3 -c "import botocore.session, botocore.auth, botocore.awsrequest" >/dev/null 2>&1; then
   PY_RUNNER=(python3)
   echo "python 実行方法: システムの python3（botocore は既に入っています）"
 else
-  echo "uv が無く、システムの python3 にも botocore が無いため、venv を作って botocore を入れます"
-  if python3 -m venv "$RUN_DIR/.venv-botocore" > "$RUN_DIR/.tmp-venv-setup.log" 2>&1 \
-    && "$RUN_DIR/.venv-botocore/bin/pip" install --quiet botocore >> "$RUN_DIR/.tmp-venv-setup.log" 2>&1; then
-    PY_RUNNER=("$RUN_DIR/.venv-botocore/bin/python3")
-    echo "python 実行方法: venv に botocore を入れました"
+  PY_RUNNER_LOG+=("システムの python3: botocore を import できない")
+  if command -v uv >/dev/null 2>&1; then
+    uv_version=$(uv --version 2>/dev/null | head -1)
+    if printf '%s' "$uv_version" | grep -qE '^uv [0-9]'; then
+      if uv run --with botocore python3 -c "import botocore.session, botocore.auth, botocore.awsrequest" >/dev/null 2>&1; then
+        PY_RUNNER=(uv run --with botocore python3)
+        echo "python 実行方法: uv run --with botocore python3（astral の uv、${uv_version}）"
+      else
+        PY_RUNNER_LOG+=("uv run --with botocore python3: astral の uv（${uv_version}）のようだが import に失敗")
+      fi
+    else
+      PY_RUNNER_LOG+=("「uv」というコマンドはあるが astral の uv ではないようだ（uv --version = ${uv_version:-出力なし}）。使わない")
+    fi
   else
-    echo "botocore を用意できませんでした（詳細は破棄済みの一時ログ）。項目 (a) は skip します"
-    PY_RUNNER=()
+    PY_RUNNER_LOG+=("uv コマンドが見つからない")
   fi
+
+  if [ "${#PY_RUNNER[@]}" -eq 0 ]; then
+    echo "venv を作って botocore を入れます"
+    if python3 -m venv "$RUN_DIR/.venv-botocore" > "$RUN_DIR/.tmp-venv-setup.log" 2>&1 \
+      && "$RUN_DIR/.venv-botocore/bin/pip" install --quiet botocore >> "$RUN_DIR/.tmp-venv-setup.log" 2>&1 \
+      && "$RUN_DIR/.venv-botocore/bin/python3" -c "import botocore.session, botocore.auth, botocore.awsrequest" >/dev/null 2>&1; then
+      PY_RUNNER=("$RUN_DIR/.venv-botocore/bin/python3")
+      echo "python 実行方法: venv に botocore を入れました"
+    else
+      PY_RUNNER_LOG+=("venv + pip install botocore: 失敗（詳細は破棄済みの一時ログ）")
+    fi
+  fi
+fi
+if [ "${#PY_RUNNER[@]}" -eq 0 ]; then
+  echo "botocore を用意できませんでした。項目 (a) は skip します"
 fi
 
 # ---- 共通のヘルパ ---------------------------------------------------------------------
@@ -313,7 +345,13 @@ report_raw_result() {
   local label=$1 prefix=$2
   local json="$RUN_DIR/$label.json"
   if [ ! -s "$json" ]; then
-    printf '[%s] 生 HTTP 呼び出しに失敗した（詳細は %s.stdout.txt / .stderr.txt）\n' "$prefix" "$label" >> "$SUMMARY"
+    # python が結果を書く前に終了している（起動できなかった、実行系の取り違えなど）。
+    # HTTP 応答が返った場合や署名・送信の例外は json 側の outcome (error/exception) に
+    # 乗るので、ここに来るのはそれより手前の失敗。
+    local first_err
+    first_err=$(head -1 "$RUN_DIR/$label.stderr.txt" 2>/dev/null)
+    [ -z "$first_err" ] && first_err=$(head -1 "$RUN_DIR/$label.stdout.txt" 2>/dev/null)
+    printf '[%s] 生 HTTP 呼び出しに失敗した（python が結果を書く前に終了。詳細は %s.stdout.txt / .stderr.txt。先頭行 = %s）\n' "$prefix" "$label" "$(mask "${first_err:-(空)}")" >> "$SUMMARY"
     return
   fi
   python3 - "$json" > "$RUN_DIR/.tmp-raw-summary" 2>/dev/null <<'PYEOF'
@@ -414,8 +452,16 @@ except Exception:
   done
 else
   echo "== raw-token-* (生 HTTP 経由の項目): skip (botocore を用意できませんでした)"
-  printf '[raw-token] skip (uv も botocore も使えなかったため未測定)\n' >> "$SUMMARY"
+  printf '[raw-token] skip (botocore を用意できなかったため未測定)\n' >> "$SUMMARY"
+  for entry in "${PY_RUNNER_LOG[@]:-}"; do
+    [ -n "$entry" ] && printf '[raw-token] 試した候補: %s\n' "$entry" >> "$SUMMARY"
+  done
 fi
+
+if [ "${ONLY_RAW:-0}" = "1" ]; then
+  echo "== (b)(c)(d): skip (ONLY_RAW=1 のため、生 HTTP の項目 (a) だけ実行します)"
+  printf '[running][cancelled][diff-WorkGroup] skip (ONLY_RAW=1)\n' >> "$SUMMARY"
+else
 
 # ---- (b)・(c) 実行中の再送と CANCELLED の後の再送（同じ1本のクエリで続けて測る） -------
 
@@ -533,6 +579,8 @@ else
   echo "== diff-workgroup: skip (WORKGROUP2 が未設定)"
   printf '[diff-WorkGroup] skip (WORKGROUP2 が未設定)\n' >> "$SUMMARY"
 fi
+
+fi # ONLY_RAW
 
 echo
 echo "完了しました。"

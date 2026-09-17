@@ -34,6 +34,15 @@ later name the date they were measured on.
 - `StartQueryExecution` now keeps the `WorkGroup` it was given, and
   `GetQueryExecution` reports that name instead of always saying `primary`.
   Omitting it still means `primary`.
+- `StartQueryExecution` accepts `ClientRequestToken` and makes retries
+  idempotent: a retry with the same token returns the same `QueryExecutionId`
+  regardless of the first query's state, and does not run the query again. A
+  retry whose `QueryString`, `QueryExecutionContext.Database` or
+  `ResultConfiguration.OutputLocation` differs instead fails with
+  `IDEMPOTENT_PARAMETER_MISMATCH`. `ExecutionParameters` and `WorkGroup` are not
+  compared. The token is not normalized or length-checked, and requests without
+  one still run as a new execution every time (unchanged for now). Measured
+  against Athena on 2026-09-17.
 
 ### Changed
 
