@@ -50,7 +50,7 @@ pub struct Execution {
     pub database: Option<String>,
     /// 結果の置き場所。OutputLocation（またはその既定）が無ければ None。
     pub result_location: Option<ResultLocation>,
-    /// GetQueryExecution がそのまま返す名前。既定は operation.rs 側で当てる。
+    /// GetQueryExecution がそのまま返す名前。既定は operation/execution.rs 側で当てる。
     pub work_group: String,
     pub state: State,
     pub state_change_reason: Option<String>,
@@ -122,7 +122,7 @@ pub struct Submission {
     pub database: Option<String>,
     pub result_location: Option<ResultLocation>,
     pub work_group: String,
-    /// ClientRequestToken。operation.rs が必須項目として検証済みなので常に有効な値。
+    /// ClientRequestToken。operation/execution.rs が必須項目として検証済みなので常に有効な値。
     pub token: String,
     pub fingerprint: Fingerprint,
 }

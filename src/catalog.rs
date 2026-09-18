@@ -11,7 +11,7 @@
 //! 文字列リテラルとコメントの中は読み飛ばす。置き換えた名前が短ければ閉じ引用符の後ろを空白で埋め、
 //! Trino のエラーに出る桁位置を受け取った SQL と揃える（`"tpch"   .tiny.nation` が通ることを Trino 482 で確認）。
 //!
-//! 文の種類の判定（`operation.rs`／`results.rs`）が先頭の空白とコメントを読み飛ばすのにも使う
+//! 文の種類の判定（`operation/classification.rs`／`results.rs`）が先頭の空白とコメントを読み飛ばすのにも使う
 //! 字句処理（`skip_leading_trivia`）をここに置く。
 
 use std::borrow::Cow;
