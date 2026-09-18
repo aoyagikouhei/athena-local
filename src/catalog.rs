@@ -10,6 +10,9 @@
 //!
 //! 文字列リテラルとコメントの中は読み飛ばす。置き換えた名前が短ければ閉じ引用符の後ろを空白で埋め、
 //! Trino のエラーに出る桁位置を受け取った SQL と揃える（`"tpch"   .tiny.nation` が通ることを Trino 482 で確認）。
+//!
+//! 文の種類の判定（`operation.rs`／`results.rs`）が先頭の空白とコメントを読み飛ばすのにも使う
+//! 字句処理（`skip_leading_trivia`）をここに置く。
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -83,6 +86,32 @@ fn comment_end(bytes: &[u8], start: usize) -> Option<usize> {
     } else {
         None
     }
+}
+
+/// 先頭の空白とコメント（`--` と `/* */`）を、交互に現れても全部読み飛ばした残りを返す。
+/// 文の種類の判定（`words()`／`ResultFile::of`）が使う。区切りはすべて ASCII なので、
+/// バイト単位で走査しても UTF-8 の途中を切らない（区切りに使う文字がどれも ASCII のため）。
+///
+/// 全部がトリビアだった（コメントだけの文や空白だけの文）ときは空文字列を返す。本物はそういう文を
+/// 「先頭のキーワードが無い」として構文エラーにするので、athena-local でも直後の構文チェック
+/// （`Trino::syntax_error`）が弾き、分類のこの粗さは観測できる差にならない（2026-09-18 実測）。
+///
+/// 未閉じの `/*` は `comment_end` と同じく末尾まで飛ばす。本物は未閉じの `/*` をコメントとして
+/// 扱わず `line 1:1` でそこの `/` を読むという違いがあるが（2026-09-18 実測）、どちらも構文エラーに
+/// なって実行が作られないので、この差も観測できない。
+pub(crate) fn skip_leading_trivia(sql: &str) -> &str {
+    let bytes = sql.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b' ' | b'\t' | b'\r' | b'\n' => i += 1,
+            _ => match comment_end(bytes, i) {
+                Some(end) => i = end,
+                None => break,
+            },
+        }
+    }
+    &sql[i..]
 }
 
 /// 空白とコメントを読み飛ばした次の文字が `.` か。
@@ -292,5 +321,49 @@ mod tests {
         ] {
             assert_eq!(alias(sql), sql);
         }
+    }
+
+    #[test]
+    fn トリビアが無ければ受け取った_sql_をそのまま返す() {
+        assert_eq!(skip_leading_trivia("SELECT 1"), "SELECT 1");
+        assert_eq!(skip_leading_trivia("(SELECT 1)"), "(SELECT 1)");
+    }
+
+    #[test]
+    fn 行コメントを読み飛ばす() {
+        assert_eq!(skip_leading_trivia("-- c\nSELECT 1"), "SELECT 1");
+        assert_eq!(skip_leading_trivia("--c\nSELECT 1"), "SELECT 1");
+    }
+
+    #[test]
+    fn ブロックコメントを読み飛ばす() {
+        assert_eq!(skip_leading_trivia("/* c */ SELECT 1"), "SELECT 1");
+        assert_eq!(skip_leading_trivia("/* c */SELECT 1"), "SELECT 1");
+        assert_eq!(skip_leading_trivia("/* a\nb */ SELECT 1"), "SELECT 1");
+        assert_eq!(skip_leading_trivia("/*/ x */ SELECT 1"), "SELECT 1");
+    }
+
+    #[test]
+    fn 空白とコメントを交互に読み飛ばす() {
+        assert_eq!(
+            skip_leading_trivia("  -- a\n\n /* b */  SELECT 1"),
+            "SELECT 1"
+        );
+        assert_eq!(skip_leading_trivia("-- a\n-- b\nSELECT 1"), "SELECT 1");
+    }
+
+    #[test]
+    fn コメントだけの文は空文字列になる() {
+        assert_eq!(skip_leading_trivia("-- only"), "");
+        assert_eq!(skip_leading_trivia("/* only */"), "");
+        assert_eq!(skip_leading_trivia("   "), "");
+        assert_eq!(skip_leading_trivia(""), "");
+        // 未閉じの `/*` も comment_end が末尾まで飛ばすので空文字列になる。
+        assert_eq!(skip_leading_trivia("/* c SELECT 1"), "");
+    }
+
+    #[test]
+    fn 非_ascii_のコメントでもバイト単位の走査が途中を切らない() {
+        assert_eq!(skip_leading_trivia("-- あ\nSELECT 1"), "SELECT 1");
     }
 }

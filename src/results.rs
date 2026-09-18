@@ -36,9 +36,13 @@ pub enum ResultFile {
 }
 
 impl ResultFile {
-    /// 先頭のキーワードで分ける。StatementType と同じく、先頭のコメントは考慮しない。
+    /// 先頭のキーワードで分ける。StatementType と同じく、先頭の空白とコメントは読み飛ばしてから
+    /// 判定する（2026-09-18 実測）。`is_iceberg_table` だけは元の `query`（読み飛ばし前）を見る。
+    /// 全文検索なのでコメントの中の `table_type='ICEBERG'` も数える。この粗さは変えない
+    /// （README の Caveats に記載。是正は #26）。
     pub fn of(query: &str) -> Self {
-        let words: Vec<String> = query
+        let trimmed = crate::catalog::skip_leading_trivia(query);
+        let words: Vec<String> = trimmed
             .split_whitespace()
             .map(|word| word.to_uppercase())
             .collect();
@@ -561,6 +565,14 @@ mod tests {
             ("DROP TABLE t", ResultFile::Text),
             ("SHOW TABLES IN db", ResultFile::Text),
             ("", ResultFile::Text),
+            // 先頭のコメントは読み飛ばして判定する（2026-09-18 実測）。
+            ("-- c\nSELECT 1", ResultFile::Csv),
+            ("/* c */ SHOW TABLES", ResultFile::Text),
+            ("-- c\nCREATE TABLE c AS SELECT 1 AS i", ResultFile::Table),
+            (
+                "-- c\nCREATE TABLE c WITH (table_type = 'ICEBERG') AS SELECT 1 AS i",
+                ResultFile::Manifest,
+            ),
         ] {
             assert_eq!(ResultFile::of(query), file, "{query:?}");
         }
@@ -587,6 +599,12 @@ mod tests {
         assert_eq!(
             ResultFile::of("CREATE TABLE c (i int) WITH (table_type = 'ICEBERG')"),
             ResultFile::Text
+        );
+        // is_iceberg_table は元の query の全文検索のまま（D5）。先頭コメントの中の
+        // table_type='ICEBERG' も数える既知の粗さ（README:445-450）は変えない。
+        assert_eq!(
+            ResultFile::of("/* table_type = 'ICEBERG' */ CREATE TABLE c AS SELECT 1 AS i"),
+            ResultFile::Manifest
         );
     }
 }

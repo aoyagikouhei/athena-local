@@ -635,15 +635,16 @@ fn update_count(query: &str, outcome: &Outcome) -> Option<i64> {
         .or_else(|| (statement_type(query) != "DDL").then_some(0))
 }
 
-/// 先頭のコメントは考慮しない。大文字にした単語の並び。
+/// 先頭の空白とコメントを読み飛ばしてから大文字にした単語の並びにする（2026-09-18 実測）。
 fn words(query: &str) -> Vec<String> {
-    query
+    crate::catalog::skip_leading_trivia(query)
         .split_whitespace()
         .map(|word| word.trim_start_matches('(').to_uppercase())
         .collect()
 }
 
 /// 本物の StatementType（2026-09-14 実測）。EXPLAIN と VACUUM は DML、OPTIMIZE は DDL。
+/// 先頭のコメントは `words()` が読み飛ばして判定する（2026-09-18 実測）。
 fn statement_type(query: &str) -> &'static str {
     let words = words(query);
     match words.first().map(String::as_str).unwrap_or_default() {
@@ -655,6 +656,7 @@ fn statement_type(query: &str) -> &'static str {
 }
 
 /// 本物の SubstatementType（2026-09-14 実測）。実測していない形の文は None にして項目ごと省く。
+/// 先頭のコメントは `words()` が読み飛ばして判定する（2026-09-18 実測）。
 /// Trino の書き方しか無い同義の文（CREATE SCHEMA、SHOW SCHEMAS、ADD COLUMN）は、Athena の同義の文に寄せる。
 fn substatement_type(query: &str) -> Option<&'static str> {
     let words = words(query);
@@ -790,6 +792,9 @@ mod tests {
             "DDL"
         );
         assert_eq!(statement_type("SHOW TABLES"), "UTILITY");
+        // 先頭のコメントは読み飛ばして判定する（2026-09-18 実測）。
+        assert_eq!(statement_type("-- c\nSELECT 1"), "DML");
+        assert_eq!(statement_type("/* c */ SHOW TABLES"), "UTILITY");
     }
 
     #[test]
@@ -834,6 +839,8 @@ mod tests {
                 "ALTER TABLE t ADD COLUMN c varchar",
                 "ALTER_TABLE_ADD_COLUMN",
             ),
+            // 先頭のコメントは読み飛ばして判定する（2026-09-18 実測）。
+            ("-- c\nSELECT 1", "SELECT"),
         ] {
             assert_eq!(substatement_type(query), Some(expected), "{query:?}");
         }

@@ -136,6 +136,18 @@ later name the date they were measured on.
   which already add a token automatically; a raw HTTP client now needs to add
   one itself. Measured against Athena on 2026-09-17.
 
+### Fixed
+
+- `StatementType`, `SubstatementType`, `UpdateCount` and `OutputLocation` are
+  now classified correctly for a SQL statement that starts with a comment
+  (`-- ...` or `/* ... */`, possibly with more whitespace and comments after
+  it): the leading comment is skipped before the classification keyword is
+  read, matching Athena, instead of being read as the first word and always
+  falling into `UTILITY` / `<id>.txt`. This also fixes the leading query ID of
+  the `.metadata` companion file for a commented `DESCRIBE` or
+  `SHOW CREATE TABLE`, which must be the `QueryExecutionId` rather than
+  Trino's own query ID. Measured against Athena on 2026-09-18.
+
 ## [0.4.0] - 2026-09-15
 
 ### Added
