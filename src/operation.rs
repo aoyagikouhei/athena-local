@@ -841,6 +841,9 @@ mod tests {
             ),
             // 先頭のコメントは読み飛ばして判定する（2026-09-18 実測）。
             ("-- c\nSELECT 1", "SELECT"),
+            // 2 語目以降も読み飛ばした後の並びから取る。`metadata_query_id` の
+            // `("SHOW", "CREATE")` の分岐も同じ `words()` を使うので、ここで一緒に守る。
+            ("-- c\nSHOW CREATE TABLE t", "SHOW_CREATE_TABLE"),
         ] {
             assert_eq!(substatement_type(query), Some(expected), "{query:?}");
         }
