@@ -96,6 +96,15 @@ later name the date they were measured on.
   startup, and there is no "keep forever" value, so use a large number instead.
   Real Athena's retention period has not been measured; 3600 is athena-local's
   own number.
+- README documents how to connect Athena JDBC 3.x. The driver refuses a
+  plain-HTTP `AthenaEndpoint` or `S3Endpoint`
+  (`EndpointHelper.constructEndpointUri` accepts `https` only, and no property
+  disables it; disassembled from 3.8.1), so the new section shows a minimal
+  nginx TLS terminator for athena-local and the S3-compatible store, how to
+  make a self-signed certificate the JVM accepts, and the `keytool` import and
+  driver properties that go with it. The Caveats entry "Plain HTTP only" points
+  at it. This is the setup athena-local was verified against JDBC 3.8.1 with on
+  2026-09-17. Documentation only; no behaviour change.
 
 ### Changed
 
