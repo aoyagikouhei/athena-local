@@ -19,7 +19,7 @@ pub struct StartQueryExecutionRequest {
     #[serde(default)]
     pub work_group: Option<String>,
     /// 本物と同じく必須（省略は INVALID_INPUT。2026-09-17 実測）。`Option` なのは、
-    /// serde の欠落エラーではなく operation.rs が実測した文言で自前のエラーを返すため。
+    /// serde の欠落エラーではなく operation/execution.rs が実測した文言で自前のエラーを返すため。
     #[serde(default)]
     pub client_request_token: Option<String>,
 }
@@ -208,7 +208,7 @@ pub struct WorkGroup {
     pub configuration: WorkGroupConfiguration,
 }
 
-/// athena-local にワークグループの実体は無く、値は operation.rs で実測して直書きする。
+/// athena-local にワークグループの実体は無く、値は operation/work_group.rs で実測して直書きする。
 #[derive(Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct WorkGroupConfiguration {

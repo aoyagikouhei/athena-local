@@ -26,11 +26,11 @@ CI（`.github/workflows/ci.yml`）は `fmt --check`、`clippy -D warnings`、`te
 ### リクエストの流れ
 
 1. `handler::dispatch` — `POST /` の 1 本だけ。`X-Amz-Target: AmazonAthena.<Operation>` でオペレーションを振り分ける。SigV4 は検証しない。
-2. `operation.rs` — 4 つのオペレーションの本体。
-   - `start_query_execution`: 文脈（カタログ／スキーマ）に既定値を当てる → `OutputLocation` を検証 → `Trino::syntax_error` で構文を確かめる（`PREPARE athena_local_syntax_check FROM\n<sql>` を送り、1 行ずれたエラー位置を元に戻す）→ `Store::submit` → `spawn_query` でバックグラウンド実行して、ID をすぐ返す。
-   - `spawn_query` → `run`: `ExecutionParameters` の値ごとに `SELECT (<値>)` を Trino に投げて分類し（`statement::bind`）、`EXECUTE IMMEDIATE '<sql>' USING ...` で実行する。包む前に `catalog::alias_qualified_names` で修飾名のカタログに別名を当てる。パラメータが無く、別名に一致する修飾名も無ければ SQL は一切書き換えない（テストで保証している不変条件）。`?` の無い SQL に値が渡されたときのエラーでは、別名を当てただけの SQL で再実行する。
-   - `write_result`: 本体（CSV / TXT）を置き、列があれば `.metadata` を置いてから `SUCCEEDED` にする（クライアントは SUCCEEDED を見た直後に S3 を読むため）。本体を置くのは `ResultFile::Csv` で更新件数が無いときと `ResultFile::Text` のときで、取り消されていないときだけ。DML と CTAS は本体を置かず `.metadata` だけを置く。本体の PUT が失敗したら `.metadata` は試みない。
-   - `write_failure`: 失敗（`run` が `Err`）したときに、`ResultFile::Text` の文だけ `<id>.txt` に `FAILED: ` + `StateChangeReason` を置く。`.metadata` は置かない。取り消されていれば何も置かない。書けなくても FAILED と理由は Trino のエラーのまま。置き場所と Content-Type は `ResultLocation::failed`（`ResultFile::FailedText`。Content-Type だけ成功時と違う）。
+2. `operation/` — 6 つのオペレーションの本体。`execution.rs`（`StartQueryExecution`）、`query_execution.rs`（`GetQueryExecution`／`GetQueryResults`／`StopQueryExecution`）、`work_group.rs`（`GetWorkGroup`／`ListWorkGroups`）に分かれ、文の種類の判定だけ `classification.rs` に置いて実行系と参照系の両方から呼ぶ。`mod.rs` は `mod` 宣言と 6 関数の再エクスポートだけで、`handler` からの見え方は分割前と変わらない。
+   - `execution.rs` の `start_query_execution`: 文脈（カタログ／スキーマ）に既定値を当てる → `OutputLocation` を検証 → `Trino::syntax_error` で構文を確かめる（`PREPARE athena_local_syntax_check FROM\n<sql>` を送り、1 行ずれたエラー位置を元に戻す）→ `Store::submit` → `spawn_query` でバックグラウンド実行して、ID をすぐ返す。
+   - `execution.rs` の `spawn_query` → `run`: `ExecutionParameters` の値ごとに `SELECT (<値>)` を Trino に投げて分類し（`statement::bind`）、`EXECUTE IMMEDIATE '<sql>' USING ...` で実行する。包む前に `catalog::alias_qualified_names` で修飾名のカタログに別名を当てる。パラメータが無く、別名に一致する修飾名も無ければ SQL は一切書き換えない（テストで保証している不変条件）。`?` の無い SQL に値が渡されたときのエラーでは、別名を当てただけの SQL で再実行する。
+   - `execution.rs` の `write_result`: 本体（CSV / TXT）を置き、列があれば `.metadata` を置いてから `SUCCEEDED` にする（クライアントは SUCCEEDED を見た直後に S3 を読むため）。本体を置くのは `ResultFile::Csv` で更新件数が無いときと `ResultFile::Text` のときで、取り消されていないときだけ。DML と CTAS は本体を置かず `.metadata` だけを置く。本体の PUT が失敗したら `.metadata` は試みない。
+   - `execution.rs` の `write_failure`: 失敗（`run` が `Err`）したときに、`ResultFile::Text` の文だけ `<id>.txt` に `FAILED: ` + `StateChangeReason` を置く。`.metadata` は置かない。取り消されていれば何も置かない。書けなくても FAILED と理由は Trino のエラーのまま。置き場所と Content-Type は `ResultLocation::failed`（`ResultFile::FailedText`。Content-Type だけ成功時と違う）。
 3. `store.rs` — 実行状態をメモリの `HashMap` で持つ。`finish` は終端状態では何もしないので、先に `CANCELLED` になったクエリにあとから届いた結果は捨てられる。
 4. `trino.rs` — Trino クライアント。`nextUri` を辿ってページを `Outcome` にまとめる（503 は待って再試行、DML の `data` は行として扱わない）。timestamp の精度を保つため `X-Trino-Client-Capabilities: PARAMETRIC_DATETIME` を必ず付ける。
 
@@ -41,9 +41,9 @@ CI（`.github/workflows/ci.yml`）は `fmt --check`、`clippy -D warnings`、`te
 ### Athena の見え方への変換
 
 - `convert.rs` — Trino の値と型から Athena の `ResultSet` を作る。1 ページ目の先頭行に列名を入れる、値はすべて文字列にする、複合型は `typeSignature` を見て Athena の表記（`[1, 2]`、`{k=1}`）にする、double は Java の `Double.toString` の表記にする、varbinary は 16 進にする、`ColumnInfo` の Precision／Scale を埋める、など。`GetQueryResults` と結果 CSV（`results::to_csv`）の両方がここを通る。
-- 文の種類は先頭のキーワードで判定していて、判定が 2 か所にある。`StatementType`／`SubstatementType`／`UpdateCount` は `operation.rs`、`OutputLocation` のファイル名（`<id>.csv`、`<id>`、`tables/<id>`、`<id>.txt`）は `results::ResultFile::of`。CTAS の判定（`is_create_table_as`）は両者で共有している。どちらも先頭の空白とコメント（`-- ...`、`/* ... */`）は `catalog::skip_leading_trivia` で読み飛ばしてから判定する（本物の Athena も同様。2026-09-18 実測）。ただし `ResultFile::of` が Iceberg の CTAS かどうかを見る `is_iceberg_table` だけは読み飛ばし前の元の SQL 全文を見る（コメントの中の `table_type='ICEBERG'` も数える既知の粗さはそのまま）。
+- 文の種類は先頭のキーワードで判定していて、判定が 2 か所にある。`StatementType`／`SubstatementType` は `operation/classification.rs`（`UpdateCount` は `operation/query_execution.rs` がその `statement_type` を使って決める）、`OutputLocation` のファイル名（`<id>.csv`、`<id>`、`tables/<id>`、`<id>.txt`）は `results::ResultFile::of`。CTAS の判定（`is_create_table_as`）は両者で共有している。どちらも先頭の空白とコメント（`-- ...`、`/* ... */`）は `catalog::skip_leading_trivia` で読み飛ばしてから判定する（本物の Athena も同様。2026-09-18 実測）。ただし `ResultFile::of` が Iceberg の CTAS かどうかを見る `is_iceberg_table` だけは読み飛ばし前の元の SQL 全文を見る（コメントの中の `table_type='ICEBERG'` も数える既知の粗さはそのまま）。
 - `catalog.rs` — `TRINO_CATALOG_MAP` の別名を SQL の修飾名にも当てる。対象は、別名マップのキーと完全一致する二重引用符付き識別子で、空白やコメントを挟んで `.` が続くものだけ。文字列リテラルとコメントは読み飛ばす。置き換えた名前が短ければ空白で埋めて、Trino のエラーの桁位置を受け取った SQL に揃える。構文チェックと `GetQueryExecution` の `Query` は受け取った SQL のまま。
-- `metadata.rs` — 結果ファイルの隣に置く `.metadata` の protobuf を組み立てる（公式のスキーマは無く、burtcorp/athena-jdbc の `AthenaMetaDataParser` と同じフィールド番号）。先頭にクエリ ID、DML と CTAS は `updateType` と更新件数、続けて列ごとに `ColumnInfo` と同じ値。列の Precision／Scale／CaseSensitive を出すかどうかは値ではなく型ごとの表で決める（2026-09-17 実測）。S3 も文の分類も知らない。クエリ ID の出どころ（Trino の ID か `QueryExecutionId` か）は `operation.rs` 側で決める。
+- `metadata.rs` — 結果ファイルの隣に置く `.metadata` の protobuf を組み立てる（公式のスキーマは無く、burtcorp/athena-jdbc の `AthenaMetaDataParser` と同じフィールド番号）。先頭にクエリ ID、DML と CTAS は `updateType` と更新件数、続けて列ごとに `ColumnInfo` と同じ値。列の Precision／Scale／CaseSensitive を出すかどうかは値ではなく型ごとの表で決める（2026-09-17 実測）。S3 も文の分類も知らない。クエリ ID の出どころ（Trino の ID か `QueryExecutionId` か）は `operation/execution.rs` 側で決める。
 - `failure.rs` — Trino のエラー名を `AthenaError` の `ErrorCategory`／`ErrorType` に写す。
 - `response.rs` — awsJson1.1 のエラー形（`__type` と `x-amzn-errortype` ヘッダ、必要なら `AthenaErrorCode`）。
 - `athena.rs` — リクエスト／レスポンスの型（PascalCase で SDK の JSON と一対一に対応する）。
