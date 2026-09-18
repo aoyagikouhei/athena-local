@@ -441,3 +441,56 @@ async fn _0_行の_select_でも_metadata_を置く() {
         ))
     );
 }
+
+#[tokio::test]
+async fn 先頭のコメントを読み飛ばして_metadata_のクエリ_id_の出どころを決める() {
+    // 2026-09-18 実測。DESCRIBE は先頭コメントの有無によらず QueryExecutionId が先頭に来る。
+    let harness = Harness::builder(select_response())
+        .route(
+            "-- c\nDESCRIBE t",
+            json!({
+                "columns": [
+                    { "name": "col_name", "type": "varchar" },
+                    { "name": "data_type", "type": "varchar" }
+                ],
+                "data": [["id", "integer"], ["name", "varchar"]]
+            }),
+        )
+        .results_s3()
+        .start()
+        .await;
+
+    let execution = harness
+        .run_query(json!({
+            "QueryString": "-- c\nDESCRIBE t",
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+        }))
+        .await;
+    let id = execution_id(&execution);
+
+    let puts = harness.s3_puts();
+    assert_eq!(puts.len(), 2, "{puts:?}");
+    assert_eq!(puts[1].key, format!("athena/{id}.txt.metadata"));
+
+    // 列 `col_name varchar` は 6 + 10 + 10 + 9 + 6 + 2 + 2 + 2 = 47 = 0x2f、
+    // 列 `data_type varchar` は 6 + 11 + 11 + 9 + 6 + 2 + 2 + 2 = 49 = 0x31。
+    assert_eq!(
+        hex_of(&puts[1].body),
+        hex(&format!(
+            "{}
+             222f
+               0a04 68697665
+               2208 636f6c5f6e616d65
+               2a08 636f6c5f6e616d65
+               3207 76617263686172
+               38ffffffff07 4000 4803 5001
+             2231
+               0a04 68697665
+               2209 646174615f74797065
+               2a09 646174615f74797065
+               3207 76617263686172
+               38ffffffff07 4000 4803 5001",
+            execution_id_field(&id)
+        ))
+    );
+}

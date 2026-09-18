@@ -255,3 +255,41 @@ async fn 失敗したクエリには_athena_error_が付き_成功したクエ�
             .is_none()
     );
 }
+
+#[tokio::test]
+async fn 先頭のコメントを読み飛ばして_statement_type_と_update_count_を決める() {
+    // 2026-09-18 実測。先頭のコメントは判定の前に読み飛ばす。
+    let harness = Harness::builder(json!({
+        "columns": [{ "name": "id", "type": "integer" }],
+        "data": [[1]]
+    }))
+    .route(
+        "-- c\nCREATE TABLE t (i int)",
+        json!({ "columns": [], "updateType": "CREATE TABLE" }),
+    )
+    .start()
+    .await;
+
+    let select = harness
+        .run_query(json!({ "QueryString": "-- c\nSELECT 1" }))
+        .await;
+    assert_eq!(select["QueryExecution"]["StatementType"], "DML");
+
+    let create = harness
+        .run_query(json!({ "QueryString": "-- c\nCREATE TABLE t (i int)" }))
+        .await;
+    assert_eq!(create["QueryExecution"]["StatementType"], "DDL");
+
+    let (status, create_results) = harness
+        .call(
+            "GetQueryResults",
+            json!({ "QueryExecutionId": execution_id(&create) }),
+        )
+        .await;
+    assert_eq!(status, 200);
+    // 件数の無い DDL は本物では UpdateCount が null になり SDK からは省いたのと同じに見える。
+    assert!(
+        create_results.get("UpdateCount").is_none(),
+        "{create_results}"
+    );
+}

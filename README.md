@@ -169,6 +169,11 @@ Behaviour that matches real Athena:
   `CREATE_TABLE_AS_SELECT`, and so on. Trino spellings map to Athena's
   (`CREATE SCHEMA` is `CREATE_DATABASE`, `SHOW SCHEMAS` is `SHOW_DATABASES`).
   Statements whose `SubstatementType` was not measured leave the field out.
+  Leading whitespace and comments (`-- ...`, `/* ... */`, possibly interleaved)
+  are skipped before the classification keyword is read, the same way Athena
+  does (measured 2026-09-18); this also decides the `OutputLocation` file name
+  and, for `DESCRIBE` / `SHOW CREATE TABLE`, whether the `.metadata` file's
+  leading query ID is the `QueryExecutionId` or Trino's own ID.
 - A `FAILED` query carries `Status.AthenaError` with the same `ErrorMessage` as
   `StateChangeReason`. Trino's user errors are `ErrorCategory` 2 with the
   `ErrorType` Athena uses for that error name (measured: `TABLE_NOT_FOUND` and
@@ -386,6 +391,13 @@ passed; see Caveats.
 - **Iceberg maintenance statements differ.** Athena's `OPTIMIZE ... REWRITE DATA`
   and `VACUUM` do not exist in Trino, which uses `ALTER TABLE ... EXECUTE optimize`
   and `ALTER TABLE ... EXECUTE expire_snapshots` instead.
+- **A block comment before `SHOW CREATE TABLE` can succeed here but fails on
+  Athena.** `StatementType`/`SubstatementType`/`OutputLocation` are classified
+  correctly either way (comments are skipped for classification), but Athena's
+  parser for this statement rejects a leading `/* ... */` at execution time
+  (measured 2026-09-18); a leading `-- ...` line comment is fine on both. Since
+  athena-local sends the SQL to Trino unmodified, the block-comment form can
+  succeed here where it would fail on real Athena.
 - **Cancellation is checked between pages.** A stopped query is `CANCELLED`
   at once, but the `DELETE` reaches Trino only when the current long poll to
   `nextUri` returns (about a second at most).

@@ -461,3 +461,42 @@ async fn 応答しない_s3_には_put_を諦めて_failed_になる() {
         "再試行せず、.metadata も試みない"
     );
 }
+
+#[tokio::test]
+async fn 先頭のコメントを読み飛ばして_output_location_を決める() {
+    // 2026-09-18 実測。先頭のコメントは判定の前に読み飛ばす。
+    let harness = Harness::builder(select_response())
+        .route(
+            "-- c\nCREATE TABLE t2 AS SELECT 1",
+            json!({
+                "columns": [{ "name": "rows", "type": "bigint" }],
+                "updateType": "CREATE TABLE",
+                "updateCount": 1
+            }),
+        )
+        .results_s3()
+        .start()
+        .await;
+
+    let select = harness
+        .run_query(json!({
+            "QueryString": "-- c\nSELECT id, name FROM users",
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+        }))
+        .await;
+    assert_eq!(
+        output_location(&select),
+        format!("s3://results-bucket/athena/{}.csv", execution_id(&select))
+    );
+
+    let ctas = harness
+        .run_query(json!({
+            "QueryString": "-- c\nCREATE TABLE t2 AS SELECT 1",
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+        }))
+        .await;
+    assert_eq!(
+        output_location(&ctas),
+        format!("s3://results-bucket/athena/tables/{}", execution_id(&ctas))
+    );
+}
