@@ -170,6 +170,23 @@ fn parse_results(env: impl Fn(&str) -> Option<String>) -> Result<ResultsMode, St
     }))
 }
 
+/// 既定の出力先が無いときに起動時に出す警告。起動は止めない。
+/// 出力は main.rs の起動ログに並ぶので、そちらと同じ英語にする。
+pub const OUTPUT_LOCATION_WARNING: &str = "warning: no default output location; awswrangler may create a bucket on real AWS. Set ATHENA_LOCAL_RESULTS=s3 with ATHENA_LOCAL_OUTPUT_LOCATION, or pass s3_output from the client (see README Caveats).";
+
+/// 既定の出力先が無ければ OUTPUT_LOCATION_WARNING を返す。
+/// 既定の出力先が無いと GetWorkGroup は OutputLocation を返さず、awswrangler は
+/// create_athena_bucket() で STS と S3 を呼ぶ。AWS_ENDPOINT_URL が全サービスに効いていなければ
+/// 実 AWS に出る（#2 の実機検証で確認）。ResultsMode::None でも GetWorkGroup は
+/// OutputLocation を返さないので、危険の条件は同じ。よって none にも出す。
+pub fn output_location_warning(results: &ResultsMode) -> Option<&'static str> {
+    let location = match results {
+        ResultsMode::None => None,
+        ResultsMode::S3(settings) => settings.default_output_location.as_deref(),
+    };
+    location.is_none().then_some(OUTPUT_LOCATION_WARNING)
+}
+
 /// ATHENA_LOCAL_RETENTION_SECONDS を読む。未設定なら既定。空文字は optional_env が未設定として落とす。
 /// 数として読めない値と 0 は起動時に止める（0 を「無期限」と読んだ設定で全クエリが直後に消えるのを防ぐ）。
 fn parse_retention(env: impl Fn(&str) -> Option<String>) -> Result<Duration, String> {
@@ -403,6 +420,27 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn 既定の出力先が無ければ警告を出す() {
+        assert!(output_location_warning(&ResultsMode::None).is_some());
+
+        let Ok(results) = parse_results(env(&with(&[]))) else {
+            panic!("s3 として読めない");
+        };
+        assert!(output_location_warning(&results).is_some());
+    }
+
+    #[test]
+    fn 既定の出力先があれば警告を出さない() {
+        let Ok(results) = parse_results(env(&with(&[(
+            "ATHENA_LOCAL_OUTPUT_LOCATION",
+            "s3://results/athena/",
+        )]))) else {
+            panic!("s3 として読めない");
+        };
+        assert_eq!(output_location_warning(&results), None);
+    }
+
     #[test]
     fn ワークグループの既定は_primary_の_1_件() {
         assert_eq!(parse_work_groups(env(&[])), Ok(vec!["primary".to_string()]));
