@@ -115,6 +115,16 @@ later name the date they were measured on.
 
 ### Changed
 
+- A new Caveat records that a leading `/* ... */` before `SHOW CREATE TABLE`
+  can succeed here while real Athena rejects it at execution time with
+  `FAILED: ParseException line 1:0 cannot recognize input near '/' '*' 'c'`
+  and `ErrorCategory` 1 / `ErrorType` 1003, even though
+  `StatementType`, `SubstatementType` and `OutputLocation` come back correctly
+  on both sides; a leading `-- ...` line comment works on both. athena-local
+  sends the SQL to Trino unmodified, so nothing rejects the block-comment form
+  here. Whether other statements that Athena parses the same way behave alike
+  is not measured. No behaviour changed. Measured against Athena on
+  2026-09-18.
 - The Caveat about the opaque `.metadata` Athena writes for `SHOW TABLES`,
   `SHOW DATABASES`, `SHOW COLUMNS`, `SHOW PARTITIONS` and `SHOW TBLPROPERTIES`
   now records what the blob looks like — a fixed 233 bytes (345 for

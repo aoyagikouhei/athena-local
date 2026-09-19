@@ -508,9 +508,13 @@ passed; see Caveats.
   Athena.** `StatementType`/`SubstatementType`/`OutputLocation` are classified
   correctly either way (comments are skipped for classification), but Athena's
   parser for this statement rejects a leading `/* ... */` at execution time
-  (measured 2026-09-18); a leading `-- ...` line comment is fine on both. Since
+  (measured 2026-09-18): the query fails with `FAILED: ParseException line 1:0
+  cannot recognize input near '/' '*' 'c'` and `ErrorCategory` 1 /
+  `ErrorType` 1003. A leading `-- ...` line comment is fine on both. Since
   athena-local sends the SQL to Trino unmodified, the block-comment form can
-  succeed here where it would fail on real Athena.
+  succeed here where it would fail on real Athena. Whether other statements
+  that Athena parses the same way reject a leading block comment as well is
+  not measured.
 - **Cancellation is checked between pages.** A stopped query is `CANCELLED`
   at once, but the `DELETE` reaches Trino only when the current long poll to
   `nextUri` returns (about a second at most).

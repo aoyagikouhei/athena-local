@@ -121,3 +121,27 @@ async fn 構文エラー以外の失敗は開始時には返さず実行に任�
     assert_eq!(code, 200, "{started}");
     assert!(started["QueryExecutionId"].is_string());
 }
+
+#[tokio::test]
+async fn ブロックコメント付きの_show_create_table_も本物と違いそのまま通る() {
+    // 本物は分類だけ正しく返し、実行時に ParseException で弾く（2026-09-18 実測）。
+    // athena-local は受け取った SQL をそのまま Trino に投げるので成功する。
+    // README の Caveats に書いてある差を、SQL を書き換えないことで固定する。
+    let sql = "/* c */ SHOW CREATE TABLE t";
+    let harness = Harness::builder(select_response())
+        .route(
+            sql,
+            json!({
+                "columns": [{ "name": "Create Table", "type": "varchar" }],
+                "data": [["CREATE TABLE t (id integer)"]]
+            }),
+        )
+        .start()
+        .await;
+
+    let execution = harness.run_query(json!({ "QueryString": sql })).await;
+
+    assert_eq!(execution["QueryExecution"]["Status"]["State"], "SUCCEEDED");
+    assert_eq!(harness.syntax_checks(), [sql]);
+    assert_eq!(harness.trino_sqls(), [sql]);
+}
