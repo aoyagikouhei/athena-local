@@ -19,8 +19,7 @@ later name the date they were measured on.
   none for column-less DDL either, so those statements still fail there, while
   3.8.1 logs the 404 at INFO level and carries on, measured 2026-09-17). The
   names follow the result file: `<id>.csv.metadata`, `<id>.txt.metadata`,
-  `<id>.metadata` for `INSERT` and an Iceberg CTAS, and `tables/<id>.metadata`
-  for a Hive CTAS. It is written for every statement that has columns,
+  `<id>.metadata` for `INSERT`, and `tables/<id>.metadata` for a CTAS. It is written for every statement that has columns,
   including a `SELECT` returning
   no rows; DML and CTAS write the companion file only, and DDL without columns,
   failed queries and cancelled queries write no companion file. The content is
@@ -173,6 +172,15 @@ later name the date they were measured on.
   the `.metadata` companion file for a commented `DESCRIBE` or
   `SHOW CREATE TABLE`, which must be the `QueryExecutionId` rather than
   Trino's own query ID. Measured against Athena on 2026-09-18.
+- `CREATE TABLE ... AS SELECT` now always writes to `tables/<id>`. It used to
+  write to `<id>` when the text `table_type = 'ICEBERG'` appeared anywhere in
+  the statement, which also caught the text inside a comment, inside a string
+  literal, or outside the `WITH` clause. Athena writes `tables/<id>` for all of
+  those, and for a real Iceberg CTAS as well, so the table format is no longer
+  read out of the SQL at all. Measured against Athena on 2026-09-19, with
+  `SHOW CREATE TABLE` confirming the table format; this supersedes the
+  2026-09-17 round, which had recorded `<id>` for an Iceberg CTAS. `INSERT`
+  keeps writing `<id>` (measured 2026-09-17, not measured again).
 
 ## [0.4.0] - 2026-09-15
 
