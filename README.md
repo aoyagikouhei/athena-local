@@ -425,6 +425,9 @@ reads:
 The query id follows Athena's own split: `SELECT`, DML, CTAS, `EXPLAIN` and the
 `SHOW` statements carry the engine's query id (Trino's here, Athena's engine id
 there), while `DESCRIBE` and `SHOW CREATE TABLE` carry the `QueryExecutionId`.
+For the `SHOW` statements whose real companion file is opaque (see Caveats)
+Athena's own choice cannot be observed, so athena-local uses the engine id there
+by analogy with `EXPLAIN`.
 
 ### `ExecutionParameters`
 
@@ -518,10 +521,22 @@ passed; see Caveats.
   (see Result files above).
 - **`SHOW` metadata is not the opaque form Athena writes.** For `SHOW TABLES`,
   `SHOW DATABASES`, `SHOW COLUMNS`, `SHOW PARTITIONS` and `SHOW TBLPROPERTIES`,
-  real Athena writes a base64 blob that does not decode as protobuf and is
-  presumably encrypted (measured 2026-09-17). athena-local writes the same plain
-  protobuf it writes for every other statement, so a client that parses it sees
-  the columns instead of failing.
+  real Athena writes a base64 blob that does not decode as protobuf (measured
+  2026-09-16, 2026-09-17 and 2026-09-18). The blob is 312 base64 characters for
+  the first four statements and 460 for `SHOW TBLPROPERTIES`, decoding to a
+  fixed 233 and 345 bytes whatever the result holds. Only the leading byte
+  `0x01` is stable: everything after it differs between measurement rounds and
+  sometimes between two statements of the same round, and running the same
+  `SHOW TABLES` twice over the same tables yields different bytes. That is
+  consistent with an encrypted payload, but **what the format actually is has
+  not been identified** and is not reproduced here. The result file itself is
+  unaffected — it is the same plain text Athena writes for any other `SHOW`.
+  `SHOW CREATE TABLE` is not affected either: it writes plain protobuf, like
+  `DESCRIBE`. athena-local writes the same plain protobuf it writes for every
+  other statement, so a client that parses it sees the columns instead of
+  failing; Athena JDBC 3.8.1 in its default `ResultFetcher=auto` fetched the
+  companion file of a `SHOW TABLES` from athena-local and read it without an
+  exception (verified 2026-09-17).
 - **`DROP TABLE` gets no companion file.** Athena writes a 41-byte `.metadata`
   holding only the query id and `DROP TABLE` for it (measured 2026-09-17).
   athena-local writes a companion file only for statements that have columns,
