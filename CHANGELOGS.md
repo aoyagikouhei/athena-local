@@ -105,6 +105,14 @@ later name the date they were measured on.
   driver properties that go with it. The Caveats entry "Plain HTTP only" points
   at it. This is the setup athena-local was verified against JDBC 3.8.1 with on
   2026-09-17. Documentation only; no behaviour change.
+- A one-line warning is printed to stderr at startup when there is no default
+  output location, telling you that awswrangler may create a bucket on real
+  AWS and pointing at the README Caveat. It appears with
+  `ATHENA_LOCAL_RESULTS=none` as well as with `s3` and no
+  `ATHENA_LOCAL_OUTPUT_LOCATION`, because `GetWorkGroup` reports no
+  `OutputLocation` in either case, which is what sends awswrangler down its
+  `create_athena_bucket()` fallback. The server still starts, and the outgoing
+  calls are still not blocked.
 
 ### Changed
 

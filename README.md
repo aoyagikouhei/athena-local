@@ -181,7 +181,7 @@ and ran without an exception.
 | `ATHENA_LOCAL_RETENTION_SECONDS` | `3600` | How long a finished query (`SUCCEEDED` / `FAILED` / `CANCELLED`) and its `ClientRequestToken` are kept, in seconds. Queued and running queries are never dropped. A value that is not a positive integer stops the server at startup |
 | `ATHENA_LOCAL_RESULTS` | `none` | `s3` writes results to `OutputLocation`: a `SELECT` as CSV, DDL and `SHOW` as text. `none` writes nothing |
 | `ATHENA_LOCAL_WORK_GROUPS` | `primary` | Workgroup names that `ListWorkGroups` returns, comma separated. `GetWorkGroup` still accepts any name, listed or not. An empty entry stops the server at startup |
-| `ATHENA_LOCAL_OUTPUT_LOCATION` | *(none)* | With `s3`: `s3://bucket/prefix` used when the request has no `ResultConfiguration.OutputLocation` (stands in for the workgroup default). `GetWorkGroup` also reports it as `Configuration.ResultConfiguration.OutputLocation` |
+| `ATHENA_LOCAL_OUTPUT_LOCATION` | *(none)* | With `s3`: `s3://bucket/prefix` used when the request has no `ResultConfiguration.OutputLocation` (stands in for the workgroup default). `GetWorkGroup` also reports it as `Configuration.ResultConfiguration.OutputLocation`. When no default output location is set, athena-local prints a one-line warning at startup and keeps running (see the awswrangler Caveat) |
 | `AWS_ENDPOINT_URL_S3` | *(none)* | With `s3`: the S3-compatible store, `http://` only. Falls back to `AWS_ENDPOINT_URL` |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | *(none)* | With `s3`: credentials for the store |
 | `AWS_REGION` | `us-east-1` | With `s3`: region used for signing |
@@ -584,6 +584,12 @@ passed; see Caveats.
   `aws-athena-query-results-{account}-{region}`, its own documented fallback.
   Those calls go to real AWS unless `AWS_ENDPOINT_URL` covers every service, not
   just Athena. Set `ATHENA_LOCAL_OUTPUT_LOCATION` to keep the run local.
+  athena-local warns about this once at startup whenever it has no default
+  output location to report, which includes every `ATHENA_LOCAL_RESULTS=none`
+  run, because `GetWorkGroup` then leaves `OutputLocation` out either way. The
+  warning goes to stderr and does not stop the server; athena-local still does
+  not block the outgoing calls, since that would mean answering unlike real
+  Athena.
 - **`GetWorkGroup` omits two fields Athena returns.** `CreationTime` is left out
   because athena-local has no workgroup that was ever created, so any value
   would be invented; `EnableMinimumEncryptionConfiguration` is left out because
