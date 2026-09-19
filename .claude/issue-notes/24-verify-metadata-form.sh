@@ -48,8 +48,12 @@ for f in $R1/show-create-table $R2/show-create-table $R1/describe $R3/describe $
   check "protobuf $(basename $f)" "$(xxd -l 1 -p $f.metadata.bytes)" "0a"
 done
 
-# 6. SHOW TABLES の結果本体そのものは平文
-check "本体は平文" "$(head -c 7 $R4/probe-show-tables.bytes)" "answers"
+# 6. SHOW TABLES の結果本体そのものは平文（実テーブル名は書かない。形だけを確かめる）
+body=$R4/probe-show-tables.bytes
+check "本体は印字可能な ASCII と改行だけ" "$(LC_ALL=C tr -d '\n\t\40-\176' < $body | wc -c)" "0"
+check "本体は複数行（1 行 1 テーブル）" "$([ "$(wc -l < $body)" -ge 2 ] && echo yes || echo no)" "yes"
+check "本体の 1 行目は base64 の塊ではない（233 バイトに戻らない）" \
+  "$([ "$(head -n 1 $body | base64 -d 2>/dev/null | wc -c)" = 233 ] && echo blob || echo text)" "text"
 
 [ $fail -eq 0 ] && echo "=== 全項目 ok ===" || echo "=== 失敗あり ==="
 exit $fail
