@@ -116,6 +116,15 @@ later name the date they were measured on.
 
 ### Changed
 
+- The Caveat about the opaque `.metadata` Athena writes for `SHOW TABLES`,
+  `SHOW DATABASES`, `SHOW COLUMNS`, `SHOW PARTITIONS` and `SHOW TBLPROPERTIES`
+  now records what the blob looks like — a fixed 233 bytes (345 for
+  `SHOW TBLPROPERTIES`) behind base64, a leading `0x01`, and different bytes
+  every run — states that the format itself remains unidentified, and notes
+  that `SHOW CREATE TABLE` and the result file itself are unaffected and that
+  Athena JDBC 3.8.1 reads athena-local's plain protobuf for those statements
+  without an exception. No behaviour changed. Measured against Athena on
+  2026-09-16, 2026-09-17 and 2026-09-18.
 - A CTAS on an Iceberg table now reports `s3://bucket/prefix/<id>` as its
   `OutputLocation`, like `INSERT`, instead of
   `s3://bucket/prefix/tables/<id>`, and its `.metadata` companion moves with
