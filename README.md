@@ -328,8 +328,7 @@ on the location makes no difference. The file name depends on the statement:
 | `SELECT` / `WITH` / `VALUES` | `s3://bucket/prefix/<id>.csv` |
 | `UPDATE` / `DELETE` / `MERGE` | `s3://bucket/prefix/<id>.csv` (only the `.metadata` companion is written) |
 | `INSERT` | `s3://bucket/prefix/<id>` (only the `.metadata` companion is written) |
-| `CREATE TABLE ... AS SELECT` (Hive) | `s3://bucket/prefix/tables/<id>` (only the `.metadata` companion is written) |
-| `CREATE TABLE ... AS SELECT` (`table_type = 'ICEBERG'`) | `s3://bucket/prefix/<id>` (only the `.metadata` companion is written) |
+| `CREATE TABLE ... AS SELECT` | `s3://bucket/prefix/tables/<id>` (only the `.metadata` companion is written) |
 | Other DDL, `SHOW`, `DESCRIBE`, ... | `s3://bucket/prefix/<id>.txt` |
 
 With `ATHENA_LOCAL_RESULTS=s3`, a successful `SELECT` writes the CSV there
@@ -581,11 +580,13 @@ passed; see Caveats.
   `SELECT` whose output bucket did not exist (measured). athena-local makes it
   `FAILED` so the mistake shows up locally.
 - **Unmeasured file names.** The file name for `CREATE OR REPLACE TABLE ... AS`
-  (Trino only) follows the measured rule for CTAS but was not measured. A CTAS
-  counts as Iceberg when `table_type = 'ICEBERG'` appears anywhere in the
-  statement (case and spacing are ignored), so that text inside a string
-  literal or a comment counts too, and a table whose format comes from
-  somewhere else than the `WITH` clause is treated as Hive.
+  (Trino only) follows the measured rule for CTAS but was not measured.
+  A CTAS always gets `tables/<id>`: Athena used that name for an Iceberg CTAS
+  too, both for `WITH (table_type = 'ICEBERG')` and for the Hive default
+  (measured 2026-09-19, with `SHOW CREATE TABLE` confirming the table really was
+  Iceberg). An earlier round had recorded `<id>` for the same statement
+  (2026-09-17); the later measurement is the one reproduced here. `INSERT` still
+  writes `<id>`, which was measured on 2026-09-17 and not measured again.
 - **Any workgroup name is accepted.** `GetWorkGroup` never fails because of the
   name: it echoes the name back and returns the same `Configuration` every time,
   because athena-local has no workgroups to look up. Real Athena answers a name

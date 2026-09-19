@@ -326,7 +326,7 @@ async fn insert_と_ctas_は_metadata_だけを置く() {
     let puts = harness.s3_puts();
     assert_eq!(puts.len(), 2, "{puts:?}");
     // INSERT の本体は拡張子なしの `<id>`、CTAS は `tables/<id>`。
-    // `tables/` は Hive の CTAS の実測。Iceberg（`table_type = 'ICEBERG'`）では付かない。
+    // `tables/` はテーブルの形式によらない（Iceberg の CTAS も同じ。2026-09-19 実測）。
     assert_eq!(
         puts[0].key,
         format!("athena/{}.metadata", execution_id(&insert))

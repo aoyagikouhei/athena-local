@@ -20,10 +20,10 @@ pub enum ResultFile {
     /// SELECT など。`<id>.csv` に結果を書く。UPDATE / DELETE / MERGE も名前はこれだが、結果は書かない
     /// （本物も `.csv.metadata` だけを置く。2026-09-17 実測）。
     Csv,
-    /// INSERT と Iceberg の CTAS。`<id>`（拡張子なし）。
-    /// Iceberg の CTAS に `tables/` が付かないことは 2026-09-17 実測。
+    /// INSERT。`<id>`（拡張子なし。2026-09-17 実測）。
     Manifest,
-    /// Hive の CREATE TABLE AS SELECT。`tables/<id>`（2026-09-14 実測）。
+    /// CREATE TABLE AS SELECT。`tables/<id>`（2026-09-14 実測）。
+    /// テーブルの形式では変わらない（Iceberg の CTAS も `tables/<id>`。2026-09-19 実測）。
     Table,
     /// それ以外の DDL と SHOW など。`<id>.txt`。
     Text,
@@ -37,9 +37,7 @@ pub enum ResultFile {
 
 impl ResultFile {
     /// 先頭のキーワードで分ける。StatementType と同じく、先頭の空白とコメントは読み飛ばしてから
-    /// 判定する（2026-09-18 実測）。`is_iceberg_table` だけは元の `query`（読み飛ばし前）を見る。
-    /// 全文検索なのでコメントの中の `table_type='ICEBERG'` も数える。この粗さは変えない
-    /// （README の Caveats に記載。是正は #26）。
+    /// 判定する（2026-09-18 実測）。文の種類だけで決まり、SQL の残りは見ない。
     pub fn of(query: &str) -> Self {
         let trimmed = crate::catalog::skip_leading_trivia(query);
         let words: Vec<String> = trimmed
@@ -55,8 +53,8 @@ impl ResultFile {
             "INSERT" => Self::Manifest,
             // Athena の OPTIMIZE は CTAS と同じ扱い（Trino には無い文なので実行はできない）。
             "OPTIMIZE" => Self::Table,
-            // CTAS の `tables/` はテーブルの形式で変わる。Iceberg は INSERT と同じ `<id>`。
-            "CREATE" if is_create_table_as(&words) && is_iceberg_table(query) => Self::Manifest,
+            // CTAS はテーブルの形式によらず `tables/<id>`。本物の Iceberg テーブルの CTAS も
+            // そうだった（2026-09-19 実測。#26）。SQL の本文から形式を読み取ることはしない。
             "CREATE" if is_create_table_as(&words) => Self::Table,
             _ => Self::Text,
         }
@@ -103,14 +101,6 @@ pub(crate) fn is_create_table_as(words: &[String]) -> bool {
                 || pair[1].starts_with("WITH")
                 || pair[1].starts_with('('))
     })
-}
-
-/// `WITH (table_type = 'ICEBERG')` が付いているか。Athena の Iceberg テーブルの CTAS は
-/// `tables/` を付けず、INSERT と同じ `<id>` になる（2026-09-17 実測）。空白と大文字小文字は
-/// 問わない。文字列リテラルとコメントの中は見分けない（先頭のキーワードで文を分けるのと同じ粗さ）。
-fn is_iceberg_table(query: &str) -> bool {
-    let squeezed: String = query.to_uppercase().split_whitespace().collect();
-    squeezed.contains("TABLE_TYPE='ICEBERG'")
 }
 
 /// 1 実行ぶんの置き場所。
@@ -493,7 +483,7 @@ mod tests {
         assert_eq!(key(ResultFile::Csv), "p/id.csv.metadata");
         assert_eq!(key(ResultFile::Text), "p/id.txt.metadata");
         assert_eq!(key(ResultFile::Manifest), "p/id.metadata");
-        // `tables/` は Hive の CTAS の実測。Iceberg では付かない（is_iceberg_table）。
+        // `tables/` は CTAS の実測（テーブルの形式によらない）。
         assert_eq!(key(ResultFile::Table), "p/tables/id.metadata");
     }
 
@@ -571,7 +561,7 @@ mod tests {
             ("-- c\nCREATE TABLE c AS SELECT 1 AS i", ResultFile::Table),
             (
                 "-- c\nCREATE TABLE c WITH (table_type = 'ICEBERG') AS SELECT 1 AS i",
-                ResultFile::Manifest,
+                ResultFile::Table,
             ),
         ] {
             assert_eq!(ResultFile::of(query), file, "{query:?}");
@@ -579,19 +569,21 @@ mod tests {
     }
 
     #[test]
-    fn iceberg_の_ctas_だけ_tables_を付けない() {
-        // 2026-09-17 実測。Iceberg の CTAS は tables/ が付かず、INSERT と同じ `<id>` になる。
-        for query in [
-            "CREATE TABLE c WITH (table_type = 'ICEBERG') AS SELECT 1 AS i",
-            "CREATE TABLE c WITH (table_type='ICEBERG',location='s3://b/p') AS SELECT 1 AS i",
-            "create or replace table c with (table_type = 'iceberg') as (select 1)",
-        ] {
-            assert_eq!(ResultFile::of(query), ResultFile::Manifest, "{query:?}");
-        }
-        // 形式を指定しない CTAS と Hive の CTAS は tables/<id> のまま（2026-09-14 実測）。
+    fn ctas_は_iceberg_でも_tables_を付ける() {
+        // 2026-09-19 実測。本物の Iceberg テーブル（`SHOW CREATE TABLE` で
+        // `'table_type'='iceberg'` を確認）の CTAS も `tables/<id>` だった。
         for query in [
             "CREATE TABLE c AS SELECT 1 AS i",
             "CREATE TABLE c WITH (format = 'PARQUET') AS SELECT 1 AS i",
+            "CREATE TABLE c WITH (table_type = 'ICEBERG') AS SELECT 1 AS i",
+            "CREATE TABLE c WITH (table_type='ICEBERG',location='s3://b/p') AS SELECT 1 AS i",
+            "create or replace table c with (table_type = 'iceberg') as (select 1)",
+            // table_type='ICEBERG' がコメント・文字列リテラル・WITH 句の外にある CTAS も、
+            // 本物は Hive のまま `tables/<id>` に置いた（2026-09-19 実測。#26）。
+            "CREATE TABLE c AS SELECT 1 AS i -- table_type = 'ICEBERG'",
+            "/* table_type = 'ICEBERG' */ CREATE TABLE c AS SELECT 1 AS i",
+            "CREATE TABLE c AS SELECT 'table_type=''ICEBERG''' AS s",
+            "CREATE TABLE c AS SELECT * FROM t WHERE t.table_type = 'ICEBERG'",
         ] {
             assert_eq!(ResultFile::of(query), ResultFile::Table, "{query:?}");
         }
@@ -600,10 +592,9 @@ mod tests {
             ResultFile::of("CREATE TABLE c (i int) WITH (table_type = 'ICEBERG')"),
             ResultFile::Text
         );
-        // is_iceberg_table は元の query の全文検索のまま（D5）。先頭コメントの中の
-        // table_type='ICEBERG' も数える既知の粗さ（README:445-450）は変えない。
+        // 拡張子なしの `<id>` に残るのは INSERT だけ（2026-09-17 実測。2026-09-19 は測っていない）。
         assert_eq!(
-            ResultFile::of("/* table_type = 'ICEBERG' */ CREATE TABLE c AS SELECT 1 AS i"),
+            ResultFile::of("INSERT INTO t VALUES (1)"),
             ResultFile::Manifest
         );
     }
