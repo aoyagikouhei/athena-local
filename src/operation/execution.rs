@@ -20,6 +20,12 @@ use crate::statement;
 use crate::store::{Execution, Fingerprint, Submission, SubmitOutcome};
 use crate::trino::{Outcome, QueryError, Trino};
 
+use super::table_format::{self, EngineDdl};
+
+/// DROP TABLE × Iceberg など、列が無くても本体・`.metadata` を置く DDL の Content-Type
+/// （2026-09-20 実測。本体も `.metadata` も application/octet-stream）。
+const ENGINE_DDL_CONTENT_TYPE: &str = "application/octet-stream";
+
 /// OutputLocation も既定も無いときの本物の文言（2026-09-14 実測。"for  your" の空白 2 つも本物のまま）。
 const NO_OUTPUT_LOCATION: &str = "No output location provided. You did not provide an output location for  your query results. Either specify an S3 bucket location or enable Athena managed query results in your workgroup settings.";
 
@@ -207,7 +213,9 @@ fn spawn_query(app: App, id: String) {
         }
 
         let outcome = match run(&app.trino, &app.config, &execution).await {
-            Ok(outcome) => write_result(&app, &execution, &id, outcome).await,
+            Ok((outcome, engine_ddl)) => {
+                write_result(&app, &execution, &id, outcome, engine_ddl).await
+            }
             Err(error) => {
                 let failure = Failure::from_query_error(&error);
                 // FAILED にする前に置く（クライアントは FAILED を見た直後に S3 を読みに行く）。
@@ -226,11 +234,14 @@ fn spawn_query(app: App, id: String) {
 /// （Trino では既に実行し終えており、本物の Athena も補助ファイルの書き込みでは失敗にしない）。
 /// `.metadata` は列がある文に置き、書けなくても SUCCEEDED のまま。
 /// DML と CTAS は本体を置かず `.metadata` だけを置く（2026-09-17 実測）。
+/// `engine_ddl` が `Some` の文（DROP TABLE × Iceberg。issue #39）は列が無くても本体に改行 1 つ、
+/// `.metadata` を置き、どちらも Content-Type は application/octet-stream にする（2026-09-20 実測）。
 async fn write_result(
     app: &App,
     execution: &Execution,
     id: &str,
     outcome: Outcome,
+    engine_ddl: Option<EngineDdl>,
 ) -> Result<Outcome, Failure> {
     let (Some(writer), Some(location)) = (&app.results, &execution.result_location) else {
         return Ok(outcome);
@@ -247,9 +258,14 @@ async fn write_result(
     if should_write {
         let body = match location.file {
             ResultFile::Csv => results::to_csv(&outcome),
+            // 改行 1 つ（0x0a）。to_text は列の空を見て 0 バイトを返すので使わない。
+            // 本体を書くのは DROP TABLE × Iceberg だけで、`.metadata` を置く文のすべてではない
+            // （ALTER TABLE ADD COLUMNS × Hive の本体は 0 バイト。2026-09-20 実測）。
+            _ if matches!(engine_ddl, Some(EngineDdl::DropTableIceberg)) => vec![b'\n'],
             _ => results::to_text(&outcome),
         };
-        match writer.put(location, body).await {
+        let content_type = engine_ddl.is_some().then_some(ENGINE_DDL_CONTENT_TYPE);
+        match writer.put(location, body, content_type).await {
             Ok(()) => {}
             // 本体が書けなかったら付随ファイルは試みない。
             Err(reason) if location.file == ResultFile::Text => {
@@ -261,8 +277,8 @@ async fn write_result(
     }
 
     // 列が無い文（CREATE TABLE、CREATE / DROP DATABASE）には本物も付随ファイルを置かない。
-    // DROP TABLE だけは本物が列なしの 41 バイトを置くが、athena-local は置かない（README の Caveats）。
-    if !outcome.columns.is_empty() {
+    // DROP TABLE × Iceberg だけは本物が列なしの 41 バイトを置く（2026-09-20 実測。issue #39）。
+    if !outcome.columns.is_empty() || engine_ddl.is_some() {
         write_metadata(writer, location, &execution.query, id, &outcome).await;
     }
     Ok(outcome)
@@ -286,7 +302,7 @@ async fn write_failure(app: &App, execution: &Execution, failure: &Failure) {
     };
 
     let body = format!("FAILED: {}", failure.reason).into_bytes();
-    if let Err(reason) = writer.put(&location, body).await {
+    if let Err(reason) = writer.put(&location, body, None).await {
         eprintln!("失敗の理由のファイル（.txt）の書き込みに失敗しました。無視します: {reason}");
     }
 }
@@ -306,7 +322,7 @@ async fn write_metadata(
         outcome.update_count,
         &convert::column_infos(outcome),
     );
-    if let Err(reason) = writer.put(&location.metadata(), body).await {
+    if let Err(reason) = writer.put(&location.metadata(), body, None).await {
         eprintln!("付随ファイル（.metadata）の書き込みに失敗しました。無視します: {reason}");
     }
 }
@@ -330,7 +346,13 @@ fn metadata_query_id<'a>(
 
 /// 値を分類して EXECUTE IMMEDIATE で包んで実行する。
 /// パラメータが無ければ分類は走らず、SQL は修飾名に別名を当てただけで送られる（to_trino_sql が判断する）。
-async fn run(trino: &Trino, config: &Config, execution: &Execution) -> Result<Outcome, QueryError> {
+/// 戻り値の `Option<EngineDdl>` は、実行前にテーブルの形式を問い合わせて分かった、
+/// 列が無くても本体・`.metadata` を置くべき文（issue #39 Phase 1: DROP TABLE × Iceberg）。
+async fn run(
+    trino: &Trino,
+    config: &Config,
+    execution: &Execution,
+) -> Result<(Outcome, Option<EngineDdl>), QueryError> {
     // Trino に送るのは別名を当てた名前。実行情報には受け取った名前が残る。
     let catalog = execution
         .catalog
@@ -339,6 +361,16 @@ async fn run(trino: &Trino, config: &Config, execution: &Execution) -> Result<Ou
     let database = execution.database.as_deref();
     // 分類の問い合わせにも本体にも同じ取り消し要求を渡す。
     let cancel = &execution.cancel;
+
+    // 対象の文（Phase 1 は既定カタログの DROP TABLE だけ）なら、実行前にテーブルの形式を
+    // Trino に聞く。パラメータ分類のループより前に置く（対象テーブルは実行後に消えるため）。
+    // カタログは本体・分類の問い合わせと同じ、別名解決後の値を使う。
+    let engine_ddl = match table_format::target_statement(&execution.query) {
+        Some(statement) => table_format::probe_format(trino, catalog, database, cancel)
+            .await
+            .and_then(|format| table_format::engine_ddl(statement, format)),
+        None => None,
+    };
 
     // 分類も本体と同じカタログ・スキーマで問い合わせ、関数の解決先を揃える。
     let mut bound = Vec::with_capacity(execution.execution_parameters.len());
@@ -353,10 +385,11 @@ async fn run(trino: &Trino, config: &Config, execution: &Execution) -> Result<Ou
     // 包んだ後の引用符の二重化を考えなくてよい。構文チェックと GetQueryExecution の Query は受け取った SQL のまま。
     let query = alias_qualified_names(&execution.query, &config.catalog_map);
     let sql = statement::to_trino_sql(&query, &bound);
-    match trino.execute(&sql, catalog, database, cancel).await {
+    let outcome = match trino.execute(&sql, catalog, database, cancel).await {
         Err(error) if statement::is_unused_parameters(&error) => {
             trino.execute(&query, catalog, database, cancel).await
         }
         result => result,
-    }
+    }?;
+    Ok((outcome, engine_ddl))
 }

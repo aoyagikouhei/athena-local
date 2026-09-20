@@ -239,7 +239,14 @@ impl ResultWriter {
     }
 
     /// 失敗の理由はそのまま StateChangeReason に載る。再試行はしない（ローカルでは即座に分かる方がよい）。
-    pub async fn put(&self, location: &ResultLocation, body: Vec<u8>) -> Result<(), String> {
+    /// `content_type` を渡せば `location.file` の既定を上書きする（DROP TABLE × Iceberg など、
+    /// 文の種類だけでは決まらない Content-Type のため。issue #39）。
+    pub async fn put(
+        &self,
+        location: &ResultLocation,
+        body: Vec<u8>,
+        content_type: Option<&str>,
+    ) -> Result<(), String> {
         let uri = location.uri();
         let bucket = Bucket::new(
             self.endpoint.clone(),
@@ -255,7 +262,10 @@ impl ResultWriter {
         let response = self
             .http
             .put(url)
-            .header(CONTENT_TYPE, location.file.content_type())
+            .header(
+                CONTENT_TYPE,
+                content_type.unwrap_or_else(|| location.file.content_type()),
+            )
             .body(body)
             .send()
             .await

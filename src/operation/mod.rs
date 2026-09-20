@@ -3,6 +3,7 @@
 mod classification;
 mod execution;
 mod query_execution;
+mod table_format;
 mod work_group;
 
 pub(crate) use execution::start_query_execution;

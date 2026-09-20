@@ -343,6 +343,45 @@ async fn merge_の_metadata_は_update_と同じ形で_update_type_の長さだ�
 }
 
 #[tokio::test]
+async fn drop_table_は_iceberg_なら_41_バイトの_metadata_を置く() {
+    // 2026-09-20 実測（issue #39）。field 1 はエンジン（Trino）のクエリ ID、
+    // field 2 は Trino の updateType（`DROP TABLE` は 10 バイト）。列が無いので field 4 は無い
+    // （41 = field1 29 バイト + field2 12 バイト）。結合レベルのバイト数・Content-Type・
+    // キーの有無は tests/table_format.rs（計画レビュー F）。
+    let harness = Harness::builder(json!({ "updateType": "DROP TABLE" }))
+        .route(
+            "SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = 'default_catalog'",
+            json!({
+                "columns": [{ "name": "connector_name", "type": "varchar" }],
+                "data": [["iceberg"]]
+            }),
+        )
+        .results_s3()
+        .start()
+        .await;
+
+    let execution = harness
+        .run_query(json!({
+            "QueryString": "DROP TABLE t",
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+        }))
+        .await;
+    let id = execution_id(&execution);
+
+    assert_eq!(execution["QueryExecution"]["Status"]["State"], "SUCCEEDED");
+
+    let puts = harness.s3_puts();
+    assert_eq!(puts.len(), 2, "{puts:?}");
+    assert_eq!(puts[0].key, format!("athena/{id}.txt"));
+    assert_eq!(puts[1].key, format!("athena/{id}.txt.metadata"));
+
+    assert_eq!(
+        hex_of(&puts[1].body),
+        hex(&format!("{} 120a 44524f50205441424c45", engine_id_field()))
+    );
+}
+
+#[tokio::test]
 async fn insert_と_ctas_は_metadata_だけを置く() {
     let harness = Harness::builder(select_response())
         .route("INSERT INTO t VALUES (1)", dml_response("INSERT", 1))
