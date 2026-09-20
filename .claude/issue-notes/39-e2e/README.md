@@ -47,6 +47,9 @@ cd .claude/issue-notes/39-e2e
 
 内部でやっていること:
 
+0. **JDBC の検証をするときだけ**: `bash tls/make-cert.sh` で自己署名証明書を作る。
+   **秘密鍵はリポジトリに入れない**ので、`tls/server.key` と `tls/server.crt` は手元で作る
+   （`verify.sh` だけなら要らない。JDBC ドライバが平文 HTTP を拒むための TLS 終端に使う）
 1. `docker compose up -d` で Trino・MinIO を起動し、バケット `athena-results` を用意する
 2. Trino に直接（athena-local を経由せず）`iceberg.default` / `hive.default` スキーマと、
    DROP TABLE 対象の 2 テーブル（Iceberg 側・Hive 側それぞれ 1 つ、`CREATE TABLE ... AS SELECT`）を作る
