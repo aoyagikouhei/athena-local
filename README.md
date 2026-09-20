@@ -331,6 +331,11 @@ on the location makes no difference. The file name depends on the statement:
 | `CREATE TABLE ... AS SELECT` | `s3://bucket/prefix/tables/<id>` (only the `.metadata` companion is written) |
 | Other DDL, `SHOW`, `DESCRIBE`, ... | `s3://bucket/prefix/<id>.txt` |
 
+`DROP TABLE` and `ALTER TABLE ... ADD COLUMNS` keep the `<id>.txt` name above;
+see [DDL that depends on the target table's format](#ddl-that-depends-on-the-target-tables-format)
+for the cases where their content, Content-Type and `.metadata` differ from
+ordinary column-less DDL.
+
 With `ATHENA_LOCAL_RESULTS=s3`, a successful `SELECT` writes the CSV there
 before the query becomes `SUCCEEDED`, so a client may read it as soon as it sees
 that state. The format matches Athena byte for byte:
@@ -356,16 +361,24 @@ The file holds the rows `GetQueryResults` returns, joined with `\n`:
 - Columns are joined with a tab. Athena itself returns one already joined,
   space-padded string per row; Trino returns the columns separately, so the
   padding is not reproduced.
-- `DROP TABLE` writes a single newline on Athena, which returns two empty rows
-  for zero columns. athena-local writes an empty file.
+- On an Iceberg table, `DROP TABLE` writes a single newline on Athena, which
+  returns two empty rows for zero columns; athena-local matches it there
+  (measured 2026-09-20 and 2026-09-21, reproduced across three rounds). On a
+  Hive table, or when the target does not exist, both write an empty file. See
+  [DDL that depends on the target table's format](#ddl-that-depends-on-the-target-tables-format).
 
 The object is uploaded with a presigned `PUT` (path-style), so any
 S3-compatible store works; it is not retried, and a `PUT` that gets no response
 within 30 seconds is given up on so the query still reaches a final state
 (the limit is fixed and has no environment variable). `<id>.csv` and the `.metadata`
 companions are sent as `application/octet-stream` and `<id>.txt` as
-`binary/octet-stream`, as Athena does (measured 2026-09-17). A failed CSV
-upload makes the query `FAILED` with the store's response in
+`binary/octet-stream`, as Athena does (measured 2026-09-17), except for two
+combinations: `DROP TABLE` on an Iceberg table and
+`ALTER TABLE ... ADD COLUMNS` on a Hive table send their `<id>.txt` as
+`application/octet-stream` too, the same Content-Type as their `.metadata`
+companion (measured 2026-09-20/21; see
+[DDL that depends on the target table's format](#ddl-that-depends-on-the-target-tables-format)).
+A failed CSV upload makes the query `FAILED` with the store's response in
 `StateChangeReason`. A failed `<id>.txt` or `.metadata` upload leaves the query
 `SUCCEEDED` and logs one line instead: the statement has already run on Trino,
 and DDL cannot be undone. When the result file itself fails to upload, no
@@ -408,8 +421,11 @@ it returns no rows), `SHOW` / `DESCRIBE` / `EXPLAIN`, DML (`INSERT` / `UPDATE`
 / `DELETE` / `MERGE`) and CTAS. DML and CTAS write the companion file only and
 no result file of their own, as on Athena. DDL without columns
 (`CREATE DATABASE`, `DROP DATABASE`, `CREATE TABLE`), a failed query and a
-cancelled query write no companion file, also as on Athena; a failed statement
-may still write its own `<id>.txt` (see Result files above).
+cancelled query write no companion file, also as on Athena — except the two
+combinations described under
+[DDL that depends on the target table's format](#ddl-that-depends-on-the-target-tables-format).
+A failed statement may still write its own `<id>.txt` (see Result files
+above).
 
 The content is protobuf. There is no official schema; the field numbers are the
 ones [burtcorp/athena-jdbc's `AthenaMetaDataParser`](https://github.com/burtcorp/athena-jdbc/blob/master/src/main/java/io/burt/athena/result/AthenaMetaDataParser.java)
@@ -430,7 +446,68 @@ The query id follows Athena's own split: `SELECT`, DML, CTAS, `EXPLAIN` and the
 there), while `DESCRIBE` and `SHOW CREATE TABLE` carry the `QueryExecutionId`.
 For the `SHOW` statements whose real companion file is opaque (see Caveats)
 Athena's own choice cannot be observed, so athena-local uses the engine id there
-by analogy with `EXPLAIN`.
+by analogy with `EXPLAIN`. The two statements under
+[DDL that depends on the target table's format](#ddl-that-depends-on-the-target-tables-format)
+follow the same split: `DROP TABLE` on an Iceberg table carries the engine's
+query id, like `EXPLAIN`, while `ALTER TABLE ... ADD COLUMNS` on a Hive table
+carries the `QueryExecutionId`, like `DESCRIBE` (measured 2026-09-21).
+
+### DDL that depends on the target table's format
+
+`DROP TABLE` and `ALTER TABLE ... ADD COLUMNS` write a different `<id>.txt`
+and `.metadata` companion depending on whether the Trino catalog holding the
+target table uses the `hive` or the `iceberg` connector (measured against
+Athena on 2026-09-20 and 2026-09-21, reproduced across three rounds):
+
+| Statement | Target format | `<id>.txt` | Content-Type | `.metadata` |
+| --- | --- | --- | --- | --- |
+| `DROP TABLE` | Iceberg | a single newline (1 byte) | `application/octet-stream` | 41 bytes: the engine's query id (field 1), then `DROP TABLE` (field 2) |
+| `DROP TABLE` | Hive, or the target does not exist | empty | `binary/octet-stream` | none |
+| `ALTER TABLE ... ADD COLUMNS` | Hive | empty | `application/octet-stream` | 38 bytes: `QueryExecutionId` only (field 1); no `updateType`, count or columns |
+| `ALTER TABLE ... ADD COLUMNS` | Iceberg | empty | `binary/octet-stream` | none |
+
+Write `ADD COLUMN` (singular) to reach that `ALTER TABLE` row from
+athena-local: Trino's grammar rejects Athena's `ADD COLUMNS` at the syntax
+check (see [Caveats](#caveats)).
+
+Every other `ALTER TABLE` form that gets a `SubstatementType` (`SET
+TBLPROPERTIES`, `DROP COLUMN`, `SET LOCATION`) behaves like ordinary
+column-less DDL on both table formats: an empty `<id>.txt`,
+`binary/octet-stream`, and no `.metadata`.
+
+Only these two statements trigger the format probe below; no other statement
+pays an extra round trip to Trino. For a matching statement, athena-local
+sends the format probe as a single query, asking which connector backs the
+target's catalog and whether the target exists:
+
+```sql
+SELECT
+  (SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = '<catalog>'),
+  (SELECT count(*) FROM system.jdbc.tables
+   WHERE table_cat = '<catalog>' AND table_schem = '<schema>' AND table_name = '<table>')
+```
+
+The catalog, schema and table name come from a qualified name in the SQL when
+`DROP TABLE` or `ALTER TABLE ... ADD COLUMNS` gives one (`t`, `ns.t` or
+`cat.ns.t`, quoted or not, with a leading `IF EXISTS` skipped). Whichever part
+a qualified name does not give falls back to `QueryExecutionContext` /
+`TRINO_CATALOG` / `TRINO_SCHEMA`. A catalog taken from the SQL is translated
+through `TRINO_CATALOG_MAP` before the format probe is sent, the same as the
+catalog used to run the statement itself.
+
+athena-local falls back to ordinary column-less DDL (empty file, no
+`.metadata`) when any of these hold:
+
+- the catalog or schema still cannot be resolved;
+- the format probe fails;
+- the connector is neither `hive` nor `iceberg`;
+- for `DROP TABLE` only, the target does not exist. (For
+  `ALTER TABLE ... ADD COLUMNS`, Trino itself errors out on a missing target
+  before athena-local would reach this fallback.)
+
+For `DROP TABLE`, that last fallback happens to match what real Athena does
+for `DROP TABLE IF EXISTS` on a missing table too (measured 2026-09-21). See
+Caveats for the limits of this detection.
 
 ### `ExecutionParameters`
 
@@ -502,9 +579,25 @@ passed; see Caveats.
   error positions after it shift.
 - **Syntax differs.** Trino-only syntax such as `CREATE OR REPLACE TABLE` passes
   here but is a syntax error on Athena, and the `Expecting:` list in a syntax
-  error follows Trino's grammar. For an incomplete statement (`SELECT * FROM`)
-  Athena answers `Queries of this type are not supported`; athena-local returns
-  Trino's syntax error.
+  error follows Trino's grammar. `ALTER TABLE IF EXISTS ...` and
+  `ALTER TABLE ... RENAME COLUMN ... TO ...` are the same: Trino runs both, but
+  Athena's grammar has no such form and answers `mismatched input` before the
+  statement starts (measured 2026-09-21), so athena-local executes them on
+  Trino where Athena would have rejected the call outright. For an incomplete
+  statement (`SELECT * FROM`) Athena answers `Queries of this type are not
+  supported`; athena-local returns Trino's syntax error.
+- **Athena's `ADD COLUMNS` / `SET TBLPROPERTIES` spelling is rejected.**
+  `ALTER TABLE ... ADD COLUMNS (...)` and
+  `ALTER TABLE ... SET TBLPROPERTIES (...)` are Athena syntax, not Trino's, so
+  athena-local rejects them at the syntax check with
+  `mismatched input 'COLUMNS'` / `mismatched input 'TBLPROPERTIES'` where
+  Athena would have run them (measured 2026-09-21). Write Trino's spelling
+  instead — `ADD COLUMN` (singular) and `SET PROPERTIES` — to reach the
+  behaviour described under
+  [DDL that depends on the target table's format](#ddl-that-depends-on-the-target-tables-format).
+  Classification accepts either spelling: a statement written as `ADD COLUMN`
+  still gets the `ADD COLUMNS` `SubstatementType` (verified against Trino 482
+  and MinIO on 2026-09-21).
 - **Iceberg maintenance statements differ.** Athena's `OPTIMIZE ... REWRITE DATA`
   and `VACUUM` do not exist in Trino, which uses `ALTER TABLE ... EXECUTE optimize`
   and `ALTER TABLE ... EXECUTE expire_snapshots` instead.
@@ -550,13 +643,29 @@ passed; see Caveats.
   failing; Athena JDBC 3.8.1 in its default `ResultFetcher=auto` fetched the
   companion file of a `SHOW TABLES` from athena-local and read it without an
   exception (verified 2026-09-17).
-- **`DROP TABLE` gets no companion file.** Athena writes a 41-byte `.metadata`
-  holding only the query id and `DROP TABLE` for it (measured 2026-09-17).
-  athena-local writes a companion file only for statements that have columns,
-  and `DROP TABLE` has none, so it writes nothing. Athena JDBC 3.8.1 logs the
-  missing file (a 404) at INFO level and carries on; versions before 3.5.1 fail
-  with `NoSuchKey` here, as they do for any column-less DDL (measured
-  2026-09-17).
+- **Table format is detected per Trino catalog.** Real Athena keeps Hive and
+  Iceberg tables side by side in one `AwsDataCatalog`; Trino can only put them
+  in separate catalogs, so athena-local's detection follows your Trino catalog
+  configuration instead: it agrees with Athena only when the Trino catalog
+  behind a given Athena table uses the connector Athena would expect. A Trino
+  deployment that mixes both formats behind a single catalog, or a
+  `TRINO_CATALOG_MAP` alias that points an Athena catalog at the wrong
+  connector, falls back to ordinary column-less DDL (empty file, no
+  `.metadata`) instead of matching Athena. See
+  [DDL that depends on the target table's format](#ddl-that-depends-on-the-target-tables-format)
+  for what this changes.
+- **Most `ALTER TABLE` forms are unmeasured beyond their `SubstatementType`.**
+  `SET LOCATION` was measured on a Hive table only; its Iceberg-table
+  behaviour is assumed to be the same but was not measured. `ADD PARTITION`,
+  `DROP PARTITION`, `REPLACE COLUMNS` and any other `ALTER TABLE` form besides
+  the four classified ones (`SET TBLPROPERTIES`, `ADD COLUMNS`, `DROP COLUMN`,
+  `SET LOCATION`) were not measured at all and are left unclassified, the same
+  as any other statement whose `SubstatementType` was not measured (see
+  [Supported API](#supported-api)); tracked in issue #43.
+- **Two `ALTER TABLE` forms fail on Athena itself.** `DROP COLUMN` on a Hive
+  table, and `SET TBLPROPERTIES` setting `comment` on an Iceberg table, are
+  rejected by Athena's Hive/Iceberg backend before athena-local's own
+  format-dependent behaviour would matter — not a limitation of athena-local.
 - **Unmeasured `.metadata` details.** The update count of a DML statement that
   changes no rows (`DELETE ... WHERE false`) was not measured; athena-local
   writes `0`. Columns of type `timestamp with time zone`, `time with time zone`

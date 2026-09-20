@@ -1,2 +1,5 @@
 /target
 /athena-txt-measurements
+
+# ネストしたビルド成果物（例: .claude/issue-notes/*/jdbc-client/target）
+target/

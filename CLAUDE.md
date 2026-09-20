@@ -66,3 +66,8 @@ CI（`.github/workflows/ci.yml`）は `fmt --check`、`clippy -D warnings`、`te
 - 大きな `Response` を `Result` で返すときは `Box<Response>` にする（`clippy::result_large_err` 対策）。
 - HTTP クライアントは TLS 無しでビルドしている（`reqwest` は `default-features = false`）。Trino にも S3 にも `http://` だけでつなぐ。
 - Rust edition 2024（let chains を使っている）。Docker のビルドイメージは `rust:1.98`。
+- **ローカルの `aws` コマンドは Docker のラッパのことがある。** マウントされるのは実行時のカレントディレクトリだけで、
+  絶対パスへの書き出しはコンテナの中に消えるうえ終了コードは 0 になる。取得は `aws s3 cp <src> -` で標準出力に流し、
+  リダイレクトはシェルが行う（2026-09-16 に実測スクリプトで、2026-09-21 に実機検証で踏んだ）。
+  同じ理由で compose のネットワークにも入れないので、compose 内のサービス（MinIO など）を触るときは
+  `--network` を付けた使い捨てコンテナから叩く（`.claude/issue-notes/39-e2e/verify.sh`）。

@@ -61,15 +61,71 @@ pub(super) fn substatement_type(query: &str) -> Option<&'static str> {
             "DATABASE" | "SCHEMA" => "DROP_DATABASE",
             _ => return None,
         },
-        "ALTER"
-            if word(1) == "TABLE"
-                && words.iter().any(|w| w == "ADD")
-                && words.iter().any(|w| w.starts_with("COLUMN")) =>
-        {
-            "ALTER_TABLE_ADD_COLUMN"
-        }
+        // テーブル名は固定位置ではなく `catalog::skip_qualified_name` で読み飛ばしてから、
+        // その後ろのキーワードで判定する（2026-09-21 実測で見つかった退行の修正。
+        // `word(3)`／`word(4)` の固定位置だと、引用符付きテーブル名や修飾名が空白・コメントを
+        // 挟むと語数がずれて None に落ちていた。`ALTER TABLE IF EXISTS ...` と
+        // `RENAME COLUMN` は本物の Athena に構文が無い（mismatched input）ので、テーブル名の
+        // 位置に "IF" や "RENAME" 相当の語しか無く変わらず None になる）。
+        "ALTER" if word(1) == "TABLE" => alter_table_action(query)?,
         _ => return None,
     })
+}
+
+/// `ALTER TABLE` の後ろのテーブル名を `catalog::skip_qualified_name` で読み飛ばし、
+/// その後ろのキーワードを 1 つずつ読み進めて ADD／DROP／SET を判定する。
+/// `ALTER`／`TABLE` のキーワード自体は呼び出し元の `word(0)`／`word(1)` の guard で確定している。
+///
+/// キーワードの一致は `split_whitespace` の完全一致ではなく `skip_keyword` で確かめる。
+/// そうしないと `TBLPROPERTIES('comment' = 'x')` のようにキーワードの直後に空白なしで
+/// `(` や文字列リテラルが続く書き方を判定できない（3 本目のレビューで実測）。
+fn alter_table_action(query: &str) -> Option<&'static str> {
+    let after_alter = skip_keyword(query, "ALTER")?;
+    let after_table = skip_keyword(after_alter, "TABLE")?;
+    let name_start = after_table.len() - crate::catalog::skip_leading_trivia(after_table).len();
+    let name_end = crate::catalog::skip_qualified_name(after_table, name_start);
+    let rest = &after_table[name_end..];
+
+    if let Some(after_add) = skip_keyword(rest, "ADD") {
+        return skip_columns_keyword(after_add).map(|_| "ALTER_TABLE_ADD_COLUMN");
+    }
+    if let Some(after_drop) = skip_keyword(rest, "DROP") {
+        return skip_columns_keyword(after_drop).map(|_| "ALTER_TABLE_DROP_COLUMN");
+    }
+    if let Some(after_set) = skip_keyword(rest, "SET") {
+        if skip_keyword(after_set, "TBLPROPERTIES").is_some() {
+            return Some("ALTER_TABLE_PROPERTIES");
+        }
+        if skip_keyword(after_set, "LOCATION").is_some() {
+            return Some("ALTER_TABLE_SET_LOCATION");
+        }
+    }
+    None
+}
+
+/// `COLUMN` と `COLUMNS` の両方を受け付ける（`ADD`／`DROP` に共通）。長い方から試す
+/// （先に `COLUMN` を試すと `COLUMNS` の `S` が識別子の文字として境界チェックに引っかかり None になる）。
+fn skip_columns_keyword(input: &str) -> Option<&str> {
+    skip_keyword(input, "COLUMNS").or_else(|| skip_keyword(input, "COLUMN"))
+}
+
+/// 先頭の空白・コメントを読み飛ばしてからキーワードを 1 語ぶん読み飛ばす。大文字小文字は
+/// 区別せず、続きが識別子の文字（英数字・`_`）なら別の語（`COLUMN` に対する `COLUMNS` など）
+/// とみなして一致させない。続きが `(` や文字列リテラルの `'` など識別子でない文字なら
+/// 空白が無くても一致させる（`TBLPROPERTIES(...)` のような書き方。3 本目のレビューで実測）。
+fn skip_keyword<'a>(input: &'a str, keyword: &str) -> Option<&'a str> {
+    let trimmed = crate::catalog::skip_leading_trivia(input);
+    if trimmed.len() < keyword.len() || !trimmed.is_char_boundary(keyword.len()) {
+        return None;
+    }
+    let (head, tail) = trimmed.split_at(keyword.len());
+    if !head.eq_ignore_ascii_case(keyword) {
+        return None;
+    }
+    if tail.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_') {
+        return None;
+    }
+    Some(tail)
 }
 
 #[cfg(test)]
@@ -140,6 +196,18 @@ mod tests {
                 "ALTER TABLE t ADD COLUMN c varchar",
                 "ALTER_TABLE_ADD_COLUMN",
             ),
+            // TBLPROPERTIES の値に add と column という語が含まれても
+            // ALTER_TABLE_PROPERTIES になる（全文走査ではなく位置固定で判定する。2026-09-21 実測）。
+            (
+                "ALTER TABLE t SET TBLPROPERTIES ('comment' = 'remember to add column for region')",
+                "ALTER_TABLE_PROPERTIES",
+            ),
+            ("ALTER TABLE t DROP COLUMN c", "ALTER_TABLE_DROP_COLUMN"),
+            ("ALTER TABLE t DROP COLUMNS c", "ALTER_TABLE_DROP_COLUMN"),
+            (
+                "ALTER TABLE t SET LOCATION 's3://bucket/path/'",
+                "ALTER_TABLE_SET_LOCATION",
+            ),
             // 先頭のコメントは読み飛ばして判定する（2026-09-18 実測）。
             ("-- c\nSELECT 1", "SELECT"),
             // 2 語目以降も読み飛ばした後の並びから取る。`metadata_query_id` の
@@ -153,6 +221,9 @@ mod tests {
         for query in [
             "SHOW FUNCTIONS",
             "ALTER TABLE t RENAME TO u",
+            // RENAME COLUMN と IF EXISTS は本物の Athena に構文が無い（mismatched input。2026-09-21 実測）。
+            "ALTER TABLE t RENAME COLUMN a TO b",
+            "ALTER TABLE IF EXISTS t ADD COLUMNS (m int)",
             "CALL x()",
             "SET SESSION a = 1",
             "",
@@ -160,5 +231,76 @@ mod tests {
             assert_eq!(substatement_type(query), None, "{query:?}");
         }
         assert_eq!(statement_type(""), "UTILITY");
+    }
+
+    #[test]
+    fn substatement_type_は_alter_table_の判定でテーブル名の後ろのトリビアを跨いでも正しく分類する()
+    {
+        // word(3)/word(4) の固定位置ではなく、テーブル名を読み飛ばした後ろの語で判定することを
+        // 固定する（2026-09-21 実測、2 本のレビューが独立に確認した退行）。
+        for (query, expected) in [
+            (
+                r#"ALTER TABLE "my table" ADD COLUMNS (c string)"#,
+                "ALTER_TABLE_ADD_COLUMN",
+            ),
+            (
+                "ALTER TABLE cat . ns . t ADD COLUMNS (m int)",
+                "ALTER_TABLE_ADD_COLUMN",
+            ),
+            (
+                "ALTER TABLE t -- comment\nADD COLUMN c int",
+                "ALTER_TABLE_ADD_COLUMN",
+            ),
+        ] {
+            assert_eq!(substatement_type(query), Some(expected), "{query:?}");
+        }
+
+        // 誤判定が復活していないことも合わせて固定する（全文走査に戻すと TBLPROPERTIES の
+        // 値の中の "add column" で誤判定する。Phase 3a の主題）。
+        for (query, expected) in [
+            (
+                r#"ALTER TABLE "my table" SET TBLPROPERTIES ('comment' = 'remember to add column for region')"#,
+                "ALTER_TABLE_PROPERTIES",
+            ),
+            (
+                "ALTER TABLE cat . ns . t SET TBLPROPERTIES ('comment' = 'add column')",
+                "ALTER_TABLE_PROPERTIES",
+            ),
+        ] {
+            assert_eq!(substatement_type(query), Some(expected), "{query:?}");
+        }
+
+        // DROP TABLE は影響を受けない。
+        assert_eq!(
+            substatement_type(r#"DROP TABLE "my table""#),
+            Some("DROP_TABLE")
+        );
+
+        // 本物の Athena に構文が無い形は変わらず None。
+        for query in [
+            "ALTER TABLE IF EXISTS t ADD COLUMNS (m int)",
+            "ALTER TABLE t RENAME COLUMN a TO b",
+        ] {
+            assert_eq!(substatement_type(query), None, "{query:?}");
+        }
+    }
+
+    #[test]
+    fn substatement_type_は_alter_table_のキーワードの直後に空白が無くても分類する() {
+        // `SET TBLPROPERTIES('comment' = 'x')` のように、キーワードの直後に `(` や
+        // 文字列リテラルが続く空白無しの書き方（3 本目のレビューが実測で確認）。
+        for (query, expected) in [
+            (
+                "ALTER TABLE t SET TBLPROPERTIES('comment' = 'x')",
+                "ALTER_TABLE_PROPERTIES",
+            ),
+            (
+                "ALTER TABLE t SET LOCATION's3://bucket/path/'",
+                "ALTER_TABLE_SET_LOCATION",
+            ),
+            ("ALTER TABLE t ADD COLUMNS(m int)", "ALTER_TABLE_ADD_COLUMN"),
+        ] {
+            assert_eq!(substatement_type(query), Some(expected), "{query:?}");
+        }
     }
 }

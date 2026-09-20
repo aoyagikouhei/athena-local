@@ -55,7 +55,9 @@ pub fn alias_qualified_names<'a>(sql: &'a str, aliases: &HashMap<String, String>
 }
 
 /// `'...'` や `"..."` の終わりの次の位置。引用符を 2 つ重ねたものは中身として読む。閉じていなければ末尾。
-fn skip_quoted(bytes: &[u8], start: usize) -> usize {
+///
+/// `operation/table_format.rs` が DROP TABLE の修飾名の引用符付き識別子を読むのにも再利用する（issue #39 Phase 2）。
+pub(crate) fn skip_quoted(bytes: &[u8], start: usize) -> usize {
     let quote = bytes[start];
     let mut i = start + 1;
     while i < bytes.len() {
@@ -72,7 +74,9 @@ fn skip_quoted(bytes: &[u8], start: usize) -> usize {
 }
 
 /// `--` か `/*` で始まるコメントなら、その終わりの次の位置。閉じていなければ末尾。
-fn comment_end(bytes: &[u8], start: usize) -> Option<usize> {
+///
+/// `operation/table_format.rs` が DROP TABLE の修飾名を読むのにも再利用する（issue #39 Phase 2）。
+pub(crate) fn comment_end(bytes: &[u8], start: usize) -> Option<usize> {
     let rest = &bytes[start..];
     if rest.starts_with(b"--") {
         let end = rest.iter().position(|&b| b == b'\n').unwrap_or(rest.len());
@@ -114,22 +118,68 @@ pub(crate) fn skip_leading_trivia(sql: &str) -> &str {
     &sql[i..]
 }
 
-/// 空白とコメントを読み飛ばした次の文字が `.` か。
-fn next_is_dot(bytes: &[u8], mut i: usize) -> bool {
+/// 空白とコメントを読み飛ばした位置を返す。`skip_leading_trivia` は文字列を返すが、
+/// ここでは呼び出し元がバイト位置を持ち回るのでバイト位置で返す。
+fn skip_trivia(bytes: &[u8], mut i: usize) -> usize {
     while i < bytes.len() {
         match bytes[i] {
             b' ' | b'\t' | b'\r' | b'\n' => i += 1,
             _ => match comment_end(bytes, i) {
                 Some(end) => i = end,
-                None => return bytes[i] == b'.',
+                None => break,
             },
         }
     }
-    false
+    i
+}
+
+/// 空白とコメントを読み飛ばした次の文字が `.` か。
+fn next_is_dot(bytes: &[u8], i: usize) -> bool {
+    matches!(bytes.get(skip_trivia(bytes, i)), Some(&b'.'))
+}
+
+/// 修飾名を 1 つ読み飛ばして、その後ろの位置を返す。`a`、`a.b`、`a.b.c`、
+/// `"quoted name".b` のように、ドットの前後に空白やコメントを挟んだ形も読み飛ばす。
+///
+/// `operation/classification.rs` の ALTER TABLE の判定が使う。`words()`（`split_whitespace`）は
+/// 引用符付き識別子の中の空白や、ドットを挟んだ修飾名で語数を数え間違えるため、テーブル名の
+/// 終わりの位置をここで確かめてから、その後ろの語だけを見て判定する。
+///
+/// `operation/table_format.rs::parse_qualified_name` は名前の中身を取り出す関数で、
+/// こちらは中身を見ずに位置だけを進める（用途が違うので無理に共通化しない。issue #44）。
+/// 字句処理は増やさず、`skip_quoted`・`comment_end`・`skip_leading_trivia` と同じ判定
+/// （引用符・コメント・空白）を使い回す。
+pub(crate) fn skip_qualified_name(sql: &str, start: usize) -> usize {
+    let bytes = sql.as_bytes();
+    let mut i = skip_name_part(bytes, start);
+    loop {
+        let after_trivia = skip_trivia(bytes, i);
+        if after_trivia < bytes.len() && bytes[after_trivia] == b'.' {
+            i = skip_name_part(bytes, skip_trivia(bytes, after_trivia + 1));
+        } else {
+            return i;
+        }
+    }
+}
+
+/// 名前を 1 つ読み飛ばした位置。引用符付きなら `skip_quoted` の終わりまで、無引用なら
+/// 識別子の文字（英数字・`_`）が続く間読み進めた位置まで。
+fn skip_name_part(bytes: &[u8], start: usize) -> usize {
+    if bytes.get(start) == Some(&b'"') {
+        skip_quoted(bytes, start)
+    } else {
+        let mut i = start;
+        while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+            i += 1;
+        }
+        i
+    }
 }
 
 /// `"a""b"` の中身 `a"b`。
-fn unquote(identifier: &str) -> String {
+///
+/// `operation/table_format.rs` が DROP TABLE の修飾名の引用符付き識別子を読むのにも再利用する（issue #39 Phase 2）。
+pub(crate) fn unquote(identifier: &str) -> String {
     let inner = identifier
         .strip_prefix('"')
         .and_then(|rest| rest.strip_suffix('"'))
@@ -365,5 +415,53 @@ mod tests {
     #[test]
     fn 非_ascii_のコメントでもバイト単位の走査が途中を切らない() {
         assert_eq!(skip_leading_trivia("-- あ\nSELECT 1"), "SELECT 1");
+    }
+
+    #[test]
+    fn skip_qualified_name_は無引用の単純な名前を読み飛ばす() {
+        assert_eq!(skip_qualified_name("t", 0), 1);
+        assert_eq!(skip_qualified_name("t ADD COLUMNS", 0), 1);
+    }
+
+    #[test]
+    fn skip_qualified_name_はドットで繋いだ修飾名を読み飛ばす() {
+        assert_eq!(skip_qualified_name("cat.ns.t", 0), "cat.ns.t".len());
+        assert_eq!(skip_qualified_name("cat.ns.t ADD", 0), "cat.ns.t".len());
+    }
+
+    #[test]
+    fn skip_qualified_name_は引用符付きの識別子を読み飛ばす() {
+        let sql = r#""my table".ns.t"#;
+        assert_eq!(skip_qualified_name(sql, 0), sql.len());
+    }
+
+    #[test]
+    fn skip_qualified_name_はドットの前後の空白やコメントを読み飛ばす() {
+        assert_eq!(skip_qualified_name("cat . ns . t", 0), "cat . ns . t".len());
+        assert_eq!(
+            skip_qualified_name("cat /* c */ . ns", 0),
+            "cat /* c */ . ns".len()
+        );
+        assert_eq!(
+            skip_qualified_name("cat -- c\n. ns", 0),
+            "cat -- c\n. ns".len()
+        );
+    }
+
+    #[test]
+    fn skip_qualified_name_はドットが続かなければ後ろのトリビアを消費せずに止まる() {
+        // 名前の後ろにコメントがあっても、続きがドットでなければコメントは読み飛ばした
+        // 位置に含めない（呼び出し元が改めて skip_leading_trivia できるようにする）。
+        assert_eq!(skip_qualified_name("t -- comment\nADD COLUMN", 0), 1);
+    }
+
+    #[test]
+    fn skip_qualified_name_は途中の位置からも読める() {
+        let sql = "ALTER TABLE cat.ns.t ADD COLUMNS";
+        let start = "ALTER TABLE ".len();
+        assert_eq!(
+            skip_qualified_name(sql, start),
+            "ALTER TABLE cat.ns.t".len()
+        );
     }
 }
