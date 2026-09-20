@@ -394,29 +394,35 @@ async fn run(
     // 修飾名にカタログ／スキーマがあればそれを、無ければ実行時の既定（別名解決前の値）を使う。
     // カタログには本体と同じ別名を当ててから問い合わせる（system.metadata.catalogs /
     // system.jdbc.tables は Trino 側の名前でしか引けない。issue #39 Phase 2）。
-    let engine_ddl = match table_format::target_statement(&execution.query) {
-        Some(statement) => match table_format::parse_target_table(
-            &execution.query,
-            statement,
-            execution.catalog.as_deref(),
-            execution.database.as_deref(),
-        ) {
-            Some(target) => {
-                let target_catalog = config.trino_catalog(&target.catalog);
-                table_format::probe_format(
-                    trino,
-                    target_catalog,
-                    &target.schema,
-                    &target.table,
-                    database,
-                    cancel,
-                )
-                .await
-                .and_then(|format| table_format::engine_ddl(statement, format))
-            }
+    // 結果 CSV の S3 書き込みが無効（ResultsMode::None）なら、write_result が判定結果を
+    // 丸ごと捨てるので問い合わせない（Trino へのフル往復が無駄になるだけのレビュー指摘）。
+    let engine_ddl = if matches!(config.results, ResultsMode::None) {
+        None
+    } else {
+        match table_format::target_statement(&execution.query) {
+            Some(statement) => match table_format::parse_target_table(
+                &execution.query,
+                statement,
+                execution.catalog.as_deref(),
+                execution.database.as_deref(),
+            ) {
+                Some(target) => {
+                    let target_catalog = config.trino_catalog(&target.catalog);
+                    table_format::probe_format(
+                        trino,
+                        target_catalog,
+                        &target.schema,
+                        &target.table,
+                        database,
+                        cancel,
+                    )
+                    .await
+                    .and_then(|format| table_format::engine_ddl(statement, format))
+                }
+                None => None,
+            },
             None => None,
-        },
-        None => None,
+        }
     };
 
     // 分類も本体と同じカタログ・スキーマで問い合わせ、関数の解決先を揃える。

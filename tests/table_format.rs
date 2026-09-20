@@ -182,12 +182,11 @@ async fn 引用符付きのカタログ名にも別名を当てて問い合わ�
     assert_eq!(execution["QueryExecution"]["Status"]["State"], "SUCCEEDED");
     // 問い合わせは、修飾名から取り出したカタログに別名を当てた（Trino 側の）名前で送る。
     // 本体は catalog.rs の alias_qualified_names が別名で書き換えたもの（既存の振る舞い）。
+    // パディングは catalog::replacement が決める（元の引用符付き識別子 27 文字 -
+    // 別名を引用符で包んだ "iceberg_catalog" 17 文字 = 空白 10 個。他のテストと同じく完全一致で見る）。
     let sqls = harness.trino_sqls();
     assert_eq!(sqls[0], probe_sql("iceberg_catalog", "ns", "t"));
-    assert!(
-        sqls[1].starts_with("DROP TABLE \"iceberg_catalog\"") && sqls[1].ends_with(".ns.t"),
-        "{sqls:?}"
-    );
+    assert_eq!(sqls[1], "DROP TABLE \"iceberg_catalog\"          .ns.t");
 
     let puts = harness.s3_puts();
     assert_eq!(puts.len(), 2, "{puts:?}");
@@ -462,6 +461,21 @@ async fn alter_table_add_columns_は_iceberg_なら今までどおり_0_バイ�
     assert_eq!(puts[0].key, format!("athena/{id}.txt"));
     assert_eq!(puts[0].body, Vec::<u8>::new());
     assert_eq!(puts[0].content_type.as_deref(), Some("binary/octet-stream"));
+}
+
+#[tokio::test]
+async fn 結果_s3_が無効なら_drop_table_でも形式を問い合わせない() {
+    // results_s3() を呼ばないので ATHENA_LOCAL_RESULTS=none 相当（Harness の既定）。
+    // write_result は app.results が None なら判定結果を丸ごと捨てるので、probe_format を
+    // 呼ぶだけ Trino へのフル往復が無駄になる（レビュー指摘）。
+    let harness = Harness::builder(drop_table_response()).start().await;
+
+    let execution = harness
+        .run_query(json!({ "QueryString": "DROP TABLE t" }))
+        .await;
+
+    assert_eq!(execution["QueryExecution"]["Status"]["State"], "SUCCEEDED");
+    assert_eq!(harness.trino_sqls(), ["DROP TABLE t".to_string()]);
 }
 
 #[tokio::test]

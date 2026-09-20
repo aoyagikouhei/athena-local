@@ -517,6 +517,30 @@ mod tests {
     }
 
     #[test]
+    fn parse_qualified_name_と_catalog_skip_qualified_name_は同じ書き方を受け付ける() {
+        // 名前を「取り出す」parse_qualified_name（ここ）と「読み飛ばす」
+        // catalog::skip_qualified_name（classification.rs の ALTER TABLE 判定が使う）は
+        // 用途が違うので実装は別だが、受け付ける書き方（引用符・ドット・空白・コメント）は
+        // 揃っていることをここで固定する（issue #39 レビュー指摘）。
+        for input in [
+            "t",
+            "cat.ns.t",
+            "cat . ns . t",
+            "cat /* c */ . ns . t",
+            "cat -- c\n. ns . t",
+            r#""my table".ns.t"#,
+        ] {
+            let parts = parse_qualified_name(input).expect("parse_qualified_name");
+            assert!(!parts.is_empty(), "{input:?}");
+            assert_eq!(
+                crate::catalog::skip_qualified_name(input, 0),
+                input.len(),
+                "{input:?}"
+            );
+        }
+    }
+
+    #[test]
     fn parse_target_table_は_alter_table_でも_if_exists_を読み飛ばす() {
         // 本物の Athena には `ALTER TABLE IF EXISTS` の構文が無く、classification.rs の時点で
         // target_statement は None に落ちる（この文が実際に parse_target_table まで届くことは無い）。
