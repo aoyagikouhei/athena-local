@@ -3,13 +3,18 @@
 # DROP TABLE / ALTER TABLE の updateType がどう出るかを、ローカル Trino の
 # /v1/statement を直接叩いて確かめるスクリプト。
 #
-# 前提: .claude/issue-notes/39-trino-probe/docker-compose.yml で Trino を起動済み、
-#       hive.default.t1 / iceberg.default.t1 を CREATE TABLE ... AS SELECT 1 AS n
-#       で作成済み（本スクリプトが再作成もする）。
+# 前提: .claude/issue-notes/39-trino-probe/docker-compose.yml で Trino を起動済み
+#       （スキーマ・対照テーブルは本スクリプトが作成する）。
+#
+# バージョンを変えて確かめるときは、このスクリプトではなく docker-compose.yml 側を
+# 差し替える: TRINO_TAG=<タグ> [CATALOG_DIR=./catalog-legacy] docker compose up -d
+# （古いバージョンは fs.local.enabled が無く fs.native-local.enabled が要るため
+# catalog-legacy/ を用意してある。要るかはバージョンごとに起動ログで確認する）。
 #
 # 出力: $OUT_DIR 以下に <ラベル>.<ページ番号>.json で生の応答を保存する。
+# バージョンごとに OUT_DIR を分けて実行すること。
 #
-# 使い方: OUT_DIR=/path/to/out BASE=http://127.0.0.1:8090 bash probe.sh
+# 使い方: OUT_DIR=/path/to/out/482 BASE=http://127.0.0.1:8090 bash probe.sh
 
 set -euo pipefail
 
@@ -100,6 +105,18 @@ post "CREATE TABLE iceberg.default.t_plain (n int)" c3_create_table_iceberg
 # C4: 対照 SELECT
 post "SELECT 1 AS n" c4_select_1_hive hive default
 post "SELECT 1 AS n" c4_select_1_iceberg iceberg default
+
+echo
+echo "=== D. 本番の probe_sql と同じ形（system.metadata.catalogs + system.jdbc.tables を1クエリで） ==="
+# src/operation/table_format.rs の probe_sql() と同じ組み立て。
+# table_cat / table_schem / table_name を3つとも指定したときの count(*) が
+# 存在するテーブルで1、しないテーブルで0になるかを見る。
+post "SELECT (SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = 'hive'), (SELECT count(*) FROM system.jdbc.tables WHERE table_cat = 'hive' AND table_schem = 'default' AND table_name = 't1')" d1_probe_hive_exists
+post "SELECT (SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = 'iceberg'), (SELECT count(*) FROM system.jdbc.tables WHERE table_cat = 'iceberg' AND table_schem = 'default' AND table_name = 't1')" d2_probe_iceberg_exists
+post "SELECT (SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = 'hive'), (SELECT count(*) FROM system.jdbc.tables WHERE table_cat = 'hive' AND table_schem = 'default' AND table_name = 'nope')" d3_probe_hive_missing
+post "SELECT (SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = 'iceberg'), (SELECT count(*) FROM system.jdbc.tables WHERE table_cat = 'iceberg' AND table_schem = 'default' AND table_name = 'nope')" d4_probe_iceberg_missing
+# table_schem/table_name は一致するがカタログが違う（3つ全部を見ているかの確認。0件のはず）
+post "SELECT count(*) FROM system.jdbc.tables WHERE table_cat = 'no_such_catalog' AND table_schem = 'default' AND table_name = 't1'" d5_probe_wrong_catalog
 
 echo
 echo "=== 完了 ==="
