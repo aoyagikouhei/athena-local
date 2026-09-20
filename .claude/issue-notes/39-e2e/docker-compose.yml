@@ -1,0 +1,57 @@
+# issue #39 Step 9（実機検証）の足場。
+# .claude/issue-notes/39-trino-probe/docker-compose.yml をベースに、athena-local が
+# 結果ファイルを書く先として MinIO を足したもの。本物の AWS は一切使わない。
+#
+# ポートは 39-trino-probe（Trino のみ 8090）や他プロジェクトの compose と衝突しないものを選んだ
+# （2026-09-21 時点の `docker ps` で確認）。
+name: athena-local-issue39-e2e
+
+services:
+  trino:
+    image: trinodb/trino:482
+    container_name: athena-local-issue39-e2e-trino
+    ports:
+      - "8092:8080"
+    volumes:
+      - ./catalog:/etc/trino/catalog:ro
+      - trino-hive-data:/data/hive
+      - trino-iceberg-data:/data/iceberg
+
+  minio:
+    image: quay.io/minio/minio:latest
+    container_name: athena-local-issue39-e2e-minio
+    ports:
+      - "9002:9000" # S3 互換 API
+      - "9003:9001" # 管理コンソール（無くても検証は進む）
+    environment:
+      # ローカル専用のダミー認証情報。本物の AWS の認証情報ではない。
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  # 使い捨てコンテナ。起動のたびに athena-results バケットを（無ければ）作って終了する。
+  minio-init:
+    image: quay.io/minio/mc:latest
+    container_name: athena-local-issue39-e2e-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        mc alias set local http://minio:9000 minioadmin minioadmin
+        mc mb --ignore-existing local/athena-results
+        echo "bucket ready: athena-results"
+
+volumes:
+  trino-hive-data:
+  trino-iceberg-data:
+  minio-data:
