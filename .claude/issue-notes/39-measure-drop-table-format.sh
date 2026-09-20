@@ -614,7 +614,10 @@ FMT_ICE_CTAS=unknown
 
 # a. 争点: CTAS でない素の CREATE TABLE（Hive）。CTAS との作り方の違いで形式判定や
 #    結果ファイルが変わるかを見る。
-run a "CREATE TABLE $DB.${PREFIX}_hive_plain (n int)" keys
+#    1 ラウンド目（2026-09-20）は LOCATION 無しで投げ、`No location was specified for
+#    table` で開始自体が失敗した（MALFORMED_QUERY）。Athena の Hive は場所を持たない
+#    テーブルを作れないので、EXTERNAL と LOCATION を明示する。
+run a "CREATE EXTERNAL TABLE $DB.${PREFIX}_hive_plain (n int) LOCATION '${OUTPUT}tables-probe-39-hive-plain/'" keys
 A_OK=$?
 
 # b. 争点: CTAS でない素の CREATE TABLE（Iceberg）。location と TBLPROPERTIES を
@@ -631,14 +634,18 @@ FMT_ICE_PLAIN=unknown
 
 # --- 本編: c1/c2/d1/d2 ALTER TABLE -------------------------------------------
 
-# c1/c2. 同じ ALTER 文を Hive / Iceberg の両形式に投げる対。
+# c1/c2. ALTER TABLE のプロパティ変更。1 ラウンド目（2026-09-20）は両形式に同じ
+#    `('comment'='x')` を投げ、Iceberg 側が `Unsupported table property key: comment`
+#    で FAILED になった。両形式に共通で通るキーが無いので、形式ごとに通るキーを使う。
+#    同じ文を両形式に投げる厳密な対は d1/d2（ADD COLUMNS）が担うので、ここは
+#    「ALTER が成功したときの結果ファイル」を両形式で 1 件ずつ見ることを目的にする。
 if [ "$A_OK" = 0 ]; then
   run c1 "ALTER TABLE $DB.${PREFIX}_hive_plain SET TBLPROPERTIES ('comment'='x')" keys
 else
   skip c1 "hive_plain を作れなかったので未測定"
 fi
 if [ "$B_OK" = 0 ]; then
-  run c2 "ALTER TABLE $DB.${PREFIX}_ice_plain SET TBLPROPERTIES ('comment'='x')" keys
+  run c2 "ALTER TABLE $DB.${PREFIX}_ice_plain SET TBLPROPERTIES ('vacuum_max_snapshot_age_seconds'='432000')" keys
 else
   skip c2 "ice_plain を作れなかったので未測定"
 fi
