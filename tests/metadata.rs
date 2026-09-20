@@ -385,6 +385,47 @@ async fn drop_table_は_iceberg_なら_41_バイトの_metadata_を置く() {
 }
 
 #[tokio::test]
+async fn alter_table_add_columns_は_hive_なら_38_バイトの_metadata_を置く() {
+    // 2026-09-21 実測（issue #39 Phase 3b）。field 1 は実行 ID（QueryExecutionId）のみ。
+    // field 2（updateType）も field 3（更新件数）も無い。Trino の updateType は "ADD COLUMN"
+    // （Athena の `ADD COLUMNS` と綴りが違う）なので使わない。列も無いので field 4 も無い
+    // （38 = field1 のみ）。41 バイト（DROP TABLE × Iceberg）と違い field 2 が丸ごと無い。
+    // 結合レベルのバイト数・Content-Type・キーの有無は tests/table_format.rs（計画レビュー F）。
+    let harness = Harness::builder(json!({ "updateType": "ADD COLUMN" }))
+        .route(
+            "SELECT (SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = 'default_catalog'), (SELECT count(*) FROM system.jdbc.tables WHERE table_cat = 'default_catalog' AND table_schem = 'default_schema' AND table_name = 't')",
+            json!({
+                "columns": [
+                    { "name": "_col0", "type": "varchar" },
+                    { "name": "_col1", "type": "bigint" }
+                ],
+                "data": [["hive", 1]]
+            }),
+        )
+        .results_s3()
+        .start()
+        .await;
+
+    let execution = harness
+        .run_query(json!({
+            "QueryString": "ALTER TABLE t ADD COLUMNS (m int)",
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+        }))
+        .await;
+    let id = execution_id(&execution);
+
+    assert_eq!(execution["QueryExecution"]["Status"]["State"], "SUCCEEDED");
+
+    let puts = harness.s3_puts();
+    assert_eq!(puts.len(), 2, "{puts:?}");
+    assert_eq!(puts[0].key, format!("athena/{id}.txt"));
+    assert_eq!(puts[1].key, format!("athena/{id}.txt.metadata"));
+
+    // field 1（実行 ID）だけの 38 バイト。field 2 も field 3 も丸ごと無い。
+    assert_eq!(hex_of(&puts[1].body), execution_id_field(&id));
+}
+
+#[tokio::test]
 async fn insert_と_ctas_は_metadata_だけを置く() {
     let harness = Harness::builder(select_response())
         .route("INSERT INTO t VALUES (1)", dml_response("INSERT", 1))

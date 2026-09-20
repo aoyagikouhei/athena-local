@@ -1,8 +1,10 @@
-//! DROP TABLE の結果ファイルを、対象テーブルの形式（Trino のコネクタ）に応じて書き分ける。
+//! DROP TABLE と ALTER TABLE ... ADD COLUMNS の結果ファイルを、対象テーブルの形式
+//! （Trino のコネクタ）に応じて書き分ける。
 //!
 //! Phase 2 では修飾名（`cat.ns.t` や引用符付きのカタログ名）も解析し、対象テーブルの存在も
 //! あわせて確かめる。修飾名にカタログ・スキーマが無ければ実行時の既定を当て、それでも
 //! カタログかスキーマが決まらなければ判定しない（今までどおりに倒す。issue #39 Phase 2）。
+//! Phase 3b は ALTER TABLE ... ADD COLUMNS × Hive を対象に足す（2026-09-21 実測）。
 
 use crate::statement::quote_literal;
 use crate::trino::{Cancel, Outcome, Trino};
@@ -11,6 +13,7 @@ use crate::trino::{Cancel, Outcome, Trino};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TargetStatement {
     DropTable,
+    AlterTableAddColumns,
 }
 
 /// 問い合わせで分かる、対象テーブルの Trino コネクタ。
@@ -21,44 +24,60 @@ pub(super) enum TableFormat {
 }
 
 /// 本物が列なしでも本体・`.metadata` を置く、文の種類とテーブルの形式の組み合わせ
-/// （2026-09-20 実測）。
+/// （2026-09-20〜21 実測）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum EngineDdl {
     /// DROP TABLE × Iceberg。本体に改行 1 つ、`.metadata` に 41 バイト
     /// （field 1 = Trino のエンジンのクエリ ID、field 2 = `DROP TABLE`）。
     DropTableIceberg,
+    /// ALTER TABLE ... ADD COLUMNS × Hive。本体は 0 バイトのまま、`.metadata` に 38 バイト
+    /// （field 1 = QueryExecutionId のみ。field 2 の updateType も field 3 の更新件数も無い。
+    /// Trino の updateType は `"ADD COLUMN"` で Athena の `ADD COLUMNS` と綴りが違うので使わない。
+    /// 2026-09-21 実測）。
+    AlterAddColumnsHive,
 }
 
-/// `DROP TABLE [IF EXISTS] <名前>` から取り出した対象。カタログ・スキーマは
+/// `DROP TABLE` / `ALTER TABLE ... ADD COLUMNS` から取り出した対象。カタログ・スキーマは
 /// 修飾名に無ければ既定を当てた後の値（呼び出し元の別名解決前）。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct DropTarget {
+pub(super) struct TargetTable {
     pub(super) catalog: String,
     pub(super) schema: String,
     pub(super) table: String,
 }
 
-/// この文が対象か。対象は DROP TABLE だけ（`substatement_type` の判定をそのまま使い、
-/// 判定を二重に持たない）。修飾名でカタログを明示していても対象にする（Phase 2）。
+/// この文が対象か。対象は DROP TABLE と ALTER TABLE ... ADD COLUMNS だけ
+/// （`substatement_type` の判定をそのまま使い、判定を二重に持たない）。
+/// 修飾名でカタログを明示していても対象にする（Phase 2）。
 pub(super) fn target_statement(query: &str) -> Option<TargetStatement> {
-    if super::classification::substatement_type(query) != Some("DROP_TABLE") {
-        return None;
+    match super::classification::substatement_type(query) {
+        Some("DROP_TABLE") => Some(TargetStatement::DropTable),
+        Some("ALTER_TABLE_ADD_COLUMN") => Some(TargetStatement::AlterTableAddColumns),
+        _ => None,
     }
-    Some(TargetStatement::DropTable)
 }
 
-/// `DROP TABLE [IF EXISTS] <名前>` を解析し、カタログ・スキーマに既定値を当てる。
-/// 修飾名にあればその値（引用符付きなら中身、無引用なら Trino の規則で小文字）を使い、
-/// 無ければ `default_catalog` / `default_schema`（実行時の値。別名解決前）を使う。
-/// カタログかスキーマが決まらなければ None（今までどおりに倒す）。
+/// `target_statement` の種類ごとに、テーブル名の前に来る動詞（`DROP` / `ALTER`）。
+fn verb(statement: TargetStatement) -> &'static str {
+    match statement {
+        TargetStatement::DropTable => "DROP",
+        TargetStatement::AlterTableAddColumns => "ALTER",
+    }
+}
+
+/// `DROP TABLE [IF EXISTS] <名前>` / `ALTER TABLE [IF EXISTS] <名前> ADD COLUMNS ...` を解析し、
+/// カタログ・スキーマに既定値を当てる。修飾名にあればその値（引用符付きなら中身、無引用なら
+/// Trino の規則で小文字）を使い、無ければ `default_catalog` / `default_schema`（実行時の値。
+/// 別名解決前）を使う。カタログかスキーマが決まらなければ None（今までどおりに倒す）。
 ///
 /// 字句処理は新しく書かず、`catalog.rs` の `skip_leading_trivia`・`skip_quoted`・`unquote` を再利用する。
-pub(super) fn parse_drop_target(
+pub(super) fn parse_target_table(
     query: &str,
+    statement: TargetStatement,
     default_catalog: Option<&str>,
     default_schema: Option<&str>,
-) -> Option<DropTarget> {
-    let name = drop_table_name_start(query)?;
+) -> Option<TargetTable> {
+    let name = table_name_start(query, verb(statement))?;
     let parts = parse_qualified_name(name)?;
 
     let (catalog, schema, table) = match <[String; 1]>::try_from(parts.clone()) {
@@ -74,18 +93,18 @@ pub(super) fn parse_drop_target(
 
     let catalog = catalog.or_else(|| default_catalog.map(str::to_string))?;
     let schema = schema.or_else(|| default_schema.map(str::to_string))?;
-    Some(DropTarget {
+    Some(TargetTable {
         catalog,
         schema,
         table,
     })
 }
 
-/// `DROP TABLE` と、あれば `IF EXISTS` を読み飛ばし、名前が始まる位置を返す。
-/// 先頭が `DROP TABLE` でなければ None。
-fn drop_table_name_start(query: &str) -> Option<&str> {
+/// `<動詞> TABLE` と、あれば `IF EXISTS` を読み飛ばし、名前が始まる位置を返す。
+/// 先頭が `<動詞> TABLE` でなければ None。`<動詞>` は `DROP` か `ALTER`。
+fn table_name_start<'a>(query: &'a str, verb: &str) -> Option<&'a str> {
     let rest = crate::catalog::skip_leading_trivia(query);
-    let rest = skip_keyword(rest, "DROP")?;
+    let rest = skip_keyword(rest, verb)?;
     let rest = skip_keyword(crate::catalog::skip_leading_trivia(rest), "TABLE")?;
     let rest = crate::catalog::skip_leading_trivia(rest);
     let rest = match skip_keyword(rest, "IF") {
@@ -200,6 +219,10 @@ pub(super) fn engine_ddl(statement: TargetStatement, format: TableFormat) -> Opt
     match (statement, format) {
         (TargetStatement::DropTable, TableFormat::Iceberg) => Some(EngineDdl::DropTableIceberg),
         (TargetStatement::DropTable, TableFormat::Hive) => None,
+        (TargetStatement::AlterTableAddColumns, TableFormat::Hive) => {
+            Some(EngineDdl::AlterAddColumnsHive)
+        }
+        (TargetStatement::AlterTableAddColumns, TableFormat::Iceberg) => None,
     }
 }
 
@@ -230,6 +253,38 @@ mod tests {
     }
 
     #[test]
+    fn target_statement_は_alter_table_add_columns_も対象にする() {
+        // classification.rs が返す ALTER_TABLE_ADD_COLUMN をそのまま使う（判定を二重に持たない）。
+        for query in [
+            "ALTER TABLE t ADD COLUMNS (m int)",
+            "ALTER TABLE t ADD COLUMN m int",
+        ] {
+            assert_eq!(
+                target_statement(query),
+                Some(TargetStatement::AlterTableAddColumns),
+                "{query:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn target_statement_は_add_columns_以外の_alter_table_を対象外にする() {
+        // SET TBLPROPERTIES / DROP COLUMN / SET LOCATION は本物も列なしの本体・.metadata を
+        // 置かない（2026-09-21 実測）。IF EXISTS と RENAME COLUMN は Athena に構文が無いので
+        // classification.rs の時点で None になる。
+        for query in [
+            "ALTER TABLE t SET TBLPROPERTIES ('comment' = 'remember to add column for region')",
+            "ALTER TABLE t DROP COLUMN c",
+            "ALTER TABLE t SET LOCATION 's3://bucket/path/'",
+            "ALTER TABLE IF EXISTS t ADD COLUMNS (m int)",
+            "ALTER TABLE t RENAME COLUMN a TO b",
+            "ALTER TABLE t RENAME TO u",
+        ] {
+            assert_eq!(target_statement(query), None, "{query:?}");
+        }
+    }
+
+    #[test]
     fn target_statement_は_2_パートの名前を既定カタログの文として対象にする() {
         // `ns.t` はカタログを名指ししておらず、`t` と同じ既定カタログを使うだけ。
         assert_eq!(
@@ -254,6 +309,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn engine_ddl_は_alter_table_add_columns_と_hive_の組み合わせだけ_some() {
+        assert_eq!(
+            engine_ddl(TargetStatement::AlterTableAddColumns, TableFormat::Hive),
+            Some(EngineDdl::AlterAddColumnsHive)
+        );
+        assert_eq!(
+            engine_ddl(TargetStatement::AlterTableAddColumns, TableFormat::Iceberg),
+            None
+        );
+    }
+
     #[tokio::test]
     async fn 形式の問い合わせが失敗すれば今までどおりに倒す() {
         // 127.0.0.1:1 には何も listen していないので接続に失敗する。
@@ -266,10 +333,15 @@ mod tests {
     }
 
     #[test]
-    fn parse_drop_target_は修飾名の無い名前に既定のカタログとスキーマを当てる() {
+    fn parse_target_table_は修飾名の無い名前に既定のカタログとスキーマを当てる() {
         assert_eq!(
-            parse_drop_target("DROP TABLE t", Some("cat"), Some("ns")),
-            Some(DropTarget {
+            parse_target_table(
+                "DROP TABLE t",
+                TargetStatement::DropTable,
+                Some("cat"),
+                Some("ns")
+            ),
+            Some(TargetTable {
                 catalog: "cat".to_string(),
                 schema: "ns".to_string(),
                 table: "t".to_string(),
@@ -278,10 +350,15 @@ mod tests {
     }
 
     #[test]
-    fn parse_drop_target_は_2_パートの名前にスキーマを当て既定のカタログを使う() {
+    fn parse_target_table_は_2_パートの名前にスキーマを当て既定のカタログを使う() {
         assert_eq!(
-            parse_drop_target("DROP TABLE ns.t", Some("cat"), Some("default_ns")),
-            Some(DropTarget {
+            parse_target_table(
+                "DROP TABLE ns.t",
+                TargetStatement::DropTable,
+                Some("cat"),
+                Some("default_ns")
+            ),
+            Some(TargetTable {
                 catalog: "cat".to_string(),
                 schema: "ns".to_string(),
                 table: "t".to_string(),
@@ -290,14 +367,15 @@ mod tests {
     }
 
     #[test]
-    fn parse_drop_target_は_3_パートの名前でカタログとスキーマをそのまま使う() {
+    fn parse_target_table_は_3_パートの名前でカタログとスキーマをそのまま使う() {
         assert_eq!(
-            parse_drop_target(
+            parse_target_table(
                 "DROP TABLE cat.ns.t",
+                TargetStatement::DropTable,
                 Some("default_cat"),
                 Some("default_ns")
             ),
-            Some(DropTarget {
+            Some(TargetTable {
                 catalog: "cat".to_string(),
                 schema: "ns".to_string(),
                 table: "t".to_string(),
@@ -306,10 +384,15 @@ mod tests {
     }
 
     #[test]
-    fn parse_drop_target_は引用符付きの第_1_パートを中身のまま使う() {
+    fn parse_target_table_は引用符付きの第_1_パートを中身のまま使う() {
         assert_eq!(
-            parse_drop_target(r#"DROP TABLE "s3tablescatalog/my-bucket".ns.t"#, None, None),
-            Some(DropTarget {
+            parse_target_table(
+                r#"DROP TABLE "s3tablescatalog/my-bucket".ns.t"#,
+                TargetStatement::DropTable,
+                None,
+                None
+            ),
+            Some(TargetTable {
                 catalog: "s3tablescatalog/my-bucket".to_string(),
                 schema: "ns".to_string(),
                 table: "t".to_string(),
@@ -318,10 +401,15 @@ mod tests {
     }
 
     #[test]
-    fn parse_drop_target_は_if_exists_を読み飛ばす() {
+    fn parse_target_table_は_if_exists_を読み飛ばす() {
         assert_eq!(
-            parse_drop_target("DROP TABLE IF EXISTS cat.ns.t", None, None),
-            Some(DropTarget {
+            parse_target_table(
+                "DROP TABLE IF EXISTS cat.ns.t",
+                TargetStatement::DropTable,
+                None,
+                None
+            ),
+            Some(TargetTable {
                 catalog: "cat".to_string(),
                 schema: "ns".to_string(),
                 table: "t".to_string(),
@@ -330,10 +418,15 @@ mod tests {
     }
 
     #[test]
-    fn parse_drop_target_はコメントを読み飛ばす() {
+    fn parse_target_table_はコメントを読み飛ばす() {
         assert_eq!(
-            parse_drop_target("DROP TABLE /* c */ cat.ns.t", None, None),
-            Some(DropTarget {
+            parse_target_table(
+                "DROP TABLE /* c */ cat.ns.t",
+                TargetStatement::DropTable,
+                None,
+                None
+            ),
+            Some(TargetTable {
                 catalog: "cat".to_string(),
                 schema: "ns".to_string(),
                 table: "t".to_string(),
@@ -342,10 +435,15 @@ mod tests {
     }
 
     #[test]
-    fn parse_drop_target_は引用符の無い名前を小文字にする() {
+    fn parse_target_table_は引用符の無い名前を小文字にする() {
         assert_eq!(
-            parse_drop_target("DROP TABLE CAT.NS.T", None, None),
-            Some(DropTarget {
+            parse_target_table(
+                "DROP TABLE CAT.NS.T",
+                TargetStatement::DropTable,
+                None,
+                None
+            ),
+            Some(TargetTable {
                 catalog: "cat".to_string(),
                 schema: "ns".to_string(),
                 table: "t".to_string(),
@@ -354,21 +452,89 @@ mod tests {
     }
 
     #[test]
-    fn parse_drop_target_はカタログもスキーマも決まらなければ_none() {
-        assert_eq!(parse_drop_target("DROP TABLE t", None, None), None);
-    }
-
-    #[test]
-    fn parse_drop_target_はカタログが決まらなければ_none() {
+    fn parse_target_table_はカタログもスキーマも決まらなければ_none() {
         assert_eq!(
-            parse_drop_target("DROP TABLE ns.t", None, Some("ignored")),
+            parse_target_table("DROP TABLE t", TargetStatement::DropTable, None, None),
             None
         );
     }
 
     #[test]
-    fn parse_drop_target_はスキーマが決まらなければ_none() {
-        assert_eq!(parse_drop_target("DROP TABLE t", Some("cat"), None), None);
+    fn parse_target_table_はカタログが決まらなければ_none() {
+        assert_eq!(
+            parse_target_table(
+                "DROP TABLE ns.t",
+                TargetStatement::DropTable,
+                None,
+                Some("ignored")
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_target_table_はスキーマが決まらなければ_none() {
+        assert_eq!(
+            parse_target_table(
+                "DROP TABLE t",
+                TargetStatement::DropTable,
+                Some("cat"),
+                None
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_target_table_は_alter_table_add_columns_の名前も読む() {
+        // ADD COLUMNS 以降は見ない（名前の直後で止める）。
+        assert_eq!(
+            parse_target_table(
+                "ALTER TABLE cat.ns.t ADD COLUMNS (m int)",
+                TargetStatement::AlterTableAddColumns,
+                Some("default_cat"),
+                Some("default_ns")
+            ),
+            Some(TargetTable {
+                catalog: "cat".to_string(),
+                schema: "ns".to_string(),
+                table: "t".to_string(),
+            })
+        );
+        assert_eq!(
+            parse_target_table(
+                "ALTER TABLE t ADD COLUMNS (m int)",
+                TargetStatement::AlterTableAddColumns,
+                Some("cat"),
+                Some("ns")
+            ),
+            Some(TargetTable {
+                catalog: "cat".to_string(),
+                schema: "ns".to_string(),
+                table: "t".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_target_table_は_alter_table_でも_if_exists_を読み飛ばす() {
+        // 本物の Athena には `ALTER TABLE IF EXISTS` の構文が無く、classification.rs の時点で
+        // target_statement は None に落ちる（この文が実際に parse_target_table まで届くことは無い）。
+        // ここでは `table_name_start` の IF EXISTS の読み飛ばしが動詞（DROP / ALTER）によらず
+        // 共通のコードで効いていることを固定する。
+        assert_eq!(
+            parse_target_table(
+                "ALTER TABLE IF EXISTS cat.ns.t ADD COLUMNS (m int)",
+                TargetStatement::AlterTableAddColumns,
+                None,
+                None
+            ),
+            Some(TargetTable {
+                catalog: "cat".to_string(),
+                schema: "ns".to_string(),
+                table: "t".to_string(),
+            })
+        );
     }
 
     #[test]

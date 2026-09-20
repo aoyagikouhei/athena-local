@@ -1,7 +1,9 @@
-//! DROP TABLE の結果ファイルを対象テーブルの形式（Trino のコネクタ）で書き分ける（issue #39）。
+//! DROP TABLE と ALTER TABLE ... ADD COLUMNS の結果ファイルを対象テーブルの形式
+//! （Trino のコネクタ）で書き分ける（issue #39）。
 //! Phase 2 では修飾名（`cat.ns.t` や引用符付きのカタログ名）も解析し、対象テーブルの存在も
-//! あわせて確かめる。41 バイトのバイト単位の固定は tests/metadata.rs に集約し、ここでは
-//! 結合レベル（バイト数・Content-Type・キーの有無）だけを見る（計画レビュー F）。
+//! あわせて確かめる。Phase 3b は ALTER TABLE ... ADD COLUMNS × Hive を対象に足す
+//! （2026-09-21 実測）。41 バイト／38 バイトのバイト単位の固定は tests/metadata.rs に集約し、
+//! ここでは結合レベル（バイト数・Content-Type・キーの有無）だけを見る（計画レビュー F）。
 
 mod common;
 
@@ -47,6 +49,11 @@ fn probe_response_missing() -> Value {
 
 fn drop_table_response() -> Value {
     json!({ "updateType": "DROP TABLE" })
+}
+
+/// Trino の updateType は `"ADD COLUMN"`（Athena の `ADD COLUMNS` とは綴りが違う。2026-09-21 実測）。
+fn alter_add_columns_response() -> Value {
+    json!({ "updateType": "ADD COLUMN" })
 }
 
 fn has_call(harness: &Harness, call: &str) -> bool {
@@ -380,4 +387,112 @@ async fn 別名を当てたカタログ名で形式を問い合わせる() {
     assert_eq!(puts[0].body, vec![0x0a]);
     assert_eq!(puts[1].key, format!("athena/{id}.txt.metadata"));
     assert_eq!(puts[1].body.len(), 41);
+}
+
+#[tokio::test]
+async fn alter_table_add_columns_は_hive_なら本体_0_バイトのまま_metadataを_38_バイト書く() {
+    // 2026-09-21 実測（issue #39 Phase 3b）。DROP TABLE × Iceberg（41 バイト・改行 1 つ）とは
+    // 向きも中身の形も違う: ADD COLUMNS は Hive 側が対象で、本体は 0 バイトのまま。
+    let harness = Harness::builder(alter_add_columns_response())
+        .route(
+            &probe_sql("default_catalog", "default_schema", "t"),
+            probe_response("hive"),
+        )
+        .results_s3()
+        .start()
+        .await;
+
+    let execution = harness
+        .run_query(json!({
+            "QueryString": "ALTER TABLE t ADD COLUMNS (m int)",
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+        }))
+        .await;
+    let id = execution_id(&execution);
+
+    assert_eq!(execution["QueryExecution"]["Status"]["State"], "SUCCEEDED");
+    // 形式の問い合わせを本体より先に送る。
+    assert_eq!(
+        harness.trino_sqls(),
+        [
+            probe_sql("default_catalog", "default_schema", "t"),
+            "ALTER TABLE t ADD COLUMNS (m int)".to_string()
+        ]
+    );
+
+    let puts = harness.s3_puts();
+    assert_eq!(puts.len(), 2, "{puts:?}");
+    assert_eq!(puts[0].key, format!("athena/{id}.txt"));
+    assert_eq!(puts[0].body, Vec::<u8>::new(), "本体は 0 バイトのまま");
+    assert_eq!(
+        puts[0].content_type.as_deref(),
+        Some("application/octet-stream")
+    );
+    assert_eq!(puts[1].key, format!("athena/{id}.txt.metadata"));
+    assert_eq!(puts[1].body.len(), 38, "{:?}", puts[1].body);
+    assert_eq!(
+        puts[1].content_type.as_deref(),
+        Some("application/octet-stream")
+    );
+}
+
+#[tokio::test]
+async fn alter_table_add_columns_は_iceberg_なら今までどおり_0_バイトのまま_metadataも置かない() {
+    let harness = Harness::builder(alter_add_columns_response())
+        .route(
+            &probe_sql("default_catalog", "default_schema", "t"),
+            probe_response("iceberg"),
+        )
+        .results_s3()
+        .start()
+        .await;
+
+    let execution = harness
+        .run_query(json!({
+            "QueryString": "ALTER TABLE t ADD COLUMNS (m int)",
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+        }))
+        .await;
+    let id = execution_id(&execution);
+
+    assert_eq!(execution["QueryExecution"]["Status"]["State"], "SUCCEEDED");
+
+    let puts = harness.s3_puts();
+    assert_eq!(puts.len(), 1, "{puts:?}");
+    assert_eq!(puts[0].key, format!("athena/{id}.txt"));
+    assert_eq!(puts[0].body, Vec::<u8>::new());
+    assert_eq!(puts[0].content_type.as_deref(), Some("binary/octet-stream"));
+}
+
+#[tokio::test]
+async fn add_columns_以外の_alter_table_は形式を問い合わせない() {
+    // SET TBLPROPERTIES・DROP COLUMN・SET LOCATION は本物も列なしの本体・.metadata を
+    // 置かない（2026-09-21 実測）ので、classification.rs の時点で対象外になり probe も飛ばない。
+    for query in [
+        "ALTER TABLE t SET TBLPROPERTIES ('comment' = 'remember to add column for region')",
+        "ALTER TABLE t DROP COLUMN c",
+        "ALTER TABLE t SET LOCATION 's3://bucket/path/'",
+    ] {
+        let harness = Harness::builder(json!({ "updateType": "ALTER TABLE" }))
+            .results_s3()
+            .start()
+            .await;
+
+        let execution = harness
+            .run_query(json!({
+                "QueryString": query,
+                "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+            }))
+            .await;
+
+        assert_eq!(
+            execution["QueryExecution"]["Status"]["State"], "SUCCEEDED",
+            "{query:?}"
+        );
+        assert_eq!(harness.trino_sqls(), [query.to_string()], "{query:?}");
+
+        let puts = harness.s3_puts();
+        assert_eq!(puts.len(), 1, "形式を問い合わせていない: {puts:?}");
+        assert_eq!(puts[0].content_type.as_deref(), Some("binary/octet-stream"));
+    }
 }

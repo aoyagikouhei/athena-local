@@ -234,8 +234,10 @@ fn spawn_query(app: App, id: String) {
 /// （Trino では既に実行し終えており、本物の Athena も補助ファイルの書き込みでは失敗にしない）。
 /// `.metadata` は列がある文に置き、書けなくても SUCCEEDED のまま。
 /// DML と CTAS は本体を置かず `.metadata` だけを置く（2026-09-17 実測）。
-/// `engine_ddl` が `Some` の文（DROP TABLE × Iceberg。issue #39）は列が無くても本体に改行 1 つ、
-/// `.metadata` を置き、どちらも Content-Type は application/octet-stream にする（2026-09-20 実測）。
+/// `engine_ddl` が `Some` の文（issue #39）は列が無くても `.metadata` を置き、Content-Type は
+/// 本体・付随ファイルとも application/octet-stream にする。本体に改行 1 つを足すのは
+/// DROP TABLE × Iceberg だけで、ALTER TABLE ADD COLUMNS × Hive の本体は 0 バイトのまま
+/// （2026-09-20／21 実測）。
 async fn write_result(
     app: &App,
     execution: &Execution,
@@ -277,9 +279,31 @@ async fn write_result(
     }
 
     // 列が無い文（CREATE TABLE、CREATE / DROP DATABASE）には本物も付随ファイルを置かない。
-    // DROP TABLE × Iceberg だけは本物が列なしの 41 バイトを置く（2026-09-20 実測。issue #39）。
+    // DROP TABLE × Iceberg（41 バイト）と ALTER TABLE ADD COLUMNS × Hive（38 バイト）だけは
+    // 本物が列なしでも `.metadata` を置く（2026-09-20／21 実測。issue #39）。
     if !outcome.columns.is_empty() || engine_ddl.is_some() {
-        write_metadata(writer, location, &execution.query, id, &outcome).await;
+        // ALTER TABLE ADD COLUMNS × Hive だけは field 1 に実行 ID だけを置き、field 2（updateType）も
+        // field 3（更新件数）も置かない。Trino の updateType は "ADD COLUMN"（Athena の
+        // `ADD COLUMNS` と綴りが違う）なので、そのまま使うと誤った field 2 が付く（2026-09-21 実測）。
+        let (query_id, update_type, update_count) =
+            if engine_ddl == Some(EngineDdl::AlterAddColumnsHive) {
+                (id, None, None)
+            } else {
+                (
+                    metadata_query_id(&execution.query, id, outcome.id.as_deref()),
+                    outcome.update_type.as_deref(),
+                    outcome.update_count,
+                )
+            };
+        write_metadata(
+            writer,
+            location,
+            query_id,
+            update_type,
+            update_count,
+            &outcome,
+        )
+        .await;
     }
     Ok(outcome)
 }
@@ -308,18 +332,20 @@ async fn write_failure(app: &App, execution: &Execution, failure: &Failure) {
 }
 
 /// 付随ファイル `.metadata` を組み立てて置く。書けなくても実行は成功のまま（補助ファイルなので握りつぶす）。
+/// `query_id` / `update_type` / `update_count` は呼び出し元（`write_result`）が文の種類に応じて
+/// 決めた値（ALTER TABLE ADD COLUMNS × Hive だけは実行 ID・None・None に上書きされている）。
 async fn write_metadata(
     writer: &results::ResultWriter,
     location: &ResultLocation,
-    query: &str,
-    id: &str,
+    query_id: &str,
+    update_type: Option<&str>,
+    update_count: Option<i64>,
     outcome: &Outcome,
 ) {
     let body = metadata::to_metadata(
-        metadata_query_id(query, id, outcome.id.as_deref()),
-        outcome.update_type.as_deref(),
-        // update_count（SELECT を Some(0) にする関数）は使わない。本物は SELECT に field 3 を置かない。
-        outcome.update_count,
+        query_id,
+        update_type,
+        update_count,
         &convert::column_infos(outcome),
     );
     if let Err(reason) = writer.put(&location.metadata(), body, None).await {
@@ -347,7 +373,8 @@ fn metadata_query_id<'a>(
 /// 値を分類して EXECUTE IMMEDIATE で包んで実行する。
 /// パラメータが無ければ分類は走らず、SQL は修飾名に別名を当てただけで送られる（to_trino_sql が判断する）。
 /// 戻り値の `Option<EngineDdl>` は、実行前にテーブルの形式を問い合わせて分かった、
-/// 列が無くても本体・`.metadata` を置くべき文（issue #39 Phase 1: DROP TABLE × Iceberg）。
+/// 列が無くても本体・`.metadata` を置くべき文（issue #39。DROP TABLE × Iceberg、
+/// ALTER TABLE ADD COLUMNS × Hive）。
 async fn run(
     trino: &Trino,
     config: &Config,
@@ -362,14 +389,15 @@ async fn run(
     // 分類の問い合わせにも本体にも同じ取り消し要求を渡す。
     let cancel = &execution.cancel;
 
-    // 対象の文（DROP TABLE）なら、実行前にテーブルの形式と存在を Trino に聞く。
+    // 対象の文（DROP TABLE・ALTER TABLE ADD COLUMNS）なら、実行前にテーブルの形式と存在を Trino に聞く。
     // パラメータ分類のループより前に置く（対象テーブルは実行後に消えるため）。
     // 修飾名にカタログ／スキーマがあればそれを、無ければ実行時の既定（別名解決前の値）を使う。
     // カタログには本体と同じ別名を当ててから問い合わせる（system.metadata.catalogs /
     // system.jdbc.tables は Trino 側の名前でしか引けない。issue #39 Phase 2）。
     let engine_ddl = match table_format::target_statement(&execution.query) {
-        Some(statement) => match table_format::parse_drop_target(
+        Some(statement) => match table_format::parse_target_table(
             &execution.query,
+            statement,
             execution.catalog.as_deref(),
             execution.database.as_deref(),
         ) {
