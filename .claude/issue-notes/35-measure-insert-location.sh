@@ -546,12 +546,20 @@ run i "CREATE TABLE $DB.${PREFIX}_ctas AS SELECT 1 AS n" keys
 
 # --- 後始末 ------------------------------------------------------------------
 
+DROP_ALL_OK=1
 for t in $TABLES; do
-  run "z-drop-$t" "DROP TABLE IF EXISTS $DB.${PREFIX}_$t"
+  run "z-drop-$t" "DROP TABLE IF EXISTS $DB.${PREFIX}_$t" || DROP_ALL_OK=0
 done
 
-# ここまで来れば Z 群で DROP を投げ終えているので、trap での二度目の DROP は要らない。
-CTAS_ATTEMPTED=0
+# Z 群の DROP が全部 SUCCEEDED になったときだけ、trap での二度目の DROP を省く。
+# 投げたことは消えたことではないので、1 本でも FAILED・TIMEOUT・開始失敗があれば
+# 保険を残す（残すと DROP TABLE IF EXISTS をもう一度投げるだけで、害は無い）。
+if [ "$DROP_ALL_OK" = 1 ]; then
+  CTAS_ATTEMPTED=0
+else
+  echo "== 後始末の DROP に成功しなかったものがあります。終了時にもう一度投げます。"
+  echo "   それでも消えなければ、$DB の ${PREFIX}_* を手で消してください。"
+fi
 
 # Hive の CTAS が $OUTPUT の下に残したデータの key を、消すためのヒントとして残す。
 # バケット名・プレフィックスを含むので summary.txt には入れない。
