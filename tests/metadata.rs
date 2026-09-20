@@ -304,6 +304,45 @@ async fn update_は本体を置かず_csv_metadata_だけを置く() {
 }
 
 #[tokio::test]
+async fn merge_の_metadata_は_update_と同じ形で_update_type_の長さだけが違う() {
+    // 2026-09-20 実測（#41）。本物の Athena が Iceberg のテーブルへの MERGE に置いた
+    // `.csv.metadata` は 74 バイトで、同じラウンドの UPDATE / DELETE の 75 バイトとの差は
+    // field 2 の文字列長だけだった（`MERGE` は 5 バイト、`UPDATE` と `DELETE` は 6 バイト）。
+    // field 2 より後ろは 3 本ともバイト単位で同じで、下の期待値はその実測値そのもの
+    // （実測で投げたのは `MERGE INTO <表> AS t USING (VALUES ...) AS u(n, s) ON t.n = u.n
+    // WHEN NOT MATCHED THEN INSERT ...`。ここでは偽 Trino に届けばよいので短くしてある）。
+    let sql = "MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN UPDATE SET name = 'x'";
+    let harness = Harness::builder(select_response())
+        .route(sql, dml_response("MERGE", 1))
+        .results_s3()
+        .start()
+        .await;
+
+    let execution = harness
+        .run_query(json!({
+            "QueryString": sql,
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+        }))
+        .await;
+    let id = execution_id(&execution);
+
+    assert_eq!(execution["QueryExecution"]["Status"]["State"], "SUCCEEDED");
+
+    let puts = harness.s3_puts();
+    assert_eq!(puts.len(), 1, "{puts:?}");
+    assert_eq!(puts[0].key, format!("athena/{id}.csv.metadata"));
+
+    // field 2 は Trino の updateType（`MERGE` は 5 バイト）、field 3 は更新件数 1。
+    assert_eq!(
+        hex_of(&puts[0].body),
+        hex(&format!(
+            "{} 1205 4d45524745 1801 {COLUMN_ROWS_BIGINT}",
+            engine_id_field()
+        ))
+    );
+}
+
+#[tokio::test]
 async fn insert_と_ctas_は_metadata_だけを置く() {
     let harness = Harness::builder(select_response())
         .route("INSERT INTO t VALUES (1)", dml_response("INSERT", 1))
