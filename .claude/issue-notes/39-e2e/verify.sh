@@ -219,6 +219,17 @@ athena_start_query() {
   echo "$resp" | jq -r '.QueryExecutionId // empty'
 }
 
+# StartQueryExecution の生の応答をそのまま返す（QueryExecutionId の有無を呼び出し元が判定する）。
+# 構文確認の探り（例: Athena の綴りが Trino の構文エラーで弾かれること）に使う。
+athena_start_query_raw() {
+  local sql="$1" catalog="$2" database="$3"
+  local token body
+  token="$(uuidgen)"
+  body=$(jq -n --arg sql "$sql" --arg catalog "$catalog" --arg db "$database" --arg token "$token" \
+    '{QueryString: $sql, QueryExecutionContext: {Catalog: $catalog, Database: $db}, ClientRequestToken: $token}')
+  athena_call StartQueryExecution "$body"
+}
+
 athena_wait() {
   local id="$1" resp state
   for _ in $(seq 1 100); do
@@ -378,6 +389,29 @@ run_case() {
   fi
 }
 
+# Athena の綴り（ADD COLUMNS）で ALTER TABLE を投げ、athena-local の構文確認
+# （PREPARE ... FROM）で Trino の構文エラーとして弾かれることを確かめる。
+# classification.rs の判定自体は ADD COLUMNS / ADD COLUMN のどちらでも効くが、
+# Trino の文法には ADD COLUMN（単数形）しか無いため、実機では Athena の綴りは
+# StartQueryExecution の時点で MALFORMED_QUERY になる想定（本物の Trino で先に実測済み）。
+probe_add_columns_spelling() {
+  local table="$1" catalog="$2" database="$3"
+  local resp qid type_ code msg
+
+  resp=$(athena_start_query_raw "ALTER TABLE ${table} ADD COLUMNS (m int)" "$catalog" "$database")
+  qid=$(echo "$resp" | jq -r '.QueryExecutionId // empty')
+  if [ -n "$qid" ]; then
+    record "6前 ADD_COLUMNS綴り確認" FAIL "Athenaの綴り(ADD COLUMNS)がStartQueryExecutionを通ってしまった [id=$qid]（想定外）"
+    return
+  fi
+
+  type_=$(echo "$resp" | jq -r '.__type // empty')
+  code=$(echo "$resp" | jq -r '.AthenaErrorCode // empty')
+  msg=$(echo "$resp" | jq -r '.Message // empty')
+  record "6前 ADD_COLUMNS綴り確認" PASS \
+    "Athenaの綴り(ADD COLUMNS)はTrinoの構文エラーで弾かれた（想定どおり）: __type=$type_ AthenaErrorCode=$code Message=$msg"
+}
+
 main() {
   log "作業ディレクトリ: $SCRIPT_DIR"
   log "証跡の保存先: $EVIDENCE_DIR"
@@ -415,6 +449,8 @@ main() {
   local t_hive="t_drop_hive_${RUN_ID}"
   local t_plain="t_plain_${RUN_ID}"
   local t_missing="t_missing_${RUN_ID}"
+  local t_alter_hive="t_alter_hive_${RUN_ID}"
+  local t_alter_iceberg="t_alter_iceberg_${RUN_ID}"
 
   log "DROP TABLE 用のテーブルを作る（形式ごと）"
   if ! trino_exec "CREATE TABLE iceberg.default.${t_iceberg} AS SELECT 1 AS n" iceberg default; then
@@ -426,6 +462,18 @@ main() {
     record "セットアップ(hive)" FAIL "hive.default.${t_hive} の作成に失敗した"
   else
     record "セットアップ(hive)" PASS "hive.default.${t_hive} 作成済み"
+  fi
+
+  log "ALTER TABLE 用のテーブルを作る（形式ごと。DROP TABLE のケースで消えるテーブルとは別に用意する）"
+  if ! trino_exec "CREATE TABLE hive.default.${t_alter_hive} AS SELECT 1 AS n" hive default; then
+    record "セットアップ(alter hive)" FAIL "hive.default.${t_alter_hive} の作成に失敗した"
+  else
+    record "セットアップ(alter hive)" PASS "hive.default.${t_alter_hive} 作成済み"
+  fi
+  if ! trino_exec "CREATE TABLE iceberg.default.${t_alter_iceberg} AS SELECT 1 AS n" iceberg default; then
+    record "セットアップ(alter iceberg)" FAIL "iceberg.default.${t_alter_iceberg} の作成に失敗した"
+  else
+    record "セットアップ(alter iceberg)" PASS "iceberg.default.${t_alter_iceberg} 作成済み"
   fi
 
   if ! build_athena_local; then
@@ -487,6 +535,32 @@ main() {
       fi
     fi
   fi
+
+  # ケース 6 前段: Athena の綴り（ADD COLUMNS）は Trino の構文エラーで弾かれることを確認する
+  # （athena-local は SQL 本文を書き換えないため、Trino の文法に無い複数形はそのまま構文エラーになる）。
+  probe_add_columns_spelling "${t_alter_hive}" hive default
+
+  # ケース 6: ALTER TABLE ... ADD COLUMN（Trino の綴り・単数形）× Hive。
+  # classification.rs の判定は ADD COLUMNS / ADD COLUMN のどちらでも効くが、Trino に投げられるのは
+  # 単数形だけなので、実機で通す文はこちらにする。
+  run_case 6 "ALTER_TABLE_ADD_COLUMN_hive" \
+    "ALTER TABLE ${t_alter_hive} ADD COLUMN m int" hive default txt \
+    0 "application/octet-stream" 0 1 38
+
+  # ケース 7: ALTER TABLE ... ADD COLUMN × Iceberg。今までどおり本体 0 バイト・binary/octet-stream・
+  # .metadata 無し（Hive だけを特別扱いする実装のままであることの確認）。
+  run_case 7 "ALTER_TABLE_ADD_COLUMN_iceberg" \
+    "ALTER TABLE ${t_alter_iceberg} ADD COLUMN m int" iceberg default txt \
+    0 "binary/octet-stream" 0 0
+
+  # ケース 8: ALTER TABLE ... SET PROPERTIES × Iceberg（対象外の ALTER が巻き込まれていないことの確認）。
+  # Athena の綴り（SET TBLPROPERTIES）は Trino の構文エラー（mismatched input 'TBLPROPERTIES'.
+  # Expecting: 'AUTHORIZATION', 'PROPERTIES'）になるため実機では投げられない（事前に確認済み）。
+  # comment プロパティは Iceberg 側に存在しない（Catalog 'iceberg' table property 'comment' does
+  # not exist）ため、Trino で通る format プロパティを使う。
+  run_case 8 "ALTER_TABLE_SET_PROPERTIES_iceberg" \
+    "ALTER TABLE ${t_alter_iceberg} SET PROPERTIES format = 'PARQUET'" iceberg default txt \
+    0 "binary/octet-stream" 0 0
 
   return 0
 }

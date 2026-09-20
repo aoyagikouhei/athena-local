@@ -170,6 +170,34 @@ later name the date they were measured on.
   between 32 and 128 characters. This does not affect the AWS CLI or SDKs,
   which already add a token automatically; a raw HTTP client now needs to add
   one itself. Measured against Athena on 2026-09-17.
+- `DROP TABLE` and `ALTER TABLE ... ADD COLUMNS` now write a result file and a
+  `.metadata` companion that depend on the target table's format on Trino
+  (Hive or Iceberg), instead of always writing an empty `<id>.txt` and no
+  companion. A `DROP TABLE` on an Iceberg table now writes a single newline to
+  `<id>.txt` and a 41-byte `.metadata` (the engine's query id, then
+  `DROP TABLE`), both as `application/octet-stream`; on a Hive-format table,
+  or when the target does not exist, it keeps the old behaviour (empty file,
+  no companion, `binary/octet-stream`) — which matches Athena there too. An
+  `ALTER TABLE ... ADD COLUMNS` on a Hive table now writes a 38-byte
+  `.metadata` (`QueryExecutionId` only) as `application/octet-stream`, while
+  `<id>.txt` stays empty; the same statement on an Iceberg table keeps the old
+  behaviour. The format and the target's existence are read with a single
+  query per matching statement (`system.metadata.catalogs.connector_name` and
+  a `system.jdbc.tables` count), so no other query pays an extra round trip.
+  Both statements resolve the catalog, schema and table the same way: from a
+  qualified name in the SQL when it gives one, falling back to
+  `QueryExecutionContext` / `TRINO_CATALOG` / `TRINO_SCHEMA` otherwise, with a
+  catalog taken from the SQL translated through `TRINO_CATALOG_MAP` first,
+  same as for the statement itself. When neither catalog nor schema can be
+  resolved, the probe query fails, the connector is neither `hive` nor
+  `iceberg`, or the target does not exist, athena-local falls back to the old
+  behaviour; for `DROP TABLE`, the missing-target case happens to match what
+  real Athena does for `DROP TABLE IF EXISTS` on a missing table too. Because
+  Trino keeps Hive and Iceberg tables in separate catalogs while Athena mixes
+  both in one `AwsDataCatalog`, this reproduces Athena only when your Trino
+  catalog for a given Athena table uses the matching connector; see the new
+  Caveat. Measured against Athena on 2026-09-20 and 2026-09-21, reproduced
+  across three rounds.
 
 ### Fixed
 
@@ -200,6 +228,18 @@ later name the date they were measured on.
   `updateType` string, 74 bytes against 75; every byte after it was identical,
   down to the single `rows bigint` column with `Precision` 19. athena-local
   passes Trino's `updateType` straight through, so no behaviour changed.
+- `SubstatementType` for `ALTER TABLE` is classified correctly instead of by a
+  full-text scan for the words `ADD` and a word starting with `COLUMN`
+  anywhere in the statement, which wrongly returned `ALTER_TABLE_ADD_COLUMN`
+  for, for example, `ALTER TABLE t SET TBLPROPERTIES ('comment' = 'remember
+  to add column for region')`. The `ALTER` arm is now position-fixed like the
+  existing `CREATE` / `DROP` arms, and now also returns three measured values
+  it left out before: `ALTER_TABLE_PROPERTIES` (`SET TBLPROPERTIES`),
+  `ALTER_TABLE_DROP_COLUMN` (`DROP COLUMN`) and `ALTER_TABLE_SET_LOCATION`
+  (`SET LOCATION`). `ALTER TABLE IF EXISTS ...` and `RENAME COLUMN` are left
+  unclassified: Athena has no such syntax and answers `mismatched input`
+  before the statement runs, even though Trino accepts both (see the new
+  Caveat). Measured against Athena on 2026-09-21.
 
 ## [0.4.0] - 2026-09-15
 
