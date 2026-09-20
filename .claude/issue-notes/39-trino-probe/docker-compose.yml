@@ -1,0 +1,14 @@
+services:
+  trino:
+    image: trinodb/trino:482
+    container_name: athena-local-issue39-trino
+    ports:
+      - "8090:8080"
+    volumes:
+      - ./catalog:/etc/trino/catalog:ro
+      - hive-data:/data/hive
+      - iceberg-data:/data/iceberg
+
+volumes:
+  hive-data:
+  iceberg-data:
