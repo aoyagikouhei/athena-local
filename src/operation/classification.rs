@@ -61,13 +61,16 @@ pub(super) fn substatement_type(query: &str) -> Option<&'static str> {
             "DATABASE" | "SCHEMA" => "DROP_DATABASE",
             _ => return None,
         },
-        "ALTER"
-            if word(1) == "TABLE"
-                && words.iter().any(|w| w == "ADD")
-                && words.iter().any(|w| w.starts_with("COLUMN")) =>
-        {
-            "ALTER_TABLE_ADD_COLUMN"
-        }
+        // CREATE / DROP と同じく位置固定で判定する（2026-09-21 実測）。
+        // word(2) はテーブル名、word(3) 以降が操作。`ALTER TABLE IF EXISTS ...` と
+        // `RENAME COLUMN` は本物の Athena に構文が無い（mismatched input）ので None。
+        "ALTER" if word(1) == "TABLE" => match (word(3), word(4)) {
+            ("ADD", column) if column.starts_with("COLUMN") => "ALTER_TABLE_ADD_COLUMN",
+            ("DROP", column) if column.starts_with("COLUMN") => "ALTER_TABLE_DROP_COLUMN",
+            ("SET", "TBLPROPERTIES") => "ALTER_TABLE_PROPERTIES",
+            ("SET", "LOCATION") => "ALTER_TABLE_SET_LOCATION",
+            _ => return None,
+        },
         _ => return None,
     })
 }
@@ -140,6 +143,18 @@ mod tests {
                 "ALTER TABLE t ADD COLUMN c varchar",
                 "ALTER_TABLE_ADD_COLUMN",
             ),
+            // TBLPROPERTIES の値に add と column という語が含まれても
+            // ALTER_TABLE_PROPERTIES になる（全文走査ではなく位置固定で判定する。2026-09-21 実測）。
+            (
+                "ALTER TABLE t SET TBLPROPERTIES ('comment' = 'remember to add column for region')",
+                "ALTER_TABLE_PROPERTIES",
+            ),
+            ("ALTER TABLE t DROP COLUMN c", "ALTER_TABLE_DROP_COLUMN"),
+            ("ALTER TABLE t DROP COLUMNS c", "ALTER_TABLE_DROP_COLUMN"),
+            (
+                "ALTER TABLE t SET LOCATION 's3://bucket/path/'",
+                "ALTER_TABLE_SET_LOCATION",
+            ),
             // 先頭のコメントは読み飛ばして判定する（2026-09-18 実測）。
             ("-- c\nSELECT 1", "SELECT"),
             // 2 語目以降も読み飛ばした後の並びから取る。`metadata_query_id` の
@@ -153,6 +168,9 @@ mod tests {
         for query in [
             "SHOW FUNCTIONS",
             "ALTER TABLE t RENAME TO u",
+            // RENAME COLUMN と IF EXISTS は本物の Athena に構文が無い（mismatched input。2026-09-21 実測）。
+            "ALTER TABLE t RENAME COLUMN a TO b",
+            "ALTER TABLE IF EXISTS t ADD COLUMNS (m int)",
             "CALL x()",
             "SET SESSION a = 1",
             "",
