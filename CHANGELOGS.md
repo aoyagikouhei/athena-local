@@ -190,7 +190,10 @@ later name the date they were measured on.
   read out of the SQL at all. Measured against Athena on 2026-09-19, with
   `SHOW CREATE TABLE` confirming the table format; this supersedes the
   2026-09-17 round, which had recorded `<id>` for an Iceberg CTAS. `INSERT`
-  keeps writing `<id>` (measured 2026-09-17, not measured again).
+  keeps writing `<id>`: the same 2026-09-17 round had recorded that value too,
+  and measuring it again on 2026-09-20 reproduced it, with controls in the same
+  round for a Hive table, an Iceberg table and an `INSERT` that inserts no
+  row.
 
 ## [0.4.0] - 2026-09-15
 

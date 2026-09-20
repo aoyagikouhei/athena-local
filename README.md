@@ -518,10 +518,16 @@ passed; see Caveats.
 - **Cancellation is checked between pages.** A stopped query is `CANCELLED`
   at once, but the `DELETE` reaches Trino only when the current long poll to
   `nextUri` returns (about a second at most).
-- **Manifests are not written.** Athena writes a manifest (`<id>-manifest.csv`)
-  next to the result of DML and CTAS. athena-local writes none; `OutputLocation`
-  still names the file Athena would use. The `.metadata` companion is written
-  (see Result files above).
+- **Manifests are not written.** Athena writes a manifest next to the result
+  when a statement writes rows into a Hive table: `<id>-manifest.csv` for an
+  `INSERT` and `tables/<id>-manifest.csv` for a CTAS (measured 2026-09-20, with
+  `SHOW CREATE TABLE` confirming the table format). It writes none for the same
+  two statements on an Iceberg table, none for `UPDATE` / `DELETE` / `MERGE`,
+  none for an `INSERT` that inserts no row, and none for a failed `INSERT` —
+  although the failure message names the manifest path it would have used.
+  athena-local writes no manifest at all; `OutputLocation` still names the
+  result file Athena would use. The `.metadata` companion is written (see
+  Result files above).
 - **`SHOW` metadata is not the opaque form Athena writes.** For `SHOW TABLES`,
   `SHOW DATABASES`, `SHOW COLUMNS`, `SHOW PARTITIONS` and `SHOW TBLPROPERTIES`,
   real Athena writes a base64 blob that does not decode as protobuf (measured
@@ -558,7 +564,9 @@ passed; see Caveats.
   Hive writes `<id>.txt` holding the reason (`SHOW TABLES`, `DROP TABLE` and
   `CREATE DATABASE`, measured 2026-09-17), while statements that run on the
   query engine write no file at all, namely `SELECT`, `INSERT`, `UPDATE`,
-  `DELETE` and CTAS (measured 2026-09-17) and `ALTER TABLE` on an Iceberg table
+  `DELETE` and CTAS (measured 2026-09-17, and the `INSERT` case again on
+  2026-09-20: a type-mismatched `INSERT` left neither the result file nor the
+  `.metadata` companion) and `ALTER TABLE` on an Iceberg table
   (measured 2026-09-16 and 2026-09-17). athena-local runs everything through
   Trino and cannot tell the two apart, so it writes the file for every statement
   whose result file is `<id>.txt`. A failed `EXPLAIN` was not measured.
@@ -589,8 +597,13 @@ passed; see Caveats.
   too, both for `WITH (table_type = 'ICEBERG')` and for the Hive default
   (measured 2026-09-19, with `SHOW CREATE TABLE` confirming the table really was
   Iceberg). An earlier round had recorded `<id>` for the same statement
-  (2026-09-17); the later measurement is the one reproduced here. `INSERT` still
-  writes `<id>`, which was measured on 2026-09-17 and not measured again.
+  (2026-09-17); the later measurement is the one reproduced here. `INSERT`
+  keeps `<id>`, and that value was measured again on 2026-09-20 with controls in
+  the same round: an `INSERT` into a Hive table, one into an Iceberg table and
+  one that inserts no row all wrote `<id>`, while the `SELECT`, CTAS and
+  `SHOW TABLES` measured beside them wrote `<id>.csv`, `tables/<id>` and
+  `<id>.txt` as before. `MERGE` was measured for the first time in that round
+  and writes `<id>.csv`, like `UPDATE` and `DELETE`.
 - **Any workgroup name is accepted.** `GetWorkGroup` never fails because of the
   name: it echoes the name back and returns the same `Configuration` every time,
   because athena-local has no workgroups to look up. Real Athena answers a name

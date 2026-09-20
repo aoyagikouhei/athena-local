@@ -18,9 +18,12 @@ const SIGNATURE_EXPIRY: Duration = Duration::from_secs(60);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResultFile {
     /// SELECT など。`<id>.csv` に結果を書く。UPDATE / DELETE / MERGE も名前はこれだが、結果は書かない
-    /// （本物も `.csv.metadata` だけを置く。2026-09-17 実測）。
+    /// （本物も `.csv.metadata` だけを置く。UPDATE と DELETE は 2026-09-17 実測、
+    /// MERGE は 2026-09-20 実測。#35）。
     Csv,
-    /// INSERT。`<id>`（拡張子なし。2026-09-17 実測）。
+    /// INSERT。`<id>`（拡張子なし）。テーブルの形式でも更新件数でも変わらない
+    /// （Hive と Iceberg のテーブルへの INSERT、1 行も入らない INSERT のどれも `<id>` だった。
+    /// 2026-09-17 実測、2026-09-20 に対照つきで再実測して再現。#35）。
     Manifest,
     /// CREATE TABLE AS SELECT。`tables/<id>`（2026-09-14 実測）。
     /// テーブルの形式では変わらない（Iceberg の CTAS も `tables/<id>`。2026-09-19 実測）。
@@ -536,7 +539,8 @@ mod tests {
             ("(SELECT 1) UNION (SELECT 2)", ResultFile::Csv),
             ("VALUES 1", ResultFile::Csv),
             ("INSERT INTO t VALUES (1)", ResultFile::Manifest),
-            // UPDATE / DELETE / MERGE は INSERT と違い .csv になる（Iceberg で実測）。
+            // UPDATE / DELETE / MERGE は INSERT と違い .csv になる（Iceberg のテーブルで実測。
+            // UPDATE と DELETE は 2026-09-17、MERGE は 2026-09-20。#35）。
             ("update t SET a = 1", ResultFile::Csv),
             ("DELETE FROM t", ResultFile::Csv),
             ("MERGE INTO t USING s ON t.id = s.id", ResultFile::Csv),
@@ -592,10 +596,25 @@ mod tests {
             ResultFile::of("CREATE TABLE c (i int) WITH (table_type = 'ICEBERG')"),
             ResultFile::Text
         );
-        // 拡張子なしの `<id>` に残るのは INSERT だけ（2026-09-17 実測。2026-09-19 は測っていない）。
-        assert_eq!(
-            ResultFile::of("INSERT INTO t VALUES (1)"),
-            ResultFile::Manifest
-        );
+    }
+
+    #[test]
+    fn insert_はテーブルの形式でも更新件数でも_拡張子なしの_id_のまま() {
+        // 2026-09-20 実測（#35）。Hive のテーブルへの INSERT、本物の Iceberg テーブル
+        // （`SHOW CREATE TABLE` で `'table_type'='iceberg'` を確認）への INSERT、1 行も
+        // 入らない INSERT、型が合わずに FAILED になる INSERT のどれも `<prefix><id>` だった。
+        // 同じラウンドで測った SELECT（`<id>.csv`）・CTAS（`tables/<id>`）・SHOW（`<id>.txt`）とも
+        // 食い違っていない。これは 2026-09-17 の 1 ラウンドで採った値の再実測で、同じラウンドの
+        // CTAS は #26 で覆ったが、INSERT は再現した。だからテーブルの形式を SQL から読み取る
+        // 判定を足してはいけない（#26 で一度入れて消した）。
+        for query in [
+            "INSERT INTO hive_table VALUES (2, 'y')",
+            "INSERT INTO iceberg_table VALUES (2, 'y')",
+            "INSERT INTO t SELECT * FROM (VALUES (3, 'z')) AS s(n, v) WHERE s.n < 0",
+            "insert into t values ('not_an_int', 'y')",
+            "-- table_type = 'ICEBERG'\nINSERT INTO t VALUES (1)",
+        ] {
+            assert_eq!(ResultFile::of(query), ResultFile::Manifest, "{query:?}");
+        }
     }
 }
