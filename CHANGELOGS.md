@@ -194,6 +194,12 @@ later name the date they were measured on.
   and measuring it again on 2026-09-20 reproduced it, with controls in the same
   round for a Hive table, an Iceberg table and an `INSERT` that inserts no
   row.
+- The Caveat about unmeasured `.metadata` details no longer lists `MERGE`. The
+  companion file Athena writes for a `MERGE` was measured on 2026-09-20 and
+  differs from the one for an `UPDATE` or a `DELETE` only in the length of the
+  `updateType` string, 74 bytes against 75; every byte after it was identical,
+  down to the single `rows bigint` column with `Precision` 19. athena-local
+  passes Trino's `updateType` straight through, so no behaviour changed.
 
 ## [0.4.0] - 2026-09-15
 

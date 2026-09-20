@@ -416,7 +416,11 @@ ones [burtcorp/athena-jdbc's `AthenaMetaDataParser`](https://github.com/burtcorp
 reads:
 
 - the query id first, and for DML and CTAS the Trino `updateType` (`INSERT`,
-  `UPDATE`, `DELETE`, `CREATE TABLE`) and the update count;
+  `UPDATE`, `DELETE`, `MERGE`, `CREATE TABLE`) and the update count. Athena's
+  own companion file for a `MERGE` differs from the one for an `UPDATE` or a
+  `DELETE` only in the length of that string: 74 bytes against 75, with every
+  byte after the `updateType` identical, down to the single `rows bigint`
+  column (measured 2026-09-20);
 - then one message per column carrying the same values as the `ColumnInfo` of
   `GetQueryResults`: `CatalogName`, `Name`, `Label`, `Type`, `Precision`,
   `Scale`, `Nullable`, `CaseSensitive`.
@@ -555,8 +559,7 @@ passed; see Caveats.
   2026-09-17).
 - **Unmeasured `.metadata` details.** The update count of a DML statement that
   changes no rows (`DELETE ... WHERE false`) was not measured; athena-local
-  writes `0`. `MERGE` was not measured either and is written like `UPDATE` /
-  `DELETE`. Columns of type `timestamp with time zone`, `time with time zone`
+  writes `0`. Columns of type `timestamp with time zone`, `time with time zone`
   and `interval year to month` were not measured and are written like
   `timestamp` / `time` and `interval day to second`.
 - **A failed query writes a result file for more statements than Athena.** On
