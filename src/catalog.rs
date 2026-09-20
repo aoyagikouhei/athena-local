@@ -55,7 +55,9 @@ pub fn alias_qualified_names<'a>(sql: &'a str, aliases: &HashMap<String, String>
 }
 
 /// `'...'` や `"..."` の終わりの次の位置。引用符を 2 つ重ねたものは中身として読む。閉じていなければ末尾。
-fn skip_quoted(bytes: &[u8], start: usize) -> usize {
+///
+/// `operation/table_format.rs` が DROP TABLE の修飾名の引用符付き識別子を読むのにも再利用する（issue #39 Phase 2）。
+pub(crate) fn skip_quoted(bytes: &[u8], start: usize) -> usize {
     let quote = bytes[start];
     let mut i = start + 1;
     while i < bytes.len() {
@@ -72,7 +74,9 @@ fn skip_quoted(bytes: &[u8], start: usize) -> usize {
 }
 
 /// `--` か `/*` で始まるコメントなら、その終わりの次の位置。閉じていなければ末尾。
-fn comment_end(bytes: &[u8], start: usize) -> Option<usize> {
+///
+/// `operation/table_format.rs` が DROP TABLE の修飾名を読むのにも再利用する（issue #39 Phase 2）。
+pub(crate) fn comment_end(bytes: &[u8], start: usize) -> Option<usize> {
     let rest = &bytes[start..];
     if rest.starts_with(b"--") {
         let end = rest.iter().position(|&b| b == b'\n').unwrap_or(rest.len());
@@ -129,7 +133,9 @@ fn next_is_dot(bytes: &[u8], mut i: usize) -> bool {
 }
 
 /// `"a""b"` の中身 `a"b`。
-fn unquote(identifier: &str) -> String {
+///
+/// `operation/table_format.rs` が DROP TABLE の修飾名の引用符付き識別子を読むのにも再利用する（issue #39 Phase 2）。
+pub(crate) fn unquote(identifier: &str) -> String {
     let inner = identifier
         .strip_prefix('"')
         .and_then(|rest| rest.strip_suffix('"'))

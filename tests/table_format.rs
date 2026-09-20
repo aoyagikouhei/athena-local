@@ -1,7 +1,7 @@
-//! DROP TABLE の結果ファイルを対象テーブルの形式（Trino のコネクタ）で書き分ける（issue #39 Phase 1）。
-//! Phase 1 の対象は DROP TABLE のみで、かつ修飾名でカタログを明示していない文だけ。
-//! 41 バイトのバイト単位の固定は tests/metadata.rs に集約し、ここでは結合レベル
-//! （バイト数・Content-Type・キーの有無）だけを見る（計画レビュー F）。
+//! DROP TABLE の結果ファイルを対象テーブルの形式（Trino のコネクタ）で書き分ける（issue #39）。
+//! Phase 2 では修飾名（`cat.ns.t` や引用符付きのカタログ名）も解析し、対象テーブルの存在も
+//! あわせて確かめる。41 バイトのバイト単位の固定は tests/metadata.rs に集約し、ここでは
+//! 結合レベル（バイト数・Content-Type・キーの有無）だけを見る（計画レビュー F）。
 
 mod common;
 
@@ -16,15 +16,32 @@ fn select_response() -> Value {
     })
 }
 
-/// テーブルの形式を聞く問い合わせ（`src/operation/table_format.rs` の `probe_format` と同じ形）。
-fn probe_sql(catalog: &str) -> String {
-    format!("SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = '{catalog}'")
+/// 形式と存在を 1 つにまとめた問い合わせ（`src/operation/table_format.rs` の `probe_sql` と同じ形）。
+fn probe_sql(catalog: &str, schema: &str, table: &str) -> String {
+    format!(
+        "SELECT (SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = '{catalog}'), (SELECT count(*) FROM system.jdbc.tables WHERE table_cat = '{catalog}' AND table_schem = '{schema}' AND table_name = '{table}')"
+    )
 }
 
-fn connector_response(connector_name: &str) -> Value {
+/// 対象が存在し、形式が `connector_name` である応答。
+fn probe_response(connector_name: &str) -> Value {
     json!({
-        "columns": [{ "name": "connector_name", "type": "varchar" }],
-        "data": [[connector_name]]
+        "columns": [
+            { "name": "_col0", "type": "varchar" },
+            { "name": "_col1", "type": "bigint" }
+        ],
+        "data": [[connector_name, 1]]
+    })
+}
+
+/// 対象が存在しない（カタログはあるが件数が 0）応答。
+fn probe_response_missing() -> Value {
+    json!({
+        "columns": [
+            { "name": "_col0", "type": "varchar" },
+            { "name": "_col1", "type": "bigint" }
+        ],
+        "data": [["iceberg", 0]]
     })
 }
 
@@ -39,7 +56,10 @@ fn has_call(harness: &Harness, call: &str) -> bool {
 #[tokio::test]
 async fn drop_table_は_iceberg_なら改行1つと_41_バイトを書く() {
     let harness = Harness::builder(drop_table_response())
-        .route(&probe_sql("default_catalog"), connector_response("iceberg"))
+        .route(
+            &probe_sql("default_catalog", "default_schema", "t"),
+            probe_response("iceberg"),
+        )
         .results_s3()
         .start()
         .await;
@@ -56,7 +76,10 @@ async fn drop_table_は_iceberg_なら改行1つと_41_バイトを書く() {
     // 形式の問い合わせを本体より先に送る。
     assert_eq!(
         harness.trino_sqls(),
-        [probe_sql("default_catalog"), "DROP TABLE t".to_string()]
+        [
+            probe_sql("default_catalog", "default_schema", "t"),
+            "DROP TABLE t".to_string()
+        ]
     );
 
     let puts = harness.s3_puts();
@@ -94,8 +117,9 @@ async fn 対象外の文では形式を問い合わせない() {
 }
 
 #[tokio::test]
-async fn 修飾名でカタログを指す文は判定せず今までどおりになる() {
+async fn 修飾名でカタログを指す文も形式を問い合わせて判定する() {
     let harness = Harness::builder(drop_table_response())
+        .route(&probe_sql("cat", "ns", "t"), probe_response("iceberg"))
         .results_s3()
         .start()
         .await;
@@ -109,20 +133,70 @@ async fn 修飾名でカタログを指す文は判定せず今までどおり�
     let id = execution_id(&execution);
 
     assert_eq!(execution["QueryExecution"]["Status"]["State"], "SUCCEEDED");
-    // 形式を問い合わせず、本体だけ送る。
-    assert_eq!(harness.trino_sqls(), ["DROP TABLE cat.ns.t"]);
+    // 修飾名で明示したカタログ・スキーマを使って問い合わせる（セッションの既定は使わない）。
+    assert_eq!(
+        harness.trino_sqls(),
+        [
+            probe_sql("cat", "ns", "t"),
+            "DROP TABLE cat.ns.t".to_string()
+        ]
+    );
 
     let puts = harness.s3_puts();
-    assert_eq!(puts.len(), 1, "{puts:?}",);
+    assert_eq!(puts.len(), 2, "{puts:?}");
     assert_eq!(puts[0].key, format!("athena/{id}.txt"));
-    assert_eq!(puts[0].body, Vec::<u8>::new(), "今までどおり 0 バイト");
-    assert_eq!(puts[0].content_type.as_deref(), Some("binary/octet-stream"));
+    assert_eq!(puts[0].body, vec![0x0a]);
+    assert_eq!(puts[1].key, format!("athena/{id}.txt.metadata"));
+    assert_eq!(puts[1].body.len(), 41);
+}
+
+#[tokio::test]
+async fn 引用符付きのカタログ名にも別名を当てて問い合わせる() {
+    const S3_TABLES: &str = "s3tablescatalog/my-bucket";
+    let harness = Harness::builder(drop_table_response())
+        .catalog_map(&[(S3_TABLES, "iceberg_catalog")])
+        .route(
+            &probe_sql("iceberg_catalog", "ns", "t"),
+            probe_response("iceberg"),
+        )
+        .results_s3()
+        .start()
+        .await;
+
+    let query = format!("DROP TABLE \"{S3_TABLES}\".ns.t");
+    let execution = harness
+        .run_query(json!({
+            "QueryString": query,
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+        }))
+        .await;
+    let id = execution_id(&execution);
+
+    assert_eq!(execution["QueryExecution"]["Status"]["State"], "SUCCEEDED");
+    // 問い合わせは、修飾名から取り出したカタログに別名を当てた（Trino 側の）名前で送る。
+    // 本体は catalog.rs の alias_qualified_names が別名で書き換えたもの（既存の振る舞い）。
+    let sqls = harness.trino_sqls();
+    assert_eq!(sqls[0], probe_sql("iceberg_catalog", "ns", "t"));
+    assert!(
+        sqls[1].starts_with("DROP TABLE \"iceberg_catalog\"") && sqls[1].ends_with(".ns.t"),
+        "{sqls:?}"
+    );
+
+    let puts = harness.s3_puts();
+    assert_eq!(puts.len(), 2, "{puts:?}");
+    assert_eq!(puts[0].key, format!("athena/{id}.txt"));
+    assert_eq!(puts[0].body, vec![0x0a]);
+    assert_eq!(puts[1].key, format!("athena/{id}.txt.metadata"));
+    assert_eq!(puts[1].body.len(), 41);
 }
 
 #[tokio::test]
 async fn drop_table_は_hive_なら今までどおり_0_バイトのまま() {
     let harness = Harness::builder(drop_table_response())
-        .route(&probe_sql("default_catalog"), connector_response("hive"))
+        .route(
+            &probe_sql("default_catalog", "default_schema", "t"),
+            probe_response("hive"),
+        )
         .results_s3()
         .start()
         .await;
@@ -145,9 +219,42 @@ async fn drop_table_は_hive_なら今までどおり_0_バイトのまま() {
 }
 
 #[tokio::test]
+async fn 存在しないテーブルの_drop_table_if_existsは_iceberg_でも今までどおり_0_バイトのまま() {
+    // カタログは iceberg だが対象テーブルが無い（件数 0）。Hive 側と同じ今までどおりの振る舞いに倒す。
+    let harness = Harness::builder(drop_table_response())
+        .route(
+            &probe_sql("default_catalog", "default_schema", "t"),
+            probe_response_missing(),
+        )
+        .results_s3()
+        .start()
+        .await;
+
+    let execution = harness
+        .run_query(json!({
+            "QueryString": "DROP TABLE IF EXISTS t",
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+        }))
+        .await;
+    let id = execution_id(&execution);
+
+    assert_eq!(execution["QueryExecution"]["Status"]["State"], "SUCCEEDED");
+
+    let puts = harness.s3_puts();
+    assert_eq!(puts.len(), 1, "{puts:?}",);
+    assert_eq!(puts[0].key, format!("athena/{id}.txt"));
+    assert_eq!(
+        puts[0].body,
+        Vec::<u8>::new(),
+        "対象が無いので今までどおり 0 バイト"
+    );
+    assert_eq!(puts[0].content_type.as_deref(), Some("binary/octet-stream"));
+}
+
+#[tokio::test]
 async fn 取り消したなら本体も_metadata_も置かない() {
-    // 形式の問い合わせ（iceberg と答える）を遅らせ、応答が届く前に止める。
-    let harness = Harness::builder(connector_response("iceberg"))
+    // 形式の問い合わせ（iceberg かつ存在すると答える）を遅らせ、応答が届く前に止める。
+    let harness = Harness::builder(probe_response("iceberg"))
         .results_s3()
         .statement_delay(Duration::from_millis(200))
         .start()
@@ -170,11 +277,14 @@ async fn 取り消したなら本体も_metadata_も置かない() {
     assert_eq!(code, 200);
     assert_eq!(harness.status(&id).await["State"], "CANCELLED");
 
-    // 遅れて届いた形式の問い合わせの応答（iceberg）を処理しても、
+    // 遅れて届いた形式の問い合わせの応答（iceberg・存在する）を処理しても、
     // 取り消し後は DROP TABLE 本体を Trino に送らず、本体も付随ファイルも置かない。
     tokio::time::sleep(Duration::from_millis(600)).await;
     assert_eq!(harness.status(&id).await["State"], "CANCELLED");
-    assert_eq!(harness.trino_sqls(), [probe_sql("default_catalog")]);
+    assert_eq!(
+        harness.trino_sqls(),
+        [probe_sql("default_catalog", "default_schema", "t")]
+    );
     assert!(harness.s3_puts().is_empty(), "{:?}", harness.s3_puts());
 }
 
@@ -183,7 +293,10 @@ async fn 取り消し済みなら形式の問い合わせも届かない() {
     // 形式の問い合わせに具体的な route を用意せず、既定の応答（endless）を返させる。
     // nextUri を辿り始めた時点で、形式の問い合わせが Trino に届いたことは確認できる。
     let harness = Harness::builder(json!({
-        "columns": [{ "name": "connector_name", "type": "varchar" }]
+        "columns": [
+            { "name": "_col0", "type": "varchar" },
+            { "name": "_col1", "type": "bigint" }
+        ]
     }))
     .endless()
     .results_s3()
@@ -219,7 +332,7 @@ async fn 取り消し済みなら形式の問い合わせも届かない() {
     assert_eq!(harness.trino_calls().len(), calls_before, "続きを辿らない");
     assert_eq!(
         harness.trino_sqls(),
-        [probe_sql("default_catalog")],
+        [probe_sql("default_catalog", "default_schema", "t")],
         "DROP TABLE 本体は届かない"
     );
     assert_eq!(harness.status(&id).await["State"], "CANCELLED");
@@ -231,7 +344,10 @@ async fn 別名を当てたカタログ名で形式を問い合わせる() {
     const S3_TABLES: &str = "s3tablescatalog/my-bucket";
     let harness = Harness::builder(drop_table_response())
         .catalog_map(&[(S3_TABLES, "iceberg_catalog")])
-        .route(&probe_sql("iceberg_catalog"), connector_response("iceberg"))
+        .route(
+            &probe_sql("iceberg_catalog", "default_schema", "t"),
+            probe_response("iceberg"),
+        )
         .results_s3()
         .start()
         .await;
@@ -249,7 +365,10 @@ async fn 別名を当てたカタログ名で形式を問い合わせる() {
     // 問い合わせは別名解決後（Trino 側）のカタログ名で送る。
     assert_eq!(
         harness.trino_sqls(),
-        [probe_sql("iceberg_catalog"), "DROP TABLE t".to_string()]
+        [
+            probe_sql("iceberg_catalog", "default_schema", "t"),
+            "DROP TABLE t".to_string()
+        ]
     );
     for request in harness.trino_requests() {
         assert_eq!(request.catalog.as_deref(), Some("iceberg_catalog"));

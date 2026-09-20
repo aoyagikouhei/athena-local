@@ -362,13 +362,32 @@ async fn run(
     // 分類の問い合わせにも本体にも同じ取り消し要求を渡す。
     let cancel = &execution.cancel;
 
-    // 対象の文（Phase 1 は既定カタログの DROP TABLE だけ）なら、実行前にテーブルの形式を
-    // Trino に聞く。パラメータ分類のループより前に置く（対象テーブルは実行後に消えるため）。
-    // カタログは本体・分類の問い合わせと同じ、別名解決後の値を使う。
+    // 対象の文（DROP TABLE）なら、実行前にテーブルの形式と存在を Trino に聞く。
+    // パラメータ分類のループより前に置く（対象テーブルは実行後に消えるため）。
+    // 修飾名にカタログ／スキーマがあればそれを、無ければ実行時の既定（別名解決前の値）を使う。
+    // カタログには本体と同じ別名を当ててから問い合わせる（system.metadata.catalogs /
+    // system.jdbc.tables は Trino 側の名前でしか引けない。issue #39 Phase 2）。
     let engine_ddl = match table_format::target_statement(&execution.query) {
-        Some(statement) => table_format::probe_format(trino, catalog, database, cancel)
-            .await
-            .and_then(|format| table_format::engine_ddl(statement, format)),
+        Some(statement) => match table_format::parse_drop_target(
+            &execution.query,
+            execution.catalog.as_deref(),
+            execution.database.as_deref(),
+        ) {
+            Some(target) => {
+                let target_catalog = config.trino_catalog(&target.catalog);
+                table_format::probe_format(
+                    trino,
+                    target_catalog,
+                    &target.schema,
+                    &target.table,
+                    database,
+                    cancel,
+                )
+                .await
+                .and_then(|format| table_format::engine_ddl(statement, format))
+            }
+            None => None,
+        },
         None => None,
     };
 

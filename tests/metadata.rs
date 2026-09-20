@@ -350,10 +350,13 @@ async fn drop_table_は_iceberg_なら_41_バイトの_metadata_を置く() {
     // キーの有無は tests/table_format.rs（計画レビュー F）。
     let harness = Harness::builder(json!({ "updateType": "DROP TABLE" }))
         .route(
-            "SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = 'default_catalog'",
+            "SELECT (SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = 'default_catalog'), (SELECT count(*) FROM system.jdbc.tables WHERE table_cat = 'default_catalog' AND table_schem = 'default_schema' AND table_name = 't')",
             json!({
-                "columns": [{ "name": "connector_name", "type": "varchar" }],
-                "data": [["iceberg"]]
+                "columns": [
+                    { "name": "_col0", "type": "varchar" },
+                    { "name": "_col1", "type": "bigint" }
+                ],
+                "data": [["iceberg", 1]]
             }),
         )
         .results_s3()
