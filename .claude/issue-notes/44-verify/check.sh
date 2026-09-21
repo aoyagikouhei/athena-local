@@ -65,6 +65,10 @@ for pair in "execution.rs:result_output.rs" "table_format.rs:target_table.rs"; d
   allow="$allow"'|^[<>] (result_output::)?write_(result|failure)\(&app'             # 呼び出しの修飾
   allow="$allow"'|^[<>] .*(table_format|target_table)::parse_target_table\($'       # 同上（呼び出しが行の途中にある）
   allow="$allow"'|^[<>] #\[cfg\(test\)\]$|^[<>] mod tests \{$|^[<>] \}$'        # テストモジュールの枠が 1 組 → 2 組
+  # 独立レビューの指摘で足した 1 行。execution.rs に write_result はもう無いので、
+  # コメント内の参照にも所属モジュールを付けた（呼び出し行 2 箇所は既に result_output:: と書いている）。
+  # 移動ではなく文書の修正なので、その 1 行だけを名指しで許容する。
+  allow="$allow"'|^[<>] // 結果 CSV の S3 書き込みが無効（ResultsMode::None）なら、(result_output::)?write_result が判定結果を$'
   raw=$(diff "$b" "$a")
   rest=$(printf '%s\n' "$raw" | grep -vE "$allow")
   if [ -z "$raw" ]; then
