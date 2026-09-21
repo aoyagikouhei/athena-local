@@ -63,7 +63,7 @@ for pair in "execution.rs:result_output.rs" "table_format.rs:target_table.rs"; d
   allow="$allow"'|^---$'
   allow="$allow"'|^[<>] (pub\(super\) )?async fn write_(result|failure)\('          # 可視性の付与
   allow="$allow"'|^[<>] (result_output::)?write_(result|failure)\(&app'             # 呼び出しの修飾
-  allow="$allow"'|^[<>] (table_format|target_table)::parse_target_table\('          # 同上
+  allow="$allow"'|^[<>] .*(table_format|target_table)::parse_target_table\($'       # 同上（呼び出しが行の途中にある）
   allow="$allow"'|^[<>] #\[cfg\(test\)\]$|^[<>] mod tests \{$|^[<>] \}$'        # テストモジュールの枠が 1 組 → 2 組
   raw=$(diff "$b" "$a")
   rest=$(printf '%s\n' "$raw" | grep -vE "$allow")
