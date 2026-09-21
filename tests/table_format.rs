@@ -479,13 +479,18 @@ async fn 結果_s3_が無効なら_drop_table_でも形式を問い合わせな�
 }
 
 #[tokio::test]
-async fn add_columns_以外の_alter_table_は形式を問い合わせない() {
-    // SET TBLPROPERTIES・DROP COLUMN・SET LOCATION は本物も列なしの本体・.metadata を
-    // 置かない（2026-09-21 実測）ので、classification.rs の時点で対象外になり probe も飛ばない。
+async fn 列を変える_alter_table_以外は形式を問い合わせない() {
+    // SET TBLPROPERTIES・DROP COLUMN・SET LOCATION・ADD PARTITION・DROP PARTITION・RENAME TO は
+    // 本物も列なしの本体・.metadata を置かない（2026-09-21 実測）ので、分類はされても
+    // table_format.rs の対象からは外れ、probe も飛ばない。対象は ADD COLUMNS と
+    // REPLACE COLUMNS だけ。
     for query in [
         "ALTER TABLE t SET TBLPROPERTIES ('comment' = 'remember to add column for region')",
         "ALTER TABLE t DROP COLUMN c",
         "ALTER TABLE t SET LOCATION 's3://bucket/path/'",
+        "ALTER TABLE t ADD PARTITION (p = 'v')",
+        "ALTER TABLE t DROP PARTITION (p = 'v')",
+        "ALTER TABLE t RENAME TO u",
     ] {
         let harness = Harness::builder(json!({ "updateType": "ALTER TABLE" }))
             .results_s3()

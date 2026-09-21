@@ -14,6 +14,9 @@ use crate::trino::{Cancel, Outcome, Trino};
 pub(super) enum TargetStatement {
     DropTable,
     AlterTableAddColumns,
+    /// `ALTER TABLE ... REPLACE COLUMNS`。Hive では ADD COLUMNS と同じ `.metadata` を置き、
+    /// Iceberg では本物が実行時に失敗する（2026-09-21 実測）。
+    AlterTableReplaceColumns,
 }
 
 /// 問い合わせで分かる、対象テーブルの Trino コネクタ。
@@ -30,14 +33,15 @@ pub(super) enum EngineDdl {
     /// DROP TABLE × Iceberg。本体に改行 1 つ、`.metadata` に 41 バイト
     /// （field 1 = Trino のエンジンのクエリ ID、field 2 = `DROP TABLE`）。
     DropTableIceberg,
-    /// ALTER TABLE ... ADD COLUMNS × Hive。本体は 0 バイトのまま、`.metadata` に 38 バイト
-    /// （field 1 = QueryExecutionId のみ。field 2 の updateType も field 3 の更新件数も無い。
-    /// Trino の updateType は `"ADD COLUMN"` で Athena の `ADD COLUMNS` と綴りが違うので使わない。
-    /// 2026-09-21 実測）。
-    AlterAddColumnsHive,
+    /// ALTER TABLE ... ADD COLUMNS / REPLACE COLUMNS × Hive。本体は 0 バイトのまま、
+    /// `.metadata` に 38 バイト（field 1 = QueryExecutionId のみ。field 2 の updateType も
+    /// field 3 の更新件数も無い。Trino の updateType は `"ADD COLUMN"` で Athena の
+    /// `ADD COLUMNS` と綴りが違うので使わない。2026-09-21 実測）。REPLACE COLUMNS の
+    /// `.metadata` は ADD COLUMNS と 1 バイトも変わらない（同じ日の実測で中身を突き合わせた）。
+    AlterColumnsHive,
 }
 
-/// `DROP TABLE` / `ALTER TABLE ... ADD COLUMNS` から取り出した対象。カタログ・スキーマは
+/// `DROP TABLE` / `ALTER TABLE ... ADD COLUMNS` / `... REPLACE COLUMNS` から取り出した対象。カタログ・スキーマは
 /// 修飾名に無ければ既定を当てた後の値（呼び出し元の別名解決前）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct TargetTable {
@@ -46,13 +50,14 @@ pub(super) struct TargetTable {
     pub(super) table: String,
 }
 
-/// この文が対象か。対象は DROP TABLE と ALTER TABLE ... ADD COLUMNS だけ
+/// この文が対象か。対象は DROP TABLE と、ALTER TABLE の ADD COLUMNS / REPLACE COLUMNS だけ
 /// （`substatement_type` の判定をそのまま使い、判定を二重に持たない）。
 /// 修飾名でカタログを明示していても対象にする（Phase 2）。
 pub(super) fn target_statement(query: &str) -> Option<TargetStatement> {
     match super::classification::substatement_type(query) {
         Some("DROP_TABLE") => Some(TargetStatement::DropTable),
         Some("ALTER_TABLE_ADD_COLUMN") => Some(TargetStatement::AlterTableAddColumns),
+        Some("ALTER_TABLE_REPLACE_COLUMN") => Some(TargetStatement::AlterTableReplaceColumns),
         _ => None,
     }
 }
@@ -61,7 +66,9 @@ pub(super) fn target_statement(query: &str) -> Option<TargetStatement> {
 fn verb(statement: TargetStatement) -> &'static str {
     match statement {
         TargetStatement::DropTable => "DROP",
-        TargetStatement::AlterTableAddColumns => "ALTER",
+        TargetStatement::AlterTableAddColumns | TargetStatement::AlterTableReplaceColumns => {
+            "ALTER"
+        }
     }
 }
 
@@ -219,10 +226,14 @@ pub(super) fn engine_ddl(statement: TargetStatement, format: TableFormat) -> Opt
     match (statement, format) {
         (TargetStatement::DropTable, TableFormat::Iceberg) => Some(EngineDdl::DropTableIceberg),
         (TargetStatement::DropTable, TableFormat::Hive) => None,
-        (TargetStatement::AlterTableAddColumns, TableFormat::Hive) => {
-            Some(EngineDdl::AlterAddColumnsHive)
-        }
-        (TargetStatement::AlterTableAddColumns, TableFormat::Iceberg) => None,
+        (
+            TargetStatement::AlterTableAddColumns | TargetStatement::AlterTableReplaceColumns,
+            TableFormat::Hive,
+        ) => Some(EngineDdl::AlterColumnsHive),
+        (
+            TargetStatement::AlterTableAddColumns | TargetStatement::AlterTableReplaceColumns,
+            TableFormat::Iceberg,
+        ) => None,
     }
 }
 
@@ -268,14 +279,28 @@ mod tests {
     }
 
     #[test]
+    fn target_statement_は_alter_table_replace_columns_も対象にする() {
+        // REPLACE COLUMNS × Hive は ADD COLUMNS × Hive と同じ 38 バイトの .metadata を置く
+        // （2026-09-21 実測。保存した中身を ADD COLUMNS のものと突き合わせて確かめた）ので、
+        // 形式の問い合わせが要る。
+        assert_eq!(
+            target_statement("ALTER TABLE t REPLACE COLUMNS (n int, s string)"),
+            Some(TargetStatement::AlterTableReplaceColumns)
+        );
+    }
+
+    #[test]
     fn target_statement_は_add_columns_以外の_alter_table_を対象外にする() {
-        // SET TBLPROPERTIES / DROP COLUMN / SET LOCATION は本物も列なしの本体・.metadata を
-        // 置かない（2026-09-21 実測）。IF EXISTS と RENAME COLUMN は Athena に構文が無いので
-        // classification.rs の時点で None になる。
+        // SET TBLPROPERTIES / DROP COLUMN / SET LOCATION / ADD PARTITION / DROP PARTITION は
+        // 本物も列なしの本体・.metadata を置かない（2026-09-21 実測）。IF EXISTS と
+        // RENAME COLUMN は Athena に構文が無いので classification.rs の時点で None になる。
+        // RENAME TO は分類はされる（ALTER_TABLE_RENAME）が、.metadata は置かない。
         for query in [
             "ALTER TABLE t SET TBLPROPERTIES ('comment' = 'remember to add column for region')",
             "ALTER TABLE t DROP COLUMN c",
             "ALTER TABLE t SET LOCATION 's3://bucket/path/'",
+            "ALTER TABLE t ADD PARTITION (p = 'v')",
+            "ALTER TABLE t DROP PARTITION (p = 'v')",
             "ALTER TABLE IF EXISTS t ADD COLUMNS (m int)",
             "ALTER TABLE t RENAME COLUMN a TO b",
             "ALTER TABLE t RENAME TO u",
@@ -310,15 +335,23 @@ mod tests {
     }
 
     #[test]
-    fn engine_ddl_は_alter_table_add_columns_と_hive_の組み合わせだけ_some() {
-        assert_eq!(
-            engine_ddl(TargetStatement::AlterTableAddColumns, TableFormat::Hive),
-            Some(EngineDdl::AlterAddColumnsHive)
-        );
-        assert_eq!(
-            engine_ddl(TargetStatement::AlterTableAddColumns, TableFormat::Iceberg),
-            None
-        );
+    fn engine_ddl_は_列を変える_alter_table_と_hive_の組み合わせだけ_some() {
+        // ADD COLUMNS と REPLACE COLUMNS は Hive で同じ .metadata を置く（2026-09-21 実測）。
+        for statement in [
+            TargetStatement::AlterTableAddColumns,
+            TargetStatement::AlterTableReplaceColumns,
+        ] {
+            assert_eq!(
+                engine_ddl(statement, TableFormat::Hive),
+                Some(EngineDdl::AlterColumnsHive),
+                "{statement:?}"
+            );
+            assert_eq!(
+                engine_ddl(statement, TableFormat::Iceberg),
+                None,
+                "{statement:?}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -482,6 +515,37 @@ mod tests {
                 None
             ),
             None
+        );
+    }
+
+    #[test]
+    fn parse_target_table_は_alter_table_replace_columns_の名前も読む() {
+        // REPLACE COLUMNS でも `verb` は ALTER なので、名前の位置は ADD COLUMNS と変わらない。
+        assert_eq!(
+            parse_target_table(
+                r#"ALTER TABLE cat."my ns".t REPLACE COLUMNS (n int, s string)"#,
+                TargetStatement::AlterTableReplaceColumns,
+                Some("default_cat"),
+                Some("default_ns")
+            ),
+            Some(TargetTable {
+                catalog: "cat".to_string(),
+                schema: "my ns".to_string(),
+                table: "t".to_string(),
+            })
+        );
+        assert_eq!(
+            parse_target_table(
+                "ALTER TABLE t REPLACE COLUMNS (n int)",
+                TargetStatement::AlterTableReplaceColumns,
+                Some("cat"),
+                Some("ns")
+            ),
+            Some(TargetTable {
+                catalog: "cat".to_string(),
+                schema: "ns".to_string(),
+                table: "t".to_string(),
+            })
         );
     }
 

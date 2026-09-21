@@ -73,7 +73,9 @@ pub(super) fn substatement_type(query: &str) -> Option<&'static str> {
 }
 
 /// `ALTER TABLE` の後ろのテーブル名を `catalog::skip_qualified_name` で読み飛ばし、
-/// その後ろのキーワードを 1 つずつ読み進めて ADD／DROP／SET を判定する。
+/// その後ろのキーワードを 1 つずつ読み進めて ADD／DROP／REPLACE／RENAME／SET を判定する。
+/// 本物が実行時に失敗する組み合わせ（REPLACE COLUMNS・ADD PARTITION × Iceberg、
+/// RENAME TO × Hive）でも SubstatementType は同じ値で返るので、成否では分けない（2026-09-21 実測）。
 /// `ALTER`／`TABLE` のキーワード自体は呼び出し元の `word(0)`／`word(1)` の guard で確定している。
 ///
 /// キーワードの一致は `split_whitespace` の完全一致ではなく `skip_keyword` で確かめる。
@@ -87,10 +89,29 @@ fn alter_table_action(query: &str) -> Option<&'static str> {
     let rest = &after_table[name_end..];
 
     if let Some(after_add) = skip_keyword(rest, "ADD") {
-        return skip_columns_keyword(after_add).map(|_| "ALTER_TABLE_ADD_COLUMN");
+        if skip_columns_keyword(after_add).is_some() {
+            return Some("ALTER_TABLE_ADD_COLUMN");
+        }
+        return skip_keyword(after_add, "PARTITION").map(|_| "ALTER_TABLE_ADD_PARTITION");
     }
     if let Some(after_drop) = skip_keyword(rest, "DROP") {
-        return skip_columns_keyword(after_drop).map(|_| "ALTER_TABLE_DROP_COLUMN");
+        // DROP が受けるのは単数形の COLUMN だけ。複数形は本物が
+        // `mismatched input 'COLUMNS'. Expecting: '.', 'DROP'` で弾く（2026-09-21 実測）ので、
+        // ADD と違って `skip_columns_keyword` は使わない。
+        if skip_keyword(after_drop, "COLUMN").is_some() {
+            return Some("ALTER_TABLE_DROP_COLUMN");
+        }
+        return skip_keyword(after_drop, "PARTITION").map(|_| "ALTER_TABLE_DROP_PARTITION");
+    }
+    // REPLACE の値だけ単数形の COLUMN で終わる（2026-09-21 実測）。受けるのは本物に構文がある
+    // 複数形の COLUMNS だけで、単数形は測っていないので分類しない。
+    if let Some(after_replace) = skip_keyword(rest, "REPLACE") {
+        return skip_keyword(after_replace, "COLUMNS").map(|_| "ALTER_TABLE_REPLACE_COLUMN");
+    }
+    // RENAME TO だけ分類する。RENAME COLUMN は本物に構文が無い（2026-09-21 実測）ので、
+    // `TO` を要求すればそのまま None に落ちる。
+    if let Some(after_rename) = skip_keyword(rest, "RENAME") {
+        return skip_keyword(after_rename, "TO").map(|_| "ALTER_TABLE_RENAME");
     }
     if let Some(after_set) = skip_keyword(rest, "SET") {
         if skip_keyword(after_set, "TBLPROPERTIES").is_some() {
@@ -103,7 +124,8 @@ fn alter_table_action(query: &str) -> Option<&'static str> {
     None
 }
 
-/// `COLUMN` と `COLUMNS` の両方を受け付ける（`ADD`／`DROP` に共通）。長い方から試す
+/// `COLUMN` と `COLUMNS` の両方を受け付ける（`ADD` だけが使う。`DROP` は本物が単数形しか
+/// 受けないので使わない）。長い方から試す
 /// （先に `COLUMN` を試すと `COLUMNS` の `S` が識別子の文字として境界チェックに引っかかり None になる）。
 fn skip_columns_keyword(input: &str) -> Option<&str> {
     skip_keyword(input, "COLUMNS").or_else(|| skip_keyword(input, "COLUMN"))
@@ -203,11 +225,26 @@ mod tests {
                 "ALTER_TABLE_PROPERTIES",
             ),
             ("ALTER TABLE t DROP COLUMN c", "ALTER_TABLE_DROP_COLUMN"),
-            ("ALTER TABLE t DROP COLUMNS c", "ALTER_TABLE_DROP_COLUMN"),
             (
                 "ALTER TABLE t SET LOCATION 's3://bucket/path/'",
                 "ALTER_TABLE_SET_LOCATION",
             ),
+            // 残りの亜種（2026-09-21 実測）。REPLACE の値だけ単数形の COLUMN で終わる。
+            // 本物が実行時に失敗する組み合わせ（REPLACE COLUMNS・ADD PARTITION × Iceberg、
+            // RENAME TO × Hive）でも、SubstatementType は同じ値で返る。
+            (
+                "ALTER TABLE t REPLACE COLUMNS (n int, s string)",
+                "ALTER_TABLE_REPLACE_COLUMN",
+            ),
+            (
+                "ALTER TABLE t ADD PARTITION (p = 'v')",
+                "ALTER_TABLE_ADD_PARTITION",
+            ),
+            (
+                "ALTER TABLE t DROP PARTITION (p = 'v')",
+                "ALTER_TABLE_DROP_PARTITION",
+            ),
+            ("ALTER TABLE t RENAME TO u", "ALTER_TABLE_RENAME"),
             // 先頭のコメントは読み飛ばして判定する（2026-09-18 実測）。
             ("-- c\nSELECT 1", "SELECT"),
             // 2 語目以降も読み飛ばした後の並びから取る。`metadata_query_id` の
@@ -220,10 +257,13 @@ mod tests {
         // 実測していない形は省く。
         for query in [
             "SHOW FUNCTIONS",
-            "ALTER TABLE t RENAME TO u",
             // RENAME COLUMN と IF EXISTS は本物の Athena に構文が無い（mismatched input。2026-09-21 実測）。
             "ALTER TABLE t RENAME COLUMN a TO b",
             "ALTER TABLE IF EXISTS t ADD COLUMNS (m int)",
+            // DROP が受けるのは単数形の COLUMN だけ（複数形は mismatched input 'COLUMNS'.
+            // Expecting: '.', 'DROP' で StartQueryExecution ごと弾かれる。2026-09-21 実測）。
+            // ADD は複数形の COLUMNS を受けるので、単複の扱いは対称ではない。
+            "ALTER TABLE t DROP COLUMNS c",
             "CALL x()",
             "SET SESSION a = 1",
             "",

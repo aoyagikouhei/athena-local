@@ -282,11 +282,11 @@ async fn write_result(
     // DROP TABLE × Iceberg（41 バイト）と ALTER TABLE ADD COLUMNS × Hive（38 バイト）だけは
     // 本物が列なしでも `.metadata` を置く（2026-09-20／21 実測。issue #39）。
     if !outcome.columns.is_empty() || engine_ddl.is_some() {
-        // ALTER TABLE ADD COLUMNS × Hive だけは field 1 に実行 ID だけを置き、field 2（updateType）も
+        // ALTER TABLE の ADD COLUMNS / REPLACE COLUMNS × Hive だけは field 1 に実行 ID だけを置き、field 2（updateType）も
         // field 3（更新件数）も置かない。Trino の updateType は "ADD COLUMN"（Athena の
         // `ADD COLUMNS` と綴りが違う）なので、そのまま使うと誤った field 2 が付く（2026-09-21 実測）。
         let (query_id, update_type, update_count) =
-            if engine_ddl == Some(EngineDdl::AlterAddColumnsHive) {
+            if engine_ddl == Some(EngineDdl::AlterColumnsHive) {
                 (id, None, None)
             } else {
                 (

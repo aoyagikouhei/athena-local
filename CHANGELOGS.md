@@ -112,9 +112,33 @@ later name the date they were measured on.
   `OutputLocation` in either case, which is what sends awswrangler down its
   `create_athena_bucket()` fallback. The server still starts, and the outgoing
   calls are still not blocked.
+- `ALTER TABLE ... REPLACE COLUMNS`, `... ADD PARTITION`, `... DROP PARTITION`
+  and `... RENAME TO` now get the `SubstatementType` real Athena returns:
+  `ALTER_TABLE_REPLACE_COLUMN` (singular, although the statement is plural),
+  `ALTER_TABLE_ADD_PARTITION`, `ALTER_TABLE_DROP_PARTITION` and
+  `ALTER_TABLE_RENAME`. Athena returns the field even for the combinations it
+  then fails at run time (`REPLACE COLUMNS`, `ADD PARTITION` and `SET LOCATION`
+  on an Iceberg table; `RENAME TO` on a Hive table), so the classification does
+  not depend on the target table's format. `REPLACE COLUMNS` on a Hive table
+  also writes the same 38-byte `.metadata` as `ADD COLUMNS` does — byte for
+  byte the same content apart from the id — so it now takes the same format
+  probe. Measured against Athena on 2026-09-21. Of the four, only `RENAME TO`
+  can be run through athena-local: Trino's grammar has no `REPLACE COLUMNS`,
+  `ADD PARTITION` or `DROP PARTITION`, so those three are rejected at the
+  syntax check before an execution is created (checked against Trino 482 on
+  2026-09-21). Their classification is what athena-local would answer if the
+  backend's grammar accepted the statement, and a new Caveat lists every
+  `ALTER TABLE` spelling Trino rejects.
 
 ### Changed
 
+- `ALTER TABLE ... DROP COLUMNS` (plural) is no longer classified. Athena takes
+  the plural `COLUMNS` after `ADD` but only the singular `COLUMN` after `DROP`,
+  and rejects the plural form in `StartQueryExecution` with `mismatched input
+  'COLUMNS'. Expecting: '.', 'DROP'` (`AthenaErrorCode` `MALFORMED_QUERY`).
+  athena-local used to answer `ALTER_TABLE_DROP_COLUMN` for it. Trino's grammar
+  rejects the statement at the syntax check either way, so no reachable
+  behaviour changed. Measured against Athena on 2026-09-21.
 - A new Caveat records that a leading `/* ... */` before `SHOW CREATE TABLE`
   can succeed here while real Athena rejects it at execution time with
   `FAILED: ParseException line 1:0 cannot recognize input near '/' '*' 'c'`
