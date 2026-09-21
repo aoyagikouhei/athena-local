@@ -56,7 +56,7 @@ pub fn alias_qualified_names<'a>(sql: &'a str, aliases: &HashMap<String, String>
 
 /// `'...'` や `"..."` の終わりの次の位置。引用符を 2 つ重ねたものは中身として読む。閉じていなければ末尾。
 ///
-/// `operation/table_format.rs` が DROP TABLE の修飾名の引用符付き識別子を読むのにも再利用する（issue #39 Phase 2）。
+/// `operation/target_table.rs` が DROP TABLE の修飾名の引用符付き識別子を読むのにも再利用する（issue #39 Phase 2）。
 pub(crate) fn skip_quoted(bytes: &[u8], start: usize) -> usize {
     let quote = bytes[start];
     let mut i = start + 1;
@@ -75,7 +75,7 @@ pub(crate) fn skip_quoted(bytes: &[u8], start: usize) -> usize {
 
 /// `--` か `/*` で始まるコメントなら、その終わりの次の位置。閉じていなければ末尾。
 ///
-/// `operation/table_format.rs` が DROP TABLE の修飾名を読むのにも再利用する（issue #39 Phase 2）。
+/// `operation/target_table.rs` が DROP TABLE の修飾名を読むのにも再利用する（issue #39 Phase 2）。
 pub(crate) fn comment_end(bytes: &[u8], start: usize) -> Option<usize> {
     let rest = &bytes[start..];
     if rest.starts_with(b"--") {
@@ -145,7 +145,7 @@ fn next_is_dot(bytes: &[u8], i: usize) -> bool {
 /// 引用符付き識別子の中の空白や、ドットを挟んだ修飾名で語数を数え間違えるため、テーブル名の
 /// 終わりの位置をここで確かめてから、その後ろの語だけを見て判定する。
 ///
-/// `operation/table_format.rs::parse_qualified_name` は名前の中身を取り出す関数で、
+/// `operation/target_table.rs::parse_qualified_name` は名前の中身を取り出す関数で、
 /// こちらは中身を見ずに位置だけを進める（用途が違うので無理に共通化しない。issue #44）。
 /// 字句処理は増やさず、`skip_quoted`・`comment_end`・`skip_leading_trivia` と同じ判定
 /// （引用符・コメント・空白）を使い回す。
@@ -178,7 +178,7 @@ fn skip_name_part(bytes: &[u8], start: usize) -> usize {
 
 /// `"a""b"` の中身 `a"b`。
 ///
-/// `operation/table_format.rs` が DROP TABLE の修飾名の引用符付き識別子を読むのにも再利用する（issue #39 Phase 2）。
+/// `operation/target_table.rs` が DROP TABLE の修飾名の引用符付き識別子を読むのにも再利用する（issue #39 Phase 2）。
 pub(crate) fn unquote(identifier: &str) -> String {
     let inner = identifier
         .strip_prefix('"')
