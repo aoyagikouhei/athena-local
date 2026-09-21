@@ -465,17 +465,26 @@ Athena on 2026-09-20 and 2026-09-21, reproduced across three rounds):
 | `DROP TABLE` | Hive, or the target does not exist | empty | `binary/octet-stream` | none |
 | `ALTER TABLE ... ADD COLUMNS` | Hive | empty | `application/octet-stream` | 38 bytes: `QueryExecutionId` only (field 1); no `updateType`, count or columns |
 | `ALTER TABLE ... ADD COLUMNS` | Iceberg | empty | `binary/octet-stream` | none |
+| `ALTER TABLE ... REPLACE COLUMNS` | Hive | empty | `application/octet-stream` | 38 bytes, byte for byte the same as the `ADD COLUMNS` row (measured 2026-09-21) |
+| `ALTER TABLE ... REPLACE COLUMNS` | Iceberg | Athena itself fails the query | — | — |
 
-Write `ADD COLUMN` (singular) to reach that `ALTER TABLE` row from
+Write `ADD COLUMN` (singular) to reach the `ADD COLUMNS` row from
 athena-local: Trino's grammar rejects Athena's `ADD COLUMNS` at the syntax
-check (see [Caveats](#caveats)).
+check. `REPLACE COLUMNS` has no Trino spelling at all, so that row cannot be
+reached through athena-local; it is listed because the classification and the
+format probe follow Athena for it. See [Caveats](#caveats) for every spelling
+Trino rejects.
 
 Every other `ALTER TABLE` form that gets a `SubstatementType` (`SET
-TBLPROPERTIES`, `DROP COLUMN`, `SET LOCATION`) behaves like ordinary
-column-less DDL on both table formats: an empty `<id>.txt`,
-`binary/octet-stream`, and no `.metadata`.
+TBLPROPERTIES`, `DROP COLUMN`, `SET LOCATION`, `ADD PARTITION`,
+`DROP PARTITION`, `RENAME TO`) behaves on Athena like ordinary column-less
+DDL: an empty `<id>.txt`, `binary/octet-stream`, and no `.metadata`. All six
+were measured on 2026-09-21 on whichever table format Athena accepts them on
+(see [Caveats](#caveats) for the combinations Athena itself rejects). Of the
+six, only `DROP COLUMN` and `RENAME TO` can be run through athena-local; the
+rest are rejected at the syntax check, so their rows describe Athena alone.
 
-Only these two statements trigger the format probe below; no other statement
+Only these three statements trigger the format probe below; no other statement
 pays an extra round trip to Trino. For a matching statement, athena-local
 sends the format probe as a single query, asking which connector backs the
 target's catalog and whether the target exists:
@@ -586,18 +595,30 @@ passed; see Caveats.
   Trino where Athena would have rejected the call outright. For an incomplete
   statement (`SELECT * FROM`) Athena answers `Queries of this type are not
   supported`; athena-local returns Trino's syntax error.
-- **Athena's `ADD COLUMNS` / `SET TBLPROPERTIES` spelling is rejected.**
-  `ALTER TABLE ... ADD COLUMNS (...)` and
-  `ALTER TABLE ... SET TBLPROPERTIES (...)` are Athena syntax, not Trino's, so
-  athena-local rejects them at the syntax check with
-  `mismatched input 'COLUMNS'` / `mismatched input 'TBLPROPERTIES'` where
-  Athena would have run them (measured 2026-09-21). Write Trino's spelling
-  instead — `ADD COLUMN` (singular) and `SET PROPERTIES` — to reach the
-  behaviour described under
-  [DDL that depends on the target table's format](#ddl-that-depends-on-the-target-tables-format).
-  Classification accepts either spelling: a statement written as `ADD COLUMN`
-  still gets the `ADD COLUMNS` `SubstatementType` (verified against Trino 482
-  and MinIO on 2026-09-21).
+- **Six `ALTER TABLE` spellings Athena has and Trino does not.** These are
+  Athena syntax, not Trino's, so athena-local rejects them at the syntax check
+  with `SYNTAX_ERROR` (returned as `InvalidRequestException` /
+  `AthenaErrorCode` `MALFORMED_QUERY`, with no `QueryExecutionId` created)
+  where Athena would have run them. Checked against Trino 482 on 2026-09-21:
+
+  | Statement | Trino's syntax check | Trino's own spelling |
+  | --- | --- | --- |
+  | `ADD COLUMNS (...)` | `mismatched input 'COLUMNS'` | `ADD COLUMN` (singular) |
+  | `SET TBLPROPERTIES (...)` | `mismatched input 'TBLPROPERTIES'` | `SET PROPERTIES` |
+  | `REPLACE COLUMNS (...)` | `mismatched input 'REPLACE'` | none |
+  | `ADD PARTITION (...)` | `mismatched input 'PARTITION'` | none |
+  | `DROP PARTITION (...)` | `mismatched input 'PARTITION'` | none |
+  | `SET LOCATION '...'` | `mismatched input 'LOCATION'` | none |
+
+  Write Trino's spelling where the last column gives one to reach the behaviour
+  described under
+  [DDL that depends on the target table's format](#ddl-that-depends-on-the-target-tables-format);
+  classification accepts either spelling, so a statement written as
+  `ADD COLUMN` still gets the `ADD COLUMNS` `SubstatementType` (verified
+  against Trino 482 and MinIO on 2026-09-21). The four with no Trino spelling
+  cannot be run through athena-local at all — their `SubstatementType` and
+  result-file rows below record what Athena does, and are reachable here only
+  if the backend's grammar accepts the statement.
 - **Iceberg maintenance statements differ.** Athena's `OPTIMIZE ... REWRITE DATA`
   and `VACUUM` do not exist in Trino, which uses `ALTER TABLE ... EXECUTE optimize`
   and `ALTER TABLE ... EXECUTE expire_snapshots` instead.
@@ -654,18 +675,40 @@ passed; see Caveats.
   `.metadata`) instead of matching Athena. See
   [DDL that depends on the target table's format](#ddl-that-depends-on-the-target-tables-format)
   for what this changes.
-- **Most `ALTER TABLE` forms are unmeasured beyond their `SubstatementType`.**
-  `SET LOCATION` was measured on a Hive table only; its Iceberg-table
-  behaviour is assumed to be the same but was not measured. `ADD PARTITION`,
-  `DROP PARTITION`, `REPLACE COLUMNS` and any other `ALTER TABLE` form besides
-  the four classified ones (`SET TBLPROPERTIES`, `ADD COLUMNS`, `DROP COLUMN`,
-  `SET LOCATION`) were not measured at all and are left unclassified, the same
-  as any other statement whose `SubstatementType` was not measured (see
-  [Supported API](#supported-api)); tracked in issue #43.
-- **Two `ALTER TABLE` forms fail on Athena itself.** `DROP COLUMN` on a Hive
-  table, and `SET TBLPROPERTIES` setting `comment` on an Iceberg table, are
-  rejected by Athena's Hive/Iceberg backend before athena-local's own
-  format-dependent behaviour would matter — not a limitation of athena-local.
+- **`ALTER TABLE` classification covers eight forms.** `SET TBLPROPERTIES`,
+  `ADD COLUMNS`, `DROP COLUMN`, `SET LOCATION`, `REPLACE COLUMNS`,
+  `ADD PARTITION`, `DROP PARTITION` and `RENAME TO` each get the
+  `SubstatementType` Athena returns (measured 2026-09-21). Note that
+  `ALTER_TABLE_REPLACE_COLUMN` is singular although the statement is plural.
+  Athena returns the `SubstatementType` even when the statement then fails at
+  run time, so athena-local classifies these forms regardless of the target's
+  format. Any other `ALTER TABLE` form is left unclassified, the same as any
+  other statement whose `SubstatementType` was not measured (see
+  [Supported API](#supported-api)). Only three of the eight can actually be run
+  through athena-local — `ADD COLUMNS` (written as Trino's `ADD COLUMN`),
+  `DROP COLUMN` and `RENAME TO`. The other five are rejected at the syntax
+  check, so their classification is what athena-local would answer if the
+  backend's grammar accepted the statement; `SET TBLPROPERTIES` in particular
+  stays unclassified when written in Trino's `SET PROPERTIES` spelling, because
+  the classification keyword is the Athena one.
+- **`DROP COLUMNS` (plural) is a syntax error on Athena.** `ADD` takes the
+  plural `COLUMNS`, but `DROP` takes only the singular `COLUMN`: Athena rejects
+  `DROP COLUMNS` in `StartQueryExecution` with `mismatched input 'COLUMNS'.
+  Expecting: '.', 'DROP'` (`AthenaErrorCode` `MALFORMED_QUERY`, measured
+  2026-09-21). athena-local leaves it unclassified to match; Trino's grammar
+  rejects it at the syntax check in any case.
+- **Several `ALTER TABLE` combinations fail on Athena itself.** `DROP COLUMN` on
+  a Hive table, and `SET TBLPROPERTIES` setting `comment` on an Iceberg table,
+  are rejected by Athena's Hive/Iceberg backend. So are `REPLACE COLUMNS`,
+  `ADD PARTITION` and `SET LOCATION` on an Iceberg table, all three with
+  `Query type not supported by Athena Iceberg at this time`, and `RENAME TO` on
+  a Hive table, where Glue answers `Table cannot be renamed` (measured
+  2026-09-21). They fail before athena-local's own format-dependent behaviour
+  would matter — not a limitation of athena-local.
+- **`ADD PARTITION` and `DROP PARTITION` were measured on a partitioned Hive
+  table only.** Athena has no such syntax for Iceberg (see above), so the
+  Iceberg side of those two rows cannot exist; no other partition layout was
+  measured.
 - **Unmeasured `.metadata` details.** The update count of a DML statement that
   changes no rows (`DELETE ... WHERE false`) was not measured; athena-local
   writes `0`. Columns of type `timestamp with time zone`, `time with time zone`
@@ -679,7 +722,10 @@ passed; see Caveats.
   `DELETE` and CTAS (measured 2026-09-17, and the `INSERT` case again on
   2026-09-20: a type-mismatched `INSERT` left neither the result file nor the
   `.metadata` companion) and `ALTER TABLE` on an Iceberg table
-  (measured 2026-09-16 and 2026-09-17). athena-local runs everything through
+  (measured 2026-09-16 and 2026-09-17, and again on 2026-09-21: a failed
+  `RENAME TO` on a Hive table wrote its reason to `<id>.txt`, while failed
+  `REPLACE COLUMNS`, `ADD PARTITION` and `SET LOCATION` on an Iceberg table
+  wrote no file at all). athena-local runs everything through
   Trino and cannot tell the two apart, so it writes the file for every statement
   whose result file is `<id>.txt`. A failed `EXPLAIN` was not measured.
 - **The failed result file does not match `StateChangeReason`.** On Athena the
