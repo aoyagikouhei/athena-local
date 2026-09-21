@@ -168,6 +168,19 @@ This was the setup used to verify athena-local against Athena JDBC 3.8.1
 and all three `ResultFetcher` modes (`auto`, `S3`, `GetQueryResults`) connected
 and ran without an exception.
 
+The 3.x driver is not on Maven Central — the similarly named
+`com.amazonaws:athena-jdbc` published there is the Athena Federated Query
+connector and ships no `java.sql.Driver`. AWS serves the real one at
+`https://downloads.athena.us-east-1.amazonaws.com/drivers/JDBC/<version>/athena-jdbc-<version>-with-dependencies.jar`
+(checked for 3.8.1 on 2026-09-21). When the driver runs in a container and
+MinIO is another container, two more things have to line up, both measured on
+2026-09-21: `MINIO_DOMAIN` has to equal the S3 endpoint's host name, since the
+driver addresses the bucket in virtual-host style and MinIO otherwise answers
+`NoSuchBucket`; and that host name has to be in the container's `/etc/hosts`,
+because the AWS SDK bundled in the driver raises `UnknownHostException` for a
+name that Docker's embedded resolver serves (`search .`, `ndots:0`) even though
+`getent hosts` and `java.net.InetAddress.getByName` both resolve it.
+
 ## Configuration
 
 | Variable | Default | Description |
@@ -411,10 +424,13 @@ the client that needs it: its default `ResultFetcher=auto` reads the result and
 the metadata straight
 from S3 instead of calling `GetQueryResults`, and versions before 3.5.1 fail
 with `NoSuchKey` when a DDL statement has no metadata file. athena-local writes
-no companion file for column-less DDL either, so those statements still fail on
-versions before 3.5.1; 3.8.1 logs the missing file (a 404) at INFO level and
-carries on (measured 2026-09-17). PyAthena, awswrangler and dbt-athena do not
-read it.
+no companion file for most column-less DDL either, so those statements still
+fail on versions before 3.5.1; 3.8.1 logs the missing file (a 404) at INFO
+level and carries on (measured 2026-09-17). Two combinations are the exception
+and do get a companion file that carries no columns at all; see
+[DDL that depends on the target table's format](#ddl-that-depends-on-the-target-tables-format)
+for what the driver does with those. PyAthena, awswrangler and dbt-athena do
+not read it.
 
 The file is written for every statement that has columns: `SELECT` (also when
 it returns no rows), `SHOW` / `DESCRIBE` / `EXPLAIN`, DML (`INSERT` / `UPDATE`
@@ -467,6 +483,16 @@ Athena on 2026-09-20 and 2026-09-21, reproduced across three rounds):
 | `ALTER TABLE ... ADD COLUMNS` | Iceberg | empty | `binary/octet-stream` | none |
 | `ALTER TABLE ... REPLACE COLUMNS` | Hive | empty | `application/octet-stream` | 38 bytes, byte for byte the same as the `ADD COLUMNS` row (measured 2026-09-21) |
 | `ALTER TABLE ... REPLACE COLUMNS` | Iceberg | Athena itself fails the query | — | — |
+
+The 41-byte and 38-byte companions carry no `ColumnInfo` at all, which is
+outside what a `.metadata` file is otherwise for. Athena JDBC 3.8.1 reads them
+without an exception: in its default `ResultFetcher=auto`, and again with
+`ResultFetcher=S3`, it logged `loaded query result metadata` for both files and
+returned from `execute()` normally. The same run covered a `DROP TABLE` that
+writes no companion at all (the driver logs `does not have query result
+metadata` and carries on) and a `SELECT` for regression (verified against
+athena-local on 2026-09-21 with
+`.claude/issue-notes/46-verify-jdbc-metadata.sh`).
 
 Write `ADD COLUMN` (singular) to reach the `ADD COLUMNS` row from
 athena-local: Trino's grammar rejects Athena's `ADD COLUMNS` at the syntax
