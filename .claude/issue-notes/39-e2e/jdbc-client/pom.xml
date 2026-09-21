@@ -12,14 +12,14 @@
   </properties>
 
   <dependencies>
-    <!-- issue #39 実機検証: 公式 Athena JDBC ドライバ本体。
-         Maven Central には 3.x 表記のバージョンは無く、同じドライバ系列（com.amazonaws:athena-jdbc）
-         の calver 表記に切り替わっている。取れる最古のものを使う（2026-09-21 実測）。 -->
-    <dependency>
-      <groupId>com.amazonaws</groupId>
-      <artifactId>athena-jdbc</artifactId>
-      <version>2024.8.1</version>
-    </dependency>
+    <!-- 公式 Athena JDBC ドライバ 3.x は Maven Central に無く、AWS の配布 URL から
+         直接取る（issue #46 で入手経路を特定した。2026-09-21 実測）:
+           https://downloads.athena.us-east-1.amazonaws.com/drivers/JDBC/3.8.1/athena-jdbc-3.8.1-with-dependencies.jar
+         `46-verify-jdbc-metadata.sh` がこれを target/dependency/ に置くので、
+         Maven の依存としては宣言しない（Main.java は java.sql しか使わず、
+         ドライバは実行時に ServiceLoader が拾う）。
+         Maven Central の `com.amazonaws:athena-jdbc`（calver）は名前が似ているが
+         Athena Federated Query の JDBC コネクタで、java.sql.Driver を持たない別物。 -->
     <!-- ドライバのログ（INFO を含む）を標準エラーに出すため -->
     <dependency>
       <groupId>org.slf4j</groupId>

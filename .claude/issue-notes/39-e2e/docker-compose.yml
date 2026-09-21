@@ -27,6 +27,12 @@ services:
       # ローカル専用のダミー認証情報。本物の AWS の認証情報ではない。
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
+      # issue #46: Athena JDBC ドライバの S3 クライアントは virtual-hosted style
+      # （<bucket>.<endpoint host> = athena-results.tls-proxy）でアクセスする。
+      # これが無いと MinIO はホスト名からバケット名を切り出せず NoSuchBucket になる
+      # （README.md「Athena JDBC 3.x needs a TLS terminator in front」の注記どおり。2026-09-21 実測）。
+      # path style のアクセス（verify.sh や mc）はこの設定があっても従来どおり通る。
+      MINIO_DOMAIN: tls-proxy
     command: server /data --console-address ":9001"
     volumes:
       - minio-data:/data

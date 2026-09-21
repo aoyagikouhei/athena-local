@@ -9,16 +9,23 @@ import java.sql.Statement;
 import java.util.Properties;
 
 /**
- * issue #39 実機検証: 列 0 個の .metadata（DROP TABLE Iceberg = 41 バイト、
+ * issue #39 / #46 実機検証: 列 0 個の .metadata（DROP TABLE Iceberg = 41 バイト、
  * ALTER TABLE ADD COLUMN Hive = 38 バイト）を、公式 Athena JDBC ドライバの
  * 既定 ResultFetcher=auto（S3 を直接読む経路）が例外なく読めるかを確かめる。
  *
- * 接続先は athena-local（本物の AWS は使わない）。ResultFetcher は明示せず既定のままにする。
+ * 接続先は athena-local（本物の AWS は使わない）。
+ *
+ * 引数で ResultFetcher を切り替える（issue #46。1 ラウンドで対照まで測るため）:
+ *   引数なし   -> 明示せず既定のまま（= auto。今回の焦点）
+ *   "S3"       -> S3 直読みを明示（auto が S3 を選ばなかった場合でも同じ経路を通す対照）
+ *   "GetQueryResults" -> API 経由（.metadata を読まない対照）
  */
 public final class Main {
     private static int failures = 0;
 
     public static void main(String[] args) throws Exception {
+        // 引数なしは「明示しない」= 既定の auto。空文字も同じ扱いにする。
+        String fetcher = (args.length > 0 && !args[0].isEmpty()) ? args[0] : null;
         String runId = Long.toString(System.currentTimeMillis());
         String tIcebergDrop = "t_jdbc_drop_iceberg_" + runId;
         String tHiveDrop = "t_jdbc_drop_hive_" + runId;
@@ -33,9 +40,13 @@ public final class Main {
         props.setProperty("Password", "minioadmin");
         props.setProperty("Catalog", "iceberg");
         props.setProperty("Database", "default");
-        // ResultFetcher は指定しない = 既定の "auto"（今回の焦点）。
+        if (fetcher != null) {
+            props.setProperty("ResultFetcher", fetcher);
+        }
+        // 引数なしのときは ResultFetcher を指定しない = 既定の "auto"（今回の焦点）。
 
         System.out.println("=== 接続 ===");
+        System.out.println("ResultFetcher: " + (fetcher == null ? "(未指定 = 既定の auto)" : fetcher));
         System.out.println("URL: jdbc:awsathena://  (AthenaEndpoint/S3Endpoint は上記 Properties 経由)");
         try (Connection conn = DriverManager.getConnection("jdbc:awsathena://", props)) {
             System.out.println("接続成功: " + conn.getClass());
