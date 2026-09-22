@@ -144,10 +144,18 @@ later name the date they were measured on.
   the companion of a `SHOW TABLES` changes to `binary/octet-stream`. The
   earlier values had been the majority of a few measurements (five of six
   `.csv` files; the sixth was `SELECT 1`); this one comes from 36 statements
-  measured with controls on 2026-09-23 (issue #70). `SELECT` forms not
-  measured are sent as `application/octet-stream` and `<id>.txt` statements
-  not measured (`SHOW FUNCTIONS`, `DESC`, `SHOW CREATE VIEW`, ...) follow the
-  `.txt` defaults above; see README and #76.
+  measured with controls on 2026-09-23 (issue #70), plus 18 more the same
+  day (issue #76): a literals-only `SELECT` also covers `SELECT -1`,
+  `SELECT 1.5E0`, a double-quoted alias (`SELECT 1 AS "x"`) and a bare alias
+  (`SELECT 1 i`), all `binary/octet-stream` on Athena; `DESC`, `SELECT 1 AS
+  i, 2 AS j` and lowercase `select 1` confirmed the values already assumed;
+  `LIMIT`, `DATE '...'`, `'a' || 'b'`, `ARRAY[1]`, `(SELECT 1)` and `VALUES 1`
+  are `application/octet-stream` as before; and `SHOW FUNCTIONS` is
+  `application/octet-stream` (Athena writes it as a `<id>.csv`, which is #80).
+  Athena rejects `SHOW SESSION` and `SHOW STATS` outright, and a 98.9 MB
+  result is still one upload while 142.9 MB is multipart. `SELECT` forms not
+  measured are sent as `application/octet-stream` and `SHOW CREATE VIEW`
+  follows `SHOW CREATE TABLE`; see README.
 - README documents where the `Precision` of the `EXPLAIN` result column comes
   from: the engine types `Query Plan` as `varchar(<length of the plan text>)`,
   371 for `EXPLAIN SELECT 1` on Athena (measured 2026-09-15 and 2026-09-16) and
