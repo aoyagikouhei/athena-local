@@ -225,6 +225,13 @@ later name the date they were measured on.
 
 ### Fixed
 
+- `TABLE t` (Trino's shorthand for `SELECT * FROM t`) is now classified as
+  `DML` / `SELECT`, as on Athena (measured 2026-09-22), so `GetQueryResults`
+  returns the column-name row first and `GetQueryExecution` reports
+  `StatementType` `DML` and `SubstatementType` `SELECT`. It used to be
+  `UTILITY` with no `SubstatementType`, and the header row was dropped from
+  `GetQueryResults` while the `<id>.csv` result file kept it, so the API and
+  the file differed by one row.
 - The `<id>.txt` result file of an `EXPLAIN` now starts with the header line
   `Query Plan`, as on Athena (measured 2026-09-15 and 2026-09-16, where the
   file has exactly the rows `GetQueryResults` returns, header included). It used

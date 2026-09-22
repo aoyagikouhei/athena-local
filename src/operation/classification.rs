@@ -13,12 +13,13 @@ pub(super) fn words(query: &str) -> Vec<String> {
 }
 
 /// 本物の StatementType（2026-09-14 実測）。EXPLAIN と VACUUM は DML、OPTIMIZE は DDL。
+/// `TABLE t`（`SELECT * FROM t` の短縮形）も本物は受け付けて DML（2026-09-22 実測。#65）。
 /// 先頭のコメントは `words()` が読み飛ばして判定する（2026-09-18 実測）。
 pub(super) fn statement_type(query: &str) -> &'static str {
     let words = words(query);
     match words.first().map(String::as_str).unwrap_or_default() {
-        "SELECT" | "WITH" | "VALUES" | "INSERT" | "UPDATE" | "DELETE" | "MERGE" | "EXPLAIN"
-        | "VACUUM" => "DML",
+        "SELECT" | "WITH" | "VALUES" | "TABLE" | "INSERT" | "UPDATE" | "DELETE" | "MERGE"
+        | "EXPLAIN" | "VACUUM" => "DML",
         "CREATE" | "DROP" | "ALTER" | "OPTIMIZE" => "DDL",
         _ => "UTILITY",
     }
@@ -32,7 +33,8 @@ pub(super) fn substatement_type(query: &str) -> Option<&'static str> {
     let word = |index: usize| words.get(index).map(String::as_str).unwrap_or_default();
 
     Some(match word(0) {
-        "SELECT" | "WITH" | "VALUES" => "SELECT",
+        // `TABLE t` も本物は SELECT（2026-09-22 実測。#65）。
+        "SELECT" | "WITH" | "VALUES" | "TABLE" => "SELECT",
         "INSERT" => "INSERT",
         "UPDATE" => "UPDATE",
         "DELETE" => "DELETE",
@@ -160,6 +162,11 @@ mod tests {
             "DDL"
         );
         assert_eq!(statement_type("SHOW TABLES"), "UTILITY");
+        // `TABLE t`（`SELECT * FROM t` の短縮形）も本物は DML（2026-09-22 実測。#65）。
+        assert_eq!(statement_type("TABLE t"), "DML");
+        assert_eq!(statement_type("table db.t"), "DML");
+        assert_eq!(statement_type("(TABLE t)"), "DML");
+        assert_eq!(statement_type("-- c\nTABLE t"), "DML");
         // 先頭のコメントは読み飛ばして判定する（2026-09-18 実測）。
         assert_eq!(statement_type("-- c\nSELECT 1"), "DML");
         assert_eq!(statement_type("/* c */ SHOW TABLES"), "UTILITY");
@@ -243,6 +250,9 @@ mod tests {
             ("ALTER TABLE t RENAME TO u", "ALTER_TABLE_RENAME"),
             // 先頭のコメントは読み飛ばして判定する（2026-09-18 実測）。
             ("-- c\nSELECT 1", "SELECT"),
+            // `TABLE t` は本物も SELECT（2026-09-22 実測。#65）。
+            ("TABLE t", "SELECT"),
+            ("(TABLE t) LIMIT 1", "SELECT"),
             // 2 語目以降も読み飛ばした後の並びから取る。`metadata_query_id` の
             // `("SHOW", "CREATE")` の分岐も同じ `words()` を使うので、ここで一緒に守る。
             ("-- c\nSHOW CREATE TABLE t", "SHOW_CREATE_TABLE"),
