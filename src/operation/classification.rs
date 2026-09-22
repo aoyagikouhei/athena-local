@@ -78,46 +78,49 @@ pub(super) fn substatement_type(query: &str) -> Option<&'static str> {
 /// RENAME TO × Hive）でも SubstatementType は同じ値で返るので、成否では分けない（2026-09-21 実測）。
 /// `ALTER`／`TABLE` のキーワード自体は呼び出し元の `word(0)`／`word(1)` の guard で確定している。
 ///
-/// キーワードの一致は `split_whitespace` の完全一致ではなく `skip_keyword` で確かめる。
+/// キーワードの一致は `split_whitespace` の完全一致ではなく `catalog::skip_keyword` で確かめる。
 /// そうしないと `TBLPROPERTIES('comment' = 'x')` のようにキーワードの直後に空白なしで
 /// `(` や文字列リテラルが続く書き方を判定できない（3 本目のレビューで実測）。
 fn alter_table_action(query: &str) -> Option<&'static str> {
-    let after_alter = skip_keyword(query, "ALTER")?;
-    let after_table = skip_keyword(after_alter, "TABLE")?;
+    let after_alter = crate::catalog::skip_keyword(query, "ALTER")?;
+    let after_table = crate::catalog::skip_keyword(after_alter, "TABLE")?;
     let name_start = after_table.len() - crate::catalog::skip_leading_trivia(after_table).len();
     let name_end = crate::catalog::skip_qualified_name(after_table, name_start);
     let rest = &after_table[name_end..];
 
-    if let Some(after_add) = skip_keyword(rest, "ADD") {
+    if let Some(after_add) = crate::catalog::skip_keyword(rest, "ADD") {
         if skip_columns_keyword(after_add).is_some() {
             return Some("ALTER_TABLE_ADD_COLUMN");
         }
-        return skip_keyword(after_add, "PARTITION").map(|_| "ALTER_TABLE_ADD_PARTITION");
+        return crate::catalog::skip_keyword(after_add, "PARTITION")
+            .map(|_| "ALTER_TABLE_ADD_PARTITION");
     }
-    if let Some(after_drop) = skip_keyword(rest, "DROP") {
+    if let Some(after_drop) = crate::catalog::skip_keyword(rest, "DROP") {
         // DROP が受けるのは単数形の COLUMN だけ。複数形は本物が
         // `mismatched input 'COLUMNS'. Expecting: '.', 'DROP'` で弾く（2026-09-21 実測）ので、
         // ADD と違って `skip_columns_keyword` は使わない。
-        if skip_keyword(after_drop, "COLUMN").is_some() {
+        if crate::catalog::skip_keyword(after_drop, "COLUMN").is_some() {
             return Some("ALTER_TABLE_DROP_COLUMN");
         }
-        return skip_keyword(after_drop, "PARTITION").map(|_| "ALTER_TABLE_DROP_PARTITION");
+        return crate::catalog::skip_keyword(after_drop, "PARTITION")
+            .map(|_| "ALTER_TABLE_DROP_PARTITION");
     }
     // REPLACE の値だけ単数形の COLUMN で終わる（2026-09-21 実測）。受けるのは本物に構文がある
     // 複数形の COLUMNS だけで、単数形は測っていないので分類しない。
-    if let Some(after_replace) = skip_keyword(rest, "REPLACE") {
-        return skip_keyword(after_replace, "COLUMNS").map(|_| "ALTER_TABLE_REPLACE_COLUMN");
+    if let Some(after_replace) = crate::catalog::skip_keyword(rest, "REPLACE") {
+        return crate::catalog::skip_keyword(after_replace, "COLUMNS")
+            .map(|_| "ALTER_TABLE_REPLACE_COLUMN");
     }
     // RENAME TO だけ分類する。RENAME COLUMN は本物に構文が無い（2026-09-21 実測）ので、
     // `TO` を要求すればそのまま None に落ちる。
-    if let Some(after_rename) = skip_keyword(rest, "RENAME") {
-        return skip_keyword(after_rename, "TO").map(|_| "ALTER_TABLE_RENAME");
+    if let Some(after_rename) = crate::catalog::skip_keyword(rest, "RENAME") {
+        return crate::catalog::skip_keyword(after_rename, "TO").map(|_| "ALTER_TABLE_RENAME");
     }
-    if let Some(after_set) = skip_keyword(rest, "SET") {
-        if skip_keyword(after_set, "TBLPROPERTIES").is_some() {
+    if let Some(after_set) = crate::catalog::skip_keyword(rest, "SET") {
+        if crate::catalog::skip_keyword(after_set, "TBLPROPERTIES").is_some() {
             return Some("ALTER_TABLE_PROPERTIES");
         }
-        if skip_keyword(after_set, "LOCATION").is_some() {
+        if crate::catalog::skip_keyword(after_set, "LOCATION").is_some() {
             return Some("ALTER_TABLE_SET_LOCATION");
         }
     }
@@ -128,26 +131,8 @@ fn alter_table_action(query: &str) -> Option<&'static str> {
 /// 受けないので使わない）。長い方から試す
 /// （先に `COLUMN` を試すと `COLUMNS` の `S` が識別子の文字として境界チェックに引っかかり None になる）。
 fn skip_columns_keyword(input: &str) -> Option<&str> {
-    skip_keyword(input, "COLUMNS").or_else(|| skip_keyword(input, "COLUMN"))
-}
-
-/// 先頭の空白・コメントを読み飛ばしてからキーワードを 1 語ぶん読み飛ばす。大文字小文字は
-/// 区別せず、続きが識別子の文字（英数字・`_`）なら別の語（`COLUMN` に対する `COLUMNS` など）
-/// とみなして一致させない。続きが `(` や文字列リテラルの `'` など識別子でない文字なら
-/// 空白が無くても一致させる（`TBLPROPERTIES(...)` のような書き方。3 本目のレビューで実測）。
-fn skip_keyword<'a>(input: &'a str, keyword: &str) -> Option<&'a str> {
-    let trimmed = crate::catalog::skip_leading_trivia(input);
-    if trimmed.len() < keyword.len() || !trimmed.is_char_boundary(keyword.len()) {
-        return None;
-    }
-    let (head, tail) = trimmed.split_at(keyword.len());
-    if !head.eq_ignore_ascii_case(keyword) {
-        return None;
-    }
-    if tail.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_') {
-        return None;
-    }
-    Some(tail)
+    crate::catalog::skip_keyword(input, "COLUMNS")
+        .or_else(|| crate::catalog::skip_keyword(input, "COLUMN"))
 }
 
 #[cfg(test)]

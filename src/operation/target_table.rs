@@ -30,7 +30,8 @@ fn verb(statement: TargetStatement) -> &'static str {
 /// Trino の規則で小文字）を使い、無ければ `default_catalog` / `default_schema`（実行時の値。
 /// 別名解決前）を使う。カタログかスキーマが決まらなければ None（今までどおりに倒す）。
 ///
-/// 字句処理は新しく書かず、`catalog.rs` の `skip_leading_trivia`・`skip_quoted`・`unquote` を再利用する。
+/// 字句処理は新しく書かず、`catalog.rs` の `skip_keyword`・`skip_leading_trivia`・`skip_quoted`・`unquote`
+/// を再利用する。
 pub(super) fn parse_target_table(
     query: &str,
     statement: TargetStatement,
@@ -62,32 +63,18 @@ pub(super) fn parse_target_table(
 
 /// `<動詞> TABLE` と、あれば `IF EXISTS` を読み飛ばし、名前が始まる位置を返す。
 /// 先頭が `<動詞> TABLE` でなければ None。`<動詞>` は `DROP` か `ALTER`。
+///
+/// `catalog::skip_keyword` が先頭のトリビアを自分で読み飛ばすので、キーワードの手前では
+/// 読み飛ばさない。**最後の 1 回だけは残す**: `parse_qualified_name` はトリビアを読み飛ばさず、
+/// 先頭が空白やコメントのままだと `read_name_part` が名前を 1 文字も読めずに None を返す。
 fn table_name_start<'a>(query: &'a str, verb: &str) -> Option<&'a str> {
-    let rest = crate::catalog::skip_leading_trivia(query);
-    let rest = skip_keyword(rest, verb)?;
-    let rest = skip_keyword(crate::catalog::skip_leading_trivia(rest), "TABLE")?;
-    let rest = crate::catalog::skip_leading_trivia(rest);
-    let rest = match skip_keyword(rest, "IF") {
-        Some(after_if) => skip_keyword(crate::catalog::skip_leading_trivia(after_if), "EXISTS")?,
+    let rest = crate::catalog::skip_keyword(query, verb)?;
+    let rest = crate::catalog::skip_keyword(rest, "TABLE")?;
+    let rest = match crate::catalog::skip_keyword(rest, "IF") {
+        Some(after_if) => crate::catalog::skip_keyword(after_if, "EXISTS")?,
         None => rest,
     };
     Some(crate::catalog::skip_leading_trivia(rest))
-}
-
-/// 大文字小文字を区別せずにキーワードを読み飛ばす。続きが識別子の文字（英数字・`_`）なら
-/// 別の語（`TABLES` など）とみなして一致させない。
-fn skip_keyword<'a>(input: &'a str, keyword: &str) -> Option<&'a str> {
-    if input.len() < keyword.len() || !input.is_char_boundary(keyword.len()) {
-        return None;
-    }
-    let (head, tail) = input.split_at(keyword.len());
-    if !head.eq_ignore_ascii_case(keyword) {
-        return None;
-    }
-    if tail.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_') {
-        return None;
-    }
-    Some(tail)
 }
 
 /// `.` で区切られた名前の並びを読む。引用符付きの識別子は中身を、無引用は小文字にして集める。
