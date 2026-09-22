@@ -8,6 +8,7 @@ use reqwest::header::CONTENT_TYPE;
 use rusty_s3::{Bucket, Credentials, S3Action, UrlStyle};
 
 use crate::config::S3Settings;
+use crate::content_type;
 use crate::convert;
 use crate::trino::Outcome;
 
@@ -76,19 +77,6 @@ impl ResultFile {
             Self::FailedText => unreachable!("失敗したときのキーは ResultLocation::failed が作る"),
         }
     }
-
-    /// PUT に付ける Content-Type。Text は 2026-09-16 実測（本物は octet-stream で、
-    /// binary と application に割れていた。多数派を採る）。Csv と Metadata は 2026-09-17 実測
-    /// （6 件中 5 件が application/octet-stream。Csv の `text/csv` は 0.3.0 からの未実測の値だった）。
-    /// Manifest と Table は athena-local が本体を書き込まないので、網羅のためだけの値。
-    /// FailedText は 2026-09-17 実測（失敗した SHOW TABLES / DROP TABLE / CREATE DATABASE の
-    /// 3 件とも application/octet-stream で、成功した `.txt` とは違った）。
-    fn content_type(self) -> &'static str {
-        match self {
-            Self::Csv | Self::Metadata | Self::FailedText => "application/octet-stream",
-            Self::Text | Self::Manifest | Self::Table => "binary/octet-stream",
-        }
-    }
 }
 
 /// `CREATE [OR REPLACE] TABLE ... AS SELECT | WITH | (`。words は大文字にした単語の並び。
@@ -115,37 +103,47 @@ pub struct ResultLocation {
     pub bucket: String,
     pub key: String,
     pub file: ResultFile,
+    /// PUT に付ける Content-Type（`content_type::of`）。文の形で決まり、`.metadata` にも同じ値を使う。
+    pub content_type: &'static str,
 }
 
 impl ResultLocation {
     /// OutputLocation（`s3://bucket/prefix`）と実行 ID から、本物と同じ置き場所を作る。
-    /// prefix の末尾 `/` の有無は同じ場所になる。s3:// の形でなければ None。
-    pub fn new(output_location: &str, id: &str, file: ResultFile) -> Option<Self> {
+    /// ファイル名は文の先頭のキーワード（`ResultFile::of`）で、Content-Type は文の形
+    /// （`content_type::of`）で決める。prefix の末尾 `/` の有無は同じ場所になる。
+    /// s3:// の形でなければ None。
+    pub fn new(output_location: &str, id: &str, query: &str) -> Option<Self> {
         let (bucket, prefix) = split_output_location(output_location)?;
+        let file = ResultFile::of(query);
         Some(Self {
             bucket: bucket.to_string(),
             key: format!("{prefix}{}", file.path(id)),
             file,
+            content_type: content_type::of(file, query),
         })
     }
 
     /// 結果ファイルの隣に置く付随ファイル `<結果ファイル名>.metadata` の置き場所。
+    /// Content-Type は本体と同じ（2026-09-23 実測。36 項目すべて一致）。
     pub fn metadata(&self) -> Self {
         Self {
             bucket: self.bucket.clone(),
             key: format!("{}.metadata", self.key),
             file: ResultFile::Metadata,
+            content_type: self.content_type,
         }
     }
 
     /// 失敗したときに結果ファイルを置く場所。`<id>.txt` の文だけ Some
     /// （`.csv` / `<id>` / `tables/<id>` の文は本物も何も置かない。2026-09-17 実測）。
-    /// キーは成功時と同じ。
+    /// キーは成功時と同じで、Content-Type は文の形によらず application
+    /// （失敗した SHOW TABLES / DROP TABLE / CREATE DATABASE の 3 件とも。2026-09-17 実測）。
     pub fn failed(&self) -> Option<Self> {
         (self.file == ResultFile::Text).then(|| Self {
             bucket: self.bucket.clone(),
             key: self.key.clone(),
             file: ResultFile::FailedText,
+            content_type: content_type::APPLICATION,
         })
     }
 
@@ -245,8 +243,8 @@ impl ResultWriter {
     }
 
     /// 失敗の理由はそのまま StateChangeReason に載る。再試行はしない（ローカルでは即座に分かる方がよい）。
-    /// `content_type` を渡せば `location.file` の既定を上書きする（DROP TABLE × Iceberg など、
-    /// 文の種類だけでは決まらない Content-Type のため。issue #39）。
+    /// `content_type` を渡せば `location.content_type` を上書きする（DROP TABLE × Iceberg など、
+    /// 文の形だけでは決まらず対象テーブルの形式で変わる Content-Type のため。issue #39）。
     pub async fn put(
         &self,
         location: &ResultLocation,
@@ -268,10 +266,7 @@ impl ResultWriter {
         let response = self
             .http
             .put(url)
-            .header(
-                CONTENT_TYPE,
-                content_type.unwrap_or_else(|| location.file.content_type()),
-            )
+            .header(CONTENT_TYPE, content_type.unwrap_or(location.content_type))
             .body(body)
             .send()
             .await
@@ -486,67 +481,86 @@ mod tests {
     #[test]
     fn 置き場所は_prefix_の末尾スラッシュの有無によらない() {
         for output_location in ["s3://bucket/a/b/", "s3://bucket/a/b"] {
-            let location = ResultLocation::new(output_location, "id", ResultFile::Csv).unwrap();
+            let location = ResultLocation::new(output_location, "id", "SELECT 1").unwrap();
             assert_eq!(location.bucket, "bucket");
             assert_eq!(location.key, "a/b/id.csv");
             assert_eq!(location.uri(), "s3://bucket/a/b/id.csv");
         }
         for output_location in ["s3://bucket", "s3://bucket/"] {
-            let location = ResultLocation::new(output_location, "id", ResultFile::Csv).unwrap();
+            let location = ResultLocation::new(output_location, "id", "SELECT 1").unwrap();
             assert_eq!(location.uri(), "s3://bucket/id.csv");
         }
     }
 
+    fn location(query: &str) -> ResultLocation {
+        ResultLocation::new("s3://bucket/p/", "id", query).unwrap()
+    }
+
     #[test]
     fn ファイル名は文の種類で変わる() {
-        let uri = |file| {
-            ResultLocation::new("s3://bucket/p/", "id", file)
-                .unwrap()
-                .uri()
-        };
-        assert_eq!(uri(ResultFile::Csv), "s3://bucket/p/id.csv");
-        assert_eq!(uri(ResultFile::Manifest), "s3://bucket/p/id");
-        assert_eq!(uri(ResultFile::Table), "s3://bucket/p/tables/id");
-        assert_eq!(uri(ResultFile::Text), "s3://bucket/p/id.txt");
+        let uri = |query| location(query).uri();
+        assert_eq!(uri("SELECT 1"), "s3://bucket/p/id.csv");
+        assert_eq!(uri("INSERT INTO t VALUES (1)"), "s3://bucket/p/id");
+        assert_eq!(uri("CREATE TABLE t AS SELECT 1"), "s3://bucket/p/tables/id");
+        assert_eq!(uri("SHOW TABLES"), "s3://bucket/p/id.txt");
     }
 
     #[test]
     fn 付随ファイルのキーは本体のキーに_metadata_を足したもの() {
-        let key = |file| {
-            ResultLocation::new("s3://bucket/p/", "id", file)
-                .unwrap()
-                .metadata()
-                .key
-        };
-        assert_eq!(key(ResultFile::Csv), "p/id.csv.metadata");
-        assert_eq!(key(ResultFile::Text), "p/id.txt.metadata");
-        assert_eq!(key(ResultFile::Manifest), "p/id.metadata");
+        let key = |query| location(query).metadata().key;
+        assert_eq!(key("SELECT 1"), "p/id.csv.metadata");
+        assert_eq!(key("SHOW TABLES"), "p/id.txt.metadata");
+        assert_eq!(key("INSERT INTO t VALUES (1)"), "p/id.metadata");
         // `tables/` は CTAS の実測（テーブルの形式によらない）。
-        assert_eq!(key(ResultFile::Table), "p/tables/id.metadata");
+        assert_eq!(key("CREATE TABLE t AS SELECT 1"), "p/tables/id.metadata");
     }
 
+    /// 本体の Content-Type は文の形で決まり（2026-09-23 実測）、`.metadata` はそれを引き継ぐ。
+    /// INSERT と CTAS は本体を書かないが `.metadata` は書くので、その値が実際に届く
+    /// （本物は application。2026-09-17／18 実測）。
     #[test]
-    fn 失敗ファイルの置き場所は_txt_の文だけにあり_キーは成功時と同じ() {
-        let location = ResultLocation::new("s3://bucket/p/", "id", ResultFile::Text).unwrap();
-        let failed = location.failed().expect("txt の文には置き場所がある");
-        assert_eq!(failed.bucket, location.bucket);
-        assert_eq!(failed.key, location.key);
-        assert_eq!(failed.file, ResultFile::FailedText);
-
-        // `.csv` / `<id>` / `tables/<id>` の文は本物も失敗時に何も置かない。
-        for file in [ResultFile::Csv, ResultFile::Manifest, ResultFile::Table] {
-            let location = ResultLocation::new("s3://bucket/p/", "id", file).unwrap();
-            assert_eq!(location.failed(), None, "{file:?}");
+    fn 付随ファイルの_content_type_は本体と同じ() {
+        for (query, expected) in [
+            ("SELECT 1", "binary/octet-stream"),
+            ("SELECT 1 + 1", "application/octet-stream"),
+            ("SHOW TABLES", "binary/octet-stream"),
+            ("DESCRIBE t", "application/octet-stream"),
+            ("INSERT INTO t VALUES (1)", "application/octet-stream"),
+            ("CREATE TABLE t AS SELECT 1", "application/octet-stream"),
+        ] {
+            let body = location(query);
+            assert_eq!(body.content_type, expected, "{query}");
+            assert_eq!(body.metadata().content_type, expected, "{query}");
         }
     }
 
     #[test]
-    fn 失敗ファイルの_content_type_は成功時の_txt_と違う() {
-        assert_eq!(
-            ResultFile::FailedText.content_type(),
-            "application/octet-stream"
-        );
-        assert_eq!(ResultFile::Text.content_type(), "binary/octet-stream");
+    fn 失敗ファイルの置き場所は_txt_の文だけにあり_キーは成功時と同じ() {
+        let show = location("SHOW TABLES");
+        let failed = show.failed().expect("txt の文には置き場所がある");
+        assert_eq!(failed.bucket, show.bucket);
+        assert_eq!(failed.key, show.key);
+        assert_eq!(failed.file, ResultFile::FailedText);
+
+        // `.csv` / `<id>` / `tables/<id>` の文は本物も失敗時に何も置かない。
+        for query in [
+            "SELECT 1",
+            "INSERT INTO t VALUES (1)",
+            "CREATE TABLE t AS SELECT 1",
+        ] {
+            assert_eq!(location(query).failed(), None, "{query}");
+        }
+    }
+
+    /// 成功した `.txt` は文の形で binary にも application にもなるが、失敗の理由の `.txt` は
+    /// どちらの文でも application（2026-09-17 実測）。
+    #[test]
+    fn 失敗ファイルの_content_type_は文の形によらず_application() {
+        for query in ["SHOW TABLES", "DESCRIBE t"] {
+            let failed = location(query).failed().unwrap();
+            assert_eq!(failed.content_type, "application/octet-stream", "{query}");
+        }
+        assert_eq!(location("SHOW TABLES").content_type, "binary/octet-stream");
     }
 
     #[test]

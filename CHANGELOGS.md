@@ -132,6 +132,20 @@ later name the date they were measured on.
 
 ### Changed
 
+- The `Content-Type` of the result file and its `.metadata` companion now
+  follows the statement the way Athena does, instead of a fixed value per file
+  name. A `SELECT` of literals only (`SELECT 1`, `SELECT 1 AS i, 'a'`, the
+  connection check most JDBC drivers send) and `SHOW TABLES` / `DATABASES` /
+  `COLUMNS` / `TBLPROPERTIES` / `VIEWS` / `PARTITIONS` are uploaded as
+  `binary/octet-stream`; `DESCRIBE`, `EXPLAIN` and `SHOW CREATE TABLE` as
+  `application/octet-stream`; every other `SELECT` keeps
+  `application/octet-stream` and column-less DDL keeps `binary/octet-stream`.
+  The `.metadata` companion always gets the same value as its result file, so
+  the companion of a `SHOW TABLES` changes to `binary/octet-stream`. The
+  earlier values had been the majority of a few measurements (five of six
+  `.csv` files; the sixth was `SELECT 1`); this one comes from 36 statements
+  measured with controls on 2026-09-23 (issue #70). Forms not measured are
+  sent as `application/octet-stream`; see README and #76.
 - README documents where the `Precision` of the `EXPLAIN` result column comes
   from: the engine types `Query Plan` as `varchar(<length of the plan text>)`,
   371 for `EXPLAIN SELECT 1` on Athena (measured 2026-09-15 and 2026-09-16) and

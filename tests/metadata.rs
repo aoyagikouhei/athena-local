@@ -148,10 +148,8 @@ async fn show_は_txt_の隣に_txt_metadata_を置く() {
     assert_eq!(puts.len(), 2, "{puts:?}");
     assert_eq!(puts[0].key, format!("athena/{id}.txt"));
     assert_eq!(puts[1].key, format!("athena/{id}.txt.metadata"));
-    assert_eq!(
-        puts[1].content_type.as_deref(),
-        Some("application/octet-stream")
-    );
+    // SHOW TABLES の `.metadata` は本体と同じ binary/octet-stream（2026-09-23 実測）。
+    assert_eq!(puts[1].content_type.as_deref(), Some("binary/octet-stream"));
 
     // 列 `table_name varchar`。message = 6 + 12 + 12 + 9 + 6 + 2 + 2 + 2 = 51 = 0x33。
     // Precision の ff を含むので、非 UTF-8 の body が偽 S3 を通る証明にもなる。

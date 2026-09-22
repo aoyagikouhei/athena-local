@@ -13,7 +13,7 @@ use crate::config::{Config, DEFAULT_WORK_GROUP, ResultsMode};
 use crate::failure::Failure;
 use crate::handler::App;
 use crate::response::{invalid_request_with_code, ok, parse};
-use crate::results::{ResultFile, ResultLocation};
+use crate::results::ResultLocation;
 use crate::statement;
 use crate::store::{Execution, Fingerprint, Submission, SubmitOutcome};
 use crate::trino::{Outcome, QueryError, Trino};
@@ -187,7 +187,7 @@ fn result_location(
     };
 
     // 文言とコードは 2026-09-14 に本番 Athena で実測したもの。
-    ResultLocation::new(&output_location, id, ResultFile::of(query))
+    ResultLocation::new(&output_location, id, query)
         .map(Some)
         .ok_or_else(|| {
             Box::new(invalid_request_with_code(
