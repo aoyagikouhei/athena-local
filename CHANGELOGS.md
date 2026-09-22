@@ -255,6 +255,14 @@ later name the date they were measured on.
   `UTILITY` with no `SubstatementType`, and the header row was dropped from
   `GetQueryResults` while the `<id>.csv` result file kept it, so the API and
   the file differed by one row.
+- `EXPLAIN` results are split into one row per line of the plan, as on Athena
+  (measured 2026-09-15 and 2026-09-16: `EXPLAIN SELECT 1` returns the header
+  row, 11 plan lines and 3 empty rows, and its `<id>.txt` is 393 bytes). Trino
+  returns the whole plan as one `Query Plan` value with embedded newlines, and
+  athena-local used to pass that single row through, so `GetQueryResults`
+  returned 2 rows and the `<id>.txt` file lacked the final newline. The plan
+  text now gets one newline appended and is split on `\n`, for both the API
+  and the file.
 - The `<id>.txt` result file of an `EXPLAIN` now starts with the header line
   `Query Plan`, as on Athena (measured 2026-09-15 and 2026-09-16, where the
   file has exactly the rows `GetQueryResults` returns, header included). It used

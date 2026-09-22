@@ -279,7 +279,8 @@ async fn show_の結果を_txt_で書く() {
 /// EXPLAIN（StatementType が DML）の `.txt` は、SHOW / DESCRIBE と違って先頭行に列名
 /// `Query Plan` が入り、行数は GetQueryResults の Rows と一致する（2026-09-15／16 の
 /// 2 ラウンドの結果ファイルが、列名行込みの全行を `\n` で連結したものとバイト単位で一致。#63）。
-/// 末尾の空行も本物と同じく空のまま残り、末尾に改行は付けない。
+/// Trino が 1 行に返す改行入りの全文（末尾 `\n\n`）は、本物と同じく末尾に改行を 1 つ足してから
+/// 行に分けるので、ファイルは列名行 + 全文 + `\n` になる（`EXPLAIN SELECT 1` で 393 バイト。#73）。
 #[tokio::test]
 async fn explain_の結果は_txt_の先頭に列名行を入れて書く() {
     let harness = Harness::builder(select_response())
@@ -287,7 +288,7 @@ async fn explain_の結果は_txt_の先頭に列名行を入れて書く() {
             "EXPLAIN SELECT 1",
             json!({
                 "columns": [{ "name": "Query Plan", "type": "varchar(371)", "typeSignature": { "rawType": "varchar", "arguments": [{ "kind": "LONG", "value": 371 }] } }],
-                "data": [["Fragment 0 [SINGLE]"], ["           (1)"], [""], [""]]
+                "data": [["Fragment 0 [SINGLE]\n           (1)\n\n"]]
             }),
         )
         .results_s3()
@@ -312,7 +313,7 @@ async fn explain_の結果は_txt_の先頭に列名行を入れて書く() {
     assert_eq!(puts[0].key, format!("athena/{id}.txt"));
     assert_eq!(
         String::from_utf8(puts[0].body.clone()).unwrap(),
-        "Query Plan\nFragment 0 [SINGLE]\n           (1)\n\n"
+        "Query Plan\nFragment 0 [SINGLE]\n           (1)\n\n\n"
     );
     assert_eq!(puts[1].key, format!("athena/{id}.txt.metadata"));
     // `.txt.metadata` の列の Precision（field 7）も本物と同じ varchar(371) の 371（varint f3 02。#68）。

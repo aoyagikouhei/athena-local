@@ -298,5 +298,75 @@ async fn run(
         }
         result => result,
     }?;
+    let outcome = split_explain_rows(&execution.query, outcome);
     Ok((outcome, engine_ddl))
+}
+
+/// EXPLAIN の結果を本物と同じくプランの行ごとに分ける。Trino は `Query Plan` 列の 1 行に改行入りの
+/// 全文（末尾は `\n\n`）を返すが、本物の Athena は全文の末尾に改行を 1 つ足してから `\n` で分けた
+/// 行を返す（`EXPLAIN SELECT 1` の Rows は列名行 + 非空 11 行 + 空行 3 行の 15 行、`.txt` は
+/// 列名行 + 全文 + `\n` の 393 バイト。2026-09-15／16 の 4 ラウンドで実測。#73）。
+/// 分けた行を実行結果として持ち回るので、GetQueryResults と `.txt` の行数が揃う。
+/// 末尾が改行で終わらないプラン（`EXPLAIN (FORMAT JSON)` など）は未実測で、同じ規則で末尾に空行が 1 つ付く。
+fn split_explain_rows(query: &str, mut outcome: Outcome) -> Outcome {
+    if super::classification::substatement_type(query) != Some("EXPLAIN") {
+        return outcome;
+    }
+    let rows = std::mem::take(&mut outcome.rows);
+    outcome.rows = rows
+        .into_iter()
+        .flat_map(
+            |row| match row.first().and_then(serde_json::Value::as_str) {
+                Some(text) => text
+                    .split('\n')
+                    .chain(std::iter::once(""))
+                    .map(|line| vec![serde_json::Value::from(line)])
+                    .collect(),
+                None => vec![row],
+            },
+        )
+        .collect();
+    outcome
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn plan(rows: Vec<Vec<serde_json::Value>>) -> Outcome {
+        Outcome {
+            rows,
+            ..Outcome::default()
+        }
+    }
+
+    #[test]
+    fn explain_は全文の末尾に改行を足してから行に分ける() {
+        let outcome = split_explain_rows(
+            "EXPLAIN SELECT 1",
+            plan(vec![vec![serde_json::Value::from(
+                "Fragment 0\n    (1)\n\n",
+            )]]),
+        );
+        assert_eq!(
+            outcome.rows,
+            [["Fragment 0"], ["    (1)"], [""], [""], [""]]
+                .map(|row| row.map(serde_json::Value::from))
+        );
+    }
+
+    #[test]
+    fn explain_でない文と文字列でない値は分けない() {
+        let select = split_explain_rows(
+            "SELECT 'a\nb'",
+            plan(vec![vec![serde_json::Value::from("a\nb")]]),
+        );
+        assert_eq!(select.rows, [[serde_json::Value::from("a\nb")]]);
+
+        let null = split_explain_rows(
+            "EXPLAIN SELECT 1",
+            plan(vec![vec![serde_json::Value::Null]]),
+        );
+        assert_eq!(null.rows, [[serde_json::Value::Null]]);
+    }
 }
