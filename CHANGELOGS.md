@@ -225,6 +225,11 @@ later name the date they were measured on.
 
 ### Fixed
 
+- A malformed environment variable (`TRINO_CATALOG_MAP`,
+  `ATHENA_LOCAL_RETENTION_SECONDS`, `ATHENA_LOCAL_WORK_GROUPS`,
+  `ATHENA_LOCAL_RESULTS` and the S3 settings) now stops the server with the
+  reason printed as one plain line on stderr. It used to be printed in Rust's
+  `Debug` form, wrapped in `Error: "..."` with the inner quotes escaped.
 - A comment between two keywords (`DROP /* c */ TABLE t`,
   `ALTER -- c\nTABLE t ADD COLUMNS (c int)`, `CREATE /* c */ TABLE t AS
   SELECT 1`, `CREATE TABLE t AS /* c */ SELECT 1`, `SHOW /* c */ TABLES`) is

@@ -6,7 +6,15 @@ use tokio::net::TcpListener;
 /// ローカル用の Athena 代役。SQL は Trino に実行させる。
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let config = Config::from_env()?;
+    // 設定エラーは `String` なので、`?` で `main` の出口に渡すと Rust の既定のハンドラが
+    // `Error: "..."` と Debug 形（引用符とエスケープ付き）で表示する。理由を平文の 1 行で出して止める。
+    let config = match Config::from_env() {
+        Ok(config) => config,
+        Err(reason) => {
+            eprintln!("{reason}");
+            std::process::exit(1);
+        }
+    };
     let listener = TcpListener::bind(&config.bind_address).await?;
 
     println!(
