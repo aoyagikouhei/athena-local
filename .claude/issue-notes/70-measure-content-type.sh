@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # 本物の Athena が S3 に置く結果ファイルの Content-Type が、文によって
 # `binary/octet-stream` と `application/octet-stream` に分かれる規則を実測する。
-# issue #70 のための実測スクリプト。
+# issue #70 のための実測スクリプト。#76 で F〜I の項目（#70 で測っていない形と
+# マルチパートの境界）を足した。A〜E は #70 のラウンドと同じ SQL で、対照として残す。
 #
 # これまでに分かっていること（過去 16 ラウンド・約 140 件の head-object の集計）:
 #   - 同じ SQL は日をまたいでも常に同じ値（`SELECT 1` は 20 件すべて binary。
@@ -18,11 +19,12 @@
 #   OUTPUT=s3://your-bucket/prefix/ DB=your_db TABLE=small_table bash 70-measure-content-type.sh
 #
 # ** 課金の注意（先に読むこと） **
-#   テーブルをスキャンするのは項目 b13（`SELECT 1 FROM <db>.<t> LIMIT 1`）の 1 件だけ。
+#   テーブルを読むのは項目 b13（`SELECT 1 FROM <db>.<t> LIMIT 1`）と h3（`SHOW STATS FOR <db>.<t>`。
+#   統計がメタストアに無ければ計算のためにテーブルを読みうる）の 2 件だけ。
 #   ほかの項目は定数・メタデータ・`UNNEST(sequence(...))` だけで、テーブルを読まない。
 #   DDL は一切実行しない（作成・変更・削除はしない。読み取りだけ）。
-#   ただし d 系は 1 万〜300 万行の結果を S3 に書くので、結果ファイルの保管料と
-#   S3 の PUT/GET は発生する。
+#   ただし d 系は 1 万〜300 万行、i 系は 600 万〜1400 万行（約 58〜135 MB）の結果を S3 に
+#   書くので、結果ファイルの保管料と S3 の PUT/GET は発生する。
 #
 # 必要な環境変数:
 #   OUTPUT    結果の出力先。s3://bucket/prefix/ の形（末尾の / を付ける。無ければ足す）。
@@ -36,6 +38,8 @@
 #               ** TABLE を明示したほうが良い理由 **: 省略すると preflight で
 #               `SHOW TABLES IN <DB>` を流すので、項目 c1（同じ SQL）が同一ラウンドの
 #               2 回目になってしまう。1 回目・2 回目の比較をしたいなら TABLE を明示すること。
+#   VIEW        f2（SHOW CREATE VIEW）に使うビュー名（<DB> の中の名前。修飾なし）。
+#               省略すると c7（SHOW VIEWS IN <DB>）の 1 件目を使い、1 件も無ければ f2 を未測定にする。
 #   CATALOG     既定 AwsDataCatalog
 #   REGION      既定 ap-northeast-1
 #   OUT_DIR     既定 $HOME/athena-content-type-measurements（実名が入るのでリポジトリの外に出す）
@@ -78,8 +82,36 @@
 #     c10-show-create-table SHOW CREATE TABLE <db>.<t>    対照。過去は application
 #   D. スキャン無しで結果サイズだけを変える（`sequence` は 1 万要素が上限なので cross join で増やす）
 #     d0-rows-1 / d1-rows-10 / d2-rows-1000 / d3-rows-100k / d4-rows-1m / d5-rows-3m
+#   F. #70 が既存の判定に揃えて一般化した形の裏取り（#76）
+#     f1-desc              DESC <db>.<t>                  DESCRIBE と同じ application のはず
+#     f2-show-create-view  SHOW CREATE VIEW <db>.<v>      SHOW CREATE TABLE と同じ application のはず。
+#                                                         <v> は VIEW を明示するか、c7 の SHOW VIEWS の 1 件目。無ければ未測定
+#     f3-two-aliases       SELECT 1 AS i, 2 AS j          複数列と別名の組み合わせ。binary のはず
+#     f4-lowercase         select 1                       小文字。binary のはず
+#   G. #70 が「未測定」として application に落としている形（本物が binary なら取りこぼし）（#76）
+#     g1-negative          SELECT -1
+#     g2-semicolon         SELECT 1;
+#     g3-limit             SELECT 1 LIMIT 1
+#     g4-date-literal      SELECT DATE '2020-01-01'
+#     g5-exponent          SELECT 1.5E0
+#     g6-concat            SELECT 'a' || 'b'
+#     g7-array             SELECT ARRAY[1]
+#     g8-quoted-alias      SELECT 1 AS "x"
+#     g9-bare-alias        SELECT 1 i
+#     g10-parenthesized    (SELECT 1)
+#     g11-values           VALUES 1
+#   H. SHOW 系の残り（#76）。Athena が受け付けない文なら FAILED でよい（その事実も記録する）
+#     h1-show-functions    SHOW FUNCTIONS
+#     h2-show-session      SHOW SESSION
+#     h3-show-stats        SHOW STATS FOR <db>.<t>       統計はメタストアから読むが、無ければ計算に
+#                                                         テーブルを読むことがある（scanned_bytes を見ること）
+#   I. マルチパートになる境界（#76）。28.9 MB（d5）は単一 PUT、140 MB はマルチパートだった。
+#      d5 と同じ定数生成で本体だけ大きくする（スキャン無し。約 10 バイト/行）
+#     i1-rows-6m           約 58 MB
+#     i2-rows-10m          約 97 MB
+#     i3-rows-14m          約 135 MB
 #   E. 対照の再実行
-#     e1-select-1-again    SELECT 1                       a1 と同じ。同一ラウンド内の 2 回目
+#     e1-select-1-again    SELECT 1                       a1 と同じ。同一ラウンド内の 2 回目（最後に流す）
 #
 # preflight（本編の前。どちらもスキャンしない）:
 #   preflight-select-1    SELECT 1  疎通確認。終端状態まで到達し、本体と `.metadata` の
@@ -121,6 +153,7 @@ set -uo pipefail
 : "${OUTPUT:?OUTPUT に s3://bucket/prefix/ を設定してください}"
 : "${DB:?DB にデータベース名を設定してください}"
 TABLE=${TABLE:-}
+VIEW=${VIEW:-}
 CATALOG=${CATALOG:-AwsDataCatalog}
 REGION=${REGION:-ap-northeast-1}
 OUT_DIR=${OUT_DIR:-$HOME/athena-content-type-measurements}
@@ -154,7 +187,8 @@ SUMMARY="$RUN_DIR/summary.tsv"
 printf 'label\tstate\tstatement_type\tsubstatement_type\toutput_ext\tbody_bytes\tbody_etag_form\tbody_content_type\tmetadata_bytes\tmetadata_content_type\tplanning_ms\tengine_ms\tgqr_rows\tgqr_cols\tscanned_bytes\tnote\n' > "$SUMMARY"
 
 echo "出力先: $RUN_DIR"
-echo "スキャンするのは項目 b13（SELECT 1 FROM <db>.<t> LIMIT 1）の 1 件だけです。"
+echo "テーブルを読むのは項目 b13（SELECT 1 FROM <db>.<t> LIMIT 1）と h3（SHOW STATS FOR <db>.<t>）だけです。"
+echo "i 系は 6m〜14m 行（約 58〜135 MB）の結果を S3 に書きます（スキャン無し）。"
 echo "DDL は実行しません（読み取りだけ）。"
 echo "対象テーブル: ${TABLE:-（未指定。preflight の SHOW TABLES の 1 件目を使う）}"
 
@@ -164,6 +198,8 @@ COMPLETED=0
 TABLE_NOTE="（未確定）"
 # 異常終了した理由（summary.md の冒頭に出す）。
 ABORT_NOTE=""
+# ビューの決め方（summary.md に出す）。c7 の後で確定する。
+VIEW_NOTE="（未確定）"
 # a2 / a3 に使う乱数 5 桁。実名ではないのでマスクしない。
 FRESH_N=$(( (RANDOM % 90000) + 10000 ))
 FRESH_SQL="SELECT $FRESH_N AS fresh"
@@ -208,6 +244,9 @@ redact() {
   s=${s//$DB/<DB>}
   if [ -n "$TABLE" ]; then
     s=${s//$TABLE/<TABLE>}
+  fi
+  if [ -n "$VIEW" ]; then
+    s=${s//$VIEW/<VIEW>}
   fi
   # 12 桁の数字の並び（AWS アカウント ID）を潰す。バケット名の中のものは上の置換で既に
   # 消えているので、ここで効くのは主にエラー文言の中の ARN。
@@ -743,10 +782,12 @@ write_summary_md() {
     echo "  - GetQueryResults: $(counter gqr)"
     echo "  - S3（ls / cp / head-object の合計）: $(counter s3)"
     echo "- DDL: 無し（このスクリプトは作成・変更・削除を一切しない。読み取りだけ）。"
-    echo "- スキャン: 項目 \`b13-from-table-limit1\`（\`SELECT 1 FROM <DB>.<TABLE> LIMIT 1\`）の 1 件だけ。"
+    echo "- スキャン: 項目 \`b13-from-table-limit1\`（\`SELECT 1 FROM <DB>.<TABLE> LIMIT 1\`）と"
+    echo "  \`h3-show-stats\`（\`SHOW STATS FOR <DB>.<TABLE>\`。統計が無ければテーブルを読みうる）の 2 件だけ。"
     echo "  ほかは定数・メタデータ・\`UNNEST(sequence(...))\` でテーブルを読まない。"
     echo "  実際にスキャンした量は各行の scanned_bytes を見ること。"
     echo "- テーブルの決め方: $(clean "$TABLE_NOTE")"
+    echo "- ビューの決め方（f2）: $(clean "$VIEW_NOTE")"
     echo "- \`a2\` / \`a3\` に使った乱数: $FRESH_N（実行ごとに変わる。過去に流していない SQL を作るため）"
     if [ -n "$ABORT_NOTE" ]; then
       echo
@@ -989,7 +1030,77 @@ run d3-rows-100k "SELECT a * 10 + b AS n FROM UNNEST(sequence(1, 10000)) AS x(a)
 run d4-rows-1m   "SELECT a * 100 + b AS n FROM UNNEST(sequence(1, 10000)) AS x(a) CROSS JOIN UNNEST(sequence(1, 100)) AS y(b)"
 run d5-rows-3m   "SELECT a * 300 + b AS n FROM UNNEST(sequence(1, 10000)) AS x(a) CROSS JOIN UNNEST(sequence(1, 300)) AS y(b)"
 
-# ---- E. 対照の再実行 -----------------------------------------------------
+# ---- F. #70 が一般化した形の裏取り（#76）---------------------------------
+if [ -n "$TABLE" ]; then
+  run f1-desc "DESC $DB.$TABLE"
+else
+  skip f1-desc "$NO_TABLE_NOTE"
+fi
+# ビューは VIEW を明示していなければ c7（SHOW VIEWS IN <DB>）の 1 件目を使う。
+# GetQueryResults を読めなければ本体（<id>.txt。1 行 1 名）から拾う。
+if [ -n "$VIEW" ]; then
+  VIEW_NOTE="VIEW を環境変数で明示した（一覧との突き合わせはしていない）"
+else
+  python3 - "$RUN_DIR/c7-show-views.results.json" "$RUN_DIR/c7-show-views.bytes" "$RUN_DIR/views.txt" <<'PYEOF'
+import json, os, sys
+names = []
+try:
+    rows = json.load(open(sys.argv[1]))["ResultSet"]["Rows"]
+    names = [r["Data"][0].get("VarCharValue", "") for r in rows if r.get("Data")]
+except Exception:
+    names = []
+if not names and os.path.exists(sys.argv[2]):
+    try:
+        names = open(sys.argv[2], "rb").read().decode("utf-8", "replace").splitlines()
+    except Exception:
+        names = []
+names = [n for n in (n.strip() for n in names) if n]
+open(sys.argv[3], "w").write("\n".join(names) + "\n")
+PYEOF
+  if [ -s "$RUN_DIR/views.txt" ] && [ -n "$(head -1 "$RUN_DIR/views.txt")" ]; then
+    VIEW=$(head -1 "$RUN_DIR/views.txt")
+    VIEW_NOTE="VIEW 未指定のため c7（SHOW VIEWS）の 1 件目を使った"
+    echo "ビューは SHOW VIEWS の 1 件目を使います。一覧: $RUN_DIR/views.txt"
+  else
+    VIEW_NOTE="VIEW 未指定で、c7（SHOW VIEWS IN <DB>）にビューが 1 件も無かった"
+  fi
+fi
+if [ -n "$VIEW" ]; then
+  run f2-show-create-view "SHOW CREATE VIEW $DB.$VIEW"
+else
+  skip f2-show-create-view "対象ビューが決まらなかった: $VIEW_NOTE"
+fi
+run f3-two-aliases "SELECT 1 AS i, 2 AS j"
+run f4-lowercase   "select 1"
+
+# ---- G. #70 が application に落としている形（#76）------------------------
+run g1-negative       "SELECT -1"
+run g2-semicolon      "SELECT 1;"
+run g3-limit          "SELECT 1 LIMIT 1"
+run g4-date-literal   "SELECT DATE '2020-01-01'"
+run g5-exponent       "SELECT 1.5E0"
+run g6-concat         "SELECT 'a' || 'b'"
+run g7-array          "SELECT ARRAY[1]"
+run g8-quoted-alias   "SELECT 1 AS \"x\""
+run g9-bare-alias     "SELECT 1 i"
+run g10-parenthesized "(SELECT 1)"
+run g11-values        "VALUES 1"
+
+# ---- H. SHOW 系の残り（#76）。受け付けない文は FAILED のまま記録する ------
+run h1-show-functions "SHOW FUNCTIONS"
+run h2-show-session   "SHOW SESSION"
+if [ -n "$TABLE" ]; then
+  run h3-show-stats "SHOW STATS FOR $DB.$TABLE"
+else
+  skip h3-show-stats "$NO_TABLE_NOTE"
+fi
+
+# ---- I. マルチパートになる境界（#76）。d 系と同じ定数生成で本体だけ大きくする ----
+run i1-rows-6m  "SELECT a * 600 + b AS n FROM UNNEST(sequence(1, 10000)) AS x(a) CROSS JOIN UNNEST(sequence(1, 600)) AS y(b)"
+run i2-rows-10m "SELECT a * 1000 + b AS n FROM UNNEST(sequence(1, 10000)) AS x(a) CROSS JOIN UNNEST(sequence(1, 1000)) AS y(b)"
+run i3-rows-14m "SELECT a * 1400 + b AS n FROM UNNEST(sequence(1, 10000)) AS x(a) CROSS JOIN UNNEST(sequence(1, 1400)) AS y(b)"
+
+# ---- E. 対照の再実行（最後に流す）-----------------------------------------
 run e1-select-1-again "SELECT 1"
 
 # ---- summary ------------------------------------------------------------
