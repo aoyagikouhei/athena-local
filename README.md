@@ -269,6 +269,12 @@ Behaviour that matches real Athena:
   counted in characters. athena-local passes Trino's length through as
   `Precision`, so the number differs from Athena's only because the plan text
   differs between the engines.
+- `EXPLAIN` returns one row per line of the plan. Trino returns the whole plan
+  as a single `Query Plan` value with embedded newlines (ending in `\n\n`);
+  Athena appends one newline to that text and splits it on `\n`, so
+  `EXPLAIN SELECT 1` gives the header row, 11 plan lines and 3 empty rows, 15
+  rows in all (measured 2026-09-15 and 2026-09-16, four runs). athena-local
+  splits the same way, for `GetQueryResults` and for the `<id>.txt` file.
 - `double` and `real` values use Java's notation: `1.5`, `0.30000000000000004`,
   `1.0E20`, `1.0E-7`.
 - `array`, `map` and `row` values use Athena's notation rather than JSON:
@@ -388,8 +394,9 @@ DDL, `SHOW`, `DESCRIBE` and `EXPLAIN` write `<id>.txt` the same way (measured
 - No header line for DDL, `SHOW` and `DESCRIBE`, unlike the CSV, and no trailing
   newline. `EXPLAIN` is `DML`, and its file starts with the header line
   `Query Plan` just as its `GetQueryResults` does (measured 2026-09-15 and
-  2026-09-16); the blank lines Trino puts at the end of a plan stay in the file
-  as empty lines.
+  2026-09-16). Because the plan is split into rows with one newline appended
+  (see above), the file is the header line, the plan text as Trino returns it
+  and a final `\n`: 393 bytes for `EXPLAIN SELECT 1` on Athena.
 - A statement that returns no rows writes an empty file, `CREATE TABLE` for
   example.
 - Columns are joined with a tab. Athena itself returns one already joined,
@@ -839,6 +846,12 @@ passed; see Caveats.
   wrote no file at all). athena-local runs everything through
   Trino and cannot tell the two apart, so it writes the file for every statement
   whose result file is `<id>.txt`. A failed `EXPLAIN` was not measured.
+- **`EXPLAIN` row splitting was measured on one plan shape.** Only
+  `EXPLAIN SELECT 1`, whose plan text ends in `\n\n`, was measured; the split
+  rule (append one newline, split on `\n`) is applied to every `EXPLAIN`,
+  including `EXPLAIN ANALYZE` and plans that do not end in a newline such as
+  `EXPLAIN (FORMAT JSON)` or `EXPLAIN (TYPE IO)`, which therefore end in one
+  empty row here. How Athena splits those has not been measured.
 - **The failed result file does not match `StateChangeReason`.** On Athena the
   file is `StateChangeReason` byte for byte, and that text starts with
   `FAILED: ` because it comes from Hive (`FAILED: SemanticException

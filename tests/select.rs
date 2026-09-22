@@ -242,10 +242,12 @@ async fn show_と_describe_の結果には列名行が入らない() {
 #[tokio::test]
 async fn explain_の結果には_select_と同じく列名行が入る() {
     // EXPLAIN は StatementType が DML で、本物は SELECT と同じく先頭行に列名を入れる
-    // （2026-09-15〜18 実測。#60）。
+    // （2026-09-15〜18 実測。#60）。Trino は `Query Plan` 列の 1 行に改行入りの全文（末尾 `\n\n`）を
+    // 返すが、本物はその全文の末尾に改行を 1 つ足してから `\n` で分けた行を返す（`EXPLAIN SELECT 1` は
+    // 列名行 + 非空 11 行 + 空行 3 行の 15 行。2026-09-15／16 の 4 ラウンドで実測。#73）。
     let harness = Harness::start(json!({
         "columns": [{ "name": "Query Plan", "type": "varchar(371)", "typeSignature": { "rawType": "varchar", "arguments": [{ "kind": "LONG", "value": 371 }] } }],
-        "data": [["Fragment 0 [SINGLE]"], ["    Output layout: [expr]"]]
+        "data": [["Fragment 0 [SINGLE]\n    Output layout: [expr]\n\n"]]
     }))
     .await;
     let execution = harness
@@ -259,9 +261,22 @@ async fn explain_の結果には_select_と同じく列名行が入る() {
         .await;
 
     let rows = results["ResultSet"]["Rows"].as_array().unwrap();
-    assert_eq!(rows.len(), 3, "列名行 + データ 2 行");
-    assert_eq!(rows[0]["Data"][0]["VarCharValue"], "Query Plan");
-    assert_eq!(rows[1]["Data"][0]["VarCharValue"], "Fragment 0 [SINGLE]");
+    let values: Vec<_> = rows
+        .iter()
+        .map(|row| row["Data"][0]["VarCharValue"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        values,
+        [
+            "Query Plan",
+            "Fragment 0 [SINGLE]",
+            "    Output layout: [expr]",
+            "",
+            "",
+            "",
+        ],
+        "列名行 + プランの行ごとに 1 行 + 末尾の空行（全文の末尾 `\\n\\n` の 2 行 + 足した 1 行）"
+    );
 
     // 列は本物と同じく varchar(<プラン本文の文字数>)。本物の EXPLAIN SELECT 1 は varchar(371)
     // （2026-09-15／16 実測）で、Trino も同じ仕組みでプランの文字数を型に入れる（Trino 482 は
