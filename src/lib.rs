@@ -4,6 +4,7 @@
 pub mod athena;
 mod catalog;
 pub mod config;
+mod content_type;
 mod convert;
 mod failure;
 mod handler;

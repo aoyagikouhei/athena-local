@@ -12,7 +12,7 @@ use super::table_format::EngineDdl;
 
 /// DROP TABLE × Iceberg など、列が無くても本体・`.metadata` を置く DDL の Content-Type
 /// （2026-09-20 実測。本体も `.metadata` も application/octet-stream）。
-const ENGINE_DDL_CONTENT_TYPE: &str = "application/octet-stream";
+const ENGINE_DDL_CONTENT_TYPE: &str = crate::content_type::APPLICATION;
 
 /// 本体と付随ファイル `.metadata` の両方を置いてから結果を返す。SUCCEEDED にするのは
 /// 書き終わってからにする（クライアントは SUCCEEDED を見た直後に S3 を読みに行く）。
@@ -39,6 +39,10 @@ pub(super) async fn write_result(
         return Ok(outcome);
     }
 
+    // 列なしでも本体・`.metadata` を置く DDL（issue #39）は、本体も `.metadata` も
+    // `ResultLocation` の既定（0 バイトの DDL の binary）ではなく application で置く。
+    let content_type = engine_ddl.is_some().then_some(ENGINE_DDL_CONTENT_TYPE);
+
     // 本体を書くのは SELECT の結果（.csv、更新件数が無いとき）と DDL / SHOW（.txt）だけ。
     // DML / CTAS が置くファイル（manifest や tables/<id>）は作らない。
     let should_write = location.file == ResultFile::Text
@@ -57,7 +61,6 @@ pub(super) async fn write_result(
                 super::classification::statement_type(&execution.query) == "DML",
             ),
         };
-        let content_type = engine_ddl.is_some().then_some(ENGINE_DDL_CONTENT_TYPE);
         match writer.put(location, body, content_type).await {
             Ok(()) => {}
             // 本体が書けなかったら付随ファイルは試みない。
@@ -93,6 +96,7 @@ pub(super) async fn write_result(
             update_type,
             update_count,
             &outcome,
+            content_type,
         )
         .await;
     }
@@ -125,6 +129,8 @@ pub(super) async fn write_failure(app: &App, execution: &Execution, failure: &Fa
 /// 付随ファイル `.metadata` を組み立てて置く。書けなくても実行は成功のまま（補助ファイルなので握りつぶす）。
 /// `query_id` / `update_type` / `update_count` は呼び出し元（`write_result`）が文の種類に応じて
 /// 決めた値（ALTER TABLE ADD COLUMNS × Hive だけは実行 ID・None・None に上書きされている）。
+/// `content_type` は本体と同じ上書き（列なしでも `.metadata` を置く DDL だけ `Some`）。
+/// 上書きが無ければ本体と同じ既定の値になる（`ResultLocation::metadata`）。
 async fn write_metadata(
     writer: &results::ResultWriter,
     location: &ResultLocation,
@@ -132,6 +138,7 @@ async fn write_metadata(
     update_type: Option<&str>,
     update_count: Option<i64>,
     outcome: &Outcome,
+    content_type: Option<&str>,
 ) {
     let body = metadata::to_metadata(
         query_id,
@@ -139,7 +146,7 @@ async fn write_metadata(
         update_count,
         &convert::column_infos(outcome),
     );
-    if let Err(reason) = writer.put(&location.metadata(), body, None).await {
+    if let Err(reason) = writer.put(&location.metadata(), body, content_type).await {
         eprintln!("付随ファイル（.metadata）の書き込みに失敗しました。無視します: {reason}");
     }
 }

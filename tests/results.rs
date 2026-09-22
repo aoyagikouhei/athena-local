@@ -542,3 +542,92 @@ async fn 先頭のコメントを読み飛ばして_output_location_を決める
         format!("s3://results-bucket/athena/tables/{}", execution_id(&ctas))
     );
 }
+
+/// リテラルだけの SELECT は本物が `.csv` も `.metadata` も binary/octet-stream で置く
+/// （2026-09-23 実測。`SELECT 1`・`SELECT 1, 2`・`SELECT 'a'`・`SELECT 1.5`・`SELECT 1 AS i`・
+/// `SELECT true`・`SELECT 1, 'a'` の 7 形と、初めて流す `SELECT <乱数> AS fresh` の 1 回目から）。
+/// 式・CAST・NULL・WHERE・テーブル参照のある SELECT（`SELECT id, name FROM users` など）は
+/// application のままで、`select_の結果を_csv_で書き_フルパスを返す` が固定している。
+#[tokio::test]
+async fn リテラルだけの_select_は_csv_と_metadata_を_binary_で書く() {
+    for sql in ["SELECT 1", "SELECT 1 AS i, 'a'"] {
+        let harness = Harness::builder(select_response())
+            .route(
+                sql,
+                json!({
+                    "columns": [{ "name": "_col0", "type": "integer" }],
+                    "data": [[1]]
+                }),
+            )
+            .results_s3()
+            .start()
+            .await;
+
+        let execution = harness
+            .run_query(json!({
+                "QueryString": sql,
+                "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+            }))
+            .await;
+        let id = execution_id(&execution);
+
+        assert_eq!(execution["QueryExecution"]["Status"]["State"], "SUCCEEDED");
+        let puts = harness.s3_puts();
+        assert_eq!(puts.len(), 2, "{sql}: {puts:?}");
+        assert_eq!(puts[0].key, format!("athena/{id}.csv"), "{sql}");
+        assert_eq!(
+            puts[0].content_type.as_deref(),
+            Some("binary/octet-stream"),
+            "{sql}"
+        );
+        assert_eq!(puts[1].key, format!("athena/{id}.csv.metadata"), "{sql}");
+        assert_eq!(
+            puts[1].content_type.as_deref(),
+            Some("binary/octet-stream"),
+            "{sql}"
+        );
+    }
+}
+
+/// `.txt` の文のうち DESCRIBE・EXPLAIN・SHOW CREATE TABLE は本物が本体も `.metadata` も
+/// application/octet-stream で置く（2026-09-23 実測）。SHOW TABLES など残りの SHOW と
+/// 0 バイトの DDL は binary のままで、`show_の結果を_txt_で書く` と
+/// `dml_と_ctas_は_metadata_だけを置き_ddl_は_0_バイトの_txt_を書く` が固定している。
+#[tokio::test]
+async fn describe_と_explain_は_txt_と_metadata_を_application_で書く() {
+    for sql in [
+        "DESCRIBE users",
+        "EXPLAIN SELECT 1",
+        "SHOW CREATE TABLE users",
+    ] {
+        let harness = Harness::builder(select_response())
+            .route(sql, show_response())
+            .results_s3()
+            .start()
+            .await;
+
+        let execution = harness
+            .run_query(json!({
+                "QueryString": sql,
+                "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+            }))
+            .await;
+        let id = execution_id(&execution);
+
+        assert_eq!(execution["QueryExecution"]["Status"]["State"], "SUCCEEDED");
+        let puts = harness.s3_puts();
+        assert_eq!(puts.len(), 2, "{sql}: {puts:?}");
+        assert_eq!(puts[0].key, format!("athena/{id}.txt"), "{sql}");
+        assert_eq!(
+            puts[0].content_type.as_deref(),
+            Some("application/octet-stream"),
+            "{sql}"
+        );
+        assert_eq!(puts[1].key, format!("athena/{id}.txt.metadata"), "{sql}");
+        assert_eq!(
+            puts[1].content_type.as_deref(),
+            Some("application/octet-stream"),
+            "{sql}"
+        );
+    }
+}

@@ -404,14 +404,49 @@ DDL, `SHOW`, `DESCRIBE` and `EXPLAIN` write `<id>.txt` the same way (measured
 The object is uploaded with a presigned `PUT` (path-style), so any
 S3-compatible store works; it is not retried, and a `PUT` that gets no response
 within 30 seconds is given up on so the query still reaches a final state
-(the limit is fixed and has no environment variable). `<id>.csv` and the `.metadata`
-companions are sent as `application/octet-stream` and `<id>.txt` as
-`binary/octet-stream`, as Athena does (measured 2026-09-17), except for two
-combinations: `DROP TABLE` on an Iceberg table and
-`ALTER TABLE ... ADD COLUMNS` on a Hive table send their `<id>.txt` as
-`application/octet-stream` too, the same Content-Type as their `.metadata`
-companion (measured 2026-09-20/21; see
+(the limit is fixed and has no environment variable).
+
+The `Content-Type` of the upload follows Athena, which uses
+`binary/octet-stream` for the files it writes without planning the query and
+`application/octet-stream` for everything else (36 statements measured
+2026-09-23, with the same statement giving the same value across days). The
+`.metadata` companion gets the same Content-Type as its result file; the one
+exception seen is the multipart upload described at the end of this section,
+which athena-local never produces.
+
+| Statement | Content-Type |
+| --- | --- |
+| `SELECT` of literals only: `SELECT 1`, `SELECT 1, 2`, `SELECT 'a'`, `SELECT 1.5`, `SELECT 1 AS i`, `SELECT true`, `SELECT 1, 'a'`, with or without comments | `binary/octet-stream` |
+| Any other `SELECT`: an expression (`SELECT 1 + 1`), a `CAST`, `NULL`, a `WHERE`, a `FROM`, `VALUES`, `UNION`, or a table | `application/octet-stream` |
+| `SHOW TABLES`, `SHOW DATABASES`, `SHOW COLUMNS`, `SHOW TBLPROPERTIES`, `SHOW VIEWS`, `SHOW PARTITIONS` | `binary/octet-stream` |
+| `DESCRIBE`, `EXPLAIN`, `SHOW CREATE TABLE` | `application/octet-stream` |
+| Column-less DDL (`CREATE DATABASE`, `DROP DATABASE`, ...) | `binary/octet-stream` |
+| `INSERT`, `UPDATE`, `DELETE`, `MERGE`, CTAS (`.metadata` only) | `application/octet-stream` |
+
+athena-local recognises a literals-only `SELECT` as a comma-separated list of
+unsigned integer or decimal literals, single-quoted strings and `true`/`false`,
+each optionally followed by `AS <identifier>`, with nothing after it but
+whitespace and comments; keyword case does not matter. `SELECT` forms Athena
+was not measured with (`SELECT -1`, a trailing `;`, `LIMIT`, typed literals
+such as `DATE '...'`, `1.5E0`, `ARRAY[1]`, a quoted or bare alias,
+`(SELECT 1)`, `VALUES 1`) are sent as `application/octet-stream`, the value for
+everything that is not a literals-only `SELECT`. For `<id>.txt` the default is
+`binary/octet-stream`, and only `DESCRIBE`, `DESC`, `EXPLAIN` and `SHOW CREATE
+...` get `application/octet-stream`, so a `SHOW` form that was not measured
+(`SHOW FUNCTIONS`, `SHOW SESSION`, `SHOW STATS`) and `DESC` or
+`SHOW CREATE VIEW` follow those defaults. All of these are listed in
+[#76](https://github.com/aoyagikouhei/athena-local/issues/76) to be measured.
+Two DDL combinations depend on the target table's format instead: `DROP TABLE`
+on an Iceberg table and `ALTER TABLE ... ADD COLUMNS` on a Hive table send
+their `<id>.txt` and `.metadata` as `application/octet-stream` (measured
+2026-09-20/21; see
 [DDL that depends on the target table's format](#ddl-that-depends-on-the-target-tables-format)).
+The one exception to "the companion matches its result file": Athena uploads a
+result of about 140 MB in parts and that object comes back as
+`binary/octet-stream` with an `application/octet-stream` companion; a 29 MB
+result was still a single upload, and athena-local always uploads in one
+`PUT`, so the size at which this starts is not measured.
+
 A failed CSV upload makes the query `FAILED` with the store's response in
 `StateChangeReason`. A failed `<id>.txt` or `.metadata` upload leaves the query
 `SUCCEEDED` and logs one line instead: the statement has already run on Trino,
@@ -422,8 +457,8 @@ A failed query writes a result file too, but only for the statements whose
 result file is `<id>.txt` (DDL, `SHOW`, `DESCRIBE`, `EXPLAIN`), so a client that
 reads the result file can see why it failed. The file holds `FAILED: ` followed
 by `StateChangeReason`, with no trailing newline, and is sent as
-`application/octet-stream` rather than the `binary/octet-stream` of a successful
-`<id>.txt`; no `.metadata` companion is written. `SELECT`, DML and CTAS write
+`application/octet-stream` whatever the statement (a successful `SHOW TABLES`
+gets `binary/octet-stream`); no `.metadata` companion is written. `SELECT`, DML and CTAS write
 nothing, and neither does a cancelled query. The upload happens before the query
 becomes `FAILED`, so a client may read the file as soon as it sees that state;
 an upload that fails logs one line and leaves the state and the reason
@@ -440,7 +475,9 @@ message (`INVALID_INPUT`).
 With `ATHENA_LOCAL_RESULTS=s3`, a companion file named after the result file
 plus `.metadata` is written next to it, as Athena does (measured 2026-09-17):
 `<id>.csv.metadata`, `<id>.txt.metadata`, `<id>.metadata` for `INSERT` and an
-Iceberg CTAS, and `tables/<id>.metadata` for a Hive CTAS. Athena JDBC 3.x is
+Iceberg CTAS, and `tables/<id>.metadata` for a Hive CTAS. It is uploaded with
+the same `Content-Type` as its result file (see
+[Result files](#result-files)). Athena JDBC 3.x is
 the client that needs it: its default `ResultFetcher=auto` reads the result and
 the metadata straight
 from S3 instead of calling `GetQueryResults`, and versions before 3.5.1 fail
