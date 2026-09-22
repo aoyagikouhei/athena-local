@@ -579,6 +579,9 @@ mod tests {
                 ResultFile::Csv,
             ),
             ("VALUES 1", ResultFile::Csv),
+            // `TABLE t` も SELECT と同じ `<id>.csv`（2026-09-22 実測。#65）。
+            ("TABLE t", ResultFile::Csv),
+            ("-- c\ntable db.t LIMIT 1", ResultFile::Csv),
             ("INSERT INTO t VALUES (1)", ResultFile::Manifest),
             // UPDATE / DELETE / MERGE は INSERT と違い .csv になる（Iceberg のテーブルで実測。
             // UPDATE と DELETE は 2026-09-17、MERGE は 2026-09-20。#35）。

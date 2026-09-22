@@ -246,7 +246,9 @@ query and the catalog name the request used.
 Behaviour that matches real Athena:
 
 - The first row of the first page of a `SELECT` or `EXPLAIN` result (`StatementType`
-  `DML`) holds the column names. `SHOW ...` and `DESCRIBE` (`UTILITY`) start with
+  `DML`) holds the column names. `TABLE t`, Trino's shorthand for
+  `SELECT * FROM t`, is accepted by Athena and counts as `DML` / `SELECT` too
+  (measured 2026-09-22). `SHOW ...` and `DESCRIBE` (`UTILITY`) start with
   the first data row instead, as on Athena (`SHOW TABLES`, `SHOW DATABASES`,
   `SHOW COLUMNS`, `SHOW CREATE TABLE`, `SHOW PARTITIONS`, `SHOW TBLPROPERTIES`
   and `DESCRIBE`, measured 2026-09-15 to 2026-09-22). Athena JDBC skips the
@@ -294,7 +296,7 @@ Behaviour that matches real Athena:
   the statement first, which parses without executing and adds one round trip
   (about 10–20 ms).
 - `StatementType` and `SubstatementType` follow Athena: `SELECT` / `WITH` /
-  `VALUES` are `DML` / `SELECT`, `EXPLAIN` is `DML` / `EXPLAIN`, `SHOW TABLES` is
+  `VALUES` / `TABLE` are `DML` / `SELECT`, `EXPLAIN` is `DML` / `EXPLAIN`, `SHOW TABLES` is
   `UTILITY` / `SHOW_TABLES`, `CREATE TABLE ... AS SELECT` is `DDL` /
   `CREATE_TABLE_AS_SELECT`, and so on. Trino spellings map to Athena's
   (`CREATE SCHEMA` is `CREATE_DATABASE`, `SHOW SCHEMAS` is `SHOW_DATABASES`).
@@ -347,7 +349,7 @@ on the location makes no difference. The file name depends on the statement:
 
 | Statement | `OutputLocation` |
 | --- | --- |
-| `SELECT` / `WITH` / `VALUES` | `s3://bucket/prefix/<id>.csv` |
+| `SELECT` / `WITH` / `VALUES` / `TABLE` | `s3://bucket/prefix/<id>.csv` |
 | `UPDATE` / `DELETE` / `MERGE` | `s3://bucket/prefix/<id>.csv` (only the `.metadata` companion is written) |
 | `INSERT` | `s3://bucket/prefix/<id>` (only the `.metadata` companion is written) |
 | `CREATE TABLE ... AS SELECT` | `s3://bucket/prefix/tables/<id>` (only the `.metadata` companion is written) |
