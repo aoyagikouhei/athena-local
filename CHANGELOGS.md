@@ -132,6 +132,13 @@ later name the date they were measured on.
 
 ### Changed
 
+- README documents where the `Precision` of the `EXPLAIN` result column comes
+  from: the engine types `Query Plan` as `varchar(<length of the plan text>)`,
+  371 for `EXPLAIN SELECT 1` on Athena (measured 2026-09-15 and 2026-09-16) and
+  400 on Trino 482, and athena-local already passes Trino's length through. The
+  fake Trino in the tests now sends the same `varchar(371)` type signature, so
+  the tests pin that `GetQueryResults` and `.txt.metadata` report it. No change
+  in behaviour.
 - `ALTER TABLE ... DROP COLUMNS` (plural) is no longer classified. Athena takes
   the plural `COLUMNS` after `ADD` but only the singular `COLUMN` after `DROP`,
   and rejects the plural form in `StartQueryExecution` with `mismatched input

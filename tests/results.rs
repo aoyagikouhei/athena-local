@@ -286,7 +286,7 @@ async fn explain_の結果は_txt_の先頭に列名行を入れて書く() {
         .route(
             "EXPLAIN SELECT 1",
             json!({
-                "columns": [{ "name": "Query Plan", "type": "varchar" }],
+                "columns": [{ "name": "Query Plan", "type": "varchar(371)", "typeSignature": { "rawType": "varchar", "arguments": [{ "kind": "LONG", "value": 371 }] } }],
                 "data": [["Fragment 0 [SINGLE]"], ["           (1)"], [""], [""]]
             }),
         )
@@ -315,6 +315,12 @@ async fn explain_の結果は_txt_の先頭に列名行を入れて書く() {
         "Query Plan\nFragment 0 [SINGLE]\n           (1)\n\n"
     );
     assert_eq!(puts[1].key, format!("athena/{id}.txt.metadata"));
+    // `.txt.metadata` の列の Precision（field 7）も本物と同じ varchar(371) の 371（varint f3 02。#68）。
+    assert!(
+        puts[1].body.windows(3).any(|w| w == [0x38, 0xf3, 0x02]),
+        "{:02x?}",
+        puts[1].body
+    );
 }
 
 #[tokio::test]

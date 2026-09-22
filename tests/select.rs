@@ -244,7 +244,7 @@ async fn explain_の結果には_select_と同じく列名行が入る() {
     // EXPLAIN は StatementType が DML で、本物は SELECT と同じく先頭行に列名を入れる
     // （2026-09-15〜18 実測。#60）。
     let harness = Harness::start(json!({
-        "columns": [{ "name": "Query Plan", "type": "varchar" }],
+        "columns": [{ "name": "Query Plan", "type": "varchar(371)", "typeSignature": { "rawType": "varchar", "arguments": [{ "kind": "LONG", "value": 371 }] } }],
         "data": [["Fragment 0 [SINGLE]"], ["    Output layout: [expr]"]]
     }))
     .await;
@@ -262,4 +262,12 @@ async fn explain_の結果には_select_と同じく列名行が入る() {
     assert_eq!(rows.len(), 3, "列名行 + データ 2 行");
     assert_eq!(rows[0]["Data"][0]["VarCharValue"], "Query Plan");
     assert_eq!(rows[1]["Data"][0]["VarCharValue"], "Fragment 0 [SINGLE]");
+
+    // 列は本物と同じく varchar(<プラン本文の文字数>)。本物の EXPLAIN SELECT 1 は varchar(371)
+    // （2026-09-15／16 実測）で、Trino も同じ仕組みでプランの文字数を型に入れる（Trino 482 は
+    // 同じ文で varchar(400)）。athena-local はその長さを Precision にそのまま通す（#68）。
+    let column = &results["ResultSet"]["ResultSetMetadata"]["ColumnInfo"][0];
+    assert_eq!(column["Type"], "varchar");
+    assert_eq!(column["Precision"], 371);
+    assert_eq!(column["CaseSensitive"], true);
 }
