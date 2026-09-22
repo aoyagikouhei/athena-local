@@ -47,7 +47,10 @@ cd .claude/issue-notes/39-e2e
 
 **JDBC ドライバからの検証（issue #46）は `../46-verify-jdbc-metadata.sh` が一本でやる**
 （証明書・公式ドライバの取得・compose・athena-local の起動・4 ケース × `ResultFetcher` 2 通り・
-S3 に置かれた `.metadata` の回収まで）。`verify.sh` は athena-local を `127.0.0.1` で待たせるので
+S3 に置かれた `.metadata` の回収まで）。
+**SHOW 文の `.txt.metadata` の検証（issue #57）は `../57-verify-jdbc-show-metadata.sh`**（同じ足場。
+`Main.java` の 2 つ目の引数 `57` で SHOW のシナリオに切り替え、`ResultFetcher` 3 通りで行数を突き合わせる）。
+`verify.sh` は athena-local を `127.0.0.1` で待たせるので
 tls-proxy コンテナから届かず、JDBC の検証には使えない（46 側は `0.0.0.0` で待たせる）。
 
 内部でやっていること:

@@ -19,6 +19,14 @@ import java.util.Properties;
  *   引数なし   -> 明示せず既定のまま（= auto。今回の焦点）
  *   "S3"       -> S3 直読みを明示（auto が S3 を選ばなかった場合でも同じ経路を通す対照）
  *   "GetQueryResults" -> API 経由（.metadata を読まない対照）
+ *
+ * 2 つ目の引数でシナリオを切り替える（issue #57。46 の 4 ケースは引数なしのまま変えない）:
+ *   無し / "46" -> 上の 4 ケース（列 0 個の .metadata）
+ *   "57"        -> SHOW 文の .txt.metadata（SHOW TABLES 以外の SHOW を JDBC が読めるか）。
+ *                  Trino の文法に無い SHOW DATABASES / SHOW PARTITIONS / SHOW TBLPROPERTIES は
+ *                  Athena の原文をそのまま投げて、athena-local がどう弾くかを記録する（REJECTED は失敗に数えない）。
+ *                  各ケースは機械可読な 1 行 `RESULT <label> rows=<n> cols=<c> status=<...>` を出し、
+ *                  スクリプト側が ResultFetcher の違いで行数が変わらないことを突き合わせる。
  */
 public final class Main {
     private static int failures = 0;
@@ -26,6 +34,7 @@ public final class Main {
     public static void main(String[] args) throws Exception {
         // 引数なしは「明示しない」= 既定の auto。空文字も同じ扱いにする。
         String fetcher = (args.length > 0 && !args[0].isEmpty()) ? args[0] : null;
+        String scenario = (args.length > 1 && !args[1].isEmpty()) ? args[1] : "46";
         String runId = Long.toString(System.currentTimeMillis());
         String tIcebergDrop = "t_jdbc_drop_iceberg_" + runId;
         String tHiveDrop = "t_jdbc_drop_hive_" + runId;
@@ -51,34 +60,127 @@ public final class Main {
         try (Connection conn = DriverManager.getConnection("jdbc:awsathena://", props)) {
             System.out.println("接続成功: " + conn.getClass());
 
-            // --- セットアップ（athena-local 経由。verify.sh の直接 Trino 投入とは別に、
-            //     JDBC の execute 経路そのものを使って検証対象のテーブルを作る） ---
-            runSetup(conn, "CREATE TABLE iceberg.default." + tIcebergDrop + " AS SELECT 1 AS n");
-            runSetup(conn, "CREATE TABLE hive.default." + tHiveDrop + " AS SELECT 1 AS n");
-            runSetup(conn, "CREATE TABLE hive.default." + tHiveAlter + " AS SELECT 1 AS n");
-
-            // ケース 1: DROP TABLE (Iceberg) -> .metadata 41 バイト（列 0 個）
-            runCase(conn, "ケース1 DROP_TABLE_iceberg(41B)", "DROP TABLE iceberg.default." + tIcebergDrop);
-
-            // ケース 2: ALTER TABLE ... ADD COLUMN (Hive) -> .metadata 38 バイト（列 0 個）
-            runCase(conn, "ケース2 ALTER_TABLE_ADD_COLUMN_hive(38B)",
-                    "ALTER TABLE hive.default." + tHiveAlter + " ADD COLUMN m int");
-
-            // ケース 3: DROP TABLE (Hive) -> .metadata を置かない従来経路（対照）
-            runCase(conn, "ケース3 DROP_TABLE_hive(対照・metadata無し)", "DROP TABLE hive.default." + tHiveDrop);
-
-            // ケース 4: 通常の SELECT -> 回帰確認
-            runSelectCase(conn, "ケース4 SELECT_回帰確認", "SELECT 1 AS n");
+            if (scenario.equals("57")) {
+                runShowScenario(conn, runId);
+            } else {
+                runZeroColumnScenario(conn, tIcebergDrop, tHiveDrop, tHiveAlter);
+            }
         } catch (Exception e) {
             System.out.println("!!! 接続自体が失敗した !!!");
             e.printStackTrace(System.out);
             failures++;
+        } finally {
+            System.out.println();
+            System.out.println("=== 総括 === failures=" + failures);
         }
-
-        System.out.println();
-        System.out.println("=== 総括 === failures=" + failures);
         if (failures > 0) {
             System.exit(1);
+        }
+    }
+
+    // ---------------- issue #46: 列 0 個の .metadata ----------------
+
+    private static void runZeroColumnScenario(Connection conn, String tIcebergDrop, String tHiveDrop, String tHiveAlter) {
+        // --- セットアップ（athena-local 経由。verify.sh の直接 Trino 投入とは別に、
+        //     JDBC の execute 経路そのものを使って検証対象のテーブルを作る） ---
+        runSetup(conn, "CREATE TABLE iceberg.default." + tIcebergDrop + " AS SELECT 1 AS n");
+        runSetup(conn, "CREATE TABLE hive.default." + tHiveDrop + " AS SELECT 1 AS n");
+        runSetup(conn, "CREATE TABLE hive.default." + tHiveAlter + " AS SELECT 1 AS n");
+
+        // ケース 1: DROP TABLE (Iceberg) -> .metadata 41 バイト（列 0 個）
+        runCase(conn, "ケース1 DROP_TABLE_iceberg(41B)", "DROP TABLE iceberg.default." + tIcebergDrop);
+
+        // ケース 2: ALTER TABLE ... ADD COLUMN (Hive) -> .metadata 38 バイト（列 0 個）
+        runCase(conn, "ケース2 ALTER_TABLE_ADD_COLUMN_hive(38B)",
+                "ALTER TABLE hive.default." + tHiveAlter + " ADD COLUMN m int");
+
+        // ケース 3: DROP TABLE (Hive) -> .metadata を置かない従来経路（対照）
+        runCase(conn, "ケース3 DROP_TABLE_hive(対照・metadata無し)", "DROP TABLE hive.default." + tHiveDrop);
+
+        // ケース 4: 通常の SELECT -> 回帰確認
+        runSelectCase(conn, "ケース4 SELECT_回帰確認", "SELECT 1 AS n");
+    }
+
+    // ---------------- issue #57: SHOW 文の .txt.metadata ----------------
+
+    private static void runShowScenario(Connection conn, String runId) {
+        String t = "hive.default.t_jdbc_show_" + runId;
+        // SHOW PARTITIONS の対象になるよう、パーティション付きの Hive テーブルに 2 パーティション分の行を入れる。
+        runSetup(conn, "CREATE TABLE " + t + " (n integer, p varchar) WITH (partitioned_by = ARRAY['p'])");
+        runSetup(conn, "INSERT INTO " + t + " VALUES (1, 'a'), (2, 'b')");
+
+        // 対照: SHOW TABLES（#5 で JDBC が読めることを実機で確かめ済み）。前のラウンドが作ったテーブルが
+        // 残っていても行数が変わらないよう、自分のテーブルだけに絞る。
+        runShowCase(conn, "SHOW_TABLES(対照)", "SHOW TABLES IN hive.default LIKE 't_jdbc_show_" + runId + "'");
+        // 焦点 1: SHOW DATABASES。Trino の同義文 SHOW SCHEMAS（athena-local は SHOW_DATABASES に分類する）と、
+        //         Athena の原文（Trino の文法に無い）の両方を流す。
+        runShowCase(conn, "SHOW_SCHEMAS", "SHOW SCHEMAS");
+        runProbe(conn, "SHOW_DATABASES(原文)", "SHOW DATABASES");
+        // 焦点 2: SHOW COLUMNS（Trino も Athena も同じ書き方。Trino は 4 列を返す）
+        runShowCase(conn, "SHOW_COLUMNS", "SHOW COLUMNS FROM " + t);
+        // 焦点 3・4: Trino の文法に無い 2 文。原文のまま投げて、どこで弾かれるかを記録する。
+        runProbe(conn, "SHOW_PARTITIONS(原文)", "SHOW PARTITIONS " + t);
+        runProbe(conn, "SHOW_TBLPROPERTIES(原文)", "SHOW TBLPROPERTIES " + t);
+        // 対照: Trino でパーティションを見る書き方（SELECT なので .csv 経路）
+        runShowCase(conn, "SELECT_partitions(対照)", "SELECT * FROM hive.default.\"t_jdbc_show_" + runId + "$partitions\"");
+    }
+
+    /** 結果を最後まで読み、RESULT 行を出す。例外は失敗に数える。 */
+    private static void runShowCase(Connection conn, String label, String sql) {
+        System.out.println();
+        System.out.println("--- " + label + " ---");
+        System.out.println("SQL: " + sql);
+        try (Statement st = conn.createStatement();
+             ResultSet rs = st.executeQuery(sql)) {
+            ResultSetMetaData md = rs.getMetaData();
+            int cols = md.getColumnCount();
+            StringBuilder names = new StringBuilder();
+            for (int i = 1; i <= cols; i++) {
+                names.append(i > 1 ? "," : "").append(md.getColumnName(i)).append(':').append(md.getColumnTypeName(i));
+            }
+            System.out.println("ResultSetMetaData columnCount=" + cols + " columns=" + names);
+            int rows = 0;
+            while (rs.next()) {
+                rows++;
+                StringBuilder row = new StringBuilder();
+                for (int i = 1; i <= cols; i++) {
+                    row.append(i > 1 ? " | " : "").append(rs.getString(i));
+                }
+                System.out.println("  row: " + row);
+            }
+            System.out.println("RESULT " + label + " rows=" + rows + " cols=" + cols + " status=PASS");
+        } catch (Exception e) {
+            System.out.println("RESULT " + label + " rows=-1 cols=-1 status=FAIL");
+            e.printStackTrace(System.out);
+            failures++;
+        }
+    }
+
+    /** Trino の文法に無い文。弾かれたら REJECTED（失敗に数えない）、通ったら PASS として行数を出す。 */
+    private static void runProbe(Connection conn, String label, String sql) {
+        System.out.println();
+        System.out.println("--- " + label + " ---");
+        System.out.println("SQL: " + sql);
+        try (Statement st = conn.createStatement()) {
+            boolean hasResultSet = st.execute(sql);
+            int rows = 0;
+            int cols = 0;
+            if (hasResultSet) {
+                try (ResultSet rs = st.getResultSet()) {
+                    cols = rs.getMetaData().getColumnCount();
+                    while (rs.next()) {
+                        rows++;
+                    }
+                }
+            }
+            System.out.println("RESULT " + label + " rows=" + rows + " cols=" + cols + " status=PASS");
+        } catch (SQLException e) {
+            System.out.println("REJECTED " + label + ": " + e.getClass().getName() + ": " + e.getMessage());
+            System.out.println("RESULT " + label + " rows=-1 cols=-1 status=REJECTED");
+        } catch (Exception e) {
+            System.out.println("RESULT " + label + " rows=-1 cols=-1 status=FAIL");
+            e.printStackTrace(System.out);
+            failures++;
         }
     }
 
