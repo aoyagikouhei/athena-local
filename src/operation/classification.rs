@@ -1,10 +1,11 @@
 //! SQL の先頭のキーワードから StatementType / SubstatementType を判定する。
 
-/// 先頭の空白とコメントを読み飛ばしてから大文字にした単語の並びにする（2026-09-18 実測）。
+/// 空白とコメントを区切りにした大文字の語の並び（`catalog::words`）から、先頭の `(` を取り除いたもの。
+/// 先頭のコメント（2026-09-18 実測）もキーワードの間のコメント（2026-09-22 実測。#52）も語にならない。
 pub(super) fn words(query: &str) -> Vec<String> {
-    crate::catalog::skip_leading_trivia(query)
-        .split_whitespace()
-        .map(|word| word.trim_start_matches('(').to_uppercase())
+    crate::catalog::words(query)
+        .into_iter()
+        .map(|word| word.trim_start_matches('(').to_string())
         .collect()
 }
 
@@ -358,14 +359,73 @@ mod tests {
                 "ALTER TABLE t SET /* c */ TBLPROPERTIES ('a' = 'b')",
                 Some("ALTER_TABLE_PROPERTIES"),
             ),
-            // `ALTER` と `TABLE` の間のコメントだけは `alter_table_action` に届かない。
-            // `words()` が `split_whitespace` で語を数えるので `word(1)` が `/*` になり、
-            // 呼び出し元（`substatement_type`）の guard の時点で None に落ちるため
-            // （`skip_keyword` の手前の話で、統合しても変わらない）。
-            ("ALTER /* c */ TABLE t ADD COLUMNS (c int)", None),
+            // `ALTER` と `TABLE` の間のコメントも空白として読む（#49 の時点では `words()` が
+            // `split_whitespace` で語を数えて `word(1)` が `/*` になり None だった。#52 で
+            // 本物を実測し、コメントを空白として分類することを確かめて直した。2026-09-22 実測）。
+            (
+                "ALTER /* c */ TABLE t ADD COLUMNS (c int)",
+                Some("ALTER_TABLE_ADD_COLUMN"),
+            ),
         ] {
             assert_eq!(substatement_type(query), expected, "{query:?}");
         }
+    }
+
+    #[test]
+    fn substatement_type_はキーワードの間のコメントを空白として読む() {
+        // 本物はキーワードとキーワードの間のコメント（`/* c */` も `-- c` も）を空白として扱い、
+        // 先頭のコメントと同じく分類には影響しない（2026-09-22 実測。#52）。
+        // `SHOW /* c */ CREATE TABLE` と `SHOW CREATE /* c */ TABLE` は本物では実行が
+        // ParseException で失敗するが、SubstatementType は SHOW_CREATE_TABLE と分類された。
+        for (query, expected) in [
+            ("DROP /* c */ TABLE t", "DROP_TABLE"),
+            ("DROP -- c\nTABLE t", "DROP_TABLE"),
+            ("DROP TABLE /* c */ IF EXISTS t", "DROP_TABLE"),
+            ("DROP /* c */ VIEW v", "DROP_VIEW"),
+            ("DROP /* c */ DATABASE IF EXISTS db", "DROP_DATABASE"),
+            (
+                "ALTER -- c\nTABLE t ADD COLUMNS (c int)",
+                "ALTER_TABLE_ADD_COLUMN",
+            ),
+            (
+                "CREATE /* c */ TABLE t AS SELECT 1",
+                "CREATE_TABLE_AS_SELECT",
+            ),
+            ("CREATE -- c\nTABLE t AS SELECT 1", "CREATE_TABLE_AS_SELECT"),
+            (
+                "CREATE TABLE t AS /* c */ SELECT 1",
+                "CREATE_TABLE_AS_SELECT",
+            ),
+            (
+                "CREATE TABLE t /* c */ AS SELECT 1",
+                "CREATE_TABLE_AS_SELECT",
+            ),
+            ("CREATE /* c */ TABLE t (n int)", "CREATE_TABLE"),
+            (
+                "CREATE /* c */ DATABASE IF NOT EXISTS db",
+                "CREATE_DATABASE",
+            ),
+            (
+                "CREATE OR /* c */ REPLACE VIEW v AS SELECT 1",
+                "CREATE_VIEW",
+            ),
+            // 文字列リテラルの中の `--` はコメントではない（計画攻撃で見つかった退行。
+            // S3 Express のバケット名を 1 行の CTAS に書いた形）。
+            (
+                "CREATE TABLE t WITH (external_location = 's3://a--b--x-s3/p/') AS SELECT 1",
+                "CREATE_TABLE_AS_SELECT",
+            ),
+            ("SHOW /* c */ TABLES", "SHOW_TABLES"),
+            ("SHOW /* c */ CREATE TABLE t", "SHOW_CREATE_TABLE"),
+            ("SHOW CREATE /* c */ TABLE t", "SHOW_CREATE_TABLE"),
+            // 空白を挟まずにコメントが語に接していても区切りになる。
+            ("DROP/* c */TABLE t", "DROP_TABLE"),
+        ] {
+            assert_eq!(substatement_type(query), Some(expected), "{query:?}");
+        }
+        // 先頭の語だけで決まる文は変わらない。
+        assert_eq!(statement_type("CREATE /* c */ TABLE t AS SELECT 1"), "DDL");
+        assert_eq!(substatement_type("SELECT /* c */ 1"), Some("SELECT"));
     }
 
     #[test]

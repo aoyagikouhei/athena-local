@@ -39,14 +39,11 @@ pub enum ResultFile {
 }
 
 impl ResultFile {
-    /// 先頭のキーワードで分ける。StatementType と同じく、先頭の空白とコメントは読み飛ばしてから
-    /// 判定する（2026-09-18 実測）。文の種類だけで決まり、SQL の残りは見ない。
+    /// 先頭のキーワードで分ける。StatementType と同じく、先頭の空白とコメントは読み飛ばし
+    /// （2026-09-18 実測）、キーワードの間のコメントも空白として読んでから判定する
+    /// （2026-09-22 実測。#52）。文の種類だけで決まり、SQL の残りは見ない。
     pub fn of(query: &str) -> Self {
-        let trimmed = crate::catalog::skip_leading_trivia(query);
-        let words: Vec<String> = trimmed
-            .split_whitespace()
-            .map(|word| word.to_uppercase())
-            .collect();
+        let words = crate::catalog::words(query);
         let word = |index: usize| words.get(index).map(String::as_str).unwrap_or_default();
 
         match word(0).trim_start_matches('(') {
@@ -575,6 +572,38 @@ mod tests {
             ("-- c\nCREATE TABLE c AS SELECT 1 AS i", ResultFile::Table),
             (
                 "-- c\nCREATE TABLE c WITH (table_type = 'ICEBERG') AS SELECT 1 AS i",
+                ResultFile::Table,
+            ),
+        ] {
+            assert_eq!(ResultFile::of(query), file, "{query:?}");
+        }
+    }
+
+    #[test]
+    fn キーワードの間のコメントは空白として読んで判定する() {
+        // 本物はキーワードとキーワードの間のコメントを空白として扱い、`CREATE /* c */ TABLE ... AS`
+        // も `CREATE TABLE ... AS /* c */ SELECT` も `tables/<id>` に置いた（2026-09-22 実測。#52。
+        // 成功する Iceberg の CTAS と、存在しないテーブルを読んで失敗する CTAS の両方で同じ）。
+        for (query, file) in [
+            ("CREATE /* c */ TABLE c AS SELECT 1 AS i", ResultFile::Table),
+            ("CREATE -- c\nTABLE c AS SELECT 1 AS i", ResultFile::Table),
+            ("CREATE TABLE /* c */ c AS SELECT 1 AS i", ResultFile::Table),
+            ("CREATE TABLE c /* c */ AS SELECT 1 AS i", ResultFile::Table),
+            ("CREATE TABLE c AS /* c */ SELECT 1 AS i", ResultFile::Table),
+            ("CREATE TABLE c AS -- c\nSELECT 1 AS i", ResultFile::Table),
+            ("CREATE/* c */TABLE c AS SELECT 1 AS i", ResultFile::Table),
+            ("CREATE /* c */ TABLE t (i int)", ResultFile::Text),
+            ("DROP /* c */ TABLE t", ResultFile::Text),
+            ("SELECT /* c */ 1", ResultFile::Csv),
+            ("INSERT /* c */ INTO t VALUES (1)", ResultFile::Manifest),
+            // 文字列リテラルの中の `--` や `/*` はコメントではない（計画攻撃で見つかった退行。
+            // S3 Express のバケット名 `a--b--x-s3` を external_location に書いた 1 行の CTAS）。
+            (
+                "CREATE TABLE t WITH (external_location = 's3://a--b--x-s3/p/') AS SELECT 1",
+                ResultFile::Table,
+            ),
+            (
+                "CREATE TABLE t WITH (external_location = 's3://b/*/') AS SELECT 1",
                 ResultFile::Table,
             ),
         ] {

@@ -225,6 +225,15 @@ later name the date they were measured on.
 
 ### Fixed
 
+- A comment between two keywords (`DROP /* c */ TABLE t`,
+  `ALTER -- c\nTABLE t ADD COLUMNS (c int)`, `CREATE /* c */ TABLE t AS
+  SELECT 1`, `CREATE TABLE t AS /* c */ SELECT 1`, `SHOW /* c */ TABLES`) is
+  now read as whitespace when the statement is classified, matching Athena
+  (measured 2026-09-22). It used to be read as words of its own, so
+  `SubstatementType` was left out for those statements and a CTAS with such a
+  comment wrote its result to `<id>.txt` instead of `tables/<id>`. Only the
+  classification and the `OutputLocation` file name change; the SQL sent to
+  Trino is still untouched.
 - `StatementType`, `SubstatementType`, `UpdateCount` and `OutputLocation` are
   now classified correctly for a SQL statement that starts with a comment
   (`-- ...` or `/* ... */`, possibly with more whitespace and comments after
