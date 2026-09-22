@@ -374,10 +374,14 @@ that state. The format matches Athena byte for byte:
 - Values use the same notation as `GetQueryResults`.
 - A query with no rows writes just the header line.
 
-DDL, `SHOW` and `DESCRIBE` write `<id>.txt` the same way (measured 2026-09-16).
-The file holds the rows `GetQueryResults` returns, joined with `\n`:
+DDL, `SHOW`, `DESCRIBE` and `EXPLAIN` write `<id>.txt` the same way (measured
+2026-09-16). The file holds the rows `GetQueryResults` returns, joined with `\n`:
 
-- No header line, unlike the CSV, and no trailing newline.
+- No header line for DDL, `SHOW` and `DESCRIBE`, unlike the CSV, and no trailing
+  newline. `EXPLAIN` is `DML`, and its file starts with the header line
+  `Query Plan` just as its `GetQueryResults` does (measured 2026-09-15 and
+  2026-09-16); the blank lines Trino puts at the end of a plan stay in the file
+  as empty lines.
 - A statement that returns no rows writes an empty file, `CREATE TABLE` for
   example.
 - Columns are joined with a tab. Athena itself returns one already joined,

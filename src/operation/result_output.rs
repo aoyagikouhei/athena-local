@@ -50,7 +50,12 @@ pub(super) async fn write_result(
             // 本体を書くのは DROP TABLE × Iceberg だけで、`.metadata` を置く文のすべてではない
             // （ALTER TABLE ADD COLUMNS × Hive の本体は 0 バイト。2026-09-20 実測）。
             _ if matches!(engine_ddl, Some(EngineDdl::DropTableIceberg)) => vec![b'\n'],
-            _ => results::to_text(&outcome),
+            // 先頭の列名行を入れるのは GetQueryResults と同じく DML（EXPLAIN）だけで、
+            // DDL / SHOW / DESCRIBE（UTILITY）には入れない（2026-09-15／16 実測。#60 / #63）。
+            _ => results::to_text(
+                &outcome,
+                super::classification::statement_type(&execution.query) == "DML",
+            ),
         };
         let content_type = engine_ddl.is_some().then_some(ENGINE_DDL_CONTENT_TYPE);
         match writer.put(location, body, content_type).await {

@@ -281,6 +281,47 @@ async fn show_の結果を_txt_で書く() {
     assert_eq!(puts[1].key, format!("athena/{id}.txt.metadata"));
 }
 
+/// EXPLAIN（StatementType が DML）の `.txt` は、SHOW / DESCRIBE と違って先頭行に列名
+/// `Query Plan` が入り、行数は GetQueryResults の Rows と一致する（2026-09-15／16 の
+/// 2 ラウンドの結果ファイルが、列名行込みの全行を `\n` で連結したものとバイト単位で一致。#63）。
+/// 末尾の空行も本物と同じく空のまま残り、末尾に改行は付けない。
+#[tokio::test]
+async fn explain_の結果は_txt_の先頭に列名行を入れて書く() {
+    let harness = Harness::builder(select_response())
+        .route(
+            "EXPLAIN SELECT 1",
+            json!({
+                "columns": [{ "name": "Query Plan", "type": "varchar" }],
+                "data": [["Fragment 0 [SINGLE]"], ["           (1)"], [""], [""]]
+            }),
+        )
+        .results_s3()
+        .start()
+        .await;
+
+    let execution = harness
+        .run_query(json!({
+            "QueryString": "EXPLAIN SELECT 1",
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+        }))
+        .await;
+    let id = execution_id(&execution);
+
+    assert_eq!(execution["QueryExecution"]["Status"]["State"], "SUCCEEDED");
+    assert_eq!(
+        output_location(&execution),
+        format!("s3://results-bucket/athena/{id}.txt")
+    );
+    let puts = harness.s3_puts();
+    assert_eq!(puts.len(), 2, "{puts:?}");
+    assert_eq!(puts[0].key, format!("athena/{id}.txt"));
+    assert_eq!(
+        String::from_utf8(puts[0].body.clone()).unwrap(),
+        "Query Plan\nFragment 0 [SINGLE]\n           (1)\n\n"
+    );
+    assert_eq!(puts[1].key, format!("athena/{id}.txt.metadata"));
+}
+
 #[tokio::test]
 async fn txt_の書き込みに失敗しても_succeeded_のままになる() {
     let harness = Harness::builder(select_response())
