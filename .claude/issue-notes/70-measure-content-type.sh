@@ -233,7 +233,7 @@ clean() {
 first_err_line() {
   local f=$1 line
   if [ -s "$f" ]; then
-    line=$(head -1 "$f")
+    line=$(grep -m1 . "$f")
     clean "$line"
   else
     echo "(エラー出力なし)"
@@ -852,7 +852,7 @@ echo "python3: json/csv を読める" >> "$CAPS"
 # 名前解決・接続・スロットリングは再試行する。
 lwg_attempt=1
 while :; do
-  if aws athena list-work-groups --region "$REGION" --max-items 1 \
+  if aws athena list-work-groups --region "$REGION" \
     > "$RUN_DIR/preflight-list-work-groups.json" 2> "$RUN_DIR/preflight-list-work-groups.err"; then
     rm -f "$RUN_DIR/preflight-list-work-groups.err"
     echo "athena list-work-groups: 通った（試行 $lwg_attempt 回）" >> "$CAPS"
