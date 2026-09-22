@@ -295,9 +295,12 @@ Behaviour that matches real Athena:
   Statements whose `SubstatementType` was not measured leave the field out.
   Leading whitespace and comments (`-- ...`, `/* ... */`, possibly interleaved)
   are skipped before the classification keyword is read, the same way Athena
-  does (measured 2026-09-18); this also decides the `OutputLocation` file name
-  and, for `DESCRIBE` / `SHOW CREATE TABLE`, whether the `.metadata` file's
-  leading query ID is the `QueryExecutionId` or Trino's own ID.
+  does (measured 2026-09-18), and a comment between keywords
+  (`DROP /* c */ TABLE t`, `CREATE TABLE t AS -- c\nSELECT 1`) counts as
+  whitespace, also the same way Athena does (measured 2026-09-22); this also
+  decides the `OutputLocation` file name and, for `DESCRIBE` /
+  `SHOW CREATE TABLE`, whether the `.metadata` file's leading query ID is the
+  `QueryExecutionId` or Trino's own ID.
 - A `FAILED` query carries `Status.AthenaError` with the same `ErrorMessage` as
   `StateChangeReason`. Trino's user errors are `ErrorCategory` 2 with the
   `ErrorType` Athena uses for that error name (measured: `TABLE_NOT_FOUND` and
@@ -654,11 +657,22 @@ passed; see Caveats.
   parser for this statement rejects a leading `/* ... */` at execution time
   (measured 2026-09-18): the query fails with `FAILED: ParseException line 1:0
   cannot recognize input near '/' '*' 'c'` and `ErrorCategory` 1 /
-  `ErrorType` 1003. A leading `-- ...` line comment is fine on both. Since
-  athena-local sends the SQL to Trino unmodified, the block-comment form can
-  succeed here where it would fail on real Athena. Whether other statements
-  that Athena parses the same way reject a leading block comment as well is
-  not measured.
+  `ErrorType` 1003. A leading `-- ...` line comment is fine on both. The same
+  happens with a block comment between the keywords: `SHOW /* c */ CREATE
+  TABLE t` and `SHOW CREATE /* c */ TABLE t` are classified as
+  `SHOW_CREATE_TABLE` but fail with a `ParseException` (`ErrorCategory` 1 /
+  `ErrorType` 1003), and `ALTER /* c */ TABLE t ADD COLUMNS (c int)` against
+  a table that does not exist fails with `ParseException line 1:0 cannot
+  recognize input near 'ALTER' '/' '*'` where the uncommented statement fails
+  with `Table not found`; the same statement against an existing Iceberg
+  table succeeds, and `ALTER -- c\nTABLE ...` is fine on both (measured
+  2026-09-22). `DROP /* c */ TABLE`, `CREATE /* c */ TABLE ... AS SELECT`,
+  `SHOW /* c */ TABLES` and `CREATE` / `DROP /* c */ DATABASE` all succeed on
+  Athena. Since athena-local sends the SQL to Trino unmodified, and Trino
+  accepts a comment anywhere whitespace is allowed, every block-comment form
+  can succeed here where it would fail on real Athena. Whether other
+  statements that Athena parses the same way reject a block comment as well
+  is not measured.
 - **Cancellation is checked between pages.** A stopped query is `CANCELLED`
   at once, but the `DELETE` reaches Trino only when the current long poll to
   `nextUri` returns (about a second at most).

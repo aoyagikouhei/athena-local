@@ -118,6 +118,40 @@ pub(crate) fn skip_leading_trivia(sql: &str) -> &str {
     &sql[i..]
 }
 
+/// 空白とコメントを区切りにして、大文字にした語の並びにする。文の種類の判定
+/// （`operation/classification.rs` の `words()` と `results::ResultFile::of`）が使う。
+/// キーワードの間のコメント（`DROP /* c */ TABLE`、`CREATE TABLE t AS -- c\nSELECT 1`）は、
+/// 本物と同じく空白として扱う（2026-09-22 実測。#52。`split_whitespace` だと `/*` や `c` が
+/// 語に数えられて `word(1)` がずれ、SubstatementType が省かれ CTAS の置き場所が変わっていた）。
+///
+/// 引用符の中（`'...'`／`"..."`）は `skip_quoted` で語の一部として飛ばし、その中の `--` や `/*` を
+/// コメントと読まない。S3 Express のバケット名（`a--b--x-s3`）を `external_location` に書いた
+/// 1 行の CTAS で、`--` から文末までが消えて `AS SELECT` を見失う退行を計画攻撃が見つけた。
+/// `alias_qualified_names` と同じく、引用符 → コメント → その他の順で見る。
+pub(crate) fn words(sql: &str) -> Vec<String> {
+    let bytes = sql.as_bytes();
+    let mut words = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        i = skip_trivia(bytes, i);
+        let start = i;
+        while i < bytes.len() {
+            match bytes[i] {
+                b' ' | b'\t' | b'\r' | b'\n' => break,
+                b'\'' | b'"' => i = skip_quoted(bytes, i),
+                _ => match comment_end(bytes, i) {
+                    Some(_) => break,
+                    None => i += 1,
+                },
+            }
+        }
+        if i > start {
+            words.push(sql[start..i].to_uppercase());
+        }
+    }
+    words
+}
+
 /// 先頭の空白・コメントを読み飛ばしてからキーワードを 1 語ぶん読み飛ばす。大文字小文字は
 /// 区別せず、続きが識別子の文字（英数字・`_`）なら別の語（`COLUMN` に対する `COLUMNS` など）
 /// とみなして一致させない。続きが `(` や文字列リテラルの `'` など識別子でない文字なら
@@ -165,9 +199,10 @@ fn next_is_dot(bytes: &[u8], i: usize) -> bool {
 /// 修飾名を 1 つ読み飛ばして、その後ろの位置を返す。`a`、`a.b`、`a.b.c`、
 /// `"quoted name".b` のように、ドットの前後に空白やコメントを挟んだ形も読み飛ばす。
 ///
-/// `operation/classification.rs` の ALTER TABLE の判定が使う。`words()`（`split_whitespace`）は
-/// 引用符付き識別子の中の空白や、ドットを挟んだ修飾名で語数を数え間違えるため、テーブル名の
-/// 終わりの位置をここで確かめてから、その後ろの語だけを見て判定する。
+/// `operation/classification.rs` の ALTER TABLE の判定が使う。`words()` はドットの前後に空白や
+/// コメントを挟んだ修飾名（`cat . ns . t`）を複数の語に数えるため、テーブル名の終わりの位置を
+/// ここで確かめてから、その後ろの語だけを見て判定する（引用符付き識別子の中の空白は #52 から
+/// `words()` も 1 語として読むが、修飾名の分割は残る）。
 ///
 /// `operation/target_table.rs::parse_qualified_name` は名前の中身を取り出す関数で、
 /// こちらは中身を見ずに位置だけを進める（用途が違うので無理に共通化しない。issue #44）。
@@ -439,6 +474,62 @@ mod tests {
     #[test]
     fn 非_ascii_のコメントでもバイト単位の走査が途中を切らない() {
         assert_eq!(skip_leading_trivia("-- あ\nSELECT 1"), "SELECT 1");
+    }
+
+    #[test]
+    fn words_は空白とコメントの両方を区切りにして大文字の語にする() {
+        assert_eq!(words("DROP TABLE t"), ["DROP", "TABLE", "T"]);
+        // キーワードの間のコメントは空白と同じ区切り（本物と同じ。2026-09-22 実測）。
+        assert_eq!(words("DROP /* c */ TABLE t"), ["DROP", "TABLE", "T"]);
+        assert_eq!(words("DROP -- c\nTABLE t"), ["DROP", "TABLE", "T"]);
+        // 空白を挟まずに語に接していても区切りになる。
+        assert_eq!(words("DROP/* c */TABLE t"), ["DROP", "TABLE", "T"]);
+        assert_eq!(words("SELECT 1--c\n2"), ["SELECT", "1", "2"]);
+        // 先頭と末尾のトリビアは語にならない。
+        assert_eq!(words("  /* a */ SELECT 1 -- c"), ["SELECT", "1"]);
+        // コメントでない `/` や `-` は語の一部のまま。
+        assert_eq!(words("SELECT a/b, a-b"), ["SELECT", "A/B,", "A-B"]);
+        // `(` は取り除かない（`(SELECT` のまま。呼び出し元が要るときだけ取り除く）。
+        assert_eq!(words("(SELECT 1)"), ["(SELECT", "1)"]);
+        // 多バイト文字を含む語でも途中を切らない。
+        assert_eq!(
+            words("SELECT '日本語' /* あ */ x"),
+            ["SELECT", "'日本語'", "X"]
+        );
+    }
+
+    #[test]
+    fn words_は引用符の中のコメント記号をコメントと読まない() {
+        // S3 Express のバケット名は `--` を含む。1 行の CTAS でここから文末が消えると
+        // `AS SELECT` を見失う（計画攻撃で見つかった退行）。
+        assert_eq!(
+            words("SELECT 's3://a--b--x-s3/p/' AS x"),
+            ["SELECT", "'S3://A--B--X-S3/P/'", "AS", "X"]
+        );
+        assert_eq!(words("SELECT '/*' AS x"), ["SELECT", "'/*'", "AS", "X"]);
+        assert_eq!(
+            words(r#"SELECT "a--b" FROM t"#),
+            ["SELECT", "\"A--B\"", "FROM", "T"]
+        );
+        // 引用符の中の空白も語を切らない。重ねた引用符は中身として読む。
+        assert_eq!(words("SELECT 'a b' x"), ["SELECT", "'A B'", "X"]);
+        assert_eq!(
+            words("SELECT 'it''s -- x' y"),
+            ["SELECT", "'IT''S -- X'", "Y"]
+        );
+        // 閉じていない引用符は末尾まで 1 語。
+        assert_eq!(words("SELECT 'a -- b"), ["SELECT", "'A -- B"]);
+    }
+
+    #[test]
+    fn words_はコメントだけの文や未閉じのコメントで空か途中までになる() {
+        assert!(words("").is_empty());
+        assert!(words("   ").is_empty());
+        assert!(words("/* only */").is_empty());
+        assert!(words("-- only").is_empty());
+        // 未閉じの `/*` は comment_end と同じく末尾まで飛ばす。
+        assert_eq!(words("SELECT /* c"), ["SELECT"]);
+        assert_eq!(words("SELECT/* c"), ["SELECT"]);
     }
 
     #[test]
