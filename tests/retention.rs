@@ -141,6 +141,7 @@ async fn 実行の完了が遅れても保持期限切れまで待ち切る() {
         .statement_delay(Duration::from_secs(3))
         .start()
         .await;
+    let started = Instant::now();
     let id = harness
         .start_query(json!({ "QueryString": "SELECT n FROM t" }))
         .await;
@@ -148,4 +149,10 @@ async fn 実行の完了が遅れても保持期限切れまで待ち切る() {
     let error = wait_until_gone(&harness, &id).await;
 
     assert_eq!(error["AthenaErrorCode"], "QUERY_EXECUTION_NOT_FOUND");
+    // 遅延の前に失敗して捨てられただけでも 400 になる。本当に完了まで待ち切ったことを固定する。
+    assert!(
+        started.elapsed() >= Duration::from_secs(3),
+        "完了を待たずに消えた: {:?}",
+        started.elapsed()
+    );
 }
