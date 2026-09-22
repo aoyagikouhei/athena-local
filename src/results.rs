@@ -198,13 +198,16 @@ pub fn to_csv(outcome: &Outcome) -> Vec<u8> {
     csv.into_bytes()
 }
 
-/// 本物と同じ書式: GetQueryResults の行（先頭の列名行は除く）を `\t` で連結し、`\n` でつなぐ。
+/// 本物と同じ書式: GetQueryResults の行を `\t` で連結し、`\n` でつなぐ。
+/// 先頭の列名行を入れるかどうかは `with_header` で呼び出し元（文の種類を知る側）が決める。
+/// DDL / SHOW / DESCRIBE（UTILITY）は入れず、EXPLAIN（DML）は入れる（本物の `.txt` の先頭行が
+/// `Query Plan` で、行数が GetQueryResults の Rows と一致する。2026-09-15／16 実測。#63）。
 /// NULL は空文字（CSV と違い引用符は付けない）。末尾に改行は付けない。行が無ければ空。
 /// 値の表記（複合型・double・varbinary など）は to_csv と同じ。
-pub fn to_text(outcome: &Outcome) -> Vec<u8> {
+pub fn to_text(outcome: &Outcome, with_header: bool) -> Vec<u8> {
     convert::all_rows(outcome)
         .into_iter()
-        .skip(1)
+        .skip(if with_header { 0 } else { 1 })
         .map(|row| {
             row.into_iter()
                 .map(|cell| cell.unwrap_or_default())
@@ -309,7 +312,7 @@ mod tests {
     }
 
     fn text(outcome: &Outcome) -> String {
-        String::from_utf8(to_text(outcome)).expect("UTF-8 でない")
+        String::from_utf8(to_text(outcome, false)).expect("UTF-8 でない")
     }
 
     /// 本番 Athena に投げたクエリ（抜粋）:
@@ -413,7 +416,7 @@ mod tests {
     }
 
     #[test]
-    fn to_text_は列名の行を入れない() {
+    fn to_text_は見出し無しなら列名の行を入れない() {
         let outcome = Outcome {
             columns: vec![column("x", "integer", &scalar("integer"))],
             rows: vec![vec![Value::from(1)]],
@@ -421,6 +424,25 @@ mod tests {
         };
 
         assert_eq!(text(&outcome), "1");
+    }
+
+    #[test]
+    fn to_text_は見出しありなら列名の行を先頭に入れる() {
+        // EXPLAIN の .txt（2026-09-15／16 実測）。末尾の空行は空のまま残り、末尾に改行は付けない。
+        let outcome = Outcome {
+            columns: vec![column("Query Plan", "varchar", &scalar("varchar"))],
+            rows: vec![
+                vec![Value::from("Fragment 0 [SINGLE]")],
+                vec![Value::from("")],
+                vec![Value::from("")],
+            ],
+            ..Outcome::default()
+        };
+
+        assert_eq!(
+            String::from_utf8(to_text(&outcome, true)).expect("UTF-8 でない"),
+            "Query Plan\nFragment 0 [SINGLE]\n\n"
+        );
     }
 
     #[test]
@@ -442,14 +464,14 @@ mod tests {
     fn to_text_は行が無ければ空になる() {
         // CREATE TABLE や CREATE DATABASE のように列が無い DDL。
         let ddl = Outcome::default();
-        assert_eq!(to_text(&ddl), Vec::<u8>::new());
+        assert_eq!(to_text(&ddl, false), Vec::<u8>::new());
 
         // DML / CTAS は update_count がある。
         let dml = Outcome {
             update_count: Some(1),
             ..Outcome::default()
         };
-        assert_eq!(to_text(&dml), Vec::<u8>::new());
+        assert_eq!(to_text(&dml, false), Vec::<u8>::new());
     }
 
     #[test]

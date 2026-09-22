@@ -225,6 +225,14 @@ later name the date they were measured on.
 
 ### Fixed
 
+- The `<id>.txt` result file of an `EXPLAIN` now starts with the header line
+  `Query Plan`, as on Athena (measured 2026-09-15 and 2026-09-16, where the
+  file has exactly the rows `GetQueryResults` returns, header included). It used
+  to drop the first row like the `<id>.txt` of a DDL, `SHOW` or `DESCRIBE`,
+  which have no header line, so a client reading the file straight from S3
+  (Athena JDBC with `ResultFetcher=auto` or `S3`) saw one line fewer than on
+  Athena. The header line follows `StatementType`: only `DML` gets it, the same
+  split `GetQueryResults` uses.
 - A malformed environment variable (`TRINO_CATALOG_MAP`,
   `ATHENA_LOCAL_RETENTION_SECONDS`, `ATHENA_LOCAL_WORK_GROUPS`,
   `ATHENA_LOCAL_RESULTS` and the S3 settings) now stops the server with the
