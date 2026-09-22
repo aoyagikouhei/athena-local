@@ -704,9 +704,22 @@ passed; see Caveats.
   `SHOW CREATE TABLE` is not affected either: it writes plain protobuf, like
   `DESCRIBE`. athena-local writes the same plain protobuf it writes for every
   other statement, so a client that parses it sees the columns instead of
-  failing; Athena JDBC 3.8.1 in its default `ResultFetcher=auto` fetched the
-  companion file of a `SHOW TABLES` from athena-local and read it without an
-  exception (verified 2026-09-17).
+  failing. Athena JDBC 3.8.1 in its default `ResultFetcher=auto` fetches that
+  companion file and reads it without an exception: verified for `SHOW TABLES`
+  on 2026-09-17, and on 2026-09-22 for `SHOW SCHEMAS` (one column) and
+  `SHOW COLUMNS` (Trino's four columns, 205 bytes) in the same run. The driver
+  logs `loaded query result metadata` for each, then still presents the `.txt`
+  body as a single `varchar` column named `_col0`, one row per line; with
+  `ResultFetcher=S3` it does not fetch the `.txt.metadata` at all, and with
+  `ResultFetcher=GetQueryResults` it never touches S3. The other three
+  statements cannot reach the file: `SHOW DATABASES`, `SHOW PARTITIONS` and
+  `SHOW TBLPROPERTIES` are Athena syntax that Trino's grammar lacks, so the
+  syntax check rejects them (`mismatched input 'DATABASES'` and so on, returned
+  as `InvalidRequestException` before any file is written; Trino 482,
+  2026-09-22). Write `SHOW SCHEMAS` for `SHOW DATABASES` (classified as
+  `SHOW_DATABASES`, see above) and `SELECT * FROM "<table>$partitions"` for
+  `SHOW PARTITIONS`; `SHOW TBLPROPERTIES` has no Trino spelling
+  (`SHOW CREATE TABLE` includes the properties).
 - **Table format is detected per Trino catalog.** Real Athena keeps Hive and
   Iceberg tables side by side in one `AwsDataCatalog`; Trino can only put them
   in separate catalogs, so athena-local's detection follows your Trino catalog
