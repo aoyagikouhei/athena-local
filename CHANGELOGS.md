@@ -291,6 +291,14 @@ later name the date they were measured on.
   extra row whose value was the column name. `MaxResults` / `NextToken` now
   count data rows only for those statements. The `<id>.txt` result file is
   unchanged (it never had a header line).
+- A query whose leading `(` is followed by whitespace or a newline (`( SELECT
+  1 ) UNION ALL ( SELECT 2 )`, the shape most formatters emit) is now
+  classified like `(SELECT 1)`: `StatementType` is `DML` and the result file
+  is `<id>.csv`. The lone `(` used to leave an empty first word, so the
+  statement fell through to `UTILITY` and `<id>.txt`, and with the fix above
+  `GetQueryResults` would have dropped its first data row instead of the
+  header. Found in review of the fix above; Athena's own classification of
+  a parenthesised query has not been measured separately.
 
 ## [0.4.0] - 2026-09-15
 

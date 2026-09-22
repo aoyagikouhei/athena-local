@@ -44,9 +44,15 @@ impl ResultFile {
     /// （2026-09-22 実測。#52）。文の種類だけで決まり、SQL の残りは見ない。
     pub fn of(query: &str) -> Self {
         let words = crate::catalog::words(query);
-        let word = |index: usize| words.get(index).map(String::as_str).unwrap_or_default();
+        // 先頭の `(` は取り除いて判定する。`( SELECT` のように `(` だけの語が先頭に来たら、
+        // その次の語で判定する（`operation/classification.rs` の `words` と同じ扱い。#64）。
+        let first = words
+            .iter()
+            .map(|word| word.trim_start_matches('('))
+            .find(|word| !word.is_empty())
+            .unwrap_or_default();
 
-        match word(0).trim_start_matches('(') {
+        match first {
             "SELECT" | "WITH" | "VALUES" | "TABLE" | "UPDATE" | "DELETE" | "MERGE" | "VACUUM" => {
                 Self::Csv
             }
@@ -544,6 +550,12 @@ mod tests {
             ("SELECT 1", ResultFile::Csv),
             ("  with t AS (SELECT 1) SELECT * FROM t", ResultFile::Csv),
             ("(SELECT 1) UNION (SELECT 2)", ResultFile::Csv),
+            // `(` の直後に空白や改行があっても同じ（#64 のレビューで見つかった）。
+            ("( SELECT 1 ) UNION ( SELECT 2 )", ResultFile::Csv),
+            (
+                "(\n  SELECT 1\n) UNION ALL (\n  SELECT 2\n)",
+                ResultFile::Csv,
+            ),
             ("VALUES 1", ResultFile::Csv),
             ("INSERT INTO t VALUES (1)", ResultFile::Manifest),
             // UPDATE / DELETE / MERGE は INSERT と違い .csv になる（Iceberg のテーブルで実測。

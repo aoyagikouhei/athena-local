@@ -2,10 +2,13 @@
 
 /// 空白とコメントを区切りにした大文字の語の並び（`catalog::words`）から、先頭の `(` を取り除いたもの。
 /// 先頭のコメント（2026-09-18 実測）もキーワードの間のコメント（2026-09-22 実測。#52）も語にならない。
+/// `(` だけの語（`( SELECT` のように直後に空白や改行があるとき）は取り除くと空になるので落とし、
+/// `(SELECT` と同じ判定にする（#64 のレビューで見つかった）。
 pub(super) fn words(query: &str) -> Vec<String> {
     crate::catalog::words(query)
         .into_iter()
         .map(|word| word.trim_start_matches('(').to_string())
+        .filter(|word| !word.is_empty())
         .collect()
 }
 
@@ -160,6 +163,13 @@ mod tests {
         // 先頭のコメントは読み飛ばして判定する（2026-09-18 実測）。
         assert_eq!(statement_type("-- c\nSELECT 1"), "DML");
         assert_eq!(statement_type("/* c */ SHOW TABLES"), "UTILITY");
+        // `(` の直後に空白や改行があっても、`(SELECT` と同じく括弧を飛ばして判定する
+        // （#64 のレビューで見つかった。空の語が先頭に残って UTILITY に落ちていた）。
+        assert_eq!(statement_type("( SELECT 1 )"), "DML");
+        assert_eq!(
+            statement_type("(\n  SELECT 1\n)\nUNION ALL\n(\n  SELECT 2\n)"),
+            "DML"
+        );
     }
 
     #[test]
