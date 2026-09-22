@@ -79,7 +79,7 @@ pub(super) fn substatement_type(query: &str) -> Option<&'static str> {
 /// RENAME TO × Hive）でも SubstatementType は同じ値で返るので、成否では分けない（2026-09-21 実測）。
 /// `ALTER`／`TABLE` のキーワード自体は呼び出し元の `word(0)`／`word(1)` の guard で確定している。
 ///
-/// キーワードの一致は `split_whitespace` の完全一致ではなく `catalog::skip_keyword` で確かめる。
+/// キーワードの一致は `words()` の語の完全一致ではなく `catalog::skip_keyword` で確かめる。
 /// そうしないと `TBLPROPERTIES('comment' = 'x')` のようにキーワードの直後に空白なしで
 /// `(` や文字列リテラルが続く書き方を判定できない（3 本目のレビューで実測）。
 fn alter_table_action(query: &str) -> Option<&'static str> {

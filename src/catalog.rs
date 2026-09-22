@@ -199,9 +199,10 @@ fn next_is_dot(bytes: &[u8], i: usize) -> bool {
 /// 修飾名を 1 つ読み飛ばして、その後ろの位置を返す。`a`、`a.b`、`a.b.c`、
 /// `"quoted name".b` のように、ドットの前後に空白やコメントを挟んだ形も読み飛ばす。
 ///
-/// `operation/classification.rs` の ALTER TABLE の判定が使う。`words()`（`split_whitespace`）は
-/// 引用符付き識別子の中の空白や、ドットを挟んだ修飾名で語数を数え間違えるため、テーブル名の
-/// 終わりの位置をここで確かめてから、その後ろの語だけを見て判定する。
+/// `operation/classification.rs` の ALTER TABLE の判定が使う。`words()` はドットの前後に空白や
+/// コメントを挟んだ修飾名（`cat . ns . t`）を複数の語に数えるため、テーブル名の終わりの位置を
+/// ここで確かめてから、その後ろの語だけを見て判定する（引用符付き識別子の中の空白は #52 から
+/// `words()` も 1 語として読むが、修飾名の分割は残る）。
 ///
 /// `operation/target_table.rs::parse_qualified_name` は名前の中身を取り出す関数で、
 /// こちらは中身を見ずに位置だけを進める（用途が違うので無理に共通化しない。issue #44）。
@@ -477,7 +478,6 @@ mod tests {
 
     #[test]
     fn words_は空白とコメントの両方を区切りにして大文字の語にする() {
-        let words = |sql: &str| words(sql);
         assert_eq!(words("DROP TABLE t"), ["DROP", "TABLE", "T"]);
         // キーワードの間のコメントは空白と同じ区切り（本物と同じ。2026-09-22 実測）。
         assert_eq!(words("DROP /* c */ TABLE t"), ["DROP", "TABLE", "T"]);
@@ -500,7 +500,6 @@ mod tests {
 
     #[test]
     fn words_は引用符の中のコメント記号をコメントと読まない() {
-        let words = |sql: &str| words(sql);
         // S3 Express のバケット名は `--` を含む。1 行の CTAS でここから文末が消えると
         // `AS SELECT` を見失う（計画攻撃で見つかった退行）。
         assert_eq!(
@@ -524,7 +523,6 @@ mod tests {
 
     #[test]
     fn words_はコメントだけの文や未閉じのコメントで空か途中までになる() {
-        let words = |sql: &str| words(sql);
         assert!(words("").is_empty());
         assert!(words("   ").is_empty());
         assert!(words("/* only */").is_empty());
