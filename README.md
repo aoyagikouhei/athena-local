@@ -455,7 +455,10 @@ reads:
   own companion file for a `MERGE` differs from the one for an `UPDATE` or a
   `DELETE` only in the length of that string: 74 bytes against 75, with every
   byte after the `updateType` identical, down to the single `rows bigint`
-  column (measured 2026-09-20);
+  column (measured 2026-09-20). Trino itself reports `MERGE` as the
+  `updateType` of a `MERGE`, so the string athena-local passes through is the
+  one Athena writes (checked against Trino 482 on 2026-09-22, where every byte
+  after the query id matched Athena's own file);
 - then one message per column carrying the same values as the `ColumnInfo` of
   `GetQueryResults`: `CatalogName`, `Name`, `Label`, `Type`, `Precision`,
   `Scale`, `Nullable`, `CaseSensitive`.

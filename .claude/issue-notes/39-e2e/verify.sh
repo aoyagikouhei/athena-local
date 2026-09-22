@@ -389,6 +389,82 @@ run_case() {
   fi
 }
 
+# .metadata の先頭 2 フィールド（1 クエリ ID、2 updateType。どちらも長さ前置の文字列）と
+# 続く field 3（更新件数。varint）を読む。長さと件数は 1 バイト（< 128）の前提。
+# 標準出力に「<updateType>\t<更新件数>\t<field 3 より後ろの hex>」を書く。形が違えば 1 を返す。
+read_metadata_head() {
+  local file="$1"
+  local hex len off type_hex count rest
+  hex=$(od -An -tx1 "$file" | tr -d ' \n')
+  [ "${hex:0:2}" = "0a" ] || { echo "field 1 のタグが 0a でない: ${hex:0:2}"; return 1; }
+  len=$((16#${hex:2:2}))
+  off=$((4 + len * 2))
+  [ "${hex:$off:2}" = "12" ] || { echo "field 2 のタグが 12 でない: ${hex:$off:2}"; return 1; }
+  len=$((16#${hex:$((off + 2)):2}))
+  type_hex="${hex:$((off + 4)):$((len * 2))}"
+  off=$((off + 4 + len * 2))
+  [ "${hex:$off:2}" = "18" ] || { echo "field 3 のタグが 18 でない: ${hex:$off:2}"; return 1; }
+  count=$((16#${hex:$((off + 2)):2}))
+  rest="${hex:$((off + 4))}"
+  printf '%s\t%s\t%s\n' "$(printf "$(echo "$type_hex" | sed 's/../\\x&/g')")" "$count" "$rest"
+}
+
+# DML（MERGE）のケース。本体（<id>.csv）は置かれず、<id>.csv.metadata だけが置かれ、
+# その field 2 が expect_type、field 3 が expect_count であることを確かめる。
+# field 3 より後ろ（列 `rows bigint`）は本物の Athena の実測値（tests/metadata.rs の
+# COLUMN_ROWS_BIGINT）とバイト単位で同じであることも見る。
+run_merge_case() {
+  local no="$1" name="$2" sql="$3" catalog="$4" database="$5" expect_type="$6" expect_count="$7"
+  local rows_bigint_column="22220a04686976652204726f77732a04726f77733206626967696e743813400048035000"
+
+  log "ケース $no: $name -- $sql"
+  local id resp state
+
+  id=$(athena_start_query "$sql" "$catalog" "$database")
+  if [ -z "$id" ]; then
+    record "$no $name" FAIL "StartQueryExecution が QueryExecutionId を返さなかった"
+    return
+  fi
+
+  resp=$(athena_wait "$id")
+  state=$(echo "$resp" | jq -r '.QueryExecution.Status.State // empty')
+  if [ "$state" != "SUCCEEDED" ]; then
+    local reason
+    reason=$(echo "$resp" | jq -r '.QueryExecution.Status.StateChangeReason // empty')
+    record "$no $name" FAIL "終了状態が SUCCEEDED でない: $state ($reason) [id=$id]"
+    return
+  fi
+
+  local key="${PREFIX}/${id}.csv" detail="" ok=1
+  if mc_exists "$(mc_stat "$key")"; then
+    ok=0; detail="$detail 本体 ${id}.csv がある（DML は .metadata だけを置く想定）"
+  fi
+
+  local out="$EVIDENCE_DIR/${id}.csv.metadata"
+  if ! mc_exists "$(mc_stat "${key}.metadata")"; then
+    record "$no $name" FAIL ".metadata が無い [id=$id]"
+    return
+  fi
+  mc_get "${key}.metadata" "$out"
+  od -An -tx1c "$out" >"$out.od.txt" 2>/dev/null || true
+
+  local head type_ count rest
+  if ! head=$(read_metadata_head "$out"); then
+    record "$no $name" FAIL ".metadata の形が想定外: $head (od: $out.od.txt) [id=$id]"
+    return
+  fi
+  IFS=$'\t' read -r type_ count rest <<<"$head"
+  [ "$type_" = "$expect_type" ] || { ok=0; detail="$detail updateType=$type_(期待 $expect_type)"; }
+  [ "$count" = "$expect_count" ] || { ok=0; detail="$detail count=$count(期待 $expect_count)"; }
+  [ "$rest" = "$rows_bigint_column" ] || { ok=0; detail="$detail field3より後ろ=$rest(期待 $rows_bigint_column)"; }
+
+  if [ "$ok" = "1" ]; then
+    record "$no $name" PASS "本体無し / metadata: updateType=$type_ count=$count 列=rows bigint（本物と同じバイト列） (od: $out.od.txt) [id=$id]"
+  else
+    record "$no $name" FAIL "不一致:$detail (od: $out.od.txt) [id=$id]"
+  fi
+}
+
 # Athena の綴り（ADD COLUMNS）で ALTER TABLE を投げ、athena-local の構文確認
 # （PREPARE ... FROM）で Trino の構文エラーとして弾かれることを確かめる。
 # classification.rs の判定自体は ADD COLUMNS / ADD COLUMN のどちらでも効くが、
@@ -451,6 +527,7 @@ main() {
   local t_missing="t_missing_${RUN_ID}"
   local t_alter_hive="t_alter_hive_${RUN_ID}"
   local t_alter_iceberg="t_alter_iceberg_${RUN_ID}"
+  local t_merge_iceberg="t_merge_iceberg_${RUN_ID}"
 
   log "DROP TABLE 用のテーブルを作る（形式ごと）"
   if ! trino_exec "CREATE TABLE iceberg.default.${t_iceberg} AS SELECT 1 AS n" iceberg default; then
@@ -474,6 +551,13 @@ main() {
     record "セットアップ(alter iceberg)" FAIL "iceberg.default.${t_alter_iceberg} の作成に失敗した"
   else
     record "セットアップ(alter iceberg)" PASS "iceberg.default.${t_alter_iceberg} 作成済み"
+  fi
+
+  log "MERGE 用のテーブルを作る（Iceberg。MERGE は Iceberg のテーブルでしか動かない）"
+  if ! trino_exec "CREATE TABLE iceberg.default.${t_merge_iceberg} AS SELECT 1 AS n, 'a' AS s" iceberg default; then
+    record "セットアップ(merge iceberg)" FAIL "iceberg.default.${t_merge_iceberg} の作成に失敗した"
+  else
+    record "セットアップ(merge iceberg)" PASS "iceberg.default.${t_merge_iceberg} 作成済み"
   fi
 
   if ! build_athena_local; then
@@ -561,6 +645,13 @@ main() {
   run_case 8 "ALTER_TABLE_SET_PROPERTIES_iceberg" \
     "ALTER TABLE ${t_alter_iceberg} SET PROPERTIES format = 'PARQUET'" iceberg default txt \
     0 "binary/octet-stream" 0 0
+
+  # ケース 9（issue #56）: MERGE × Iceberg。本物の Trino が updateType に "MERGE" を返し、
+  # .metadata の field 2 がその文字列になること（本物の Athena は "MERGE"。2026-09-20 実測）。
+  # 1 行が MATCHED（更新）、1 行が NOT MATCHED（挿入）になる形にして、field 3（更新件数）が 2 になることも見る。
+  run_merge_case 9 "MERGE_iceberg" \
+    "MERGE INTO ${t_merge_iceberg} AS t USING (VALUES (1, 'b'), (2, 'c')) AS u(n, s) ON t.n = u.n WHEN MATCHED THEN UPDATE SET s = u.s WHEN NOT MATCHED THEN INSERT (n, s) VALUES (u.n, u.s)" \
+    iceberg default MERGE 2
 
   return 0
 }

@@ -265,7 +265,10 @@ later name the date they were measured on.
   differs from the one for an `UPDATE` or a `DELETE` only in the length of the
   `updateType` string, 74 bytes against 75; every byte after it was identical,
   down to the single `rows bigint` column with `Precision` 19. athena-local
-  passes Trino's `updateType` straight through, so no behaviour changed.
+  passes Trino's `updateType` straight through, so no behaviour changed. That
+  pass-through was then checked against Trino 482 on 2026-09-22: Trino reports
+  `MERGE` for a `MERGE`, and the companion file athena-local wrote matched
+  Athena's own byte for byte after the query id.
 - `SubstatementType` for `ALTER TABLE` is classified correctly instead of by a
   full-text scan for the words `ADD` and a word starting with `COLUMN`
   anywhere in the statement, which wrongly returned `ALTER_TABLE_ADD_COLUMN`
