@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use athena_local::config::{
     Config, DEFAULT_RETENTION, DEFAULT_S3_PUT_TIMEOUT, DEFAULT_WORK_GROUP, ResultsMode, S3Settings,
@@ -379,10 +379,12 @@ impl Harness {
     }
 
     /// クエリを投げ、QUEUED / RUNNING を抜けるまで待って最後の GetQueryExecution を返す。
+    /// 諦めるときは、次に落ちたときに原因を切り分けられるよう、待った時間と最後の状態を添える。
     pub async fn run_query(&self, request: Value) -> Value {
         let id = self.start_query(request).await;
 
-        for _ in 0..100 {
+        let started = Instant::now();
+        loop {
             let (_, execution) = self
                 .call("GetQueryExecution", json!({ "QueryExecutionId": id }))
                 .await;
@@ -393,22 +395,32 @@ impl Harness {
             if state != "QUEUED" && state != "RUNNING" {
                 return execution;
             }
+            let elapsed = started.elapsed();
+            if elapsed >= WAIT_DEADLINE {
+                panic!("クエリが終わらない（{elapsed:?} 待った。最後の状態: {state}）");
+            }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-
-        panic!("クエリが終わらない");
     }
 }
 
-/// 条件が成り立つまで待つ。成り立たなければ what を添えて落ちる。
+/// 待ちヘルパが諦める上限。回数ではなく経過時間で諦める（`tests/retention.rs` の `GONE_DEADLINE` と同じ値）。
+/// 負荷でバックグラウンドの実行が遅れても待ち切るための上限で、成功時には使い切らない（#61、#67）。
+pub const WAIT_DEADLINE: Duration = Duration::from_secs(30);
+
+/// 条件が成り立つまで待つ。成り立たなければ what と待った時間を添えて落ちる。
 pub async fn wait_for(what: &str, mut check: impl FnMut() -> bool) {
-    for _ in 0..200 {
+    let started = Instant::now();
+    loop {
         if check() {
             return;
         }
+        let elapsed = started.elapsed();
+        if elapsed >= WAIT_DEADLINE {
+            panic!("待っても起きなかった: {what}（{elapsed:?} 待った）");
+        }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    panic!("待っても起きなかった: {what}");
 }
 
 /// QueryExecution から実行 ID を取り出す。
