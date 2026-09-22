@@ -245,7 +245,13 @@ query and the catalog name the request used.
 
 Behaviour that matches real Athena:
 
-- The first row of the first page of a `SELECT` result holds the column names.
+- The first row of the first page of a `SELECT` or `EXPLAIN` result (`StatementType`
+  `DML`) holds the column names. `SHOW ...` and `DESCRIBE` (`UTILITY`) start with
+  the first data row instead, as on Athena (`SHOW TABLES`, `SHOW DATABASES`,
+  `SHOW COLUMNS`, `SHOW CREATE TABLE`, `SHOW PARTITIONS`, `SHOW TBLPROPERTIES`
+  and `DESCRIBE`, measured 2026-09-15 to 2026-09-22). Athena JDBC skips the
+  header row only for `DML`, so it used to show the column name as the first
+  row of a `SHOW` result with `ResultFetcher=GetQueryResults`.
 - Values are returned as strings (`Datum.VarCharValue`); NULL omits the field.
 - Timestamps keep their precision (`2020-01-01 12:34:56.789123` for
   `timestamp(6)`, no fraction for `timestamp(0)`), as Athena does.

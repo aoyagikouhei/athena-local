@@ -44,7 +44,13 @@ pub fn get_query_results(app: &App, body: &Bytes) -> Response {
         return not_succeeded(execution.state);
     };
 
-    let rows = convert::all_rows(&outcome);
+    let mut rows = convert::all_rows(&outcome);
+    // 先頭の列名行を返すのは DML（SELECT / EXPLAIN）だけ。UTILITY（SHOW / DESCRIBE）では本物は
+    // データの 1 行目から返す（2026-09-15〜22 の実測 5 ラウンドの応答を読み直して確認。#60）。
+    // 結果ファイル（results::to_csv / to_text）は列名行込みの all_rows を使い続けるので、ここで外す。
+    if super::classification::statement_type(&execution.query) != "DML" && !rows.is_empty() {
+        rows.remove(0);
+    }
     let offset = request
         .next_token
         .and_then(|token| token.parse::<usize>().ok())
