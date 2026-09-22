@@ -343,4 +343,89 @@ mod tests {
             assert_eq!(substatement_type(query), Some(expected), "{query:?}");
         }
     }
+
+    // 以下の 3 つは、issue #49 で `skip_keyword` を `catalog.rs` へ統合する前に、着手前の挙動を
+    // 境界入力で固定したもの。統合は挙動を変えないので red が成立しない。代わりにこれらが
+    // 「統合の前後で結果が変わらない」ことの網になる。期待値は推測ではなく、着手前のコードに
+    // 一時テストを足して実際に流した出力をそのまま写した。
+
+    #[test]
+    fn substatement_type_はトリビアが何個どこに挟まっても同じ結果になる() {
+        for (query, expected) in [
+            (
+                "  ALTER TABLE t ADD COLUMNS (c int)",
+                Some("ALTER_TABLE_ADD_COLUMN"),
+            ),
+            (
+                "-- c\nALTER TABLE t ADD COLUMNS (c int)",
+                Some("ALTER_TABLE_ADD_COLUMN"),
+            ),
+            // トリビアを 2 つ重ねる。
+            (
+                "ALTER TABLE t /* a */ -- b\nADD COLUMNS (c int)",
+                Some("ALTER_TABLE_ADD_COLUMN"),
+            ),
+            (
+                "ALTER TABLE t ADD /* c */ COLUMNS (c int)",
+                Some("ALTER_TABLE_ADD_COLUMN"),
+            ),
+            (
+                "ALTER TABLE t SET /* c */ TBLPROPERTIES ('a' = 'b')",
+                Some("ALTER_TABLE_PROPERTIES"),
+            ),
+            // `ALTER` と `TABLE` の間のコメントだけは `alter_table_action` に届かない。
+            // `words()` が `split_whitespace` で語を数えるので `word(1)` が `/*` になり、
+            // 呼び出し元（`substatement_type`）の guard の時点で None に落ちるため
+            // （`skip_keyword` の手前の話で、統合しても変わらない）。
+            ("ALTER /* c */ TABLE t ADD COLUMNS (c int)", None),
+        ] {
+            assert_eq!(substatement_type(query), expected, "{query:?}");
+        }
+    }
+
+    #[test]
+    fn substatement_type_はキーワードの直後が識別子の文字かどうかで一致を決める() {
+        for (query, expected) in [
+            // 続きが英数字・`_` なら別の語とみなして一致させない。
+            ("ALTER TABLE t ADDX COLUMNS (c int)", None),
+            ("ALTER TABLE t ADD COLUMNS_X (c int)", None),
+            ("ALTER TABLE t SET TBLPROPERTIESX ('a' = 'b')", None),
+            // 続きが識別子の文字でなければ、空白が無くても一致する。
+            (
+                r#"ALTER TABLE t ADD COLUMN"c" int"#,
+                Some("ALTER_TABLE_ADD_COLUMN"),
+            ),
+            (
+                "ALTER TABLE t DROP COLUMN(c)",
+                Some("ALTER_TABLE_DROP_COLUMN"),
+            ),
+        ] {
+            assert_eq!(substatement_type(query), expected, "{query:?}");
+        }
+    }
+
+    #[test]
+    fn substatement_type_は大文字小文字を無視し多バイト文字と短い入力でも破綻しない() {
+        for (query, expected) in [
+            (
+                "alter table t add columns (c int)",
+                Some("ALTER_TABLE_ADD_COLUMN"),
+            ),
+            (
+                "AlTeR TaBlE t sEt TbLpRoPeRtIeS ('a' = 'b')",
+                Some("ALTER_TABLE_PROPERTIES"),
+            ),
+            // 多バイト文字の引用符付きテーブル名を `skip_qualified_name` で読み飛ばしてから、
+            // その後ろのキーワードで判定する。
+            (
+                r#"ALTER TABLE "日本語" ADD COLUMNS (c int)"#,
+                Some("ALTER_TABLE_ADD_COLUMN"),
+            ),
+            // テーブル名の後ろに何も無い／テーブル名すら無い入力でも panic せずに None を返す。
+            ("ALTER TABLE t", None),
+            ("ALTER TABLE", None),
+        ] {
+            assert_eq!(substatement_type(query), expected, "{query:?}");
+        }
+    }
 }
