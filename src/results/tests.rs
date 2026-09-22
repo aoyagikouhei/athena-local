@@ -331,6 +331,12 @@ fn 文の先頭で置くファイルの種類を決める() {
         ("CREATE VIEW v AS SELECT 1", ResultFile::Text),
         ("DROP TABLE t", ResultFile::Text),
         ("SHOW TABLES IN db", ResultFile::Text),
+        // SHOW FUNCTIONS だけは本物も `<id>.csv`（2026-09-23 実測。#80）。SHOW の 2 語目を見る
+        // 唯一の分岐で、`SHOW CREATE` と同じくキーワードの間のコメントは空白として読む。
+        ("SHOW FUNCTIONS", ResultFile::Csv),
+        ("show functions", ResultFile::Csv),
+        ("SHOW /* c */ FUNCTIONS", ResultFile::Csv),
+        ("SHOW FUNCTIONS LIKE 'a%'", ResultFile::Csv),
         ("", ResultFile::Text),
         // 先頭のコメントは読み飛ばして判定する（2026-09-18 実測）。
         ("-- c\nSELECT 1", ResultFile::Csv),

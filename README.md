@@ -251,7 +251,9 @@ Behaviour that matches real Athena:
   (measured 2026-09-22). `SHOW ...` and `DESCRIBE` (`UTILITY`) start with
   the first data row instead, as on Athena (`SHOW TABLES`, `SHOW DATABASES`,
   `SHOW COLUMNS`, `SHOW CREATE TABLE`, `SHOW PARTITIONS`, `SHOW TBLPROPERTIES`
-  and `DESCRIBE`, measured 2026-09-15 to 2026-09-22). Athena JDBC skips the
+  and `DESCRIBE`, measured 2026-09-15 to 2026-09-22). `SHOW FUNCTIONS` is the
+  one `UTILITY` statement whose result starts with the column names, as on
+  Athena (measured 2026-09-23). Athena JDBC skips the
   header row only for `DML`, so it used to show the column name as the first
   row of a `SHOW` result with `ResultFetcher=GetQueryResults`.
 - Values are returned as strings (`Datum.VarCharValue`); NULL omits the field.
@@ -309,7 +311,8 @@ Behaviour that matches real Athena:
   (about 10–20 ms).
 - `StatementType` and `SubstatementType` follow Athena: `SELECT` / `WITH` /
   `VALUES` / `TABLE` are `DML` / `SELECT`, `EXPLAIN` is `DML` / `EXPLAIN`, `SHOW TABLES` is
-  `UTILITY` / `SHOW_TABLES`, `CREATE TABLE ... AS SELECT` is `DDL` /
+  `UTILITY` / `SHOW_TABLES`, `SHOW FUNCTIONS` is `UTILITY` / `SHOW_FUNCTIONS`
+  (measured 2026-09-23), `CREATE TABLE ... AS SELECT` is `DDL` /
   `CREATE_TABLE_AS_SELECT`, and so on. Trino spellings map to Athena's
   (`CREATE SCHEMA` is `CREATE_DATABASE`, `SHOW SCHEMAS` is `SHOW_DATABASES`).
   Statements whose `SubstatementType` was not measured leave the field out.
@@ -361,11 +364,11 @@ on the location makes no difference. The file name depends on the statement:
 
 | Statement | `OutputLocation` |
 | --- | --- |
-| `SELECT` / `WITH` / `VALUES` / `TABLE` | `s3://bucket/prefix/<id>.csv` |
+| `SELECT` / `WITH` / `VALUES` / `TABLE` / `SHOW FUNCTIONS` | `s3://bucket/prefix/<id>.csv` |
 | `UPDATE` / `DELETE` / `MERGE` | `s3://bucket/prefix/<id>.csv` (only the `.metadata` companion is written) |
 | `INSERT` | `s3://bucket/prefix/<id>` (only the `.metadata` companion is written) |
 | `CREATE TABLE ... AS SELECT` | `s3://bucket/prefix/tables/<id>` (only the `.metadata` companion is written) |
-| Other DDL, `SHOW`, `DESCRIBE`, ... | `s3://bucket/prefix/<id>.txt` |
+| Other DDL, `SHOW` (except `SHOW FUNCTIONS`), `DESCRIBE`, ... | `s3://bucket/prefix/<id>.txt` |
 
 `DROP TABLE` and `ALTER TABLE ... ADD COLUMNS` keep the `<id>.txt` name above;
 see [DDL that depends on the target table's format](#ddl-that-depends-on-the-target-tables-format)
@@ -388,7 +391,11 @@ that state. The format matches Athena byte for byte:
 - Values use the same notation as `GetQueryResults`.
 - A query with no rows writes just the header line.
 
-DDL, `SHOW`, `DESCRIBE` and `EXPLAIN` write `<id>.txt` the same way (measured
+`SHOW FUNCTIONS` is the one `SHOW` statement that writes this CSV, header line
+included, rather than `<id>.txt` (measured 2026-09-23: 89,425 bytes for the
+whole function list, with a `""` field for an empty description).
+
+DDL, the other `SHOW` statements, `DESCRIBE` and `EXPLAIN` write `<id>.txt` the same way (measured
 2026-09-16). The file holds the rows `GetQueryResults` returns, joined with `\n`:
 
 - No header line for DDL, `SHOW` and `DESCRIBE`, unlike the CSV, and no trailing
@@ -427,7 +434,7 @@ which athena-local never produces.
 | `SELECT` of literals only: `SELECT 1`, `SELECT 1, 2`, `SELECT 'a'`, `SELECT 1.5`, `SELECT -1`, `SELECT 1.5E0`, `SELECT true`, `SELECT 1, 'a'`, `SELECT 1 AS i`, `SELECT 1 AS "x"`, `SELECT 1 i`, `SELECT 1 AS i, 2 AS j`, `select 1`, with or without comments | `binary/octet-stream` |
 | Any other `SELECT`: an expression (`SELECT 1 + 1`, `SELECT 'a' \|\| 'b'`), a `CAST`, `NULL`, a typed literal (`DATE '2020-01-01'`), `ARRAY[1]`, a `WHERE`, a `LIMIT`, a `FROM`, `(SELECT 1)`, `VALUES 1`, `UNION`, or a table | `application/octet-stream` |
 | `SHOW TABLES`, `SHOW DATABASES`, `SHOW COLUMNS`, `SHOW TBLPROPERTIES`, `SHOW VIEWS`, `SHOW PARTITIONS` | `binary/octet-stream` |
-| `DESCRIBE`, `DESC`, `EXPLAIN`, `SHOW CREATE TABLE`, `SHOW FUNCTIONS` | `application/octet-stream` |
+| `DESCRIBE`, `DESC`, `EXPLAIN`, `SHOW CREATE TABLE`, `SHOW FUNCTIONS` (the `<id>.csv` above) | `application/octet-stream` |
 | Column-less DDL (`CREATE DATABASE`, `DROP DATABASE`, ...) | `binary/octet-stream` |
 | `INSERT`, `UPDATE`, `DELETE`, `MERGE`, CTAS (`.metadata` only) | `application/octet-stream` |
 
@@ -447,11 +454,11 @@ Athena rejects `SHOW SESSION` and `SHOW STATS FOR t` at `StartQueryExecution`
 (`InvalidRequestException`, `no viable alternative`), while Trino runs them, so
 athena-local writes their `<id>.txt` with the `binary/octet-stream` default.
 `SHOW CREATE VIEW` was not measured (the database measured had no view) and
-follows `SHOW CREATE TABLE`. Athena writes the result of `SHOW FUNCTIONS` as a
-`<id>.csv` with a header row and `SubstatementType` `SHOW_FUNCTIONS`;
-athena-local still writes `<id>.txt`, sent as `application/octet-stream` like
-Athena's file, and the rest is
-[#80](https://github.com/aoyagikouhei/athena-local/issues/80).
+follows `SHOW CREATE TABLE`. `SHOW FUNCTIONS` writes `<id>.csv` with a header
+row, as `application/octet-stream`, with `SubstatementType` `SHOW_FUNCTIONS`
+and with the engine's query id at the head of its `.metadata`, all as measured
+on 2026-09-23; whether a failed `SHOW FUNCTIONS` writes a result file was not
+measured, so athena-local writes none, as for every other `<id>.csv` statement.
 Two DDL combinations depend on the target table's format instead: `DROP TABLE`
 on an Iceberg table and `ALTER TABLE ... ADD COLUMNS` on a Hive table send
 their `<id>.txt` and `.metadata` as `application/octet-stream` (measured
@@ -472,7 +479,7 @@ and DDL cannot be undone. When the result file itself fails to upload, no
 companion file is attempted.
 
 A failed query writes a result file too, but only for the statements whose
-result file is `<id>.txt` (DDL, `SHOW`, `DESCRIBE`, `EXPLAIN`), so a client that
+result file is `<id>.txt` (DDL, `SHOW` other than `SHOW FUNCTIONS`, `DESCRIBE`, `EXPLAIN`), so a client that
 reads the result file can see why it failed. The file holds `FAILED: ` followed
 by `StateChangeReason`, with no trailing newline, and is sent as
 `application/octet-stream` whatever the statement (a successful `SHOW TABLES`

@@ -240,6 +240,59 @@ async fn show_と_describe_の結果には列名行が入らない() {
 }
 
 #[tokio::test]
+async fn show_functions_の結果には_utility_でも列名行が入る() {
+    // 本物は SHOW FUNCTIONS だけ、UTILITY（SubstatementType SHOW_FUNCTIONS）なのに SELECT と
+    // 同じく先頭行に列名を返す（2026-09-23 実測の GetQueryResults 応答。#80）。
+    let harness = Harness::builder(show_response())
+        .route(
+            "SHOW FUNCTIONS",
+            json!({
+                "columns": [
+                    { "name": "Function", "type": "varchar" },
+                    { "name": "Deterministic", "type": "boolean" }
+                ],
+                "data": [["abs", true], ["zip_with", false]]
+            }),
+        )
+        .start()
+        .await;
+
+    let execution = harness
+        .run_query(json!({ "QueryString": "SHOW FUNCTIONS" }))
+        .await;
+    assert_eq!(execution["QueryExecution"]["StatementType"], "UTILITY");
+    assert_eq!(
+        execution["QueryExecution"]["SubstatementType"],
+        "SHOW_FUNCTIONS"
+    );
+    let id = execution_id(&execution);
+    let (status, results) = harness
+        .call("GetQueryResults", json!({ "QueryExecutionId": id }))
+        .await;
+    assert_eq!(status, 200);
+
+    let rows = results["ResultSet"]["Rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 3, "列名行 + データ 2 行");
+    assert_eq!(rows[0]["Data"][0]["VarCharValue"], "Function");
+    assert_eq!(rows[0]["Data"][1]["VarCharValue"], "Deterministic");
+    assert_eq!(rows[1]["Data"][0]["VarCharValue"], "abs");
+    assert_eq!(rows[1]["Data"][1]["VarCharValue"], "true");
+    assert_eq!(rows[2]["Data"][0]["VarCharValue"], "zip_with");
+
+    // ページングも列名行を数える（SELECT と同じ）。1 件目は列名行。
+    let (_, page) = harness
+        .call(
+            "GetQueryResults",
+            json!({ "QueryExecutionId": id, "MaxResults": 1 }),
+        )
+        .await;
+    let rows = page["ResultSet"]["Rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["Data"][0]["VarCharValue"], "Function");
+    assert_eq!(page["NextToken"], "1");
+}
+
+#[tokio::test]
 async fn explain_の結果には_select_と同じく列名行が入る() {
     // EXPLAIN は StatementType が DML で、本物は SELECT と同じく先頭行に列名を入れる
     // （2026-09-15〜18 実測。#60）。Trino は `Query Plan` 列の 1 行に改行入りの全文（末尾 `\n\n`）を

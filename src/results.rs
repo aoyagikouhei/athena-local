@@ -29,7 +29,7 @@ pub enum ResultFile {
     /// CREATE TABLE AS SELECT。`tables/<id>`（2026-09-14 実測）。
     /// テーブルの形式では変わらない（Iceberg の CTAS も `tables/<id>`。2026-09-19 実測）。
     Table,
-    /// それ以外の DDL と SHOW など。`<id>.txt`。
+    /// それ以外の DDL と SHOW など。`<id>.txt`。SHOW FUNCTIONS だけは Csv（2026-09-23 実測。#80）。
     Text,
     /// 結果ファイルの隣に置く付随ファイル `<結果ファイル名>.metadata`。
     /// `of` は返さない（文の種類では決まらない）。キーは `ResultLocation::metadata` だけが作る。
@@ -43,6 +43,7 @@ impl ResultFile {
     /// 先頭のキーワードで分ける。StatementType と同じく、先頭の空白とコメントは読み飛ばし
     /// （2026-09-18 実測）、キーワードの間のコメントも空白として読んでから判定する
     /// （2026-09-22 実測。#52）。文の種類だけで決まり、SQL の残りは見ない。
+    /// 2 語目まで見るのは CTAS（`is_create_table_as`）と `SHOW FUNCTIONS` だけ。
     pub fn of(query: &str) -> Self {
         let words = crate::catalog::words(query);
         // 先頭の `(` は取り除いて判定する。`( SELECT` のように `(` だけの語が先頭に来たら、
@@ -63,6 +64,9 @@ impl ResultFile {
             // CTAS はテーブルの形式によらず `tables/<id>`。本物の Iceberg テーブルの CTAS も
             // そうだった（2026-09-19 実測。#26）。SQL の本文から形式を読み取ることはしない。
             "CREATE" if is_create_table_as(&words) => Self::Table,
+            // SHOW FUNCTIONS だけは他の SHOW と違い、本物も `<id>.csv` に見出し行つきの CSV を置く
+            // （2026-09-23 実測。#80）。
+            "SHOW" if words.get(1).map(String::as_str) == Some("FUNCTIONS") => Self::Csv,
             _ => Self::Text,
         }
     }

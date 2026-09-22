@@ -5,7 +5,7 @@ mod common;
 
 use std::time::Duration;
 
-use common::{Harness, S3Put, execution_id, wait_for};
+use common::{Harness, S3Put, TRINO_QUERY_ID, execution_id, wait_for};
 use serde_json::{Value, json};
 
 fn select_response() -> Value {
@@ -274,6 +274,82 @@ async fn show_の結果を_txt_で書く() {
         }
     );
     assert_eq!(puts[1].key, format!("athena/{id}.txt.metadata"));
+}
+
+/// SHOW FUNCTIONS の Trino 応答。本物の列（6 列。Deterministic だけ boolean）と、
+/// Description が空文字の行（2026-09-23 実測の `approx_distinct` の行）を含める。
+fn show_functions_response() -> Value {
+    json!({
+        "columns": [
+            { "name": "Function", "type": "varchar" },
+            { "name": "Return Type", "type": "varchar" },
+            { "name": "Argument Types", "type": "varchar" },
+            { "name": "Function Type", "type": "varchar" },
+            { "name": "Deterministic", "type": "boolean" },
+            { "name": "Description", "type": "varchar" }
+        ],
+        "data": [
+            ["abs", "bigint", "bigint", "scalar", true, "Absolute value"],
+            ["approx_distinct", "bigint", "boolean", "aggregate", true, ""]
+        ]
+    })
+}
+
+/// SHOW FUNCTIONS だけは他の SHOW と違い、本物は `<id>.csv` に見出し行つきの CSV
+/// （SELECT と同じ書式。空文字は `""`）を application/octet-stream で置き、`.csv.metadata` の
+/// 先頭は SELECT と同じくエンジンのクエリ ID になる（2026-09-23 実測、89,425 バイト・340 バイト。#80）。
+#[tokio::test]
+async fn show_functions_の結果は_select_と同じ_csv_で書く() {
+    let harness = Harness::builder(select_response())
+        .route("SHOW FUNCTIONS", show_functions_response())
+        .results_s3()
+        .start()
+        .await;
+
+    let execution = harness
+        .run_query(json!({
+            "QueryString": "SHOW FUNCTIONS",
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+        }))
+        .await;
+    let id = execution_id(&execution);
+
+    assert_eq!(execution["QueryExecution"]["Status"]["State"], "SUCCEEDED");
+    assert_eq!(
+        output_location(&execution),
+        format!("s3://results-bucket/athena/{id}.csv")
+    );
+    let puts = harness.s3_puts();
+    assert_eq!(puts.len(), 2, "{puts:?}");
+    assert_eq!(
+        puts[0],
+        S3Put {
+            bucket: "results-bucket".to_string(),
+            key: format!("athena/{id}.csv"),
+            body: concat!(
+                "\"Function\",\"Return Type\",\"Argument Types\",\"Function Type\",\"Deterministic\",\"Description\"\n",
+                "\"abs\",\"bigint\",\"bigint\",\"scalar\",\"true\",\"Absolute value\"\n",
+                "\"approx_distinct\",\"bigint\",\"boolean\",\"aggregate\",\"true\",\"\"\n",
+            )
+            .as_bytes()
+            .to_vec(),
+            content_type: Some("application/octet-stream".to_string()),
+            presigned: true,
+        }
+    );
+    assert_eq!(puts[1].key, format!("athena/{id}.csv.metadata"));
+    assert_eq!(
+        puts[1].content_type.as_deref(),
+        Some("application/octet-stream")
+    );
+    // field 1 はエンジンのクエリ ID（偽 Trino の既定 ID は 27 バイトなので長さ前置は 0x1b）。
+    let mut engine_id_field = vec![0x0a, 0x1b];
+    engine_id_field.extend_from_slice(TRINO_QUERY_ID.as_bytes());
+    assert!(
+        puts[1].body.starts_with(&engine_id_field),
+        "{:?}",
+        puts[1].body
+    );
 }
 
 /// EXPLAIN（StatementType が DML）の `.txt` は、SHOW / DESCRIBE と違って先頭行に列名
