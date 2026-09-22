@@ -256,6 +256,15 @@ later name the date they were measured on.
 
 ### Fixed
 
+- `SHOW FUNCTIONS` now writes its result as `<id>.csv`, a header-line CSV in
+  the `SELECT` format sent as `application/octet-stream`, and `GetQueryResults`
+  returns the column-name row first, as on Athena (measured 2026-09-23). Its
+  `.csv.metadata` companion starts with the engine's query id, like `SELECT`,
+  and `GetQueryExecution` now reports `SubstatementType` `SHOW_FUNCTIONS`
+  (it used to be left out). It used to write `<id>.txt` without a header line
+  like the other `SHOW` statements. A failed `SHOW FUNCTIONS` writes no result
+  file, like the other `<id>.csv` statements; Athena's behaviour there was not
+  measured.
 - `TABLE t` (Trino's shorthand for `SELECT * FROM t`) is now classified as
   `DML` / `SELECT`, as on Athena (measured 2026-09-22), so `GetQueryResults`
   returns the column-name row first and `GetQueryExecution` reports

@@ -16,7 +16,7 @@ const ENGINE_DDL_CONTENT_TYPE: &str = crate::content_type::APPLICATION;
 
 /// 本体と付随ファイル `.metadata` の両方を置いてから結果を返す。SUCCEEDED にするのは
 /// 書き終わってからにする（クライアントは SUCCEEDED を見た直後に S3 を読みに行く）。
-/// .csv（SELECT）は書けなければ FAILED。.txt（DDL / SHOW など）は書けなくても SUCCEEDED のまま
+/// .csv（SELECT と SHOW FUNCTIONS）は書けなければ FAILED。.txt（DDL / SHOW など）は書けなくても SUCCEEDED のまま
 /// （Trino では既に実行し終えており、本物の Athena も補助ファイルの書き込みでは失敗にしない）。
 /// `.metadata` は列がある文に置き、書けなくても SUCCEEDED のまま。
 /// DML と CTAS は本体を置かず `.metadata` だけを置く（2026-09-17 実測）。
@@ -43,7 +43,8 @@ pub(super) async fn write_result(
     // `ResultLocation` の既定（0 バイトの DDL の binary）ではなく application で置く。
     let content_type = engine_ddl.is_some().then_some(ENGINE_DDL_CONTENT_TYPE);
 
-    // 本体を書くのは SELECT の結果（.csv、更新件数が無いとき）と DDL / SHOW（.txt）だけ。
+    // 本体を書くのは SELECT の結果（.csv、更新件数が無いとき。SHOW FUNCTIONS もこちら。#80）と
+    // DDL / SHOW（.txt）だけ。
     // DML / CTAS が置くファイル（manifest や tables/<id>）は作らない。
     let should_write = location.file == ResultFile::Text
         || (location.file == ResultFile::Csv && outcome.update_count.is_none());
@@ -106,6 +107,7 @@ pub(super) async fn write_result(
 /// 失敗の理由を結果ファイルに置く。中身は `FAILED: ` + StateChangeReason で末尾に改行は付けない
 /// （本物は StateChangeReason そのものを置き、その文言自体が `FAILED: ` で始まる。2026-09-17 実測）。
 /// 置くのは `<id>.txt` の文（DDL / SHOW など）だけで、`.metadata` は置かない（実測）。
+/// `<id>.csv` の SHOW FUNCTIONS が失敗したときに本物が何を置くかは未測定で、他の `.csv` の文と同じく置かない（#80）。
 /// 書けなくても FAILED と StateChangeReason は Trino のエラーのまま（`.txt` / `.metadata` と同じ扱い）。
 /// `.csv` の PUT が失敗して FAILED になる経路（`write_result`）はここを通らない。
 pub(super) async fn write_failure(app: &App, execution: &Execution, failure: &Failure) {
@@ -153,7 +155,7 @@ async fn write_metadata(
 
 /// `.metadata` の先頭（field 1）に載せるクエリ ID。2026-09-17 実測では DESCRIBE と
 /// SHOW CREATE TABLE だけが QueryExecutionId で、SELECT・DML・CTAS・EXPLAIN・DROP TABLE は
-/// エンジン（Trino）のクエリ ID だった。
+/// エンジン（Trino）のクエリ ID だった。SHOW FUNCTIONS もエンジンのクエリ ID（2026-09-23 実測。#80）。
 fn metadata_query_id<'a>(
     query: &str,
     execution_id: &'a str,

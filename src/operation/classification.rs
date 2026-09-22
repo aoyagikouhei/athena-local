@@ -49,6 +49,8 @@ pub(super) fn substatement_type(query: &str) -> Option<&'static str> {
             ("DATABASES" | "SCHEMAS", _) => "SHOW_DATABASES",
             ("COLUMNS", _) => "SHOW_COLUMNS",
             ("CREATE", "TABLE") => "SHOW_CREATE_TABLE",
+            // 2026-09-23 実測（#80）。StatementType は他の SHOW と同じ UTILITY。
+            ("FUNCTIONS", _) => "SHOW_FUNCTIONS",
             _ => return None,
         },
         "CREATE" => {
@@ -201,6 +203,9 @@ mod tests {
             ("SHOW SCHEMAS", "SHOW_DATABASES"),
             ("SHOW COLUMNS IN db.t", "SHOW_COLUMNS"),
             ("SHOW CREATE TABLE t", "SHOW_CREATE_TABLE"),
+            // 2026-09-23 実測（#80）。
+            ("SHOW FUNCTIONS", "SHOW_FUNCTIONS"),
+            ("show /* c */ functions", "SHOW_FUNCTIONS"),
             ("CREATE DATABASE IF NOT EXISTS db", "CREATE_DATABASE"),
             ("CREATE SCHEMA IF NOT EXISTS db", "CREATE_DATABASE"),
             ("CREATE TABLE t (id string)", "CREATE_TABLE"),
@@ -262,7 +267,6 @@ mod tests {
 
         // 実測していない形は省く。
         for query in [
-            "SHOW FUNCTIONS",
             // RENAME COLUMN と IF EXISTS は本物の Athena に構文が無い（mismatched input。2026-09-21 実測）。
             "ALTER TABLE t RENAME COLUMN a TO b",
             "ALTER TABLE IF EXISTS t ADD COLUMNS (m int)",

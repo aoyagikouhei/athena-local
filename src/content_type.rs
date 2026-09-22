@@ -11,7 +11,7 @@ use crate::results::ResultFile;
 /// 本物がエンジンの計画を通さずに置くファイルの値（実測ではどれも `QueryPlanningTimeInMillis` が
 /// 無かった）: リテラルだけの SELECT、SHOW（SHOW CREATE TABLE を除く）、0 バイトの DDL。
 pub(crate) const BINARY: &str = "binary/octet-stream";
-/// それ以外: 式を含む SELECT、DESCRIBE、EXPLAIN、SHOW CREATE TABLE、SHOW FUNCTIONS、DML と CTAS の `.metadata`、
+/// それ以外: 式を含む SELECT、DESCRIBE、EXPLAIN、SHOW CREATE TABLE、SHOW FUNCTIONS（`.csv`）、DML と CTAS の `.metadata`、
 /// 失敗の理由の `.txt`（2026-09-17 実測）、DROP TABLE × Iceberg など列なしでも `.metadata` を置く DDL
 /// （2026-09-20／21 実測。issue #39）。
 pub(crate) const APPLICATION: &str = "application/octet-stream";
@@ -32,20 +32,21 @@ pub(crate) fn of(file: ResultFile, query: &str) -> &'static str {
     }
 }
 
-/// `.txt` の文。DESCRIBE（`DESC` も）・EXPLAIN・SHOW CREATE TABLE・SHOW FUNCTIONS だけが application で、
+/// `.txt` の文。DESCRIBE（`DESC` も）・EXPLAIN・SHOW CREATE TABLE だけが application で、
 /// 残りの SHOW（TABLES・DATABASES・COLUMNS・TBLPROPERTIES・VIEWS・PARTITIONS）と 0 バイトの DDL は
 /// binary（2026-09-23 実測）。`("DESCRIBE" | "DESC", _) | ("SHOW", "CREATE")` の組は
 /// `operation/result_output.rs` の `metadata_query_id`（`.metadata` に QueryExecutionId を載せる文）と
-/// 同じで、片方を変えたら両方を変える（こちらは `EXPLAIN` と `SHOW FUNCTIONS` も application に入れる
+/// 同じで、片方を変えたら両方を変える（こちらは `EXPLAIN` も application に入れる
 /// 点と、語の分割に `catalog::words` を使う点が違う）。`SHOW CREATE VIEW` は未測定で（測る DB に
-/// ビューが無かった）、`SHOW CREATE TABLE` の判定に揃えている。本物の `SHOW FUNCTIONS` は `.txt` では
-/// なく `.csv` に書く（ファイル名と SubstatementType の差は #80）。`SHOW SESSION` と `SHOW STATS` は
+/// ビューが無かった）、`SHOW CREATE TABLE` の判定に揃えている。`SHOW FUNCTIONS` は `.txt` ではなく
+/// `.csv`（`ResultFile::Csv`）なのでここには届かず、SELECT と同じ判定で application になる
+/// （2026-09-23 実測。#80）。`SHOW SESSION` と `SHOW STATS` は
 /// 本物が StartQueryExecution で構文エラーにするので、値は無い（2026-09-23 実測。#76）。
 fn text_content_type(query: &str) -> &'static str {
     let words = words(query);
     let word = |index: usize| words.get(index).map(String::as_str).unwrap_or_default();
     match (word(0), word(1)) {
-        ("DESCRIBE" | "DESC" | "EXPLAIN", _) | ("SHOW", "CREATE" | "FUNCTIONS") => APPLICATION,
+        ("DESCRIBE" | "DESC" | "EXPLAIN", _) | ("SHOW", "CREATE") => APPLICATION,
         _ => BINARY,
     }
 }
@@ -243,11 +244,18 @@ mod tests {
             "EXPLAIN SELECT 1",
             "SHOW CREATE TABLE t",
             "show create table t",
-            // 本物は `.csv` に application で書く（2026-09-23 実測。#76）。ファイル名の差は別 issue。
-            "SHOW FUNCTIONS",
-            "SHOW /* c */ FUNCTIONS",
         ] {
             assert_eq!(txt(query), APPLICATION, "{query:?}");
+        }
+    }
+
+    #[test]
+    fn show_functions_は_csv_として_application() {
+        // 本物は `<id>.csv` に application で書く（2026-09-23 実測。#76／#80）。
+        // ファイル名が Csv なので `.txt` の判定には届かず、SELECT と同じ判定で application になる。
+        for query in ["SHOW FUNCTIONS", "SHOW /* c */ FUNCTIONS"] {
+            assert_eq!(ResultFile::of(query), ResultFile::Csv, "{query:?}");
+            assert_eq!(csv(query), APPLICATION, "{query:?}");
         }
     }
 

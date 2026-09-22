@@ -47,8 +47,13 @@ pub fn get_query_results(app: &App, body: &Bytes) -> Response {
     let mut rows = convert::all_rows(&outcome);
     // 先頭の列名行を返すのは DML（SELECT / EXPLAIN）だけ。UTILITY（SHOW / DESCRIBE）では本物は
     // データの 1 行目から返す（2026-09-15〜22 の実測 5 ラウンドの応答を読み直して確認。#60）。
+    // 例外は SHOW FUNCTIONS で、UTILITY だが結果ファイルが `<id>.csv` の SELECT の形なので
+    // 列名行も返す（2026-09-23 実測。#80）。
     // 結果ファイル（results::to_csv / to_text）は列名行込みの all_rows を使い続けるので、ここで外す。
-    if super::classification::statement_type(&execution.query) != "DML" && !rows.is_empty() {
+    if super::classification::statement_type(&execution.query) != "DML"
+        && super::classification::substatement_type(&execution.query) != Some("SHOW_FUNCTIONS")
+        && !rows.is_empty()
+    {
         rows.remove(0);
     }
     let offset = request
