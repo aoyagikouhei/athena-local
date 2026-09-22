@@ -30,7 +30,8 @@ fn verb(statement: TargetStatement) -> &'static str {
 /// Trino の規則で小文字）を使い、無ければ `default_catalog` / `default_schema`（実行時の値。
 /// 別名解決前）を使う。カタログかスキーマが決まらなければ None（今までどおりに倒す）。
 ///
-/// 字句処理は新しく書かず、`catalog.rs` の `skip_leading_trivia`・`skip_quoted`・`unquote` を再利用する。
+/// 字句処理は新しく書かず、`catalog.rs` の `skip_keyword`・`skip_leading_trivia`・`skip_quoted`・`unquote`
+/// を再利用する。
 pub(super) fn parse_target_table(
     query: &str,
     statement: TargetStatement,
@@ -62,32 +63,18 @@ pub(super) fn parse_target_table(
 
 /// `<動詞> TABLE` と、あれば `IF EXISTS` を読み飛ばし、名前が始まる位置を返す。
 /// 先頭が `<動詞> TABLE` でなければ None。`<動詞>` は `DROP` か `ALTER`。
+///
+/// `catalog::skip_keyword` が先頭のトリビアを自分で読み飛ばすので、キーワードの手前では
+/// 読み飛ばさない。**最後の 1 回だけは残す**: `parse_qualified_name` はトリビアを読み飛ばさず、
+/// 先頭が空白やコメントのままだと `read_name_part` が名前を 1 文字も読めずに None を返す。
 fn table_name_start<'a>(query: &'a str, verb: &str) -> Option<&'a str> {
-    let rest = crate::catalog::skip_leading_trivia(query);
-    let rest = skip_keyword(rest, verb)?;
-    let rest = skip_keyword(crate::catalog::skip_leading_trivia(rest), "TABLE")?;
-    let rest = crate::catalog::skip_leading_trivia(rest);
-    let rest = match skip_keyword(rest, "IF") {
-        Some(after_if) => skip_keyword(crate::catalog::skip_leading_trivia(after_if), "EXISTS")?,
+    let rest = crate::catalog::skip_keyword(query, verb)?;
+    let rest = crate::catalog::skip_keyword(rest, "TABLE")?;
+    let rest = match crate::catalog::skip_keyword(rest, "IF") {
+        Some(after_if) => crate::catalog::skip_keyword(after_if, "EXISTS")?,
         None => rest,
     };
     Some(crate::catalog::skip_leading_trivia(rest))
-}
-
-/// 大文字小文字を区別せずにキーワードを読み飛ばす。続きが識別子の文字（英数字・`_`）なら
-/// 別の語（`TABLES` など）とみなして一致させない。
-fn skip_keyword<'a>(input: &'a str, keyword: &str) -> Option<&'a str> {
-    if input.len() < keyword.len() || !input.is_char_boundary(keyword.len()) {
-        return None;
-    }
-    let (head, tail) = input.split_at(keyword.len());
-    if !head.eq_ignore_ascii_case(keyword) {
-        return None;
-    }
-    if tail.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_') {
-        return None;
-    }
-    Some(tail)
 }
 
 /// `.` で区切られた名前の並びを読む。引用符付きの識別子は中身を、無引用は小文字にして集める。
@@ -388,5 +375,136 @@ mod tests {
                 table: "t".to_string(),
             })
         );
+    }
+
+    /// 既定のカタログ（`cat`）・スキーマ（`ns`）を当てた後の期待値。
+    fn 既定付き(table: &str) -> Option<TargetTable> {
+        Some(TargetTable {
+            catalog: "cat".to_string(),
+            schema: "ns".to_string(),
+            table: table.to_string(),
+        })
+    }
+
+    // 以下の 3 つは、issue #49 で `skip_keyword` を `catalog.rs` へ統合する前に、着手前の挙動を
+    // 境界入力で固定したもの。統合は挙動を変えないので red が成立しない。代わりにこれらが
+    // 「統合の前後で結果が変わらない」ことの網になる。期待値は推測ではなく、着手前のコードに
+    // 一時テストを足して実際に流した出力をそのまま写した。
+
+    #[test]
+    fn parse_target_table_はトリビアが何個どこに挟まっても同じ結果になる() {
+        // `skip_keyword` を「呼び出し元が先にトリビアを読み飛ばす」形から「内部で読み飛ばす」形に
+        // 寄せても結果が変わらないことを、トリビアの現れうる位置すべてで固定する。
+        for (query, statement, expected) in [
+            ("  DROP TABLE t", TargetStatement::DropTable, 既定付き("t")),
+            (
+                "-- c\nDROP TABLE t",
+                TargetStatement::DropTable,
+                既定付き("t"),
+            ),
+            (
+                "/* c */ DROP TABLE t",
+                TargetStatement::DropTable,
+                既定付き("t"),
+            ),
+            ("DROP  TABLE t", TargetStatement::DropTable, 既定付き("t")),
+            (
+                "DROP -- c\nTABLE t",
+                TargetStatement::DropTable,
+                既定付き("t"),
+            ),
+            (
+                "DROP /* c */ TABLE t",
+                TargetStatement::DropTable,
+                既定付き("t"),
+            ),
+            (
+                "DROP TABLE IF /* c */ EXISTS t",
+                TargetStatement::DropTable,
+                既定付き("t"),
+            ),
+            (
+                "DROP TABLE IF EXISTS -- c\nt",
+                TargetStatement::DropTable,
+                既定付き("t"),
+            ),
+            // トリビアを 2 つ重ねる。`skip_leading_trivia` は空白とコメントを続けて読み飛ばすので、
+            // 呼び出し元と関数の内側のどちらで読み飛ばしても同じ位置で止まる。
+            (
+                "DROP /* a */ -- b\nTABLE t",
+                TargetStatement::DropTable,
+                既定付き("t"),
+            ),
+            (
+                "/* a */ /* b */ DROP TABLE t",
+                TargetStatement::DropTable,
+                既定付き("t"),
+            ),
+            // キーワードの直後にコメントが続き、空白が 1 つも無い形。
+            (
+                "DROP TABLE/* c */t",
+                TargetStatement::DropTable,
+                既定付き("t"),
+            ),
+            (
+                "ALTER /* c */ TABLE /* d */ t ADD COLUMNS (c int)",
+                TargetStatement::AlterTableAddColumns,
+                既定付き("t"),
+            ),
+        ] {
+            assert_eq!(
+                parse_target_table(query, statement, Some("cat"), Some("ns")),
+                expected,
+                "{query:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_target_table_はキーワードの直後が識別子の文字かどうかで一致を決める() {
+        for (query, expected) in [
+            // 続きが英数字・`_` なら別の語とみなして一致させない。
+            ("DROP TABLES t", None),
+            ("DROPTABLE t", None),
+            ("DROP TABLE_X t", None),
+            // 続きが識別子の文字でなければ、空白が無くても一致する。
+            (r#"DROP TABLE"my table""#, 既定付き("my table")),
+            (r#"DROP TABLE IF EXISTS"t""#, 既定付き("t")),
+            // `IF` の直後が `X`（識別子の文字）なので `IF EXISTS` としては読まれず、
+            // `IFX` がテーブル名になる（その後ろの ` t` は見ない）。
+            ("DROP TABLE IFX t", 既定付き("ifx")),
+            // `IF` は読めるが `EXISTS` が無いので、`table_name_start` ごと None に倒れる。
+            ("DROP TABLE IF t", None),
+        ] {
+            assert_eq!(
+                parse_target_table(query, TargetStatement::DropTable, Some("cat"), Some("ns")),
+                expected,
+                "{query:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_target_table_は大文字小文字を無視し多バイト文字と短い入力でも破綻しない() {
+        for (query, expected) in [
+            ("drop table t", 既定付き("t")),
+            ("DrOp TaBlE iF eXiStS t", 既定付き("t")),
+            // `TABLE` の後ろが多バイト文字の引用符付き識別子のとき、`IF` の一致判定が
+            // `is_char_boundary` で弾かれる（`"` の次のバイトが `日` の途中）。
+            // 弾かれた結果 `IF EXISTS` 無しとして読み進み、名前として解析される。
+            (r#"DROP TABLE "日本語""#, 既定付き("日本語")),
+            // キーワードより短い入力・空の入力でも panic せずに None を返す。
+            ("DR", None),
+            ("", None),
+            ("DROP", None),
+            // `DROP TABLE` は読めるが名前が空なので None。
+            ("DROP TABLE", None),
+        ] {
+            assert_eq!(
+                parse_target_table(query, TargetStatement::DropTable, Some("cat"), Some("ns")),
+                expected,
+                "{query:?}"
+            );
+        }
     }
 }
