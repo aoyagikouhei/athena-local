@@ -35,8 +35,10 @@ pub(crate) fn of(file: ResultFile, query: &str) -> &'static str {
 /// `.txt` の文。DESCRIBE・EXPLAIN・SHOW CREATE TABLE だけが application で、残りの SHOW
 /// （TABLES・DATABASES・COLUMNS・TBLPROPERTIES・VIEWS・PARTITIONS）と 0 バイトの DDL は binary
 /// （2026-09-23 実測）。`("DESCRIBE" | "DESC", _) | ("SHOW", "CREATE")` の組は
-/// `operation/result_output.rs` の `metadata_query_id` と同じで、片方を変えたら両方を変える。
-/// `DESC` と `SHOW CREATE VIEW` は未測定で、その判定に揃えている（#76）。
+/// `operation/result_output.rs` の `metadata_query_id`（`.metadata` に QueryExecutionId を載せる文）と
+/// 同じで、片方を変えたら両方を変える（こちらは `EXPLAIN` も application に入れる点と、語の分割に
+/// `catalog::words` を使う点が違う）。`DESC` と `SHOW CREATE VIEW` は未測定で、その判定に揃えている。
+/// 未測定の SHOW（`SHOW FUNCTIONS` など）は既定の binary に落ちる（#76）。
 fn text_content_type(query: &str) -> &'static str {
     let words = words(query);
     let word = |index: usize| words.get(index).map(String::as_str).unwrap_or_default();

@@ -12,7 +12,7 @@ use super::table_format::EngineDdl;
 
 /// DROP TABLE × Iceberg など、列が無くても本体・`.metadata` を置く DDL の Content-Type
 /// （2026-09-20 実測。本体も `.metadata` も application/octet-stream）。
-const ENGINE_DDL_CONTENT_TYPE: &str = "application/octet-stream";
+const ENGINE_DDL_CONTENT_TYPE: &str = crate::content_type::APPLICATION;
 
 /// 本体と付随ファイル `.metadata` の両方を置いてから結果を返す。SUCCEEDED にするのは
 /// 書き終わってからにする（クライアントは SUCCEEDED を見た直後に S3 を読みに行く）。

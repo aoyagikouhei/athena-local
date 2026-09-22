@@ -144,8 +144,10 @@ later name the date they were measured on.
   the companion of a `SHOW TABLES` changes to `binary/octet-stream`. The
   earlier values had been the majority of a few measurements (five of six
   `.csv` files; the sixth was `SELECT 1`); this one comes from 36 statements
-  measured with controls on 2026-09-23 (issue #70). Forms not measured are
-  sent as `application/octet-stream`; see README and #76.
+  measured with controls on 2026-09-23 (issue #70). `SELECT` forms not
+  measured are sent as `application/octet-stream` and `<id>.txt` statements
+  not measured (`SHOW FUNCTIONS`, `DESC`, `SHOW CREATE VIEW`, ...) follow the
+  `.txt` defaults above; see README and #76.
 - README documents where the `Precision` of the `EXPLAIN` result column comes
   from: the engine types `Query Plan` as `varchar(<length of the plan text>)`,
   371 for `EXPLAIN SELECT 1` on Athena (measured 2026-09-15 and 2026-09-16) and

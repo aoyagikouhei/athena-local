@@ -410,7 +410,9 @@ The `Content-Type` of the upload follows Athena, which uses
 `binary/octet-stream` for the files it writes without planning the query and
 `application/octet-stream` for everything else (36 statements measured
 2026-09-23, with the same statement giving the same value across days). The
-`.metadata` companion always gets the same Content-Type as its result file.
+`.metadata` companion gets the same Content-Type as its result file; the one
+exception seen is the multipart upload described at the end of this section,
+which athena-local never produces.
 
 | Statement | Content-Type |
 | --- | --- |
@@ -424,18 +426,23 @@ The `Content-Type` of the upload follows Athena, which uses
 athena-local recognises a literals-only `SELECT` as a comma-separated list of
 unsigned integer or decimal literals, single-quoted strings and `true`/`false`,
 each optionally followed by `AS <identifier>`, with nothing after it but
-whitespace and comments; keyword case does not matter. Forms Athena was not
-measured with (`SELECT -1`, a trailing `;`, `LIMIT`, typed literals such as
-`DATE '...'`, `1.5E0`, `ARRAY[1]`, a quoted or bare alias, `(SELECT 1)`,
-`VALUES 1`, `DESC`, `SHOW CREATE VIEW`) are sent as `application/octet-stream`,
-the value for everything that is not a literals-only `SELECT`; they are listed
-in [#76](https://github.com/aoyagikouhei/athena-local/issues/76) to be measured.
+whitespace and comments; keyword case does not matter. `SELECT` forms Athena
+was not measured with (`SELECT -1`, a trailing `;`, `LIMIT`, typed literals
+such as `DATE '...'`, `1.5E0`, `ARRAY[1]`, a quoted or bare alias,
+`(SELECT 1)`, `VALUES 1`) are sent as `application/octet-stream`, the value for
+everything that is not a literals-only `SELECT`. For `<id>.txt` the default is
+`binary/octet-stream`, and only `DESCRIBE`, `DESC`, `EXPLAIN` and `SHOW CREATE
+...` get `application/octet-stream`, so a `SHOW` form that was not measured
+(`SHOW FUNCTIONS`, `SHOW SESSION`, `SHOW STATS`) and `DESC` or
+`SHOW CREATE VIEW` follow those defaults. All of these are listed in
+[#76](https://github.com/aoyagikouhei/athena-local/issues/76) to be measured.
 Two DDL combinations depend on the target table's format instead: `DROP TABLE`
 on an Iceberg table and `ALTER TABLE ... ADD COLUMNS` on a Hive table send
 their `<id>.txt` and `.metadata` as `application/octet-stream` (measured
 2026-09-20/21; see
 [DDL that depends on the target table's format](#ddl-that-depends-on-the-target-tables-format)).
-Athena uploads a result of about 140 MB in parts and that object comes back as
+The one exception to "the companion matches its result file": Athena uploads a
+result of about 140 MB in parts and that object comes back as
 `binary/octet-stream` with an `application/octet-stream` companion; a 29 MB
 result was still a single upload, and athena-local always uploads in one
 `PUT`, so the size at which this starts is not measured.
