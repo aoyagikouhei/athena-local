@@ -55,6 +55,7 @@ CI（`.github/workflows/ci.yml`）は `fmt --check`、`clippy -D warnings`、`te
 - 偽 Trino は、PREPARE の前置きを `src/trino.rs` と同じ定数 `SYNTAX_CHECK_PREFIX` で見分けている。前置きを変えるときは両方を直す。
 - テストバイナリごとに `common` を取り込むので、使われないヘルパが出る。そのため `#![allow(dead_code)]` を付けている。
 - `config.rs` のテストは本物の環境変数を触らない（テストが並列に走るため）。`parse_results` に環境変数を読むクロージャを渡して差し替える。
+- ユニットテストはインラインの `#[cfg(test)] mod tests` に置く。例外は `src/results.rs` だけで、本体が 400 行を超えないようにテストを子モジュール `src/results/tests.rs`（`mod.rs` 無し）に出している（#75）。
 
 ## 開発上の約束
 
