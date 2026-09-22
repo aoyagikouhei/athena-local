@@ -80,13 +80,8 @@ async fn 失敗の理由のファイルを書き終わるまで_failed_にしな
     assert_eq!(harness.status(&id).await["State"], "RUNNING");
 
     // 応答が返れば FAILED になる。
-    for _ in 0..100 {
-        if harness.status(&id).await["State"] != "RUNNING" {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert_eq!(harness.status(&id).await["State"], "FAILED");
+    let execution = harness.wait_until_done(&id).await;
+    assert_eq!(execution["QueryExecution"]["Status"]["State"], "FAILED");
 }
 
 #[tokio::test]

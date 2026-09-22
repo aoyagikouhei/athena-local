@@ -100,13 +100,8 @@ async fn 書き終わるまで_succeeded_にしない() {
     assert_eq!(harness.status(&id).await["State"], "RUNNING");
 
     // 応答が返れば SUCCEEDED になる。
-    for _ in 0..100 {
-        if harness.status(&id).await["State"] != "RUNNING" {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert_eq!(harness.status(&id).await["State"], "SUCCEEDED");
+    let execution = harness.wait_until_done(&id).await;
+    assert_eq!(execution["QueryExecution"]["Status"]["State"], "SUCCEEDED");
 }
 
 #[tokio::test]

@@ -5,16 +5,12 @@ mod common;
 
 use std::time::{Duration, Instant};
 
-use common::{Harness, wait_for};
+use common::{Harness, WAIT_DEADLINE, wait_for};
 use serde_json::{Value, json};
 
 fn select_response() -> Value {
     json!({ "columns": [{ "name": "n", "type": "bigint" }], "data": [[1]] })
 }
-
-/// 期限切れを待ち切る上限。回数ではなく経過時間で諦める。
-/// 負荷でバックグラウンドの実行が遅れても待ち切るための上限で、成功時には使い切らない（#61）。
-const GONE_DEADLINE: Duration = Duration::from_secs(30);
 
 /// 期限切れで GetQueryExecution が 400 になるまで待ち、その本文を返す。
 /// GetQueryExecution を叩くこと自体が Store のロック → 掃除を駆動する（定期タスクは無い）。
@@ -29,7 +25,7 @@ async fn wait_until_gone(harness: &Harness, id: &str) -> Value {
             return body;
         }
         let elapsed = started.elapsed();
-        if elapsed >= GONE_DEADLINE {
+        if elapsed >= WAIT_DEADLINE {
             panic!("保持期限を過ぎても消えない（{elapsed:?} 待った。最後の応答: {status} {body}）");
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
