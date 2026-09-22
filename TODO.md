@@ -82,10 +82,6 @@
 - [ ] `TooManyRequestsException` を返すことがない
 - [ ] リクエストを解釈できないときに `AthenaErrorCode` が無い。本物の応答は未実測
 
-### 起動
-
-- [ ] 環境変数の値が不正で起動時に止まるとき、理由が Rust の `Debug` 形（`Error: "…"`。引用符とエスケープ付き）で出る。`main` が `Result<(), Box<dyn Error>>` で `String` を包んでいるため（#55）
-
 ### ドキュメント
 
 - [ ] この節の差分のうち README に書いていないものを Caveats に書く
