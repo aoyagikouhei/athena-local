@@ -349,7 +349,7 @@ on the location makes no difference. The file name depends on the statement:
 
 | Statement | `OutputLocation` |
 | --- | --- |
-| `SELECT` / `WITH` / `VALUES` | `s3://bucket/prefix/<id>.csv` |
+| `SELECT` / `WITH` / `VALUES` / `TABLE` | `s3://bucket/prefix/<id>.csv` |
 | `UPDATE` / `DELETE` / `MERGE` | `s3://bucket/prefix/<id>.csv` (only the `.metadata` companion is written) |
 | `INSERT` | `s3://bucket/prefix/<id>` (only the `.metadata` companion is written) |
 | `CREATE TABLE ... AS SELECT` | `s3://bucket/prefix/tables/<id>` (only the `.metadata` companion is written) |
