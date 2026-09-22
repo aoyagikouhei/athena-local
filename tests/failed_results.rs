@@ -3,9 +3,9 @@
 
 mod common;
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use common::{Harness, S3Put, WAIT_DEADLINE, execution_id, trino_error, wait_for};
+use common::{Harness, S3Put, execution_id, trino_error, wait_for};
 use serde_json::{Value, json};
 
 /// Trino が返すエラーの message。非 ASCII・`"`・改行・タブを含む厄介な入力。
@@ -80,11 +80,8 @@ async fn 失敗の理由のファイルを書き終わるまで_failed_にしな
     assert_eq!(harness.status(&id).await["State"], "RUNNING");
 
     // 応答が返れば FAILED になる。
-    let started = Instant::now();
-    while harness.status(&id).await["State"] == "RUNNING" && started.elapsed() < WAIT_DEADLINE {
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert_eq!(harness.status(&id).await["State"], "FAILED");
+    let execution = harness.wait_until_done(&id).await;
+    assert_eq!(execution["QueryExecution"]["Status"]["State"], "FAILED");
 }
 
 #[tokio::test]

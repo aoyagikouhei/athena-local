@@ -379,10 +379,14 @@ impl Harness {
     }
 
     /// クエリを投げ、QUEUED / RUNNING を抜けるまで待って最後の GetQueryExecution を返す。
-    /// 諦めるときは、次に落ちたときに原因を切り分けられるよう、待った時間と最後の状態を添える。
     pub async fn run_query(&self, request: Value) -> Value {
         let id = self.start_query(request).await;
+        self.wait_until_done(&id).await
+    }
 
+    /// 実行が QUEUED / RUNNING を抜けるまで待って最後の GetQueryExecution を返す。
+    /// 諦めるときは、次に落ちたときに原因を切り分けられるよう、待った時間と最後の状態を添える。
+    pub async fn wait_until_done(&self, id: &str) -> Value {
         let started = Instant::now();
         loop {
             let (_, execution) = self
@@ -404,7 +408,7 @@ impl Harness {
     }
 }
 
-/// 待ちヘルパが諦める上限。回数ではなく経過時間で諦める（`tests/retention.rs` の `GONE_DEADLINE` と同じ値）。
+/// 待ちヘルパが諦める上限。回数ではなく経過時間で諦める（`tests/retention.rs` の期限切れ待ちも同じ値を使う）。
 /// 負荷でバックグラウンドの実行が遅れても待ち切るための上限で、成功時には使い切らない（#61、#67）。
 pub const WAIT_DEADLINE: Duration = Duration::from_secs(30);
 
