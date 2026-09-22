@@ -416,43 +416,54 @@ within 30 seconds is given up on so the query still reaches a final state
 The `Content-Type` of the upload follows Athena, which uses
 `binary/octet-stream` for the files it writes without planning the query and
 `application/octet-stream` for everything else (36 statements measured
-2026-09-23, with the same statement giving the same value across days). The
+2026-09-23 with controls, then 18 more the same day, issues #70 and #76, with
+the same statement giving the same value across rounds and days). The
 `.metadata` companion gets the same Content-Type as its result file; the one
 exception seen is the multipart upload described at the end of this section,
 which athena-local never produces.
 
 | Statement | Content-Type |
 | --- | --- |
-| `SELECT` of literals only: `SELECT 1`, `SELECT 1, 2`, `SELECT 'a'`, `SELECT 1.5`, `SELECT 1 AS i`, `SELECT true`, `SELECT 1, 'a'`, with or without comments | `binary/octet-stream` |
-| Any other `SELECT`: an expression (`SELECT 1 + 1`), a `CAST`, `NULL`, a `WHERE`, a `FROM`, `VALUES`, `UNION`, or a table | `application/octet-stream` |
+| `SELECT` of literals only: `SELECT 1`, `SELECT 1, 2`, `SELECT 'a'`, `SELECT 1.5`, `SELECT -1`, `SELECT 1.5E0`, `SELECT true`, `SELECT 1, 'a'`, `SELECT 1 AS i`, `SELECT 1 AS "x"`, `SELECT 1 i`, `SELECT 1 AS i, 2 AS j`, `select 1`, with or without comments | `binary/octet-stream` |
+| Any other `SELECT`: an expression (`SELECT 1 + 1`, `SELECT 'a' \|\| 'b'`), a `CAST`, `NULL`, a typed literal (`DATE '2020-01-01'`), `ARRAY[1]`, a `WHERE`, a `LIMIT`, a `FROM`, `(SELECT 1)`, `VALUES 1`, `UNION`, or a table | `application/octet-stream` |
 | `SHOW TABLES`, `SHOW DATABASES`, `SHOW COLUMNS`, `SHOW TBLPROPERTIES`, `SHOW VIEWS`, `SHOW PARTITIONS` | `binary/octet-stream` |
-| `DESCRIBE`, `EXPLAIN`, `SHOW CREATE TABLE` | `application/octet-stream` |
+| `DESCRIBE`, `DESC`, `EXPLAIN`, `SHOW CREATE TABLE`, `SHOW FUNCTIONS` | `application/octet-stream` |
 | Column-less DDL (`CREATE DATABASE`, `DROP DATABASE`, ...) | `binary/octet-stream` |
 | `INSERT`, `UPDATE`, `DELETE`, `MERGE`, CTAS (`.metadata` only) | `application/octet-stream` |
 
 athena-local recognises a literals-only `SELECT` as a comma-separated list of
-unsigned integer or decimal literals, single-quoted strings and `true`/`false`,
-each optionally followed by `AS <identifier>`, with nothing after it but
-whitespace and comments; keyword case does not matter. `SELECT` forms Athena
-was not measured with (`SELECT -1`, a trailing `;`, `LIMIT`, typed literals
-such as `DATE '...'`, `1.5E0`, `ARRAY[1]`, a quoted or bare alias,
-`(SELECT 1)`, `VALUES 1`) are sent as `application/octet-stream`, the value for
-everything that is not a literals-only `SELECT`. For `<id>.txt` the default is
-`binary/octet-stream`, and only `DESCRIBE`, `DESC`, `EXPLAIN` and `SHOW CREATE
-...` get `application/octet-stream`, so a `SHOW` form that was not measured
-(`SHOW FUNCTIONS`, `SHOW SESSION`, `SHOW STATS`) and `DESC` or
-`SHOW CREATE VIEW` follow those defaults. All of these are listed in
-[#76](https://github.com/aoyagikouhei/athena-local/issues/76) to be measured.
+numbers (an optional `-` directly before the digits, an optional fraction and
+an optional exponent), single-quoted strings and `true`/`false`, each
+optionally followed by an alias (with or without `AS`, unquoted or
+double-quoted), with nothing after it but whitespace and comments; keyword
+case does not matter. The forms measured are the ones in the table; the only
+generalisations are combining them, a lowercase `e` or a signed exponent
+(`SELECT -1.5e-1 x`), and keyword case.
+Everything else is sent as `application/octet-stream`, the value Athena gave
+every measured `SELECT` that is not literals only. Two measured forms cannot be
+compared: Athena writes `SELECT 1;` as `binary/octet-stream`, but Trino
+rejects the trailing `;`, so athena-local fails it at the syntax check; and
+Athena rejects `SHOW SESSION` and `SHOW STATS FOR t` at `StartQueryExecution`
+(`InvalidRequestException`, `no viable alternative`), while Trino runs them, so
+athena-local writes their `<id>.txt` with the `binary/octet-stream` default.
+`SHOW CREATE VIEW` was not measured (the database measured had no view) and
+follows `SHOW CREATE TABLE`. Athena writes the result of `SHOW FUNCTIONS` as a
+`<id>.csv` with a header row and `SubstatementType` `SHOW_FUNCTIONS`;
+athena-local still writes `<id>.txt`, sent as `application/octet-stream` like
+Athena's file, and the rest is
+[#80](https://github.com/aoyagikouhei/athena-local/issues/80).
 Two DDL combinations depend on the target table's format instead: `DROP TABLE`
 on an Iceberg table and `ALTER TABLE ... ADD COLUMNS` on a Hive table send
 their `<id>.txt` and `.metadata` as `application/octet-stream` (measured
 2026-09-20/21; see
 [DDL that depends on the target table's format](#ddl-that-depends-on-the-target-tables-format)).
 The one exception to "the companion matches its result file": Athena uploads a
-result of about 140 MB in parts and that object comes back as
-`binary/octet-stream` with an `application/octet-stream` companion; a 29 MB
-result was still a single upload, and athena-local always uploads in one
-`PUT`, so the size at which this starts is not measured.
+large result in parts and that object comes back as `binary/octet-stream` with
+an `application/octet-stream` companion. A 98.9 MB result was still a single
+upload with `application/octet-stream`, and a 142.9 MB one was multipart
+(measured 2026-09-23 with results generated from `UNNEST(sequence(...))`, and
+a 140 MB table scan on 2026-09-22), so the switch lies between those sizes;
+athena-local always uploads in one `PUT`.
 
 A failed CSV upload makes the query `FAILED` with the store's response in
 `StateChangeReason`. A failed `<id>.txt` or `.metadata` upload leaves the query
