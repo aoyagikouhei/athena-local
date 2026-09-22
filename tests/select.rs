@@ -188,3 +188,78 @@ async fn 日時を精度どおりに受け取るよう_trino_に伝える() {
         Some("PARAMETRIC_DATETIME")
     );
 }
+
+/// SHOW / DESCRIBE の Trino 応答（列 1 つ、データ 2 行）。
+fn show_response() -> serde_json::Value {
+    json!({
+        "columns": [{ "name": "table_name", "type": "varchar" }],
+        "data": [["orders"], ["users"]]
+    })
+}
+
+#[tokio::test]
+async fn show_と_describe_の結果には列名行が入らない() {
+    // 本物は UTILITY（SHOW TABLES / SHOW DATABASES / SHOW COLUMNS / SHOW CREATE TABLE /
+    // SHOW PARTITIONS / SHOW TBLPROPERTIES / DESCRIBE）で先頭行に列名を入れない
+    // （2026-09-15〜22 の実測 5 ラウンドの GetQueryResults 応答を読み直して確認。#60）。
+    let harness = Harness::builder(show_response())
+        .route("DESCRIBE t", show_response())
+        .start()
+        .await;
+
+    for query in ["SHOW TABLES IN db", "DESCRIBE t"] {
+        let execution = harness.run_query(json!({ "QueryString": query })).await;
+        let id = execution_id(&execution);
+        let (status, results) = harness
+            .call("GetQueryResults", json!({ "QueryExecutionId": id }))
+            .await;
+        assert_eq!(status, 200, "{query}");
+
+        let rows = results["ResultSet"]["Rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 2, "{query}: データ 2 行だけ（列名行は無い）");
+        assert_eq!(rows[0]["Data"][0]["VarCharValue"], "orders", "{query}");
+        assert_eq!(rows[1]["Data"][0]["VarCharValue"], "users", "{query}");
+        // 列の情報は変わらず載る。
+        assert_eq!(
+            results["ResultSet"]["ResultSetMetadata"]["ColumnInfo"][0]["Name"], "table_name",
+            "{query}"
+        );
+
+        // ページングも列名行を数えない。1 件目はデータの 1 行目。
+        let (_, page) = harness
+            .call(
+                "GetQueryResults",
+                json!({ "QueryExecutionId": id, "MaxResults": 1 }),
+            )
+            .await;
+        let rows = page["ResultSet"]["Rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 1, "{query}");
+        assert_eq!(rows[0]["Data"][0]["VarCharValue"], "orders", "{query}");
+        assert_eq!(page["NextToken"], "1", "{query}");
+    }
+}
+
+#[tokio::test]
+async fn explain_の結果には_select_と同じく列名行が入る() {
+    // EXPLAIN は StatementType が DML で、本物は SELECT と同じく先頭行に列名を入れる
+    // （2026-09-15〜18 実測。#60）。
+    let harness = Harness::start(json!({
+        "columns": [{ "name": "Query Plan", "type": "varchar" }],
+        "data": [["Fragment 0 [SINGLE]"], ["    Output layout: [expr]"]]
+    }))
+    .await;
+    let execution = harness
+        .run_query(json!({ "QueryString": "EXPLAIN SELECT 1" }))
+        .await;
+    let (_, results) = harness
+        .call(
+            "GetQueryResults",
+            json!({ "QueryExecutionId": execution_id(&execution) }),
+        )
+        .await;
+
+    let rows = results["ResultSet"]["Rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 3, "列名行 + データ 2 行");
+    assert_eq!(rows[0]["Data"][0]["VarCharValue"], "Query Plan");
+    assert_eq!(rows[1]["Data"][0]["VarCharValue"], "Fragment 0 [SINGLE]");
+}
