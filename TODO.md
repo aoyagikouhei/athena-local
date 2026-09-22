@@ -82,6 +82,10 @@
 - [ ] `TooManyRequestsException` を返すことがない
 - [ ] リクエストを解釈できないときに `AthenaErrorCode` が無い。本物の応答は未実測
 
+### 起動
+
+- [ ] 環境変数の値が不正で起動時に止まるとき、理由が Rust の `Debug` 形（`Error: "…"`。引用符とエスケープ付き）で出る。`main` が `Result<(), Box<dyn Error>>` で `String` を包んでいるため（#55）
+
 ### ドキュメント
 
 - [ ] この節の差分のうち README に書いていないものを Caveats に書く
@@ -90,16 +94,14 @@
 
 各 issue の実装で「本物の Athena で測っていない」まま残した挙動。次に本物の Athena を叩ける機会に、まとめて測る。測ったら README の Caveats の「未実測」を書き換え、ここから消す。出典は `.claude/issue-notes/<番号>.md`。
 
-### 結果ファイル（#1、#5、#6）
+### 結果ファイル（#1、#5、#6、#39、#43）
 
-- [ ] `.txt` 本体の Content-Type が `binary/octet-stream` と `application/octet-stream` に割れる条件（DESCRIBE は `application/`、SHOW TABLES は `binary/` だった）。athena-local は `binary/octet-stream` 固定
-- [ ] `ALTER TABLE` が成功したときの `.txt` の中身
-- [ ] `DROP TABLE` の `.txt`（本物は改行 1 バイト、athena-local は 0 バイト）と、本物が置く 41 バイトの `.metadata`（athena-local は置かない）
-- [ ] 失敗した `EXPLAIN`、`CREATE TABLE` の重複、Hive テーブルへの `ALTER TABLE` 失敗の結果ファイル
+- [ ] `.csv` と `.metadata` の Content-Type が実測のたびに `binary/octet-stream` と `application/octet-stream` に割れる（#1・#17）。athena-local は多数派の `application/` 固定。`.txt` の側は #39 で決着した（`.metadata` を置く文だけ `application/`、それ以外は `binary/`。README に表あり）
+- [ ] 失敗した `EXPLAIN` と、`CREATE TABLE` の重複の結果ファイル（Hive テーブルへの `ALTER TABLE` 失敗は #43 で実測済み: `RENAME TO` が理由を `<id>.txt` に書いた）
 - [ ] `.metadata` の `timestamp with time zone`／`time with time zone`／`interval year to month`／`uuid`／`ipaddress` の Precision／Scale／CaseSensitive（field 7／8／10）の有無。**推測で実装している**
-- [ ] `MERGE` の `.metadata` が UPDATE／DELETE と同じ形か
+- [ ] （本物の Athena ではなく Trino 側）Trino が `MERGE` の `updateType` に `"MERGE"` を返すか。athena-local はその文字列をそのまま `.metadata` の field 2 に書く。本物の Athena 側の `"MERGE"` は #41 で実測済み（#56）
 - [ ] 更新件数 0 の DML（`DELETE ... WHERE false` など）で本物が更新件数の field 3 を出すか（athena-local は `18 00` を書く）
-- [ ] 暗号化系の SHOW（本物の `.txt.metadata` が base64 の暗号化バイト列）。athena-local は素の protobuf
+- `SHOW` 5 文（`SHOW TABLES` / `DATABASES` / `COLUMNS` / `PARTITIONS` / `TBLPROPERTIES`）の本物の `.txt.metadata` は不透明な形式（base64 で 312 文字）。#24 で解析したが特定できず、AWS 側の仕様が公開されない限り埋まらないので測る対象から外す。athena-local は素の protobuf を置く（README の Caveats に記載済み。JDBC が読めるかは下の「実クライアントでの疎通」）
 - [ ] 失敗時の `GetQueryResults` が本物は文ごとに割れる（空の ResultSet／`INVALID_QUERY_EXECUTION_STATE`／`RESULT_NOT_FOUND`）。athena-local は常に `INVALID_QUERY_EXECUTION_STATE`
 
 ### ClientRequestToken と保持期限（#3、#4）
@@ -131,6 +133,7 @@
 - [ ] dbt-athena で `work_group` を設定して 1 回通す（#2 の人間検証リスト。Grafana は #9 で実施済み）
 - [ ] `ATHENA_LOCAL_RESULTS=s3` と保持期限の組み合わせ（捨てた後も結果 CSV は残る想定だが未確認）
 - [ ] 長時間運用でメモリが実際に頭打ちになるか（保持期限による破棄の実効性）
+- [ ] `SHOW TABLES` 以外の `SHOW` 4 文の `.txt.metadata`（素の protobuf）を Athena JDBC 3.8.1 が例外なく読めるか。`SHOW TABLES` は #5 で実機確認済み（#57）
 
 ## 4. 当面やらないもの
 
