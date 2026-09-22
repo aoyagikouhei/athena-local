@@ -263,6 +263,12 @@ Behaviour that matches real Athena:
   other types (`integer` 10, `bigint` 19, `double` and `float` 17, `timestamp` 3,
   `varbinary` 1073741824, 0 otherwise); `CaseSensitive` is true for `varchar` and
   `char`; `CatalogName` is `hive` with empty `SchemaName` / `TableName`.
+- The `Query Plan` column of `EXPLAIN` is typed `varchar(<length of the plan
+  text>)` by the engine: 371 for `EXPLAIN SELECT 1` on Athena engine version 3
+  (measured 2026-09-15 and 2026-09-16), 400 for the same statement on Trino 482,
+  counted in characters. athena-local passes Trino's length through as
+  `Precision`, so the number differs from Athena's only because the plan text
+  differs between the engines.
 - `double` and `real` values use Java's notation: `1.5`, `0.30000000000000004`,
   `1.0E20`, `1.0E-7`.
 - `array`, `map` and `row` values use Athena's notation rather than JSON:
