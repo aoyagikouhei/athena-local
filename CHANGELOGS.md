@@ -408,6 +408,16 @@ later name the date they were measured on.
   queries were also measured and already matched (the state wins over a
   malformed token), as did `ListWorkGroups` with an out-of-range
   `MaxResults` and an empty `NextToken` sent together.
+- The remaining type-mismatch combinations were measured on 2026-09-23 and
+  now carry Athena's message instead of none: `false` is `FALSE_VALUE can
+  not be converted to an Integer` / `a String`, a decimal where a string is
+  expected is `NUMBER_VALUE can not be converted to a String`, a number or
+  boolean where a list is expected is `Expected list or null`, an object
+  where a list is expected is `Start of structure or map found where not
+  expected.`, and a number or boolean where a structure is expected is
+  `Expected null`. A `null` element inside a list is dropped instead of
+  being rejected, as Athena accepts it. A decimal `MaxResults` stays a
+  `SerializationException` without `Message` (Athena truncates it).
 
 ## [0.4.0] - 2026-09-15
 
