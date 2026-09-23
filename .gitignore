@@ -4,9 +4,9 @@
 # ネストしたビルド成果物（例: tools/compose/jdbc-client/target）
 target/
 
-# 検証用の自己署名証明書と秘密鍵（make-cert.sh で作る。リポジトリには入れない）
-tools/compose/tls/server.key
-tools/compose/tls/server.crt
+# 検証用の自己署名証明書と秘密鍵（make-cert.sh で作る。リポジトリには入れない。置き場を移しても、古い clone に残った鍵が追跡に入らないよう tools/ 配下のどこでも無視する）
+tools/**/tls/server.key
+tools/**/tls/server.crt
 __pycache__/
 
 # tools/dev.sh が作る toolbox の HOME と cargo の成果物

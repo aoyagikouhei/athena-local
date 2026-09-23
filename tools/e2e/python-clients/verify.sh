@@ -56,7 +56,7 @@ cleanup() {
   for pid in "${PIDS[@]}"; do kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; done
   docker rm -f "$TRACE_CONTAINER" >/dev/null 2>&1
   if [ "${KEEP_UP:-0}" = "1" ]; then
-    log "KEEP_UP=1 のため残す（後で tools/dev.sh docker compose -f compose.yml down -v ${SERVICES[*]}）"
+    log "KEEP_UP=1 のため残す（後で tools/dev.sh docker compose -f $REPO_ROOT/compose.yml down -v ${SERVICES[*]}）"
   elif [ "$COMPOSE_OWNED" = "1" ]; then
     "${COMPOSE[@]}" down -v "${SERVICES[@]}" >/dev/null 2>&1
   fi

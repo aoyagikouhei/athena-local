@@ -106,7 +106,7 @@ tls-proxy など他のコンテナからは届かず、JDBC の検証には使�
 ## 後始末を手動でやりたいとき
 
 ```bash
-tools/dev.sh docker compose -f compose.yml down -v trino minio minio-init
+tools/dev.sh docker compose -f compose.yml down -v trino minio minio-init   # リポジトリのルートで
 ```
 
 `verify.sh` は正常終了・異常終了のどちらでも `trap` で後始末するので、通常は何もしなくてよい。

@@ -56,7 +56,7 @@ athena-local 自身は dev の中のプロセスで、足場は `127.0.0.1:<port
 付属物は `tools/compose/` にある: `catalog/`（hive・iceberg・memory の 3 つ）、`tls/`（`nginx.conf` と、自己署名証明書を作る `make-cert.sh`）、`jdbc-client/`（`Main.java` などの JVM 側）。証明書と鍵はリポジトリに入れないので、新しい clone では `tools/dev.sh bash tools/compose/tls/make-cert.sh` で作る（jdbc-drivers の足場は無ければ自分で作る）。
 
 - 足場は開始時に、使うサービスだけを `docker compose -f compose.yml down -v <サービス...>` → `up -d <サービス...>` で作り直す。前の走行の残骸（テーブル、結果ファイル、nginx のログ）で判定が狂う足場があるため。
-- 後始末の trap も同じサービスだけを `down -v` する。dev は残す。`KEEP_UP=1` で残した環境は、次に流した足場の開始時に消える。手で落とすときは `tools/dev.sh docker compose -f compose.yml down -v <サービス...>`（サービス名を必ず並べる）。
+- 後始末の trap も同じサービスだけを `down -v` する。dev は残す。`KEEP_UP=1` で残した環境のうち、次に流した足場が使うサービスは、その足場の開始時に作り直される（使わないサービス、例えば jdbc 系だけが使う tls-proxy は残る）。手で落とすときはリポジトリのルートで `tools/dev.sh docker compose -f compose.yml down -v <サービス...>`（サービス名を必ず並べる。`-f` は cwd からの相対パス）。
 - **同じプロジェクト名で 2 つの足場は流せない**（片方の開始時の `down -v` が、もう片方の Trino を走行の途中で消す）。開始時に「同じプロジェクトで別の足場が動いている」と出して止まる足場がある（jdbc-drivers、python-clients、retention、trino-probe の versions.sh）。
 - 同時に流すなら、プロジェクト名をホストの環境変数で分ける: `COMPOSE_PROJECT_NAME=athena-local-b tools/dev.sh tools/e2e/minio/verify.sh`。dev もその中の足場も同じ別プロジェクト（別のネットワーク・コンテナ・named volume）で動く。`tools/dev.sh COMPOSE_PROJECT_NAME=... <コマンド>` の形では dev 自身が既定のプロジェクトに入り、足場だけが別のプロジェクトになるので効かない。
 - プロジェクトを分けても同時に流せないもの: jdbc 系の 3 本（`tools/e2e/jdbc-drivers/verify.sh`、`tools/measure/jdbc-metadata.sh`、`tools/measure/jdbc-show-metadata.sh`）は、どのプロジェクトからも `tools/compose/jdbc-client/target` を bind するので、同時に 1 本だけ。

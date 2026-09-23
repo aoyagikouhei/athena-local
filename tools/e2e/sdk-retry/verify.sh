@@ -52,7 +52,7 @@ cleanup() {
   if [ "${KEEP_UP:-0}" != "1" ]; then
     "${COMPOSE[@]}" down -v "${SERVICES[@]}" >/dev/null 2>&1
   else
-    echo "KEEP_UP=1 のため残す（後で tools/dev.sh docker compose -f compose.yml down -v ${SERVICES[*]}）"
+    echo "KEEP_UP=1 のため残す（後で tools/dev.sh docker compose -f $REPO_ROOT/compose.yml down -v ${SERVICES[*]}）"
   fi
   echo "evidence: $EVIDENCE_DIR"
 }

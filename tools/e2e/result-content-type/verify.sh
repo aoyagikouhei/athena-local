@@ -100,7 +100,7 @@ cleanup() {
     wait "$ATHENA_PID" 2>/dev/null || true
   fi
   if [ "${KEEP_UP:-0}" = "1" ]; then
-    log "KEEP_UP=1 のため docker compose はそのまま残す（後で tools/dev.sh docker compose -f compose.yml down -v ${SERVICES[*]}）"
+    log "KEEP_UP=1 のため docker compose はそのまま残す（後で tools/dev.sh docker compose -f $REPO_ROOT/compose.yml down -v ${SERVICES[*]}）"
   else
     log "docker compose down -v ${SERVICES[*]}（使ったサービスだけ）"
     "${COMPOSE[@]}" down -v "${SERVICES[@]}" >/dev/null 2>&1
