@@ -33,17 +33,20 @@ aws CLI が Docker のラッパのときは、そこに同梱された python �
     POLL_TIMEOUT  クエリの終端状態を待つ上限（秒）。既定 120
 
 ** 課金の注意 **
-    流すクエリは `SELECT n FROM UNNEST(sequence(1, 5)) AS t(n)` の 1 本だけで、
-    テーブルは読まない（スキャン 0 バイト）。DDL・書き込みは無い。
-    結果ファイル（数十バイト）が OUTPUT に 1 組置かれる。
-    本物への呼び出しは StartQueryExecution 1 回、GetQueryExecution が終端まで数回、
-    GetQueryResults が約 20 回。すべて読み取り。
+    流すクエリは 3 本で、どれもテーブルは読まない（スキャン 0 バイト）。DDL・書き込みは無い。
+      - `SELECT n FROM UNNEST(sequence(1, 5)) AS t(n)`（5 行。ケース 1〜22）
+      - `SELECT n FROM UNNEST(sequence(1, 1500)) AS t(n)`（1500 行。既定ページサイズを測る。3 ラウンド目で追加）
+      - 存在しないテーブルの SELECT（FAILED になる。結果の無いクエリの検証順序を測る。3 ラウンド目で追加）
+    結果ファイル（数 KB）が OUTPUT に 2 組置かれる。
+    本物への呼び出しは StartQueryExecution 3 回、GetQueryExecution が終端まで数回ずつ、
+    GetQueryResults が約 30 回、ListWorkGroups 1 回。すべて読み取り。
 
 実行ごとに $OUT_DIR/raw-<日時>/ を作り、その中だけに書く。前の回と混ざらない。
 
 保存するファイル（すべて raw-<日時>/ の中）。
-    start.json                  StartQueryExecution の応答
-    execution-<n>.json          GetQueryExecution の応答（ポーリングの回ごと）
+
+    <prefix>-start.json         StartQueryExecution の応答（prefix は small / failed / big）
+    <prefix>-execution-<n>.json GetQueryExecution の応答（ポーリングの回ごと）
     case-<n>.json               ケースごとの応答（ステータス・ヘッダ全部・本文そのまま。
                                 **バケット名やアカウント ID を含みうる**）
     summary.txt                 実名を含まない要約。そのまま貼れる。
@@ -78,6 +81,10 @@ from botocore.awsrequest import AWSRequest
 
 SERVICE = "athena"
 QUERY = "SELECT n FROM UNNEST(sequence(1, 5)) AS t(n)"
+# 既定ページサイズを測る（上限 1000 を超える行数）。
+BIG_QUERY = "SELECT n FROM UNNEST(sequence(1, 1500)) AS t(n)"
+# FAILED にするための、存在しないテーブルの SELECT。
+FAILED_QUERY = "SELECT 1 FROM athena_local_issue83_missing_table"
 # 実在しない QueryExecutionId（形は正しい UUID）。検証エラーと存在確認の順序を見るために使う。
 MISSING_ID = "00000000-0000-4000-8000-000000000083"
 # 不正な NextToken の固定値。ListWorkGroups（#9）の実測と同じ文字列。
@@ -168,21 +175,22 @@ def tweak(token):
     return token[:-1] + replacement
 
 
-def start_query(region, credentials, run_dir, output):
-    """クエリを 1 本流して終端まで待ち、(QueryExecutionId, 最終状態, 理由) を返す。"""
+def start_query(region, credentials, run_dir, output, query, prefix):
+    """クエリを 1 本流して終端まで待ち、(QueryExecutionId, 最終状態, 理由) を返す。
+    応答は run_dir/<prefix>-start.json と <prefix>-execution-<n>.json に置く。"""
     result = call(
         region,
         credentials,
         "AmazonAthena.StartQueryExecution",
         {
-            "QueryString": QUERY,
+            "QueryString": query,
             "ResultConfiguration": {"OutputLocation": output},
             # 生 HTTP では CLI が自動で入れる ClientRequestToken が付かず、無いと
             # `clientRequestToken is null or empty` で弾かれる（#3 と 1 ラウンド目で実測）。
             "ClientRequestToken": str(uuid.uuid4()),
         },
     )
-    save(run_dir, "start.json", result)
+    save(run_dir, "{}-start.json".format(prefix), result)
     parsed = parsed_body(result)
     if result.get("status") != 200 or parsed is None or "QueryExecutionId" not in parsed:
         return None, "start_failed", result.get("body", result.get("exception", ""))
@@ -197,7 +205,7 @@ def start_query(region, credentials, run_dir, output):
         execution = call(
             region, credentials, "AmazonAthena.GetQueryExecution", {"QueryExecutionId": query_id}
         )
-        save(run_dir, "execution-{}.json".format(n), execution)
+        save(run_dir, "{}-execution-{}.json".format(prefix, n), execution)
         parsed = parsed_body(execution) or {}
         status = parsed.get("QueryExecution", {}).get("Status", {})
         state = status.get("State", "UNKNOWN")
@@ -211,7 +219,7 @@ def start_query(region, credentials, run_dir, output):
     return query_id, state, reason
 
 
-def build_cases(query_id, good_token):
+def build_cases(query_id, good_token, failed_id, big_id):
     """送るケース。payload はそのまま JSON にして本文にする（型違いも含めたいので、
     ここで botocore のモデルを通さない）。good_token が None のときは、それを使う
     ケースを None にして未測定にする。"""
@@ -262,6 +270,15 @@ def build_cases(query_id, good_token):
         (20, "実在しない QueryExecutionId と NextToken=空文字", {"QueryExecutionId": MISSING_ID, "NextToken": ""}),
         (21, "MaxResults=\"1\"（文字列。型違い。#84 の参考）", with_(MaxResults="1")),
         (22, "QueryExecutionId 無し（必須項目の欠落。参考）", {"MaxResults": 1}),
+        # ---- 3 ラウンド目で追加（2 ラウンド目で未実測だった順序と既定値）----
+        (23, "実在しない QueryExecutionId と MaxResults=1001（上限と存在確認のどちらが先か）", {"QueryExecutionId": MISSING_ID, "MaxResults": 1001}),
+        (24, "FAILED のクエリだけ（比較用。結果の無いクエリのエラー）", {"QueryExecutionId": failed_id} if failed_id else None),
+        (25, "FAILED のクエリと NextToken=不正な文字列（結果無しとトークンの形のどちらが先か）", {"QueryExecutionId": failed_id, "NextToken": BAD_TOKEN} if failed_id else None),
+        (26, "FAILED のクエリと MaxResults=1001", {"QueryExecutionId": failed_id, "MaxResults": 1001} if failed_id else None),
+        (27, "FAILED のクエリと NextToken=空文字", {"QueryExecutionId": failed_id, "NextToken": ""} if failed_id else None),
+        (28, "1500 行のクエリで MaxResults 無し（既定ページサイズ。列名行を数に入れるか）", {"QueryExecutionId": big_id} if big_id else None),
+        (29, "1500 行のクエリで MaxResults=1000", {"QueryExecutionId": big_id, "MaxResults": 1000} if big_id else None),
+        (30, "1500 行のクエリで MaxResults=1000 と 2 ページ目（1 ページ目の NextToken で。行数と NextToken の有無）", "big-page-2" if big_id else None),
     ]
 
 
@@ -281,7 +298,7 @@ def collect_secrets(results, good_token, output):
     return tokens, output.rstrip("/")
 
 
-def mask(text, tokens, output, query_id):
+def mask(text, tokens, output, query_id, other_ids=()):
     """トークン・OUTPUT・QueryExecutionId・12 桁のアカウント ID らしき数列をプレースホルダに置き換える。"""
     # 長いものから先に置き換える（短いトークンが長いトークンの一部のことがある）。
     for token in sorted(tokens, key=len, reverse=True):
@@ -290,6 +307,9 @@ def mask(text, tokens, output, query_id):
         text = text.replace(output, "<OUTPUT>")
     if query_id:
         text = text.replace(query_id, "<QUERY_ID>")
+    for name, other in other_ids:
+        if other:
+            text = text.replace(other, name)
     return re.sub(r"\d{12}", "<ACCOUNT_ID>", text)
 
 
@@ -297,7 +317,7 @@ def summarize(number, label, payload, result):
     """1 ケース分の要約を行の列で返す（マスクは呼び出し側）。"""
     lines = ["[ケース {}] {}".format(number, label)]
     if payload is None or result is None:
-        lines.append("  未測定: 正しい NextToken が採れなかった（ケース 2 を参照）")
+        lines.append("  未測定: 依存する準備（正しい NextToken / FAILED のクエリ / 1500 行のクエリ）が揃わなかった")
         return lines
     lines.append("  送った本文 = {}".format(result.get("request_body", "")))
     if result.get("outcome") == "exception":
@@ -329,7 +349,8 @@ def summarize(number, label, payload, result):
                 firsts.append(str(data[0].get("VarCharValue")))
             else:
                 firsts.append("?")
-        lines.append("  1 列目の値の並び = {}".format(", ".join(firsts)))
+        shown = firsts if len(firsts) <= 8 else firsts[:4] + ["..."] + firsts[-3:]
+        lines.append("  1 列目の値の並び = {}".format(", ".join(shown)))
         lines.append("  UpdateCount = {}".format(parsed.get("UpdateCount", "(キー無し)")))
         token = parsed.get("NextToken")
         if isinstance(token, str):
@@ -378,8 +399,8 @@ def main():
         "",
     ]
 
-    query_id, state, reason = start_query(region, credentials, run_dir, output)
-    lines.append("[準備] StartQueryExecution → 最終状態 = {}".format(state))
+    query_id, state, reason = start_query(region, credentials, run_dir, output, QUERY, "small")
+    lines.append("[準備] 5 行のクエリ → 最終状態 = {}".format(state))
     if reason:
         lines.append("  StateChangeReason = {}".format(reason))
     if query_id is None or state != "SUCCEEDED":
@@ -388,6 +409,24 @@ def main():
             f.write("\n".join(mask(line, set(), output.rstrip("/"), query_id) for line in lines) + "\n")
         print(summary_path)
         return 1
+
+    failed_id, failed_state, failed_reason = start_query(
+        region, credentials, run_dir, output, FAILED_QUERY, "failed"
+    )
+    lines.append("[準備] 存在しないテーブルのクエリ → 最終状態 = {}".format(failed_state))
+    if failed_reason:
+        lines.append("  StateChangeReason = {}".format(failed_reason))
+    if failed_state != "FAILED":
+        failed_id = None
+        lines.append("  FAILED にならなかったので、FAILED のクエリを使うケースは未測定。")
+
+    big_id, big_state, big_reason = start_query(region, credentials, run_dir, output, BIG_QUERY, "big")
+    lines.append("[準備] 1500 行のクエリ → 最終状態 = {}".format(big_state))
+    if big_reason:
+        lines.append("  StateChangeReason = {}".format(big_reason))
+    if big_state != "SUCCEEDED":
+        big_id = None
+        lines.append("  成功しなかったので、1500 行のクエリを使うケースは未測定。")
     lines.append("")
 
     # 先に MaxResults=1 を 1 回流して正しい NextToken を採る（ケース 2 と同じ本文。
@@ -405,22 +444,41 @@ def main():
         lines.append("[準備] MaxResults=1 で NextToken が採れなかった。トークンを使うケースは未測定。")
         lines.append("")
 
-    cases = build_cases(query_id, good_token)
+    cases = build_cases(query_id, good_token, failed_id, big_id)
     results = []
-    for number, _label, payload in cases:
+    big_token = None
+    for i, (number, _label, payload) in enumerate(cases):
+        if payload == "big-page-2":
+            # ケース 29 の応答の NextToken で 2 ページ目を取る。無ければ未測定。
+            payload = (
+                {"QueryExecutionId": big_id, "MaxResults": 1000, "NextToken": big_token}
+                if big_token
+                else None
+            )
+            cases[i] = (number, _label, payload)
         if payload is None:
             results.append(None)
             continue
         result = call(region, credentials, "AmazonAthena.GetQueryResults", payload)
         results.append(result)
         save(run_dir, "case-{}.json".format(number), result)
+        if number == 29:
+            token = (parsed_body(result) or {}).get("NextToken")
+            big_token = token if isinstance(token, str) and token else None
+
+    # ListWorkGroups の 2 件同時の形（#9 で未実測。GetQueryResults と同じ枠組みか）。
+    lwg = call(region, credentials, "AmazonAthena.ListWorkGroups", {"MaxResults": 0, "NextToken": ""})
+    save(run_dir, "case-31-list-work-groups.json", lwg)
+    cases.append((31, "ListWorkGroups で MaxResults=0 と NextToken=空文字（同時。#9 の未実測分）", {"MaxResults": 0, "NextToken": ""}))
+    results.append(lwg)
 
     tokens, output_plain = collect_secrets([r for r in results if r], good_token, output)
     for (number, label, payload), result in zip(cases, results):
         lines.extend(summarize(number, label, payload, result))
         lines.append("")
     with open(summary_path, "w") as f:
-        f.write("\n".join(mask(line, tokens, output_plain, query_id) for line in lines) + "\n")
+        others = (("<FAILED_ID>", failed_id), ("<BIG_ID>", big_id))
+        f.write("\n".join(mask(line, tokens, output_plain, query_id, others) for line in lines) + "\n")
     print(summary_path)
     return 0
 
