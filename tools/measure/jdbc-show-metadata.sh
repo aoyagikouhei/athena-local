@@ -425,9 +425,9 @@ check_metadata_loaded() {
 
 # ケースごとの行数と列数を ResultFetcher の 3 通りで突き合わせる。
 #   - auto と S3 は完全一致のはず（どちらも S3 の本体を読む）
-#   - GetQueryResults は SHOW（UTILITY）だけ 1 行多い。athena-local が 1 ページ目の先頭行に列名を入れるのに対し、
-#     ドライバは UTILITY の見出し行を読み飛ばさないため（#5 のノート「気づいたこと」4。本物の Athena が SHOW で
-#     見出し行を返すかは未実測。#57 の範囲外なので起票して引き継ぐ）。SELECT は見出し行を読み飛ばすので一致する。
+#   - GetQueryResults も一致するはず。athena-local は #60 で本物に合わせ、UTILITY（SHOW / DESCRIBE）の 1 ページ目に
+#     列名行を入れなくなった（docs/dev/measurements/clients.md の #57 の備考）。以前の「SHOW だけ +1 行」の期待は
+#     その前の挙動で、#134 で外した。SELECT はドライバが見出し行を読み飛ばすので一致する。
 compare_row_counts() {
   local base="$OUT_ROOT/jdbc-S3.log"
   local line label rows cols status got mismatch=0 total=0 want
@@ -442,10 +442,7 @@ compare_row_counts() {
       mismatch=$((mismatch + 1))
       record "突き合わせ $label" FAIL "S3: rows=$rows cols=$cols status=$status / auto: ${got:-（無し）}"
     fi
-    case "$label" in
-      SHOW_*) [ "$status" = "PASS" ] && want=$((rows + 1)) || want=$rows ;;
-      *) want=$rows ;;
-    esac
+    want=$rows
     got=$(grep "^RESULT $label " "$OUT_ROOT/jdbc-GetQueryResults.log" | sed -E 's/^RESULT [^ ]+ //')
     if [ "$got" != "rows=$want cols=$cols status=$status" ]; then
       mismatch=$((mismatch + 1))
@@ -455,7 +452,7 @@ compare_row_counts() {
   if [ "$total" = "0" ]; then
     record "行数の突き合わせ" FAIL "S3 のログに RESULT 行が無い"
   elif [ "$mismatch" = "0" ]; then
-    record "行数の突き合わせ" PASS "$total ケースすべて auto = S3、GetQueryResults は SHOW だけ見出し行ぶん +1（既知）で一致"
+    record "行数の突き合わせ" PASS "$total ケースすべて auto = S3 = GetQueryResults で一致"
   fi
   {
     echo
