@@ -1,7 +1,7 @@
 #!/bin/bash
 # issue #61 で作成（tools/ へ移す前の名前は 61-stress.sh）
 # issue #61 の実機検証: CPU を飽和させた状態で tests/retention.rs を繰り返し走らせ、落ちる回数を数える。
-# 使い方: bash tools/measure/retention-stress.sh [ラウンド数(既定 6)] [同時実行数(既定 4)] [yes の本数(既定 CPU 数×8)]
+# 使い方: tools/dev.sh bash tools/measure/retention-stress.sh [ラウンド数(既定 6)] [同時実行数(既定 4)] [yes の本数(既定 CPU 数×8)]
 # 出力: 各ラウンドの結果と "fails=<落ちた回数> / <総回数>"。ログは $LOG_DIR（既定 /tmp/athena-local-61）に残る。
 set -u
 cd "$(dirname "$0")/../.."
@@ -12,7 +12,8 @@ LOG_DIR=${LOG_DIR:-/tmp/athena-local-61}
 mkdir -p "$LOG_DIR"
 
 cargo test --locked --test retention --no-run 2>&1 | tail -1
-bin=$(ls -t target/debug/deps/retention-* | grep -v '\.d$' | head -1)
+# cargo の成果物の置き場。tools/dev.sh は CARGO_TARGET_DIR を .toolbox/target にする
+bin=$(ls -t "${CARGO_TARGET_DIR:-target}"/debug/deps/retention-* | grep -v '\.d$' | head -1)
 echo "binary: $bin"
 
 hogs=()
