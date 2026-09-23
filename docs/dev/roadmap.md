@@ -77,7 +77,7 @@
 
 - [ ] `InternalServerException` も HTTP 400 で返す
 - [ ] `TooManyRequestsException` を返すことがない
-- [ ] `InternalServerException` の本文の形（`AthenaErrorCode` の有無）。本物の応答は未実測（パース失敗と必須項目の欠落は #84 で実測して揃えた）
+- [ ] `InternalServerException` の本文の形（`AthenaErrorCode` の有無）。本物の応答はクライアントから誘発できず測れない（[unmeasured.md](unmeasured.md) の「測れないもの」。パース失敗と必須項目の欠落は #84 で実測して揃えた）
 
 ### ドキュメント
 
