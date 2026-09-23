@@ -21,6 +21,10 @@ use super::validation::paging_violation;
 /// 未指定のときのページの大きさも同じ値（列名行込みで 1000 行。2026-09-23 に 1500 行のクエリで実測）。
 const MAX_RESULTS_LIMIT: i64 = 1000;
 
+/// API 定義（枠組み）の MaxResults の上限。これを超えると本体の 1000 の文言ではなく枠組みの検証
+/// `Member must have value less than or equal to 100000` になる（2026-09-23 実測。#85）。
+const MAX_RESULTS_FRAMEWORK_LIMIT: i64 = 100_000;
+
 pub fn get_query_execution(app: &App, body: &Bytes) -> Response {
     let request: GetQueryExecutionRequest = match parse(body) {
         Ok(request) => request,
@@ -47,7 +51,11 @@ pub fn get_query_results(app: &App, body: &Bytes) -> Response {
 
     // usize にする前に i64 のまま範囲を見る（ListWorkGroups と同じ理由）。
     let limit = request.max_results.unwrap_or(MAX_RESULTS_LIMIT);
-    if let Some(response) = paging_violation(request.next_token.as_deref(), limit, None) {
+    if let Some(response) = paging_violation(
+        request.next_token.as_deref(),
+        limit,
+        Some(MAX_RESULTS_FRAMEWORK_LIMIT),
+    ) {
         return response;
     }
 
@@ -79,12 +87,15 @@ pub fn get_query_results(app: &App, body: &Bytes) -> Response {
     {
         rows.remove(0);
     }
-    // 発行するのは 1 <= end < len の 10 進（列名行を外した後の rows が基準）なので、それ以外は
-    // 本物と同じく弾く（"0"、先頭ゼロ、"+2" も通るが、返すページは正当なので厳密化しない。
-    // ListWorkGroups と同じ式で、文言だけ違う。2026-09-23 実測）。
+    // 発行するのは 1 <= end <= len の 10 進（列名行を外した後の rows が基準。満杯のページの次は
+    // end == len の空のページになる）なので、それ以外は本物と同じく弾く（"0"、先頭ゼロ、"+2" も
+    // 通るが、返すページは正当なので厳密化しない。ListWorkGroups と同じ式で、文言だけ違う。2026-09-23 実測）。
+    // 行が 1 つも無い（UTILITY で 0 行）ときは本物はトークンを見ず 200 で 0 行を返す（2026-09-23 実測。#85。
+    // 列名行だけの DML は行が 1 つあるので Malformed になる）。
     let offset = match &request.next_token {
         None => 0,
-        Some(token) => match token.parse::<usize>().ok().filter(|o| *o < rows.len()) {
+        Some(_) if rows.is_empty() => 0,
+        Some(token) => match token.parse::<usize>().ok().filter(|o| *o <= rows.len()) {
             Some(offset) => offset,
             None => {
                 return invalid_request_with_code(
@@ -99,7 +110,9 @@ pub fn get_query_results(app: &App, body: &Bytes) -> Response {
     ok(&GetQueryResultsResponse {
         result_set: convert::result_set(&outcome, &rows[offset..end]),
         update_count: update_count(&execution.query, &outcome),
-        next_token: (end < rows.len()).then(|| end.to_string()),
+        // 本物はページが満杯（返した行数 = MaxResults）なら残りが無くてもトークンを付け、次の呼び出しに
+        // 0 行・トークン無しを返す（2026-09-23 実測。#85。6 行を 6／3／1 で辿って確認）。
+        next_token: (end - offset == limit).then(|| end.to_string()),
     })
 }
 

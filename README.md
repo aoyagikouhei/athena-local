@@ -946,19 +946,25 @@ passed; see Caveats.
   (an empty `NextToken` and a `MaxResults` below 1 fail with
   `INVALID_INPUT` and `1 validation error detected: ...`; both at once give
   `2 validation errors detected: ...` listing `nextToken` before
-  `maxResults`), then the query id must exist
-  (`QUERY_EXECUTION_NOT_FOUND`), then `MaxResults` above 1000 fails with
-  `MaxResults is more than maximum allowed length 1000`, then the query must
-  have finished successfully, and only then is a malformed `NextToken`
+  `maxResults`; a `MaxResults` above 100000 is caught here too, with
+  `Member must have value less than or equal to 100000`), then the query id
+  must exist (`QUERY_EXECUTION_NOT_FOUND`), then `MaxResults` above 1000
+  fails with `MaxResults is more than maximum allowed length 1000`, then the
+  query must have finished successfully (`RUNNING`, `FAILED` and `CANCELLED`
+  all win over a malformed token), and only then is a malformed `NextToken`
   rejected with `Malformed nextPageToken <token>`. The page size defaults to
-  1000 rows counting the header row, as on Athena. `NextToken` is the offset
-  of the next page as a decimal string rather than Athena's opaque token, so
-  the malformed-token check accepts any string that parses as an offset
-  inside the result (`0`, a leading zero or a `+` sign included) and rejects
-  everything else. Not measured: a malformed token on a `RUNNING` or
-  `CANCELLED` query (handled like `FAILED`, the state wins) and any token on
-  a result with no rows (no token is ever issued; it is treated as
-  malformed).
+  1000 rows counting the header row, as on Athena. A page that is full
+  (exactly `MaxResults` rows) always carries a `NextToken`, even when
+  nothing is left, and the next call then returns zero rows and no token;
+  this is how Athena behaves for a result of 6 rows fetched 6 or 3 at a time
+  and for a header-only result fetched 1 at a time. A result with no rows
+  at all (a `SHOW` that matched nothing) ignores `NextToken` and answers
+  200 with zero rows, as Athena does. `NextToken` is the offset of the next
+  page as a decimal string rather than Athena's opaque token, so the
+  malformed-token check accepts any string that parses as an offset inside
+  the result or just past its end (`0`, a leading zero or a `+` sign
+  included) and rejects everything else. All of this was measured on
+  2026-09-23.
 - **`ListWorkGroups` paging differs from Athena in two ways.** The default page
   size is 50, the largest `MaxResults` Athena accepts; Athena's own default was
   not measured. `NextToken` is the offset of the next page as a decimal string
@@ -967,10 +973,11 @@ passed; see Caveats.
   `AthenaErrorCode: INVALID_INPUT` and Athena's messages (measured 2026-09-18);
   an empty `NextToken` together with a `MaxResults` below 1 gives the same
   combined `2 validation errors detected: ...` message as `GetQueryResults`
-  (measured 2026-09-23). An empty `NextToken` together with a `MaxResults`
-  above 50 was not measured and is combined the same way. When the list fits
-  in one page the `NextToken` key is omitted, never `""`: Grafana loops until
-  the token is absent.
+  (measured 2026-09-23), and so does an empty `NextToken` together with a
+  `MaxResults` above 50; a `MaxResults` out of range together with a
+  malformed `NextToken` reports only the `MaxResults` violation (measured
+  2026-09-23). When the list fits in one page the `NextToken` key is
+  omitted, never `""`: Grafana loops until the token is absent.
 - **Plain HTTP only.** The clients are built without TLS, for both Trino and
   the S3-compatible store, and the server itself speaks plain HTTP. To reach an
   HTTPS endpoint, add the `rustls` feature to `reqwest` in `Cargo.toml` (and CA

@@ -397,6 +397,17 @@ later name the date they were measured on.
   sent together as one `2 validation errors detected: ...` message like
   Athena (measured 2026-09-23); it used to report only the `MaxResults`
   violation.
+- `GetQueryResults` paging now follows three more Athena behaviours
+  measured on 2026-09-23. A full page (exactly `MaxResults` rows) always
+  carries a `NextToken`, and the following call returns zero rows without a
+  token; athena-local used to omit the token as soon as the last row had
+  been sent. A result with no rows at all ignores `NextToken` instead of
+  rejecting it as malformed. A `MaxResults` above 100000 fails with the
+  framework's `Member must have value less than or equal to 100000` instead
+  of the `maximum allowed length 1000` message. `RUNNING` and `CANCELLED`
+  queries were also measured and already matched (the state wins over a
+  malformed token), as did `ListWorkGroups` with an out-of-range
+  `MaxResults` and an empty `NextToken` sent together.
 
 ## [0.4.0] - 2026-09-15
 

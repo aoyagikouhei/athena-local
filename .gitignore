@@ -7,3 +7,4 @@ target/
 # 検証用の自己署名証明書と秘密鍵（make-cert.sh で作る。リポジトリには入れない）
 .claude/issue-notes/39-e2e/tls/server.key
 .claude/issue-notes/39-e2e/tls/server.crt
+__pycache__/
