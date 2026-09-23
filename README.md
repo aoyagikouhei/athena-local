@@ -764,7 +764,9 @@ passed; see Caveats.
   `INSERT` and `tables/<id>-manifest.csv` for a CTAS (measured 2026-09-20, with
   `SHOW CREATE TABLE` confirming the table format). It writes none for the same
   two statements on an Iceberg table, none for `UPDATE` / `DELETE` / `MERGE`,
-  none for an `INSERT` that inserts no row, and none for a failed `INSERT` —
+  none for an `INSERT` that inserts no row (into a Hive table, measured
+  2026-09-20, or into an Iceberg table, measured 2026-09-23), and none for a
+  failed `INSERT` —
   although the failure message names the manifest path it would have used.
   athena-local writes no manifest at all; `OutputLocation` still names the
   result file Athena would use. The `.metadata` companion is written (see
@@ -845,9 +847,13 @@ passed; see Caveats.
   table only.** Athena has no such syntax for Iceberg (see above), so the
   Iceberg side of those two rows cannot exist; no other partition layout was
   measured.
-- **Unmeasured `.metadata` details.** The update count of a DML statement that
-  changes no rows (`DELETE ... WHERE false`) was not measured; athena-local
-  writes `0`. Columns of type `timestamp with time zone`, `time with time zone`
+- **Unmeasured `.metadata` details.** The update count of an `INSERT` that
+  inserts no row is written as `0` (`18 00`), which is what Athena writes for a
+  Hive table (measured 2026-09-20) and for an Iceberg table (measured
+  2026-09-23), each beside a one-row `INSERT` in the same round whose file
+  differed in that byte only. An `UPDATE`, `DELETE` or `MERGE` that changes no
+  rows (`DELETE ... WHERE false`) was not measured; athena-local writes `0` for
+  those too. Columns of type `timestamp with time zone`, `time with time zone`
   and `interval year to month` were not measured and are written like
   `timestamp` / `time` and `interval day to second`.
 - **A failed query writes a result file for more statements than Athena.** On
@@ -903,7 +909,12 @@ passed; see Caveats.
   one that inserts no row all wrote `<id>`, while the `SELECT`, CTAS and
   `SHOW TABLES` measured beside them wrote `<id>.csv`, `tables/<id>` and
   `<id>.txt` as before. `MERGE` was measured for the first time in that round
-  and writes `<id>.csv`, like `UPDATE` and `DELETE`.
+  and writes `<id>.csv`, like `UPDATE` and `DELETE`. The one combination that
+  round had left out, an `INSERT` into an Iceberg table that inserts no row,
+  was measured on 2026-09-23 beside the other three combinations of table
+  format and row count: `<id>`, no result body, a 75-byte `.metadata` carrying
+  `INSERT` and an update count of `0`, and no manifest, exactly like the Hive
+  one.
 - **Any workgroup name is accepted.** `GetWorkGroup` never fails because of the
   name: it echoes the name back and returns the same `Configuration` every time,
   because athena-local has no workgroups to look up. Real Athena answers a name

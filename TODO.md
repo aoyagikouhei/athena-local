@@ -94,8 +94,7 @@
 - [ ] `EXPLAIN (FORMAT JSON)`／`EXPLAIN (TYPE IO)`／`EXPLAIN ANALYZE` の `Rows` の分け方（#73 は `EXPLAIN SELECT 1` の 1 形だけ実測。#92）
 - [ ] `CREATE OR REPLACE TABLE ... AS`（Trino だけの構文）を本物が受け付けるか、受け付けるならファイル名（#24・#26・#35 で未実測のまま。#93）
 - [ ] `.metadata` の `timestamp with time zone`／`time with time zone`／`interval year to month`／`uuid`／`ipaddress` の Precision／Scale／CaseSensitive（field 7／8／10）の有無。**推測で実装している**
-- [ ] 更新件数 0 の DML（`DELETE ... WHERE false` など）で本物が更新件数の field 3 を出すか（athena-local は `18 00` を書く）
-- [ ] Iceberg のテーブルへの 0 行の `INSERT` の結果ファイル（#35 は Hive でだけ測った。#91）
+- [ ] 更新件数 0 の `UPDATE` / `DELETE` / `MERGE`（`DELETE ... WHERE false` など）で本物が更新件数の field 3 を出すか（athena-local は `18 00` を書く。0 行の `INSERT` は Hive・Iceberg とも `18 00` を書くと実測済み。#35・#91）
 - `SHOW` 5 文（`SHOW TABLES` / `DATABASES` / `COLUMNS` / `PARTITIONS` / `TBLPROPERTIES`）の本物の `.txt.metadata` は不透明な形式（base64 で 312 文字）。#24 で解析したが特定できず、AWS 側の仕様が公開されない限り埋まらないので測る対象から外す。athena-local は素の protobuf を置く（README の Caveats に記載済み。JDBC が読めるかは下の「実クライアントでの疎通」）
 - [ ] 失敗時の `GetQueryResults` が本物は文ごとに割れる（空の ResultSet／`INVALID_QUERY_EXECUTION_STATE`／`RESULT_NOT_FOUND`）。athena-local は常に `INVALID_QUERY_EXECUTION_STATE`
 

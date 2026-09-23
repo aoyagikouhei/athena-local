@@ -24,7 +24,8 @@ pub(crate) fn to_metadata(
         put_string(&mut buffer, 2, update_type);
     }
     if let Some(update_count) = update_count {
-        // 0 でも書く。0 件の更新は本物で未実測。
+        // 0 でも書く。0 行の INSERT は本物も `18 00` を書く（Hive は 2026-09-20、Iceberg は 2026-09-23 実測）。
+        // 0 件の UPDATE / DELETE / MERGE は未実測。
         put_varint_field(&mut buffer, 3, update_count as u64);
     }
     for column in columns {

@@ -473,6 +473,41 @@ async fn insert_と_ctas_は_metadata_だけを置く() {
     );
 }
 
+/// 0 行の INSERT でも本物は `<id>` に本体を置かず、`.metadata` に更新件数 0 を `18 00` として書く
+/// （Hive のテーブルは 2026-09-20、Iceberg のテーブルは 2026-09-23 に実測。同じラウンドの 1 行の
+/// INSERT と比べて、違うのはその 1 バイトだけ）。athena-local はテーブルの形式を見ないので、
+/// 1 本のテストが両方の形式を固定する。
+#[tokio::test]
+async fn 行の無い_insert_も_metadata_だけを置き_更新件数_0_を書く() {
+    let harness = Harness::builder(select_response())
+        .route(
+            "INSERT INTO t SELECT 1 WHERE false",
+            dml_response("INSERT", 0),
+        )
+        .results_s3()
+        .default_output_location("s3://results-bucket/athena/")
+        .start()
+        .await;
+
+    let insert = harness
+        .run_query(json!({ "QueryString": "INSERT INTO t SELECT 1 WHERE false" }))
+        .await;
+
+    let puts = harness.s3_puts();
+    assert_eq!(puts.len(), 1, "{puts:?}");
+    assert_eq!(
+        puts[0].key,
+        format!("athena/{}.metadata", execution_id(&insert))
+    );
+    assert_eq!(
+        hex_of(&puts[0].body),
+        hex(&format!(
+            "{} 1206 494e53455254 1800 {COLUMN_ROWS_BIGINT}",
+            engine_id_field()
+        ))
+    );
+}
+
 #[tokio::test]
 async fn metadata_の書き込みに失敗しても_succeeded_のまま() {
     let harness = Harness::builder(select_response())

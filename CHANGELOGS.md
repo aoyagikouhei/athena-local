@@ -341,7 +341,10 @@ later name the date they were measured on.
   keeps writing `<id>`: the same 2026-09-17 round had recorded that value too,
   and measuring it again on 2026-09-20 reproduced it, with controls in the same
   round for a Hive table, an Iceberg table and an `INSERT` that inserts no
-  row.
+  row. The combination that round had left out, an `INSERT` into an Iceberg
+  table that inserts no row, was measured on 2026-09-23 beside the other three
+  and writes the same `<id>`: no result body, a `.metadata` companion carrying
+  an update count of `0`, and no manifest.
 - The Caveat about unmeasured `.metadata` details no longer lists `MERGE`. The
   companion file Athena writes for a `MERGE` was measured on 2026-09-20 and
   differs from the one for an `UPDATE` or a `DELETE` only in the length of the
