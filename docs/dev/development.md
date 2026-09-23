@@ -18,7 +18,7 @@ tools/dev.sh docker build -t aoyagikouhei/athena-local:dev .
 tools/dev.sh tools/e2e/minio/verify.sh             # 検証の足場（tools/e2e）。環境は compose.yml の trino / minio など。同時に流すなら COMPOSE_PROJECT_NAME
 ```
 
-CI（`.github/workflows/ci.yml`）はホストランナーで直に cargo のまま（#130）。
+CI（`.github/workflows/ci.yml`）の `check` ジョブはホストランナーで直に cargo を回す。`e2e` ジョブは toolbox の中で request-errors と paging-validation を流す（toolbox のイメージは GHA キャッシュ、cargo は `.toolbox/target/release` だけキャッシュ）。
 
 ## 検証の足場（toolbox）
 
@@ -40,7 +40,6 @@ tools/dev.sh bash -c 'cargo test 2>&1 | tail -n 5'             # パイプやリ
 - `.toolbox/` を消すときは `rm -rf .toolbox`（イメージ以外は次の実行で作り直される。venv は `tools/dev.sh tools/e2e/python-clients/setup-venvs.sh` を流し直し、JDBC のドライバは足場が取り直す）。
 - イメージのタグは `tools/toolbox/Dockerfile` の sha256 から決まるので、Dockerfile を変えると次の実行で作り直される。
 - dev サービスは compose のネットワークに入り、足場は `trino:8080` / `minio:9000` のサービス名で相手に届く。ホストにはポートを公開しない（人間が Trino を触るときは `docker compose -f compose.yml exec trino trino --execute 'SELECT 1'` か `tools/dev.sh curl http://trino:8080/v1/info`）。`/tmp` はホストと同じパスで共有しているので、足場が表示する証跡のパスはホストからそのまま開ける。
-- この先の予定: CI に軽い e2e を載せる（#130）。
 
 ### 実測（tools/measure）
 
@@ -74,7 +73,7 @@ athena-local 自身は dev の中のプロセスで、足場は `127.0.0.1:<port
 
 ## テスト
 
-テストは本物のルーターを、同じプロセス内に立てた偽 Trino と偽 S3 に向けて動かす。そのため Athena のワイヤ上の形（ヘッダ行、`UpdateCount`、ページング、エラーの写し方）、パラメータの分類、そしてパラメータの無い SQL がカタログの別名を除いて書き換えずに渡されることを確かめられる。CI は main への push とプルリクエストのたびに（手動でも起動できる）`fmt`、`clippy`、`test` を回す。
+テストは本物のルーターを、同じプロセス内に立てた偽 Trino と偽 S3 に向けて動かす。そのため Athena のワイヤ上の形（ヘッダ行、`UpdateCount`、ページング、エラーの写し方）、パラメータの分類、そしてパラメータの無い SQL がカタログの別名を除いて書き換えずに渡されることを確かめられる。CI は main への push とプルリクエストのたびに（手動でも起動できる）`fmt`、`clippy`、`test` と、軽い e2e の足場 2 本（request-errors、paging-validation）を回す。
 
 ## リリース
 
