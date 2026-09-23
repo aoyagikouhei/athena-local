@@ -1,26 +1,27 @@
 # issue #39 Step 9: 実機検証の足場
 
-`tools/e2e/trino-probe/` の Trino 構成に MinIO を足し、本物の Trino
+ルートの `compose.yml` の Trino と MinIO を使い、本物の Trino
 （`trinodb/trino:482`）と本物の S3 互換ストレージ（MinIO）を相手に athena-local を動かして、
 DROP TABLE の結果ファイルがテーブルの形式（Hive / Iceberg）で変わることを確かめるための足場。
 本物の AWS は一切使わない。
 
 ## 構成
 
-- `docker-compose.yml` — Trino（Hive カタログ・Iceberg カタログ）と MinIO、バケットを作る
-  使い捨てコンテナ（`minio-init`）
-- `catalog/hive.properties` / `catalog/iceberg.properties` — `trino-probe` からコピーしたもの
+- 環境はルートの `compose.yml` の `trino`（Hive カタログ・Iceberg カタログ。カタログは `tools/compose/catalog/`）、`minio`、
+  バケットを作る使い捨てコンテナ `minio-init`
 - `verify.sh` — 起動からケースの判定、後始末までを 1 本でやるスクリプト
 - `cases-dml-retention.sh` — ケース 10〜12・14（issue #111）の関数。`verify.sh` が `source` する（単独では実行しない）
 
-## 使っているポート・イメージ
+## 使っているサービス・イメージ
 
-| サービス | イメージ | ポート（ホスト側） |
+| サービス | イメージ | 足場からの宛先 |
 |---|---|---|
-| Trino | `trinodb/trino:482` | `8092`（`/v1/statement` 用。`trino-probe` は `8090`） |
-| MinIO | `quay.io/minio/minio:latest` | `9002`（S3 API）／`9003`（コンソール） |
-| MinIO 初期化 | `quay.io/minio/mc:latest` | 無し（使い捨て） |
-| athena-local | （docker イメージは使わず `cargo build --release` の実行バイナリ。`$CARGO_TARGET_DIR`（`tools/dev.sh` では `.toolbox/target`）の release/athena-local） | `8087` |
+| Trino（`trino`） | `trinodb/trino:482` | `trino:8080` |
+| MinIO（`minio`） | `quay.io/minio/minio:latest` | `minio:9000`（S3 API） |
+| MinIO 初期化（`minio-init`） | `quay.io/minio/mc:latest` | 無し（使い捨て） |
+| athena-local | （docker イメージは使わず `cargo build --release` の実行バイナリ。`$CARGO_TARGET_DIR`（`tools/dev.sh` では `.toolbox/target`）の release/athena-local） | dev 内の `127.0.0.1:8087` |
+
+同時実行は `docs/dev/development.md` の「足場の環境と同時実行」。
 
 MinIO のイメージは 2024 年以降 `minio/minio` / `minio/mc`（Docker Hub）が
 `pull access denied` になり、`quay.io/minio/minio` / `quay.io/minio/mc` に移っている
@@ -46,24 +47,25 @@ tools/dev.sh tools/e2e/minio/verify.sh
 S3 に置かれた `.metadata` の回収まで）。
 **SHOW 文の `.txt.metadata` の検証（issue #57）は `../../measure/jdbc-show-metadata.sh`**（同じ足場。
 `Main.java` の 2 つ目の引数 `57` で SHOW のシナリオに切り替え、`ResultFetcher` 3 通りで行数を突き合わせる）。
-`verify.sh` は athena-local を `127.0.0.1` で待たせるので
-tls-proxy コンテナから届かず、JDBC の検証には使えない（46 側は `0.0.0.0` で待たせる）。
+`verify.sh` は athena-local を dev 内の `127.0.0.1:8087` で待たせるので
+tls-proxy など他のコンテナからは届かず、JDBC の検証には使えない（JDBC は `0.0.0.0` で待たせる jdbc-drivers の足場と上の 2 本）。
 
 内部でやっていること:
 
-0. **JDBC の検証をするときだけ**: `bash tls/make-cert.sh` で自己署名証明書を作る。
-   **秘密鍵はリポジトリに入れない**ので、`tls/server.key` と `tls/server.crt` は手元で作る
+0. **JDBC の検証をするときだけ**: `tools/dev.sh bash tools/compose/tls/make-cert.sh` で自己署名証明書を作る。
+   **秘密鍵はリポジトリに入れない**ので、`tools/compose/tls/server.key` と `server.crt` は手元で作る
    （`verify.sh` だけなら要らない。JDBC ドライバが平文 HTTP を拒むための TLS 終端に使う）
-1. `docker compose up -d` で Trino・MinIO を起動し、バケット `athena-results` を用意する
+1. `docker compose -f compose.yml down -v trino minio minio-init` → `up -d trino minio minio-init` で Trino・MinIO を作り直し、
+   バケット `athena-results` を用意する
 2. Trino に直接（athena-local を経由せず）`iceberg.default` / `hive.default` スキーマと、
    DROP TABLE 対象の 2 テーブル（Iceberg 側・Hive 側それぞれ 1 つ、`CREATE TABLE ... AS SELECT`）を作る
 3. `cargo build --release --locked` を実行し、`$CARGO_TARGET_DIR`（`tools/dev.sh` では `.toolbox/target`）の release/athena-local を起動する
-   （toolbox はホストのネットワークを使うので、Trino・MinIO ともホストにマップしたポート `127.0.0.1:8092` / `127.0.0.1:9002` に繋ぐ）
+   （Trino・MinIO にはサービス名の `trino:8080` / `minio:9000` で繋ぐ）
 4. Athena API（`POST /` に `X-Amz-Target: AmazonAthena.StartQueryExecution` など）を叩いてケース 1〜5 を実行し、
    結果ファイルを `minio/mc` 経由で取得してバイト数・Content-Type・中身を確かめる
 5. ケース 14 の前に athena-local を `ATHENA_LOCAL_RETENTION_SECONDS=1` で再起動する（ログは `athena-local-retention.log`）
 6. 結果を PASS / FAIL / SKIP の表にして表示する
-7. athena-local プロセスを止め、`docker compose down -v` で後始末する（`trap` で必ず実行される）
+7. athena-local プロセスを止め、使ったサービスだけ `docker compose down -v trino minio minio-init` で後始末する（`trap` で必ず実行される。dev は残す）
 
 終了コードは結果表の FAIL の件数（issue #111。SKIP は数えない）。起動の失敗などで途中で止まったときは 1。
 
@@ -71,8 +73,8 @@ tls-proxy コンテナから届かず、JDBC の検証には使えない（46 �
 
 `tools/dev.sh KEEP_UP=1 tools/e2e/minio/verify.sh` のように、`tools/dev.sh` とコマンドの間に並べる。
 
-- `KEEP_UP=1` — テスト後に `docker compose down -v` をせず環境を残す（デバッグ用）。
-  手動で後始末するときは `docker compose -f tools/e2e/minio/docker-compose.yml down -v`
+- `KEEP_UP=1` — テスト後に `docker compose down -v` をせず環境を残す（デバッグ用。次に流した足場の開始時に消える）。
+  手動で後始末するときは下の「後始末を手動でやりたいとき」
 - `SKIP_BUILD=1` — `cargo build` を省略し、既存の `$CARGO_TARGET_DIR`（`tools/dev.sh` では `.toolbox/target`）の release/athena-local をそのまま使う
   （他エージェントが同じ置き場を使っていて自分ではビルドしたくないときなど）
 
@@ -104,7 +106,7 @@ tls-proxy コンテナから届かず、JDBC の検証には使えない（46 �
 ## 後始末を手動でやりたいとき
 
 ```bash
-docker compose -f tools/e2e/minio/docker-compose.yml down -v
+tools/dev.sh docker compose -f compose.yml down -v trino minio minio-init
 ```
 
 `verify.sh` は正常終了・異常終了のどちらでも `trap` で後始末するので、通常は何もしなくてよい。

@@ -18,7 +18,7 @@ cargo fmt --check
 cargo clippy --all-targets --locked -- -D warnings
 docker build -t aoyagikouhei/athena-local:dev .
 tools/dev.sh cargo test                            # 検証の足場は toolbox（compose.yml の dev サービス）の中で動かす（docs/dev/development.md）
-tools/dev.sh tools/e2e/minio/verify.sh             # 環境変数は tools/dev.sh KEEP_UP=1 tools/e2e/... の形
+tools/dev.sh tools/e2e/minio/verify.sh             # 環境は compose.yml の trino / minio など。同時に流すなら COMPOSE_PROJECT_NAME（docs/dev/development.md）
 ```
 
 CI（`.github/workflows/ci.yml`）は `fmt --check`、`clippy -D warnings`、`test --locked` を回す。`v*` タグを push すると `docker.yml` が amd64 / arm64 のイメージを Docker Hub に publish する。リリースの手順（版の書き換えからタグと publish の確認まで）は `.claude/skills/release/SKILL.md`（`/release X.Y.Z`）に従う。
@@ -72,7 +72,7 @@ CI（`.github/workflows/ci.yml`）は `fmt --check`、`clippy -D warnings`、`te
 | `docs/dev/decisions.md` | 決着済みの設計判断（この CLAUDE.md にある約束は重ねない） | 日本語 |
 | `docs/dev/development.md` | ビルド・テスト・リリース | 日本語 |
 | `CHANGELOGS.md` | 版の間で何が変わったか。1 項目 1〜2 行 | 英語 |
-| `tools/measure/`、`tools/e2e/`、`tools/toolbox/`、`tools/dev.sh`、`compose.yml` | 本物の Athena に投げる実測スクリプト、compose の実機検証の足場、足場を動かす toolbox のイメージと呼び口（dev サービス） | — |
+| `tools/measure/`、`tools/e2e/`、`tools/toolbox/`、`tools/dev.sh`、`compose.yml`、`tools/compose/` | 本物の Athena に投げる実測スクリプト、compose の実機検証の足場、足場を動かす toolbox のイメージと呼び口（dev サービス）、足場の環境（trino / minio などのサービス）とその付属物（カタログ、tls、jdbc-client） | — |
 
 - 作業中のノート（`.claude/issue-notes/<番号>.md` と、その issue の足場）は、いま進めている issue のぶんだけを置く。**新しい issue に着手したら、ブランチを切った直後に過去の issue のノートを `git rm -r .claude/issue-notes` で全部消してから進める**（Skill が新しいノートを書く前に消す。古いノートには後で覆った事実が残っていて、正のドキュメントより先に読まれると誤った前提で開発が進むため。#98・#100）。過去のノートは git の履歴にある。
 - ノートに書いた実測の結果表は `docs/dev/measurements/` へ、後の開発でも効く設計判断は `docs/dev/decisions.md` へ、残った未実測は `docs/dev/unmeasured.md` へ、その issue の PR をマージする前に写す。ノートは PR に残してよいが、正はつねに docs/dev 側で、ノートの記述と食い違ったら docs/dev を信じる。
