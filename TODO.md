@@ -91,8 +91,11 @@
 
 - [ ] `.csv` と `.metadata` の Content-Type が実測のたびに `binary/octet-stream` と `application/octet-stream` に割れる（#1・#17）。athena-local は多数派の `application/` 固定。`.txt` の側は #39 で決着した（`.metadata` を置く文だけ `application/`、それ以外は `binary/`。README に表あり）
 - [ ] 失敗した `EXPLAIN` と、`CREATE TABLE` の重複の結果ファイル（Hive テーブルへの `ALTER TABLE` 失敗は #43 で実測済み: `RENAME TO` が理由を `<id>.txt` に書いた）
+- [ ] `EXPLAIN (FORMAT JSON)`／`EXPLAIN (TYPE IO)`／`EXPLAIN ANALYZE` の `Rows` の分け方（#73 は `EXPLAIN SELECT 1` の 1 形だけ実測。#92）
+- [ ] `CREATE OR REPLACE TABLE ... AS`（Trino だけの構文）を本物が受け付けるか、受け付けるならファイル名（#24・#26・#35 で未実測のまま。#93）
 - [ ] `.metadata` の `timestamp with time zone`／`time with time zone`／`interval year to month`／`uuid`／`ipaddress` の Precision／Scale／CaseSensitive（field 7／8／10）の有無。**推測で実装している**
 - [ ] 更新件数 0 の DML（`DELETE ... WHERE false` など）で本物が更新件数の field 3 を出すか（athena-local は `18 00` を書く）
+- [ ] Iceberg のテーブルへの 0 行の `INSERT` の結果ファイル（#35 は Hive でだけ測った。#91）
 - `SHOW` 5 文（`SHOW TABLES` / `DATABASES` / `COLUMNS` / `PARTITIONS` / `TBLPROPERTIES`）の本物の `.txt.metadata` は不透明な形式（base64 で 312 文字）。#24 で解析したが特定できず、AWS 側の仕様が公開されない限り埋まらないので測る対象から外す。athena-local は素の protobuf を置く（README の Caveats に記載済み。JDBC が読めるかは下の「実クライアントでの疎通」）
 - [ ] 失敗時の `GetQueryResults` が本物は文ごとに割れる（空の ResultSet／`INVALID_QUERY_EXECUTION_STATE`／`RESULT_NOT_FOUND`）。athena-local は常に `INVALID_QUERY_EXECUTION_STATE`
 
@@ -122,9 +125,11 @@
 ### 実クライアントでの疎通
 
 - [ ] dbt-athena で `work_group` を設定して 1 回通す（#2 の人間検証リスト。Grafana は #9 で実施済み）
+- [ ] awswrangler の `read_sql_query(ctas_approach=False)` を athena-local + Trino + MinIO で流し、`GetWorkGroup` の応答で例外にならないこと（#2 の人間検証リスト）
+- [ ] 実 SDK でネットワーク断からのリトライを誘発し、同じ `ClientRequestToken` が再送されて `INSERT` が 2 回実行されないこと。同じトークンの高多重度の同時送信も（#3 の人間検証リスト。結合テストは 2 並列まで。#94）
+- [ ] 失敗した DDL の `<id>.txt`（`FAILED: ` + 理由）を結果ファイルを読むクライアント（PyAthena、JDBC 3.x）が読んでも壊れないこと（#6 の人間検証リスト。どれも FAILED を先に見る想定）
 - [ ] `ATHENA_LOCAL_RESULTS=s3` と保持期限の組み合わせ（捨てた後も結果 CSV は残る想定だが未確認）
 - [ ] 長時間運用でメモリが実際に頭打ちになるか（保持期限による破棄の実効性）
-- [ ] `SHOW TABLES` 以外の `SHOW` 4 文の `.txt.metadata`（素の protobuf）を Athena JDBC 3.8.1 が例外なく読めるか。`SHOW TABLES` は #5 で実機確認済み（#57）
 
 ## 4. 当面やらないもの
 
