@@ -9,6 +9,8 @@ later name the date they were measured on.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-23
+
 ### Added
 
 - A companion `.metadata` file is written next to the result file, for Athena
@@ -194,7 +196,8 @@ These change what 0.2.0 returned. All of them follow measured Athena behaviour.
   `X-Trino-Catalog` / `X-Trino-Schema` headers.
 - `linux/amd64` and `linux/arm64` images published on tag push.
 
-[Unreleased]: https://github.com/aoyagikouhei/athena-local/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/aoyagikouhei/athena-local/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/aoyagikouhei/athena-local/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/aoyagikouhei/athena-local/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/aoyagikouhei/athena-local/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/aoyagikouhei/athena-local/compare/v0.1.0...v0.2.0
