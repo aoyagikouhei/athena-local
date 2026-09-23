@@ -317,8 +317,11 @@ Known differences between athena-local and real Athena, grouped by topic.
   a new query with a new `QueryExecutionId`, so an `INSERT` or CTAS retried
   after the period runs again; how real Athena treats an expired token has not
   been measured. Dropping happens whenever an API call touches the store, not
-  on a timer, so nothing is swept while the server is idle; memory is still
-  bounded by the queries that finished within the period. Dropping a query
+  on a timer, so nothing is swept while the server is idle; memory stays
+  bounded by the queries that finished within the period: a 240-second run of
+  back-to-back 2 MiB results at a retention of 1 s grew by only 18 MiB after
+  warm-up, while the same load at 3600 s kept growing (measured 2026-09-23 with
+  `tools/e2e/retention/verify.sh`). Dropping a query
   does not touch its result files: with `ATHENA_LOCAL_RESULTS=s3`, the
   `<id>.csv` and `<id>.csv.metadata` stay in the output location after
   `GetQueryExecution` has started failing with `QUERY_EXECUTION_NOT_FOUND`

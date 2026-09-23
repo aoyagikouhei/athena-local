@@ -56,7 +56,6 @@
 
 ## 実クライアントでの疎通（[measurements/clients.md](measurements/clients.md)）
 
-- [ ] 長時間運用でメモリが実際に頭打ちになるか（保持期限による破棄の実効性）
 
 ## `ExecutionParameters`（本物で測った記録はまだ無い）
 
@@ -101,3 +100,4 @@
 - awswrangler が `GetQueryResults` を読む経路で先頭行をどう扱うか（#60）→ #111（2026-09-23。値を見ずに 1 行目を落とすが、athena-local の列名行が落ちるだけで 1500 行・1 行とも欠けない。[measurements/clients.md](measurements/clients.md)）
 - 失敗した DDL の `<id>.txt` を結果ファイルを読むクライアント（PyAthena、JDBC 3.x）が読んでも壊れないこと（#6）→ #111（2026-09-23。JDBC 3.0.0〜3.8.1 も PyAthena 3.36.0 の PandasCursor・Cursor も FAILED を見て例外を投げ、`<id>.txt` も `.txt.metadata` も取りに行かなかった。[measurements/clients.md](measurements/clients.md)。足場は `tools/e2e/jdbc-drivers/` と `tools/e2e/python-clients/`）
 - 暗号化系の `SHOW` に素の protobuf の `.txt.metadata` を返して Athena JDBC 3.5.1 未満が壊れないか（#5）→ #111（3.0.0〜3.5.0 のどれも SHOW 3 文を例外なく読んだ。3.4.0・3.5.0 の auto で準備の `CREATE TABLE` が既知の NoSuchKey。[measurements/clients.md](measurements/clients.md)）
+- 長時間運用でメモリが頭打ちになるか（保持期限による破棄の実効性）→ #111（2026-09-23。同じ負荷を 240 秒ずつ流し、保持 1 秒の VmRSS の暖機後の伸びは 17.9MiB（後半 3.1MiB）、保持 3600 秒は 3267.9MiB。最初の ID は 1 秒側で 400。足場は `tools/e2e/retention/verify.sh`。docs/caveats.md の Query lifecycle に書いた。数時間の推移は #121）
