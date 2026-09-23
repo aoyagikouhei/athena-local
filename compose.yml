@@ -1,0 +1,38 @@
+# 開発環境の定義（#126）。段階 1（#127）は検証の足場を動かす dev サービスだけ。段階 2 で trino などをここに足す。
+# 直接は呼ばず tools/dev.sh から使う（下の ${DEV_*} などは tools/dev.sh が export する）。
+# ${VAR:?} は使わない。使わないサービスの補間エラーでも compose 全体が止まり、足場が compose の中から up / down を呼べなくなる。
+name: athena-local
+
+services:
+  dev:
+    # タグは tools/toolbox/Dockerfile の sha256 の先頭 12 桁。Dockerfile を変えると次の run で作り直される。
+    image: athena-local-toolbox:${TOOLBOX_TAG}
+    build:
+      context: tools/toolbox
+    # 手元に無いタグを docker.io に取りに行かず、そのまま build する。
+    pull_policy: never
+    # 足場は 127.0.0.1:<port> で Trino・MinIO・athena-local に届く前提なので、ホストのネットワークをそのまま使う。
+    network_mode: host
+    # bash が PID 1 だと SIGINT を無視して足場の trap（compose down や kill）が走らないので、init を PID 1 に置く。
+    init: true
+    # 作ったファイル（target、証跡）をホストのユーザーの持ち物にする。
+    user: "${DEV_UID}:${DEV_GID}"
+    # docker.sock のグループ。compose run に --group-add は無いのでここで足す。
+    group_add: ["${DOCKER_GID}"]
+    working_dir: ${DEV_CWD}
+    environment:
+      # HOME はリポジトリの中に置く。足場は $HOME 配下のパス（jdbc の jar）を docker compose run -v の元に渡し、
+      # デーモンはホストのパスで解決するので、ホストと同じ絶対パスに実在する場所でなければならない。
+      HOME: ${DEV_REPO}/.toolbox/home
+      CARGO_HOME: ${DEV_REPO}/.toolbox/cargo
+      # ホストの target/ と分ける（ホスト製の古いバイナリを黙って起動しないため）。足場は BINARY 変数でこれに追随する。
+      CARGO_TARGET_DIR: ${DEV_REPO}/.toolbox/target
+      # passwd に uid の行が無く getpass.getuser() などが落ちるので、名前を環境変数で渡す。
+      USER: ${DEV_USER}
+      LOGNAME: ${DEV_USER}
+    volumes:
+      # compose の相対 bind がホストのパスで解決されるよう、リポジトリはホストと同じ絶対パスに置く。
+      - ${DEV_REPO}:${DEV_REPO}
+      # 足場は証跡を /tmp/athena-local-issueNN-* に置いてパスを表示するので、ホストから開けるよう共有する。
+      - /tmp:/tmp
+      - /var/run/docker.sock:/var/run/docker.sock

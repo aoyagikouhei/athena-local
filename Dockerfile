@@ -1,4 +1,5 @@
 # ビルド用。バイナリだけを次のステージに渡す。
+# tools/toolbox/Dockerfile と同じタグにする。変えるときは両方。
 FROM rust:1.98-bookworm AS builder
 
 WORKDIR /src
