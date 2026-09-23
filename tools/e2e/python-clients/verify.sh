@@ -18,7 +18,7 @@
 # 前提: tools/dev.sh 経由で動かす（toolbox に全部入っている）。venv（先に ./setup-venvs.sh）、$CARGO_TARGET_DIR（tools/dev.sh では .toolbox/target）の release/athena-local。
 # 環境変数: KEEP_UP=1（compose を残す）、SKIP_BUILD=1（cargo build をしない）、VENV_ROOT（既定 $HOME/.cache/athena-local-111）
 # 終了コードは FAIL の件数。証跡は /tmp/athena-local-issue111-py.* に残す。
-# 落とすのは使ったサービス（trino / minio / minio-init）と、このスクリプトが起動したプロセス・trace コンテナだけ。
+# 落とすのは使ったサービス（trino / minio / minio-init）と、このスクリプトが起動したプロセス（trace の mc を含む）だけ。
 
 set -uo pipefail
 
