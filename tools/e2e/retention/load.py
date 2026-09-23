@@ -36,7 +36,14 @@ def call(base, operation, body):
         with urllib.request.urlopen(request, timeout=60) as response:
             return response.status, json.load(response)
     except urllib.error.HTTPError as error:
-        return error.code, json.loads(error.read() or b"{}")
+        try:
+            return error.code, json.loads(error.read() or b"{}")
+        except ValueError:
+            return error.code, {}
+    except (urllib.error.URLError, OSError, ValueError) as error:
+        # athena-local が落ちた（対照側の OOM など）・応答が途切れた・JSON でない応答。
+        # 呼び出し側が run_one の失敗として数えられるよう、状態コード無しで返す。
+        return None, {"__type": type(error).__name__}
 
 
 def read_status(pid):
@@ -90,21 +97,24 @@ def load(args):
                     return  # 止めた直後の 1 行を最後の標本にする
                 stop.wait(args.sample)
 
-    sampler = threading.Thread(target=sample)
+    # daemon にして、負荷側が例外で抜けても標本のスレッドがプロセスを生かし続けないようにする（軽量レビューの指摘）。
+    sampler = threading.Thread(target=sample, daemon=True)
     sampler.start()
     first_id, reasons = None, {}
-    while time.time() - started < args.duration:
-        query_id, state = run_one(args.base, args.rows)
-        first_id = first_id or query_id
-        if state == "SUCCEEDED":
-            counters["done"] += 1
-        else:
-            counters["failed"] += 1
-            reasons[state] = reasons.get(state, 0) + 1
-            if counters["done"] == 0:
-                break  # 最初の 1 件が通らないなら負荷が流れていない
-    stop.set()
-    sampler.join()
+    try:
+        while time.time() - started < args.duration:
+            query_id, state = run_one(args.base, args.rows)
+            first_id = first_id or query_id
+            if state == "SUCCEEDED":
+                counters["done"] += 1
+            else:
+                counters["failed"] += 1
+                reasons[state] = reasons.get(state, 0) + 1
+                if counters["done"] == 0 or state.startswith("start None"):
+                    break  # 最初の 1 件が通らない、または athena-local に届かなくなったら負荷を止める
+    finally:
+        stop.set()
+        sampler.join()
     status, body = call(args.base, "GetQueryExecution", {"QueryExecutionId": first_id}) if first_id else (None, {})
     summary = {
         "retention": args.retention, "proc_ok": True, "done": counters["done"], "failed": counters["failed"],

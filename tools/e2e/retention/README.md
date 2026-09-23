@@ -6,7 +6,7 @@ athena-local の VmRSS が頭打ちになるかを確かめる。同じ負荷を
 
 ```bash
 SKIP_BUILD=1 tools/e2e/retention/verify.sh                   # 既定（240 秒 × 2、約 10 分）
-SKIP_BUILD=1 DURATION=3600 tools/e2e/retention/verify.sh     # 数時間の推移を見るとき
+SKIP_BUILD=1 DURATION=3600 ROWS=100 tools/e2e/retention/verify.sh  # 数時間の推移を見るとき。ROWS を下げる（下の注意）
 ```
 
 - compose は `../sdk-retry/docker-compose.yml`（Trino 482 + memory、8095、`athena-local-issue94-e2e`）を流用する。
