@@ -34,7 +34,8 @@ fn engine_version() -> EngineVersion {
 /// Trino にも Store にも問い合わせない。athena-local にワークグループの実体が無く、
 /// 名前だけをそのまま返して、Configuration は固定値にする。本物と違い、存在しない名前でもエラーにしない。
 /// Configuration の値は 2026-09-17 に本番 Athena で実測したもの
-/// (EnableMinimumEncryptionConfiguration は値が採れず、CreationTime は実体が無いのでどちらも省く)。
+/// (EnableMinimumEncryptionConfiguration は 2026-09-23 実測。CreationTime は実体が無いので省き、
+/// ワイヤ上だけにある QuerySchedulingType は SDK のモデルに無いので EngineVersion.Category と同じく返さない)。
 /// State と EngineVersion は ListWorkGroups と同じ値なので WORK_GROUP_STATE / engine_version() で共有する。
 pub fn get_work_group(app: &App, body: &Bytes) -> Response {
     let request: GetWorkGroupRequest = match parse(body) {
@@ -55,6 +56,7 @@ pub fn get_work_group(app: &App, body: &Bytes) -> Response {
             state: WORK_GROUP_STATE.to_string(),
             configuration: WorkGroupConfiguration {
                 result_configuration: ResultConfiguration { output_location },
+                enable_minimum_encryption_configuration: false,
                 enforce_work_group_configuration: false,
                 publish_cloud_watch_metrics_enabled: false,
                 requester_pays_enabled: false,

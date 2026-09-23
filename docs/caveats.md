@@ -376,10 +376,14 @@ Known differences between athena-local and real Athena, grouped by topic.
   `WorkGroup is not found.` and `AthenaErrorCode: INVALID_INPUT`;
   `StartQueryExecution` fails the same way (measured 2026-09-17). Per-workgroup
   settings are not reproduced.
-- **`GetWorkGroup` omits two fields Athena returns.** `CreationTime` is left out
-  because athena-local has no workgroup that was ever created, so any value
-  would be invented; `EnableMinimumEncryptionConfiguration` is left out because
-  its value was not measured. No client reads either one (measured 2026-09-17).
+- **`GetWorkGroup` omits some fields Athena returns.** `CreationTime` is left
+  out because athena-local has no workgroup that was ever created, so any value
+  would be invented. No client reads it (measured 2026-09-17).
+  `Configuration.QuerySchedulingType` (`DEFAULT` on the wire) and
+  `EngineVersion.Category` (`Presto` on the wire) are not in the SDK model, so
+  no client can read them; neither is returned (measured 2026-09-23).
+  `Configuration.EnableMinimumEncryptionConfiguration` is returned as `false`,
+  the value Athena returned (measured 2026-09-23).
 - **`ListWorkGroups` lists a fixed set of names.** The list comes from
   `ATHENA_LOCAL_WORK_GROUPS`, not from workgroups anyone created, and it is
   sorted by name like Athena's (measured with 3 workgroups, 2026-09-18). It
