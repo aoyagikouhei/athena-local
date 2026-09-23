@@ -104,7 +104,6 @@ run_case() {
   fi
 }
 
-
 # DML（MERGE）のケース。本体（<id>.csv）は置かれず、<id>.csv.metadata だけが置かれ、
 # その field 2 が expect_type、field 3 が expect_count であることを確かめる。
 # field 3 より後ろ（列 `rows bigint`）は本物の Athena の実測値（tests/metadata.rs の
