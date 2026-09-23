@@ -487,7 +487,7 @@ if ! run probe-show-tables "SHOW TABLES"; then
   exit 1
 fi
 
-IFS=$'\t' read -r _ SHOW_TABLES_LOC < <(read_execution_fields "$RUN_DIR/probe-show-tables.execution.json")
+IFS=$'\t' read -r _ SHOW_TABLES_LOC _ < <(read_execution_fields "$RUN_DIR/probe-show-tables.execution.json")
 if fetch "$SHOW_TABLES_LOC" "$RUN_DIR/tables.txt" "$RUN_DIR/tables.err"; then
   if grep -qi "$PREFIX" "$RUN_DIR/tables.txt"; then
     echo
