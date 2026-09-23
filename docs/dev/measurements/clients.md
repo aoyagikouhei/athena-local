@@ -166,7 +166,7 @@
   後続の `SELECT 1 AS n` は `[[1]]`。
 - 備考: PyAthena は `FAILED` を見た時点で `StateChangeReason` を `OperationalError` にし（`cursor.py:155-166`、`pandas/cursor.py:218-240`）、athena-local が置いた `FAILED: ` の `<id>.txt` も `.txt.metadata` も読みに行かない（trace の区間に GET・HEAD とも 0）。`cursor.query_id` は FAILED でも取れる
 
-## Athena JDBC 3.8.1
+## Athena JDBC 3.x
 
 ### Athena JDBC 3.8.1 の読み方
 - 日付: 2026-09-17 ／ issue: #5 ／ スクリプト: 無し（scratchpad の `e2e/Jdbc.java` / `jdbc.sh`）
@@ -263,3 +263,53 @@
   - GetQueryResults は SHOW（UTILITY）で見出し行をデータとして返す（`SELECT` では読み飛ばす）
   - 余分な `.csv.metadata` 3 個は、ドライバが接続時に流す接続テストの `SELECT`
 - 備考: GetQueryResults 列の「SHOW で +1 行」は当時の athena-local が UTILITY にも列名行を返していたため（#5 の「気づいたこと」4 と同じ観察）。#60 で本物（UTILITY は先頭行＝データ）に合わせて直したので、この +1 行は覆った（athena-local 側の当時の挙動）
+
+### 失敗した DDL の `<id>.txt` を Athena JDBC 3.x が読むか
+- 日付: 2026-09-23 ／ issue: #111 ／ スクリプト: `tools/e2e/jdbc-drivers/verify.sh`（判定は `judge.sh`、JVM 側は `tools/e2e/minio/jdbc-client/src/main/java/local/athenajdbccheck/FailedDdlScenario.java`） ／ 生データ: verify.sh が `/tmp/athena-local-issue111-jdbc.*` に残す
+- 相手: Athena JDBC 3.8.1・3.5.0・3.4.0・3.3.0・3.2.2・3.1.0・3.0.0（athena-local 相手。Trino 482 + MinIO + nginx の TLS 終端。本物の AWS ではない）
+- 投げたもの: 構文チェックは通り Trino が FAILED にする 4 文（`DROP TABLE iceberg.default.nope_<run>`、`SHOW COLUMNS FROM hive.default.nope_<run>`、`DESCRIBE hive.default.nope_<run>`、`ALTER TABLE hive.default.nope_<run> ADD COLUMN m int`）と後続の `SELECT 1`。3.8.1 は `ResultFetcher` 未指定（auto）・`S3`・`GetQueryResults`、3.5.0/3.4.0 は未指定・`S3`、3.3.0 以下は `S3`（auto は 3.4.0 から）。URL は全版 `jdbc:athena://`。回ごとに `OutputLocation` を `s3://athena-results/e2e-jdbc111/<版>/<fetcher>/111/` に分け、athena-local が置いた `<id>.txt`（`FAILED: ` + 理由、`.metadata` 無し）への GET を nginx のアクセスログで数えた
+- 返ったもの:
+
+| 版 | fetcher | 4 文の例外 | 後続の `SELECT 1` | 置かれた `.txt` | `.txt` / `.txt.metadata` への GET | 接頭辞への GET（全体） |
+|---|---|---|---|---|---|---|
+| 3.8.1 | 未指定（auto） | 4 文とも `java.sql.SQLException` | 通った | 4 | 0 | 5（`.csv` と `.csv.metadata`） |
+| 3.8.1 | S3 | 同上 | 通った | 4 | 0 | 5 |
+| 3.8.1 | GetQueryResults | 同上 | 通った | 4 | 0 | 0（S3 を読まない対照） |
+| 3.5.0 | 未指定（auto） | 同上 | 通った | 4 | 0 | 5 |
+| 3.5.0 | S3 | 同上 | 通った | 4 | 0 | 5 |
+| 3.4.0 | 未指定（auto） | 同上 | 通った | 4 | 0 | 5 |
+| 3.4.0 | S3 | 同上 | 通った | 4 | 0 | 5 |
+| 3.3.0 | S3 | 同上 | 通った | 4 | 0 | 5 |
+| 3.2.2 | S3 | 同上 | 通った | 4 | 0 | 5 |
+| 3.1.0 | S3 | 同上 | 通った | 4 | 0 | 5 |
+| 3.0.0 | S3 | 同上 | 通った | 4 | 0 | 5 |
+
+  - 例外の文言は全 11 回・4 文とも `java.sql.SQLException: Query execution failed: TABLE_NOT_FOUND: line 1:1: Table '<catalog>.default.nope_<run>' does not exist`（`GetQueryExecution` の `StateChangeReason` がそのまま入る）
+  - 結論: どの版も FAILED を見て SQLException を投げ、`<id>.txt` も `<id>.txt.metadata` も取りに行かなかった。失敗のあとも同じ接続で `SELECT 1` が通る
+- 備考: athena-local 相手の実機検証で、本物の Athena ではない（ドライバの挙動を測った）。本物が失敗した文に `<id>.txt` を置くことは #43 の `RENAME TO` の実測（`result-files.md`）。3.0.0・3.1.0 の jar には ServiceLoader の登録（`META-INF/services/java.sql.Driver`）が無く、`Class.forName("com.amazon.athena.jdbc.AthenaDriver")` で読み込んだ（3.2.2 から登録がある）
+
+### 旧版の Athena JDBC（3.0.0〜3.5.0）が athena-local の `.txt.metadata` を読むか
+- 日付: 2026-09-23 ／ issue: #111 ／ スクリプト: `tools/e2e/jdbc-drivers/verify.sh`（JVM 側は `tools/e2e/minio/jdbc-client/src/main/java/local/athenajdbccheck/Main.java` のシナリオ 57） ／ 生データ: verify.sh が `/tmp/athena-local-issue111-jdbc.*` に残す
+- 相手: Athena JDBC 3.5.0・3.4.0・3.3.0・3.2.2・3.1.0・3.0.0（各修正の直前の版）と対照の 3.8.1（athena-local 相手）
+- 投げたもの: #57 と同じシナリオ（Hive のパーティション付きテーブルを `CREATE TABLE` と `INSERT` で作り、`SHOW TABLES ... LIKE`・`SHOW SCHEMAS`・`SHOW COLUMNS FROM t`、原文 3 文、`"t$partitions"` の SELECT）。URL は全版 `jdbc:athena://`。fetcher は上の項目と同じ組み合わせ。合否は `SHOW TABLES`・`SHOW SCHEMAS`・`SHOW COLUMNS` の 3 行だけで決め、準備の `CREATE TABLE`（`.metadata` を置かない DDL）の失敗は別に数えた
+- 返ったもの:
+
+| 版 | fetcher | 接続と `SELECT 1` | SHOW TABLES | SHOW SCHEMAS | SHOW COLUMNS | `.txt.metadata` への GET（うち 404） | ドライバが `.txt.metadata` を読み込んだログ | 準備の `CREATE TABLE` |
+|---|---|---|---|---|---|---|---|---|
+| 3.8.1 | 未指定（auto） | 通った | 1 行 | 2 行 | 2 行 | 4（1） | 3 | 404 を INFO で続行 |
+| 3.8.1 | S3 | 通った | 1 行 | 2 行 | 2 行 | 0 | 0 | 通った |
+| 3.8.1 | GetQueryResults | 通った | 1 行 | 2 行 | 2 行 | 0 | 0 | 通った |
+| 3.5.0 | 未指定（auto） | 通った | 1 行 | 2 行 | 2 行 | 4（1） | 3 | `NoSuchKeyException` で SQLException |
+| 3.5.0 | S3 | 通った | 1 行 | 2 行 | 2 行 | 0 | 0 | 通った |
+| 3.4.0 | 未指定（auto） | 通った | 1 行 | 2 行 | 2 行 | 4（1） | 3 | `NoSuchKeyException` で SQLException |
+| 3.4.0 | S3 | 通った | 1 行 | 2 行 | 2 行 | 0 | 0 | 通った |
+| 3.3.0 | S3 | 通った | 1 行 | 2 行 | 2 行 | 0 | 0 | 通った |
+| 3.2.2 | S3 | 通った | 1 行 | 2 行 | 2 行 | 0 | 0 | 通った |
+| 3.1.0 | S3 | 通った | 1 行 | 2 行 | 2 行 | 0 | 0 | 通った |
+| 3.0.0 | S3 | 通った | 1 行 | 2 行 | 2 行 | 0 | 0 | 通った |
+
+  - `ResultSetMetaData` はどの版も S3 から読む経路で `_col0:varchar` の 1 列（GetQueryResults は `Table:string` など）。行数も版で変わらない
+  - 3.5.0・3.4.0 の auto の準備の失敗: `java.sql.SQLException: Query execution failed: Could not load query result metadata from "s3://athena-results/e2e-jdbc111/3.5.0/auto/57/<id>.txt.metadata": software.amazon.awssdk.services.s3.model.NoSuchKeyException: The specified key does not exist. (Service: S3, Status Code: 404, ...)`（原因は `com.amazon.athena.client.error.QueryResultException`）。テーブルは作られていて、後の `INSERT` と SHOW は通った
+  - `S3` を明示するとどの版も `.txt.metadata` を取りに行かない（#57 の 3.8.1 と同じ）ので、準備の NoSuchKey は出ない。3.3.0 以下は auto が無いので、auto での NoSuchKey は 3.4.0・3.5.0 でしか観測していない
+  - 結論: 3.0.0〜3.5.0 のどの版も、athena-local の素の protobuf の `.txt.metadata` を例外なく読んだ（auto で読み込みのログが 3 件）。壊れるのは `.metadata` の無い DDL だけで、既知の 3.5.1 未満の NoSuchKey
+- 備考: 対照の 3.8.1 は #57 の結果（`failures=0`、auto で読み込みのログ 3 件、S3 明示は取りに行かない）と同じ。準備の失敗は `docs/result-files.md` の「3.5.1 未満は `.metadata` の無い DDL で `NoSuchKey`」の athena-local 相手の実測にあたる（3.5.1 のリリースノート「Fixed `NoSuchKeyFound` issue with DDL query metadata handling」と整合）。3.0.0・3.1.0 は `Class.forName` で読み込んだ（上の項目の備考）
