@@ -953,8 +953,9 @@ passed; see Caveats.
   rejected with `Malformed nextPageToken <token>`. The page size defaults to
   1000 rows counting the header row, as on Athena. `NextToken` is the offset
   of the next page as a decimal string rather than Athena's opaque token, so
-  the malformed-token check accepts any decimal offset inside the result and
-  rejects everything else. Not measured: a malformed token on a `RUNNING` or
+  the malformed-token check accepts any string that parses as an offset
+  inside the result (`0`, a leading zero or a `+` sign included) and rejects
+  everything else. Not measured: a malformed token on a `RUNNING` or
   `CANCELLED` query (handled like `FAILED`, the state wins) and any token on
   a result with no rows (no token is ever issued; it is treated as
   malformed).
