@@ -66,16 +66,16 @@ def regression():
 
 def api_first_row(name, sql, expected):
     """(9) OutputLocation 無しで始めた SELECT を get_query_results で読む（_fetch_api_result の経路）。"""
-    client = athena_client()
-    query_id = client.start_query_execution(QueryString=sql, QueryExecutionContext={"Database": DB})["QueryExecutionId"]
-    state = wait_query(client, query_id)["State"]
     window = Window().start()
     try:
+        client = athena_client()
+        query_id = client.start_query_execution(QueryString=sql, QueryExecutionContext={"Database": DB})["QueryExecutionId"]
+        state = wait_query(client, query_id)["State"]
         df = wr.athena.get_query_results(query_id)
         values = [str(v) for v in df.iloc[:, 0].tolist()]
         error = None
     except Exception as exc:  # noqa: BLE001
-        values, error = [], short(exc)
+        state, values, error = "-", [], short(exc)
     gets = window.reads("/athena-results/", apis=("s3.GetObject",))
     head_tail = f"n={len(values)} first={values[:1]} last={values[-1:]}"
     detail = f"state={state} {head_tail} error={error} 区間の S3 GET={len(gets)} 期待 n={len(expected)} first={expected[:1]} last={expected[-1:]}"

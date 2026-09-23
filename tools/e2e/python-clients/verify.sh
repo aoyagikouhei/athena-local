@@ -124,10 +124,17 @@ start_proxy_and_trace() {
 }
 
 run_check() {
-  local name="$1"
+  local name="$1" rc fails
   shift
   log "check: $name"
   (cd "$SCRIPT_DIR" && "$@") 2>"$EVIDENCE_DIR/$name.stderr" | tee "$EVIDENCE_DIR/$name.log" | grep -E '^(PASS|FAIL|SKIP|INFO) ' >>"$RESULTS"
+  rc=${PIPESTATUS[0]}
+  # check の終了コードは FAIL の件数。結果行の FAIL より大きければ、捕まえていない例外で途中で落ちている
+  # （結果行が出ないまま合格に見えるのを防ぐ。軽量レビューの指摘）。
+  fails=$(grep -c '^FAIL ' "$EVIDENCE_DIR/$name.log")
+  if [ "$rc" -gt "$fails" ]; then
+    record FAIL "$name 異常終了" "check が rc=$rc で止まった（結果行の FAIL は $fails 件。$EVIDENCE_DIR/$name.stderr）"
+  fi
 }
 
 summary() {

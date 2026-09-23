@@ -146,8 +146,9 @@ athena-local, including `work_group` in the profile: the adapter's
 `is_work_group_output_location_enforced()` calls `GetWorkGroup` and reads
 `EnforceWorkGroupConfiguration=false`. `dbt run` does not get that far on
 athena-local alone: before running any SQL it lists schemas through AWS Glue
-(`GetDatabases`), and it also needs STS, neither of which athena-local
-provides, so it stops with `UnknownOperationException`.
+(`GetDatabases`), which athena-local does not provide, so it stops with
+`UnknownOperationException` (whether STS would be needed later was not
+reached).
 
 Point it at athena-local with environment variables rather than
 `endpoint_url` in the profile. The profile's `endpoint_url` only reaches the

@@ -83,7 +83,8 @@ gw=$(count "$from" 'target=AmazonAthena\.GetWorkGroup ')
 detail="rc=$rc log=${enforced:-無し} 中継の区間: GetWorkGroup=$gw targets=[$(targets "$from")]"
 if [ "$rc" = 0 ] && [ "$enforced" = "ENFORCED=False" ] && [ "$gw" -ge 1 ]; then
   result PASS "(1) E2 dbt run-operation check_work_group" "$detail"
-elif [ -z "$enforced" ] && [ "$rc" != 0 ]; then
+elif [ -z "$enforced" ] && [ "$rc" != 0 ] && [ "$gw" -eq 0 ]; then
+  # GetWorkGroup が中継に届いていれば「呼べなかった」ではなく応答側の問題なので、下の FAIL に落とす。
   result SKIP "(1) E2 dbt run-operation check_work_group" "未測定: マクロから呼べなかった $detail errors=$(errors_of "$OUT/run-operation.jsonl" | tr '\n' '|')"
 else
   result FAIL "(1) E2 dbt run-operation check_work_group" "$detail"
