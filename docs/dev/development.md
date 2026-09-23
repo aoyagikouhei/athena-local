@@ -22,3 +22,5 @@ docker build -t aoyagikouhei/athena-local:dev .
 ## リリース
 
 コミットに `v*` のタグを付けると、GitHub Actions が `linux/amd64` と `linux/arm64` のイメージを Docker Hub に publish する（シークレットは `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN`）。アーキテクチャごとにネイティブのランナーでビルドし、結果を 1 つのマニフェストにまとめるので、QEMU のエミュレーションは使わない。
+
+手順（版の書き換え、PR、タグ、publish の確認、止まる条件）はリポジトリの Skill `.claude/skills/release/SKILL.md` にある。Claude Code では `/release X.Y.Z` で呼ぶ。
