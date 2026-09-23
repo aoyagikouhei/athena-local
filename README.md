@@ -706,8 +706,12 @@ passed; see Caveats.
   (`iceberg.db.users`), and when the Trino name is longer than the Athena name,
   error positions after it shift.
 - **Syntax differs.** Trino-only syntax such as `CREATE OR REPLACE TABLE` passes
-  here but is a syntax error on Athena, and the `Expecting:` list in a syntax
-  error follows Trino's grammar. `ALTER TABLE IF EXISTS ...` and
+  here but is a syntax error on Athena (`CREATE OR REPLACE TABLE ... AS SELECT`
+  answers `InvalidRequestException` with `line 1:19: mismatched input 'TABLE'.
+  Expecting: 'MATERIALIZED', 'MULTI', 'PROTECTED', 'VIEW'` and
+  `AthenaErrorCode` `MALFORMED_QUERY` before anything runs, with or without an
+  Iceberg `WITH` clause, measured 2026-09-23), and the `Expecting:` list in a
+  syntax error follows Trino's grammar. `ALTER TABLE IF EXISTS ...` and
   `ALTER TABLE ... RENAME COLUMN ... TO ...` are the same: Trino runs both, but
   Athena's grammar has no such form and answers `mismatched input` before the
   statement starts (measured 2026-09-21), so athena-local executes them on
@@ -901,9 +905,12 @@ passed; see Caveats.
 - **A missing bucket fails the query.** Athena reported `SUCCEEDED` for a
   `SELECT` whose output bucket did not exist (measured). athena-local makes it
   `FAILED` so the mistake shows up locally.
-- **Unmeasured file names.** The file name for `CREATE OR REPLACE TABLE ... AS`
-  (Trino only) follows the measured rule for CTAS but was not measured.
-  A CTAS always gets `tables/<id>`: Athena used that name for an Iceberg CTAS
+- **`CREATE OR REPLACE TABLE ... AS` has no Athena file name.** Athena rejects
+  the statement as a syntax error before it starts (see "Syntax differs"), so
+  there is nothing to match; athena-local, which lets Trino run it, names its
+  result `tables/<id>` by the CTAS rule below (on Trino 482 the Iceberg
+  connector runs it and the Hive connector fails with `This connector does not
+  support replacing tables`). A CTAS always gets `tables/<id>`: Athena used that name for an Iceberg CTAS
   too, both for `WITH (table_type = 'ICEBERG')` and for the Hive default
   (measured 2026-09-19, with `SHOW CREATE TABLE` confirming the table really was
   Iceberg). An earlier round had recorded `<id>` for the same statement
