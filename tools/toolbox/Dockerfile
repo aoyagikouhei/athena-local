@@ -14,10 +14,10 @@ FROM rust:1.98-bookworm
 RUN rustup component add clippy rustfmt
 
 # 足場が呼ぶコマンド: jq、python3 -m venv と pip、boto3（sdk-retry）、uuidgen、ss、openssl（tools/compose/tls/make-cert.sh）、curl。
-# gnupg は下の Docker 公式 apt の鍵を入れるため。
+# gnupg は下の Docker 公式 apt の鍵を入れるため。unzip は下の awscli v2 の展開に使う。
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      jq python3-venv python3-pip python3-boto3 uuid-runtime iproute2 openssl ca-certificates curl gnupg \
+      jq python3-venv python3-pip python3-boto3 uuid-runtime iproute2 openssl ca-certificates curl gnupg unzip \
  && rm -rf /var/lib/apt/lists/*
 
 # docker CLI と compose は Docker 公式 apt から入れる（Debian の docker.io は古く compose v2 が付かない）。
@@ -32,3 +32,18 @@ RUN install -m 0755 -d /etc/apt/keyrings \
 
 # mc（#129）。足場は compose のネットワークに直接繋いで minio:9000 を見るので、使い捨てコンテナが要らない。
 COPY --from=mc /usr/bin/mc /usr/local/bin/mc
+
+# awscli v2（#129）。tools/measure が呼ぶ（--no-paginate・--max-items・--debug など v2 本体が要る形を使う）。
+# 版を版付きの zip で固定する。理由: toolbox のタグは Dockerfile の sha256 だけで、`awscli-exe-linux-<arch>-latest.zip`
+# だと Dockerfile を変えないまま中身（版）が変わる。版を上げるときは
+# https://raw.githubusercontent.com/aws/aws-cli/v2/CHANGELOG.rst で最新を見て、この行の版番号を書き換える。
+RUN arch="$(uname -m)" \
+ && case "$arch" in \
+      aarch64) awscli_arch=aarch64 ;; \
+      x86_64)  awscli_arch=x86_64 ;; \
+      *) echo "未対応のアーキテクチャ: $arch" >&2; exit 1 ;; \
+    esac \
+ && curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${awscli_arch}-2.37.0.zip" -o /tmp/awscliv2.zip \
+ && unzip -q /tmp/awscliv2.zip -d /tmp \
+ && /tmp/aws/install \
+ && rm -rf /tmp/awscliv2.zip /tmp/aws

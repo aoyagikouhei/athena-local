@@ -32,7 +32,7 @@ tools/dev.sh KEEP_UP=1 SKIP_BUILD=1 tools/e2e/minio/verify.sh   # 環境変数�
 tools/dev.sh bash -c 'cargo test 2>&1 | tail -n 5'             # パイプやリダイレクトは bash -c の中に書く
 ```
 
-- 入っているもの（[tools/toolbox/Dockerfile](../../tools/toolbox/Dockerfile)）: Rust（`rust:1.98-bookworm`。clippy・rustfmt 付き）、jq、python3（venv・pip・boto3）、docker CLI と compose、curl、uuidgen、ss、openssl、mc（マルチアーキの manifest list のダイジェストで固定。#129。S3 の確認は `mc alias set local http://minio:9000 ...` で直接見る）。awscli は入れていない（`tools/measure` の `aws` は #129 のこの段階では扱わない。フェーズ 3）。
+- 入っているもの（[tools/toolbox/Dockerfile](../../tools/toolbox/Dockerfile)）: Rust（`rust:1.98-bookworm`。clippy・rustfmt 付き）、jq、python3（venv・pip・boto3）、docker CLI と compose、curl、uuidgen、ss、openssl、mc（マルチアーキの manifest list のダイジェストで固定。#129。S3 の確認は `mc alias set local http://minio:9000 ...` で直接見る）、awscli v2（2.37.0。版付きの zip で固定。#129。`tools/measure` が呼ぶ）。
 - 環境変数は `tools/dev.sh VAR=値 <コマンド>` の形で渡す（`env` の代入として効く）。`KEEP_UP=1 tools/dev.sh ...` のようにホスト側で前に置いても、コンテナには届かない。
 - 引数の `~` や `$VAR` はホストのシェルが展開してから渡る。コンテナの中で展開したいもの、パイプ、リダイレクトは `bash -c '...'` に書く。
 - リポジトリの中のどこからでも呼べて、cwd はそのままコンテナに引き継ぐ。リポジトリの外では止まる。
@@ -40,7 +40,14 @@ tools/dev.sh bash -c 'cargo test 2>&1 | tail -n 5'             # パイプやリ
 - `.toolbox/` を消すときは `rm -rf .toolbox`（イメージ以外は次の実行で作り直される。venv は `tools/dev.sh tools/e2e/python-clients/setup-venvs.sh` を流し直し、JDBC のドライバは足場が取り直す）。
 - イメージのタグは `tools/toolbox/Dockerfile` の sha256 から決まるので、Dockerfile を変えると次の実行で作り直される。
 - dev サービスは compose のネットワークに入り、足場は `trino:8080` / `minio:9000` のサービス名で相手に届く。ホストにはポートを公開しない（人間が Trino を触るときは `docker compose -f compose.yml exec trino trino --execute 'SELECT 1'` か `tools/dev.sh curl http://trino:8080/v1/info`）。`/tmp` はホストと同じパスで共有しているので、足場が表示する証跡のパスはホストからそのまま開ける。
-- この先の予定: `tools/measure/` も toolbox で走らせる（#129）、CI に軽い e2e を載せる（#130）。
+- この先の予定: CI に軽い e2e を載せる（#130）。
+
+### 実測（tools/measure）
+
+実測（`tools/measure`）も toolbox で動かす。`AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... tools/dev.sh bash tools/measure/get-work-group.sh`
+のように、資格情報はホストのシェルの環境変数として渡す（`~/.aws/credentials` でも届く）。出力はホストの `~/athena-*-measurements`
+（dev にホストのホームを同じパスでマウントし、`DEV_HOST_HOME` を既定の出力先にしている）。`opaque-metadata-form.sh` は
+aws を呼ばず保存済みの実測データを検算するだけなので、ホストで直接流す（xxd を使う）。
 
 ### 足場の環境と同時実行
 

@@ -12,7 +12,8 @@
 # 結果ファイル名 / 列名行の有無がどうなるのかを 1 ラウンドで決める。
 #
 # 使い方:
-#   OUTPUT=s3://your-bucket/prefix/ DB=your_db TABLE=small_table bash table-statement.sh
+#   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db TABLE=small_table bash tools/measure/table-statement.sh
+#   （資格情報はホストのシェルで AWS_ACCESS_KEY_ID などを export してから。または ~/.aws/credentials）
 #
 # ** 課金の注意（先に読むこと） **
 #   この実行は対象テーブル <T> を 6 回フルスキャンする（a, b, c, d, e, g）。
@@ -31,7 +32,7 @@
 #               f（存在しないテーブル）だけを測る。
 #   CATALOG     既定 AwsDataCatalog
 #   REGION      既定 ap-northeast-1
-#   OUT_DIR     既定 $HOME/athena-table-statement-measurements（実名が入るのでリポジトリの外に出す）
+#   OUT_DIR     既定 ${DEV_HOST_HOME:-$HOME}/athena-table-statement-measurements（実名が入るのでリポジトリの外に出す）
 #   POLL_TIMEOUT 終端状態を待つ上限（秒）。既定 180
 #   RETRY_MAX   名前解決・接続など一時的な失敗を再試行する回数の上限。既定 4
 #   RETRY_DELAY 再試行の間隔（秒）。既定 5
@@ -91,7 +92,8 @@ set -uo pipefail
 TABLE=${TABLE:-}
 CATALOG=${CATALOG:-AwsDataCatalog}
 REGION=${REGION:-ap-northeast-1}
-OUT_DIR=${OUT_DIR:-$HOME/athena-table-statement-measurements}
+# toolbox（tools/dev.sh）ではホストのホーム（DEV_HOST_HOME）。#129
+OUT_DIR=${OUT_DIR:-${DEV_HOST_HOME:-$HOME}/athena-table-statement-measurements}
 POLL_TIMEOUT=${POLL_TIMEOUT:-180}
 RETRY_MAX=${RETRY_MAX:-4}
 RETRY_DELAY=${RETRY_DELAY:-5}

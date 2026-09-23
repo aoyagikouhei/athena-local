@@ -13,24 +13,17 @@ AWS CLI は botocore のクライアント側検証で `--max-results 0` を
 エラーの __type・AthenaErrorCode・Message と HTTP ステータスが分かる。
 
 使い方:
-    python3 raw-list-work-groups.py
+    tools/dev.sh python3 tools/measure/raw-list-work-groups.py
+    （資格情報はホストのシェルで AWS_ACCESS_KEY_ID などを export してから。または ~/.aws/credentials）
 
-botocore が要る。システムの python3 に入っていないときは、#3 の
-client-request-token.sh と同じ順で実行方法を探す。
-
-    uv run --with botocore python3 raw-list-work-groups.py
-    # ただし astral の uv（`uv --version` が `uv <数字>` で始まる）のときだけ。
-    # このホストには同名の無関係なコマンドがあるので、名前だけで判断しない。
-
-    python3 -m venv /tmp/botocore-venv && /tmp/botocore-venv/bin/pip install botocore
-    /tmp/botocore-venv/bin/python3 raw-list-work-groups.py
+botocore が要る。toolbox（tools/dev.sh）の python3 には入っている。ホストで流すなら botocore 入りの python3 で。
 
 aws CLI が Docker のラッパのときは、そこに同梱された python では動かないことがある。
 
 任意の環境変数:
     REGION    既定 ap-northeast-1
-    OUT_DIR   既定 $HOME/athena-list-work-groups-measurements
-              （実名が入りうるのでリポジトリの外に出す）
+    OUT_DIR   既定 ${DEV_HOST_HOME:-$HOME}/athena-list-work-groups-measurements
+              （実名が入りうるのでリポジトリの外に出す。toolbox（tools/dev.sh）ではホストのホーム。#129）
 
 実行ごとに $OUT_DIR/raw-<日時>/ を作り、その中だけに書く。前の回と混ざらない。
 ListWorkGroups は読み取り専用で、クエリは一切流さないので課金は増えない。
@@ -210,9 +203,13 @@ def summarize(number, label, result, names, tokens):
 
 def main():
     region = os.environ.get("REGION", "ap-northeast-1")
+    # toolbox（tools/dev.sh）ではホストのホーム（DEV_HOST_HOME）。#129
     out_dir = os.environ.get(
         "OUT_DIR",
-        os.path.join(os.path.expanduser("~"), "athena-list-work-groups-measurements"),
+        os.path.join(
+            os.environ.get("DEV_HOST_HOME") or os.path.expanduser("~"),
+            "athena-list-work-groups-measurements",
+        ),
     )
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     run_dir = os.path.join(out_dir, "raw-{}".format(stamp))

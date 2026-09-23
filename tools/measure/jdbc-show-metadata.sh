@@ -56,7 +56,8 @@ DRIVER_CACHE="$DRIVER_CACHE_DIR/athena-jdbc-${DRIVER_VERSION}-with-dependencies.
 DRIVER_MOUNT="/driver/athena-jdbc.jar"
 
 # 出力はリポジトリの外に置く（生ログを追跡しない）。
-OUT_ROOT="$HOME/athena-local-issue57-measurements/run-$(date +%Y%m%d-%H%M%S)"
+# toolbox（tools/dev.sh）ではホストのホーム（DEV_HOST_HOME）。#129
+OUT_ROOT="${DEV_HOST_HOME:-$HOME}/athena-local-issue57-measurements/run-$(date +%Y%m%d-%H%M%S)"
 SUMMARY="$OUT_ROOT/summary.txt"
 ATHENA_LOG="$OUT_ROOT/athena-local.log"
 BUILD_LOG="$OUT_ROOT/cargo-build.log"

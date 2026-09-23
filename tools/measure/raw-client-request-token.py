@@ -9,8 +9,9 @@ issue #3（athena-local の ClientRequestToken 対応）の実測用。AWS CLI�
 client-request-token.sh / client-request-token-extra.sh の
 両方から呼ばれる、独立した1回分の呼び出しスクリプト。単体では実行しない。
 
-使い方:
-    python3 raw-client-request-token.py <region> <db> <output> <workgroup> <query> <token_mode> <out_json>
+使い方（単体で流すなら）:
+    tools/dev.sh python3 tools/measure/raw-client-request-token.py <region> <db> <output> <workgroup> <query> <token_mode> <out_json>
+    （資格情報はホストのシェルで AWS_ACCESS_KEY_ID などを export してから。または ~/.aws/credentials）
 
     token_mode は "__OMIT__" なら ClientRequestToken を JSON に含めない。それ以外は
     そのままの値を送る（空文字も可）。

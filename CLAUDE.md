@@ -89,9 +89,10 @@ CI（`.github/workflows/ci.yml`）は toolbox を使わず、ホストランナ�
 - 大きな `Response` を `Result` で返すときは `Box<Response>` にする（`clippy::result_large_err` 対策）。
 - HTTP クライアントは TLS 無しでビルドしている（`reqwest` は `default-features = false`）。Trino にも S3 にも `http://` だけでつなぐ。
 - Rust edition 2024（let chains を使っている）。Docker のビルドイメージは `rust:1.98`。toolbox（`tools/toolbox/Dockerfile`）も同じタグ。変えるときは両方。
-- **検証の足場（`tools/e2e`）はホストで直接叩かず `tools/dev.sh` 経由で toolbox の中で動かす**（`tools/measure` のうち本物の AWS に
-  `aws` で投げるものは、toolbox に移す #129 まではホストのまま）。
+- **検証の足場（`tools/e2e`）はホストで直接叩かず `tools/dev.sh` 経由で toolbox の中で動かす**。
   ホストの PATH にある同名の別物（Docker で包んだ `aws`、snap 製の `jq`、astral でない `uv`）を踏んで回避策を積み上げた経緯があり
   （2026-09-16〜23）、足場が動く場所をコンテナに固定した（#127）。足場は `aws` を使わない（S3 の確認は toolbox の `mc` で
-  `minio:9000` を直接見る。#129）。人間が対話で本物の AWS に投げる `aws` もホストのまま。toolbox の HOME と cargo の成果物は
+  `minio:9000` を直接見る。#129）。実測（`tools/measure`）も `tools/dev.sh` 経由で動かす（awscli v2 を toolbox に入れた。#129）。
+  資格情報はホストのシェルで export した `AWS_*` を渡す（`~/.aws` も読める）。生データはホストの `~/athena-*-measurements`。
+  人間が対話で本物の AWS に投げる `aws` はホストのまま。toolbox の HOME と cargo の成果物は
   リポジトリの `.toolbox/` の下で、ホストの `target/` とは混ぜない（足場は `BINARY` 変数で `CARGO_TARGET_DIR` に追随する）。詳細は `docs/dev/development.md`。

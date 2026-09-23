@@ -3,10 +3,11 @@
 # 結果ファイルの Content-Type を実測する。txt-result.sh の出力をそのまま使う。
 #
 # 使い方:
-#   bash txt-result-content-type.sh
+#   tools/dev.sh bash tools/measure/txt-result-content-type.sh
+#   （資格情報はホストのシェルで AWS_ACCESS_KEY_ID などを export してから。または ~/.aws/credentials）
 #
 # 任意の環境変数:
-#   OUT_DIR  既定 $HOME/athena-txt-measurements
+#   OUT_DIR  既定 ${DEV_HOST_HOME:-$HOME}/athena-txt-measurements
 #   RUN_DIR  既定は OUT_DIR の中でいちばん新しい run-*
 #   REGION   既定 ap-northeast-1
 #
@@ -14,7 +15,8 @@
 
 set -uo pipefail
 
-OUT_DIR=${OUT_DIR:-$HOME/athena-txt-measurements}
+# toolbox（tools/dev.sh）ではホストのホーム（DEV_HOST_HOME）。#129
+OUT_DIR=${OUT_DIR:-${DEV_HOST_HOME:-$HOME}/athena-txt-measurements}
 RUN_DIR=${RUN_DIR:-$(ls -dt "$OUT_DIR"/run-* 2>/dev/null | head -1)}
 REGION=${REGION:-ap-northeast-1}
 

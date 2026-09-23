@@ -4,11 +4,12 @@
 # #2 の get-work-group.sh を雛形にしている。
 #
 # 使い方:
-#   bash list-work-groups.sh
+#   tools/dev.sh bash tools/measure/list-work-groups.sh
+#   （資格情報はホストのシェルで AWS_ACCESS_KEY_ID などを export してから。または ~/.aws/credentials）
 #
 # 任意の環境変数:
 #   REGION    既定 ap-northeast-1
-#   OUT_DIR   既定 $HOME/athena-list-work-groups-measurements
+#   OUT_DIR   既定 ${DEV_HOST_HOME:-$HOME}/athena-list-work-groups-measurements
 #             （実名が入るのでリポジトリの外に出す）
 #
 # クエリは一切流さないので DB や OutputLocation は要らない。呼ぶのは
@@ -77,7 +78,8 @@
 set -uo pipefail
 
 REGION=${REGION:-ap-northeast-1}
-OUT_DIR=${OUT_DIR:-$HOME/athena-list-work-groups-measurements}
+# toolbox（tools/dev.sh）ではホストのホーム（DEV_HOST_HOME）。#129
+OUT_DIR=${OUT_DIR:-${DEV_HOST_HOME:-$HOME}/athena-list-work-groups-measurements}
 
 # 4 で使う固定の不正トークン。実在のトークンと衝突しない形にしておく。
 BAD_TOKEN=athena-local-invalid-next-token-probe

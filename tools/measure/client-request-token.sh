@@ -3,8 +3,9 @@
 # 本物の Athena で、ClientRequestToken（StartQueryExecution の冪等性）の挙動を実測する（issue #3）。
 #
 # 使い方:
-#   DB=<データベース名> OUTPUT=s3://<バケット>/<プレフィックス>/ \
-#     bash client-request-token.sh
+#   tools/dev.sh DB=<データベース名> OUTPUT=s3://<バケット>/<プレフィックス>/ \
+#     bash tools/measure/client-request-token.sh
+#   （資格情報はホストのシェルで AWS_ACCESS_KEY_ID などを export してから。または ~/.aws/credentials）
 #
 # 必須の環境変数（どちらか片方でも無ければ、何も実行せず使い方を出して終了する）:
 #   DB      StartQueryExecution の QueryExecutionContext.Database に使うデータベース名
@@ -36,7 +37,7 @@
 #   POLL_TIMEOUT      GetQueryExecution のポーリング上限秒。既定 120。超えたら諦めて summary
 #                      にその旨を書く
 #   TTL_WAIT          項目6（トークンの有効期間）で、終了後に待つ秒数。既定 60。0 なら skip
-#   OUT_DIR           既定 $HOME/athena-client-request-token-measurements
+#   OUT_DIR           既定 ${DEV_HOST_HOME:-$HOME}/athena-client-request-token-measurements
 #                      （実名が入るのでリポジトリの外に出す）
 #
 # python3 + botocore が要る項目（項目3・項目4）:
@@ -107,8 +108,8 @@ set -uo pipefail
 if [ -z "${DB:-}" ] || [ -z "${OUTPUT:-}" ]; then
   cat <<'USAGE'
 使い方:
-  DB=<データベース名> OUTPUT=s3://<バケット>/<プレフィックス>/ \
-    bash client-request-token.sh
+  tools/dev.sh DB=<データベース名> OUTPUT=s3://<バケット>/<プレフィックス>/ \
+    bash tools/measure/client-request-token.sh
 
 DB と OUTPUT は必須です（どちらか片方でも無いと何も実行しません）。
 任意の環境変数はスクリプト冒頭のコメントを参照してください。
@@ -129,7 +130,8 @@ FAIL_QUERY_SQL=${FAIL_QUERY_SQL:-"SELECT * FROM athena_local_nonexistent_table_p
 SYNTAX_ERROR_SQL=${SYNTAX_ERROR_SQL:-"SELEC 1"}
 POLL_TIMEOUT=${POLL_TIMEOUT:-120}
 TTL_WAIT=${TTL_WAIT:-60}
-OUT_DIR=${OUT_DIR:-$HOME/athena-client-request-token-measurements}
+# toolbox（tools/dev.sh）ではホストのホーム（DEV_HOST_HOME）。#129
+OUT_DIR=${OUT_DIR:-${DEV_HOST_HOME:-$HOME}/athena-client-request-token-measurements}
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RAW_SCRIPT="$SCRIPT_DIR/raw-client-request-token.py"
@@ -146,7 +148,7 @@ echo "出力先: $RUN_DIR"
 # `uv <数字>` で始まるときだけ。**このホストには `uv` という名前の、astral の uv とは
 # 無関係な独自コマンドがあり、名前だけで判断すると誤動作する**ため）、(c) $RUN_DIR に
 # 作る venv。どれも使えなければ、生 HTTP の節は skip し、試した候補と失敗理由を summary
-# に書く。
+# に書く。toolbox（tools/dev.sh）では python3 に botocore が入っているので (a) で通る。#129
 PY_RUNNER=()
 PY_RUNNER_LOG=()
 if [ ! -f "$RAW_SCRIPT" ]; then

@@ -10,16 +10,10 @@ AWS CLI は botocore のクライアント側検証で `--max-results 0` や `--
 手前で止めてしまい、サーバの応答が測れない。生 HTTP なら素通しできる。
 
 使い方:
-    OUTPUT=s3://your-bucket/prefix/ python3 raw-get-query-results.py
+    tools/dev.sh OUTPUT=s3://your-bucket/prefix/ python3 tools/measure/raw-get-query-results.py
+    （資格情報はホストのシェルで AWS_ACCESS_KEY_ID などを export してから。または ~/.aws/credentials）
 
-botocore が要る。システムの python3 に入っていないときは、#9 と同じ順で実行方法を探す。
-
-    uv run --with botocore python3 raw-get-query-results.py
-    # ただし astral の uv（`uv --version` が `uv <数字>` で始まる）のときだけ。
-    # このホストには同名の無関係なコマンドがあるので、名前だけで判断しない。
-
-    python3 -m venv /tmp/botocore-venv && /tmp/botocore-venv/bin/pip install botocore
-    OUTPUT=... /tmp/botocore-venv/bin/python3 raw-get-query-results.py
+botocore が要る。toolbox（tools/dev.sh）の python3 には入っている。ホストで流すなら botocore 入りの python3 で。
 
 aws CLI が Docker のラッパのときは、そこに同梱された python では動かないことがある。
 
@@ -29,8 +23,8 @@ aws CLI が Docker のラッパのときは、そこに同梱された python �
 
 任意の環境変数:
     REGION        既定 ap-northeast-1
-    OUT_DIR       既定 $HOME/athena-get-query-results-measurements
-                  （実名が入りうるのでリポジトリの外に出す）
+    OUT_DIR       既定 ${DEV_HOST_HOME:-$HOME}/athena-get-query-results-measurements
+                  （実名が入りうるのでリポジトリの外に出す。toolbox（tools/dev.sh）ではホストのホーム。#129）
     POLL_TIMEOUT  クエリの終端状態を待つ上限（秒）。既定 120
 
 ** 課金の注意 **
@@ -364,9 +358,13 @@ def summarize(number, label, payload, result):
 def main():
     region = os.environ.get("REGION", "ap-northeast-1")
     output = os.environ.get("OUTPUT", "")
+    # toolbox（tools/dev.sh）ではホストのホーム（DEV_HOST_HOME）。#129
     out_dir = os.environ.get(
         "OUT_DIR",
-        os.path.join(os.path.expanduser("~"), "athena-get-query-results-measurements"),
+        os.path.join(
+            os.environ.get("DEV_HOST_HOME") or os.path.expanduser("~"),
+            "athena-get-query-results-measurements",
+        ),
     )
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     run_dir = os.path.join(out_dir, "raw-{}".format(stamp))
