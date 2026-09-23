@@ -141,7 +141,8 @@ sanitize() {
 first_err_line() {
   local f=$1 line
   if [ -s "$f" ]; then
-    line=$(head -1 "$f")
+    # aws CLI のエラーは空行から始まるので、最初の空でない行を取る。
+    line=$(grep -m1 . "$f")
     sanitize "$(redact "$line")"
   else
     echo "(エラー出力なし)"

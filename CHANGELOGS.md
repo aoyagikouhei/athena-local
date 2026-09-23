@@ -357,6 +357,13 @@ later name the date they were measured on.
   table that inserts no row, was measured on 2026-09-23 beside the other three
   and writes the same `<id>`: no result body, a `.metadata` companion carrying
   an update count of `0`, and no manifest.
+- The Caveat about unmeasured file names is gone: `CREATE OR REPLACE TABLE
+  ... AS SELECT`, the one statement it listed, turned out to be a syntax error
+  on Athena (`line 1:19: mismatched input 'TABLE'. Expecting: 'MATERIALIZED',
+  'MULTI', 'PROTECTED', 'VIEW'`, measured 2026-09-23 with and without an
+  Iceberg `WITH` clause), so no Athena file name exists for it. athena-local
+  still lets Trino run it and keeps naming the result `tables/<id>`; the
+  message is now quoted under "Syntax differs".
 - The Caveat about unmeasured `.metadata` details no longer lists `MERGE`. The
   companion file Athena writes for a `MERGE` was measured on 2026-09-20 and
   differs from the one for an `UPDATE` or a `DELETE` only in the length of the
