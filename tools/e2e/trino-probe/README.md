@@ -29,5 +29,5 @@ tools/dev.sh TRINO_TAGS=482 tools/e2e/trino-probe/versions.sh      # 対照（do
 - 証跡は `/tmp/athena-local-issue111-trino.XXXXXX`（toolbox の中でもホストと同じパス。版ごとの試行の起動ログ・生の JSON・`summary.md`）
 - 同じ compose プロジェクトの `trino` を作り直すので、`probe.sh` を手で流している最中には走らせない（同じプロジェクトで別の足場が動いていれば止まる）
 - probe.sh の準備（スキーマ・対照テーブル）が `error` になった版は、詳細に「準備の失敗」を出す（D1・D2・C1・C2 の値が Trino の違いではなく準備の失敗で変わるため）
-- 版ごとに `docker compose down -v trino` → `up -d trino` で作り直す（`probe.sh` の C 節は `IF NOT EXISTS` 無しで CREATE するため）
+- 版ごとに `docker compose down -v trino` → `up -d trino` で作り直す（版ごとに別の Trino で測るため。`probe.sh` は C 節のテーブルを先に消すので、同じ Trino に何度流しても C 節は error にならない）
 - 前提コマンド: `tools/dev.sh` 経由で動かす（toolbox に全部入っている。`docs/dev/development.md` の「検証の足場（toolbox）」）
