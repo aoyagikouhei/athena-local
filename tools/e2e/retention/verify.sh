@@ -4,15 +4,15 @@
 # メモリ（VmRSS）が頭打ちになるかを確かめる。同じ負荷を保持 3600 秒（対照）と保持 1 秒で DURATION 秒ずつ
 # 流し、load.py --judge が (a)〜(e) を判定する（判定の中身は README.md）。本物の AWS は一切使わない。
 #
-# compose は新設せず tools/e2e/sdk-retry/docker-compose.yml（Trino 482 + memory カタログ、8095、
-# プロジェクト athena-local-issue94-e2e）を流用する。sdk-retry の verify.sh とは同時に流せない。
+# 環境はルートの compose.yml の trino（memory カタログ）。開始時に down -v → up -d で作り直す。
+# 同じ compose プロジェクトで別の足場（dev）が動いていたら止まる（開始時の down -v が相手の Trino を消すため）。
 # athena-local は $CARGO_TARGET_DIR（tools/dev.sh では .toolbox/target）の release バイナリを 127.0.0.1:8101 で起動する（結果ファイルは書かない）。
 #
 # 使い方:
 #   tools/dev.sh tools/e2e/retention/verify.sh
 #
 # 環境変数:
-#   KEEP_UP=1           終了後に docker compose down -v をしない（デバッグ用）
+#   KEEP_UP=1           終了後に docker compose down -v <サービス...> をしない（デバッグ用）
 #   SKIP_BUILD=1        cargo build を省略し、ビルド済みの $CARGO_TARGET_DIR（tools/dev.sh では .toolbox/target）の release/athena-local を使う
 #   DURATION=240        1 回の負荷の秒数。数時間の推移を見るなら 3600 などにするが、対照側は約 15MiB/秒で伸びて
 #                       メモリを使い切るので、ROWS=100 のように 1 件を小さくすること（README の注意）
@@ -23,17 +23,20 @@
 #   JUDGE_*             判定の閾値（load.py の judge を参照。既定は計画の値）
 #
 # 終了コードは FAIL の件数。後始末は trap が行う（このスクリプトが起動した athena-local と、
-# KEEP_UP=1 でなければ athena-local-issue94-e2e プロジェクトだけを落とす）。
+# KEEP_UP=1 でなければ使ったサービス（trino）だけを落とす。dev は残す）。
 
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-COMPOSE_FILE="$SCRIPT_DIR/../sdk-retry/docker-compose.yml"
+COMPOSE=(docker compose -f "$REPO_ROOT/compose.yml")
+SERVICES=(trino)
+# 自分で環境を作り直した（down -v → up -d した）ときだけ後始末で落とす。判定より前に止まった経路で相手の環境を消さない。
+COMPOSE_OWNED=0
 # cargo の成果物の置き場。tools/dev.sh は CARGO_TARGET_DIR を .toolbox/target にする
 BINARY="${CARGO_TARGET_DIR:-$REPO_ROOT/target}/release/athena-local"
 
-TRINO_BASE="http://127.0.0.1:8095"
+TRINO_BASE="http://trino:8080"
 ATHENA_BIND="127.0.0.1:8101"
 export DURATION="${DURATION:-240}" WARMUP="${WARMUP:-20}" ROWS="${ROWS:-2000}"
 RETENTION_HIGH="${RETENTION_HIGH:-3600}"
@@ -45,8 +48,8 @@ FAILS=0
 
 cleanup() {
   stop_athena_local
-  if [ "${KEEP_UP:-0}" != "1" ]; then
-    docker compose -f "$COMPOSE_FILE" down -v >/dev/null 2>&1
+  if [ "${KEEP_UP:-0}" != "1" ] && [ "$COMPOSE_OWNED" = "1" ]; then
+    "${COMPOSE[@]}" down -v "${SERVICES[@]}" >/dev/null 2>&1
   fi
   echo "evidence: $EVIDENCE_DIR"
 }
@@ -107,12 +110,21 @@ if [ "${SKIP_BUILD:-0}" != "1" ]; then
 fi
 [ -x "$BINARY" ] || { echo "FAIL $BINARY が無い（SKIP_BUILD=1 ならビルド済みのものが要る）"; exit 1; }
 
-if curl -s -o /dev/null "http://$ATHENA_BIND/" 2>/dev/null; then
-  echo "FAIL $ATHENA_BIND が使用中（ほかのプロセスを止めてから流す）"; exit 1
+# 同じプロジェクトに自分以外の dev（別の足場）がいたら止まる（hostname は自分のコンテナ ID の先頭 12 桁）。
+PROJECT=$("${COMPOSE[@]}" config --format json 2>/dev/null | jq -r '.name // empty')
+if [ -z "$PROJECT" ]; then
+  echo "FAIL compose のプロジェクト名を取れない（docker compose config が失敗した）"; exit 1
+fi
+others=$(docker ps -q --filter "label=com.docker.compose.project=$PROJECT" --filter label=com.docker.compose.service=dev | grep -v "^$(hostname)" | wc -l)
+if [ "$others" != "0" ]; then
+  echo "FAIL 同じプロジェクト（$PROJECT）で別の足場が動いている。COMPOSE_PROJECT_NAME で分けるか、終わるのを待つ"; exit 1
 fi
 
 echo "== trino"
-docker compose -f "$COMPOSE_FILE" up -d >"$EVIDENCE_DIR/compose-up.log" 2>&1 || {
+COMPOSE_OWNED=1
+"${COMPOSE[@]}" down -v "${SERVICES[@]}" >"$EVIDENCE_DIR/compose-down.log" 2>&1 || {
+  echo "FAIL docker compose down -v ${SERVICES[*]}（$EVIDENCE_DIR/compose-down.log）"; exit 1; }
+"${COMPOSE[@]}" up -d "${SERVICES[@]}" >"$EVIDENCE_DIR/compose-up.log" 2>&1 || {
   echo "FAIL docker compose up（$EVIDENCE_DIR/compose-up.log）"; exit 1; }
 for _ in $(seq 1 120); do
   curl -fsS "$TRINO_BASE/v1/info" 2>/dev/null | grep -q '"starting":false' && break

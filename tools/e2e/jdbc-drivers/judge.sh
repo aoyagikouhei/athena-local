@@ -56,7 +56,7 @@ check_nginx_log_format() {
     record "nginx ログの形式" FAIL "athena-local が SELECT 1 を SUCCEEDED にしない（id=${id:-無し} state=${state:-無し}）"
     return 1
   fi
-  curl -ks -o /dev/null "https://127.0.0.1:9443/$PREFIX_ROOT/preflight/$id.csv" -H "Host: $BUCKET.tls-proxy"
+  curl -ks -o /dev/null "https://tls-proxy:9443/$PREFIX_ROOT/preflight/$id.csv" -H "Host: $BUCKET.tls-proxy"
   sleep 1
   dc logs --no-color tls-proxy >"$OUT_ROOT/nginx-preflight.log" 2>&1
   n=$(grep -cF "GET /$PREFIX_ROOT/preflight/$id.csv" "$OUT_ROOT/nginx-preflight.log")

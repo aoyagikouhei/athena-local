@@ -9,13 +9,15 @@
 #
 # 構成: athena-local を 2 本（s3 モード 8098・none モード 8099）。s3 側の手前に中継
 # （../sdk-retry/drop_proxy.py を DROP_COUNT=0 で。全部そのまま通し、1 リクエスト 1 行の X-Amz-Target を残す）を 8102 に置く。
-# クライアントの向け先は env.sh（AWS_ENDPOINT_URL と _ATHENA → 中継、_S3 → MinIO 9006）。
+# クライアントの向け先は env.sh（AWS_ENDPOINT_URL と _ATHENA → 中継、_S3 → MinIO（minio:9000））。
 # MinIO へのアクセスは `mc admin trace --json` を流す使い捨てコンテナで記録し、check ごとの区間だけを数える（common.py）。
 #
+# 環境はルートの compose.yml の trino / minio / minio-init。開始時に down -v → up -d で作り直す。
+# 同じ compose プロジェクトで別の足場（dev）が動いていたら止まる（開始時の down -v が相手の環境を消すため）。
 # 前提: tools/dev.sh 経由で動かす（toolbox に全部入っている）。venv（先に ./setup-venvs.sh）、$CARGO_TARGET_DIR（tools/dev.sh では .toolbox/target）の release/athena-local。
 # 環境変数: KEEP_UP=1（compose を残す）、SKIP_BUILD=1（cargo build をしない）、VENV_ROOT（既定 $HOME/.cache/athena-local-111）
 # 終了コードは FAIL の件数。証跡は /tmp/athena-local-issue111-py.* に残す。
-# 落とすのはこの compose プロジェクト（athena-local-issue111-py）と、このスクリプトが起動したプロセス・trace コンテナだけ。
+# 落とすのは使ったサービス（trino / minio / minio-init）と、このスクリプトが起動したプロセス・trace コンテナだけ。
 
 set -uo pipefail
 
@@ -23,19 +25,23 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 # cargo の成果物の置き場。tools/dev.sh は CARGO_TARGET_DIR を .toolbox/target にする
 BINARY="${CARGO_TARGET_DIR:-$REPO_ROOT/target}/release/athena-local"
-COMPOSE=(docker compose -f "$SCRIPT_DIR/docker-compose.yml")
+COMPOSE=(docker compose -f "$REPO_ROOT/compose.yml")
+SERVICES=(trino minio minio-init)
+# 自分で環境を作り直した（down -v → up -d した）ときだけ後始末で落とす。判定より前に止まった経路で相手の環境を消さない。
+COMPOSE_OWNED=0
 VENV_ROOT="${VENV_ROOT:-$HOME/.cache/athena-local-111}"
 PY_WR="$VENV_ROOT/venv-wr/bin/python"
 export DBT_BIN="$VENV_ROOT/venv-dbt/bin/dbt"
 
-TRINO_BASE="http://127.0.0.1:8097"
-export MINIO_ENDPOINT="http://127.0.0.1:9006"
+TRINO_BASE="http://trino:8080"
+export MINIO_ENDPOINT="http://minio:9000"
 ATHENA_S3="127.0.0.1:8098"
 ATHENA_NONE="127.0.0.1:8099"
 export PROXY_BIND="127.0.0.1:8102"
-export TRACE_CONTAINER="athena-local-issue111-py-trace"
 MC_IMAGE="quay.io/minio/mc:latest"
 export RUN_ID="$(date +%s)"
+# プロジェクト名で分けて同時に流したとき、相手の trace コンテナと名前が衝突しない（後始末で消さない）よう RUN_ID を入れる。
+export TRACE_CONTAINER="athena-local-py-trace-$RUN_ID"
 
 export EVIDENCE_DIR="$(mktemp -d /tmp/athena-local-issue111-py.XXXXXX)"
 export PROXY_LOG="$EVIDENCE_DIR/proxy.log"
@@ -49,13 +55,17 @@ record() { echo "$1 $2: $3" | tee -a "$RESULTS"; }
 cleanup() {
   for pid in "${PIDS[@]}"; do kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; done
   docker rm -f "$TRACE_CONTAINER" >/dev/null 2>&1
-  if [ "${KEEP_UP:-0}" != "1" ]; then "${COMPOSE[@]}" down -v >/dev/null 2>&1; fi
+  if [ "${KEEP_UP:-0}" = "1" ]; then
+    log "KEEP_UP=1 のため残す（後で tools/dev.sh docker compose -f $REPO_ROOT/compose.yml down -v ${SERVICES[*]}）"
+  elif [ "$COMPOSE_OWNED" = "1" ]; then
+    "${COMPOSE[@]}" down -v "${SERVICES[@]}" >/dev/null 2>&1
+  fi
   log "証跡: $EVIDENCE_DIR"
 }
 trap cleanup EXIT
 
 preflight() {
-  local cmd port
+  local cmd project others
   for cmd in docker curl jq python3; do
     command -v "$cmd" >/dev/null || { log "$cmd が無い"; return 1; }
   done
@@ -64,9 +74,13 @@ preflight() {
     (cd "$REPO_ROOT" && cargo build --release --locked >"$EVIDENCE_DIR/cargo-build.log" 2>&1) || { log "cargo build 失敗"; return 1; }
   fi
   [ -x "$BINARY" ] || { log "$BINARY が無い"; return 1; }
-  for port in 8097 8098 8099 8102 9006; do
-    if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then log "ポート $port が使用中。止まる"; return 1; fi
-  done
+  # 同じプロジェクトに自分以外の dev（別の足場）がいたら止まる（hostname は自分のコンテナ ID の先頭 12 桁）。
+  project=$("${COMPOSE[@]}" config --format json 2>/dev/null | jq -r '.name // empty')
+  [ -n "$project" ] || { log "compose のプロジェクト名を取れない（docker compose config が失敗した）"; return 1; }
+  others=$(docker ps -q --filter "label=com.docker.compose.project=$project" --filter label=com.docker.compose.service=dev | grep -v "^$(hostname)" | wc -l)
+  if [ "$others" != "0" ]; then
+    log "同じプロジェクト（$project）で別の足場が動いている。COMPOSE_PROJECT_NAME で分けるか、終わるのを待つ"; return 1
+  fi
   "$PY_WR" -m pip freeze >"$EVIDENCE_DIR/freeze-wr.txt"
   "$VENV_ROOT/venv-dbt/bin/python" -m pip freeze >"$EVIDENCE_DIR/freeze-dbt.txt"
 }
@@ -83,13 +97,18 @@ trino_exec() {
 }
 
 start_env() {
-  log "compose up"
-  "${COMPOSE[@]}" up -d >"$EVIDENCE_DIR/compose-up.log" 2>&1 || { log "compose up 失敗"; return 1; }
+  # 前の走行の残骸（テーブル、結果ファイル）を持ち越さないよう、使うサービスを作り直す。
+  log "compose down -v / up -d ${SERVICES[*]}"
+  COMPOSE_OWNED=1
+  "${COMPOSE[@]}" down -v "${SERVICES[@]}" >"$EVIDENCE_DIR/compose-down.log" 2>&1 \
+    || { record FAIL "compose起動" "docker compose down -v ${SERVICES[*]} が失敗した（$EVIDENCE_DIR/compose-down.log）"; return 1; }
+  "${COMPOSE[@]}" up -d "${SERVICES[@]}" >"$EVIDENCE_DIR/compose-up.log" 2>&1 || { log "compose up 失敗"; return 1; }
   for _ in $(seq 1 120); do trino_exec "SELECT 1" 2>/dev/null && break; sleep 1; done
   trino_exec "SELECT 1" || { log "Trino が起動しない"; return 1; }
   curl -s "$TRINO_BASE/v1/info" >"$EVIDENCE_DIR/trino-info.json"
   trino_exec "CREATE SCHEMA IF NOT EXISTS hive.default" && trino_exec "CREATE SCHEMA IF NOT EXISTS iceberg.default" || return 1
-  MC_NETWORK=$(docker inspect athena-local-issue111-py-minio --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}')
+  MC_NETWORK=$(docker inspect "$("${COMPOSE[@]}" ps -q minio)" --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}' 2>/dev/null)
+  [ -n "$MC_NETWORK" ] || { record FAIL "MinIOネットワーク" "minio のコンテナのネットワークを取れなかった（mc を繋ぐ先が無い）"; return 1; }
   export MC_NETWORK
 }
 

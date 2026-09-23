@@ -6,19 +6,20 @@
 # 1 つになり詰まらないこと、を確かめる。本物の AWS は一切使わない。結果ファイルは書かない。
 #
 # 前提コマンド: tools/dev.sh 経由で動かす（toolbox に全部入っている。boto3 は toolbox の python3 に入っている）
+# 環境はルートの compose.yml の trino（memory カタログで INSERT の副作用を数える）。開始時に down -v → up -d で作り直す。
+# athena-local と応答を落とす代理は dev の中のプロセス（127.0.0.1:8091 と 8096）。
 #
 # 使い方:
 #   tools/dev.sh tools/e2e/sdk-retry/verify.sh
 #
 # 環境変数:
-#   KEEP_UP=1        テスト後に docker compose down -v をせず環境を残す（デバッグ用）
+#   KEEP_UP=1        テスト後に docker compose down -v <サービス...> をせず環境を残す（デバッグ用）
 #   SKIP_BUILD=1     cargo build を省略し、既存の $CARGO_TARGET_DIR（tools/dev.sh では .toolbox/target）の release/athena-local をそのまま使う
 #   PYTHON=...       boto3 入りの python3（既定は python3）
 #   DROP_COUNT=2     代理が落とす応答の回数
 #
 # 後始末は trap が行う（KEEP_UP=1 でなければ必ず docker compose down -v する）。
-# 落とすのはこの compose プロジェクト（athena-local-issue94-e2e）と、このスクリプトが起動した
-# athena-local と代理のプロセスだけ。
+# 落とすのは使ったサービス（trino）と、このスクリプトが起動した athena-local と代理のプロセスだけ。
 
 set -uo pipefail
 
@@ -26,9 +27,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 # cargo の成果物の置き場。tools/dev.sh は CARGO_TARGET_DIR を .toolbox/target にする
 BINARY="${CARGO_TARGET_DIR:-$REPO_ROOT/target}/release/athena-local"
-COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
+COMPOSE=(docker compose -f "$REPO_ROOT/compose.yml")
+SERVICES=(trino)
 
-TRINO_BASE="http://127.0.0.1:8095"
+TRINO_BASE="http://trino:8080"
 ATHENA_BIND="127.0.0.1:8091"
 PROXY_BIND="127.0.0.1:8096"
 DROP_COUNT="${DROP_COUNT:-2}"
@@ -48,7 +50,9 @@ cleanup() {
   [ -n "$PROXY_PID" ] && kill "$PROXY_PID" 2>/dev/null
   [ -n "$ATHENA_PID" ] && kill "$ATHENA_PID" 2>/dev/null
   if [ "${KEEP_UP:-0}" != "1" ]; then
-    docker compose -f "$COMPOSE_FILE" down -v >/dev/null 2>&1
+    "${COMPOSE[@]}" down -v "${SERVICES[@]}" >/dev/null 2>&1
+  else
+    echo "KEEP_UP=1 のため残す（後で tools/dev.sh docker compose -f $REPO_ROOT/compose.yml down -v ${SERVICES[*]}）"
   fi
   echo "evidence: $EVIDENCE_DIR"
 }
@@ -62,7 +66,9 @@ fi
 [ -x "$BINARY" ] || { echo "$BINARY が無い（SKIP_BUILD=1 ならビルド済みのものが要る）"; exit 1; }
 
 echo "== trino"
-docker compose -f "$COMPOSE_FILE" up -d >/dev/null 2>&1 || { echo "docker compose up failed"; exit 1; }
+# 前の走行の memory.default.t94 と system.runtime.queries の目印を持ち越さないよう、Trino を作り直す。
+"${COMPOSE[@]}" down -v "${SERVICES[@]}" >/dev/null 2>&1 || { echo "docker compose down -v ${SERVICES[*]} failed"; exit 1; }
+"${COMPOSE[@]}" up -d "${SERVICES[@]}" >/dev/null 2>&1 || { echo "docker compose up failed"; exit 1; }
 for _ in $(seq 1 120); do
   if curl -fsS "$TRINO_BASE/v1/info" 2>/dev/null | grep -q '"starting":false'; then break; fi
   sleep 1

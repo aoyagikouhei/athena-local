@@ -3,7 +3,7 @@
 # JDBC の検証に使う自己署名証明書を作る。**鍵はリポジトリに入れない**ので、
 # verify.sh や jdbc-client を動かす前にここで作る。
 #
-#   bash tools/e2e/minio/tls/make-cert.sh
+#   tools/dev.sh bash tools/compose/tls/make-cert.sh
 #
 # 名前は、ドライバが接続する先をすべて subjectAltName に入れる（JVM が
 # 名前の一致を見るため）。README の「Athena JDBC 3.x needs a TLS terminator in front」

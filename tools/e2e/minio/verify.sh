@@ -5,16 +5,17 @@
 # （Hive / Iceberg）で変わることを実際に確かめる。
 #
 # 前提コマンド: tools/dev.sh 経由で動かす（toolbox に全部入っている）
+# 環境はルートの compose.yml の trino / minio / minio-init。開始時に down -v → up -d で作り直す。
 # S3（MinIO）側の確認は、compose と同じネットワークに繋いだ minio/mc の使い捨てコンテナで行う。
 #
 # 使い方:
 #   tools/dev.sh tools/e2e/minio/verify.sh
 #
 # 環境変数:
-#   KEEP_UP=1        テスト後に docker compose down -v をせず環境を残す（デバッグ用）
+#   KEEP_UP=1        テスト後に docker compose down -v <サービス...> をせず環境を残す（デバッグ用）
 #   SKIP_BUILD=1     cargo build を省略し、既存の $CARGO_TARGET_DIR（tools/dev.sh では .toolbox/target）の release/athena-local をそのまま使う
 #
-# 後始末は本スクリプトの trap が行う（KEEP_UP=1 でなければ必ず docker compose down -v する）。
+# 後始末は本スクリプトの trap が行う（KEEP_UP=1 でなければ必ず使ったサービスだけ docker compose down -v する。dev は残す）。
 # 終了コードは結果表の FAIL の件数（issue #111。SKIP と INFO は数えない。起動の失敗などで途中で止まったときは 1）。
 
 set -uo pipefail
@@ -23,10 +24,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 # cargo の成果物の置き場。tools/dev.sh は CARGO_TARGET_DIR を .toolbox/target にする
 BINARY="${CARGO_TARGET_DIR:-$REPO_ROOT/target}/release/athena-local"
-COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
+COMPOSE=(docker compose -f "$REPO_ROOT/compose.yml")
+SERVICES=(trino minio minio-init)
 
-TRINO_BASE="http://127.0.0.1:8092"
-MINIO_ENDPOINT="http://127.0.0.1:9002"
+TRINO_BASE="http://trino:8080"
+MINIO_ENDPOINT="http://minio:9000"
 ATHENA_BASE="http://127.0.0.1:8087"
 BUCKET="athena-results"
 PREFIX="e2e"
@@ -34,9 +36,8 @@ OUTPUT_LOCATION="s3://${BUCKET}/${PREFIX}/"
 RUN_ID="$(date +%s)"
 
 MC_IMAGE="quay.io/minio/mc:latest"
-# docker compose up -d の後、compose のデフォルトネットワークを実際に調べて上書きする
-# （docker-compose.yml の `name:` から決まる想定値。念のため動的にも確かめる）。
-MC_NETWORK="athena-local-issue39-e2e_default"
+# docker compose up -d の後、minio のコンテナが繋がっているネットワークを調べて入れる（プロジェクト名で変わるため）。
+MC_NETWORK=""
 MC_ALIAS_CMD='mc alias set local http://minio:9000 minioadmin minioadmin >/dev/null 2>&1'
 
 EVIDENCE_DIR="$(mktemp -d /tmp/athena-local-issue39-e2e.XXXXXX)"
@@ -69,10 +70,10 @@ cleanup() {
     wait "$ATHENA_PID" 2>/dev/null || true
   fi
   if [ "${KEEP_UP:-0}" = "1" ]; then
-    log "KEEP_UP=1 のため docker compose はそのまま残す（後で手動で down -v してください）"
+    log "KEEP_UP=1 のため docker compose はそのまま残す（後で tools/dev.sh docker compose -f $REPO_ROOT/compose.yml down -v ${SERVICES[*]}）"
   else
-    log "docker compose down -v"
-    docker compose -f "$COMPOSE_FILE" down -v >/dev/null 2>&1
+    log "docker compose down -v ${SERVICES[*]}"
+    "${COMPOSE[@]}" down -v "${SERVICES[@]}" >/dev/null 2>&1
   fi
   log "証跡（ログ・取得したファイル）: $EVIDENCE_DIR"
   print_table
@@ -501,16 +502,21 @@ main() {
   log "作業ディレクトリ: $SCRIPT_DIR"
   log "証跡の保存先: $EVIDENCE_DIR"
 
-  log "docker compose up -d"
-  if ! docker compose -f "$COMPOSE_FILE" up -d; then
-    record "compose起動" FAIL "docker compose up -d が失敗した"
+  # 前の走行の残骸（テーブル、結果ファイル）を持ち越さないよう、使うサービスを作り直す。
+  log "docker compose down -v / up -d ${SERVICES[*]}"
+  if ! "${COMPOSE[@]}" down -v "${SERVICES[@]}" >/dev/null 2>&1; then
+    record "compose起動" FAIL "docker compose down -v ${SERVICES[*]} が失敗した"
+    return 1
+  fi
+  if ! "${COMPOSE[@]}" up -d "${SERVICES[@]}"; then
+    record "compose起動" FAIL "docker compose up -d ${SERVICES[*]} が失敗した"
     return 1
   fi
 
-  local detected_network
-  detected_network=$(docker network ls --filter "label=com.docker.compose.project=athena-local-issue39-e2e" --format '{{.Name}}' | head -1)
-  if [ -n "$detected_network" ]; then
-    MC_NETWORK="$detected_network"
+  MC_NETWORK=$(docker inspect "$("${COMPOSE[@]}" ps -q minio)" --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}' 2>/dev/null)
+  if [ -z "$MC_NETWORK" ]; then
+    record "MinIOバケット" FAIL "minio のコンテナのネットワークを取れなかった（mc を繋ぐ先が無い）"
+    return 1
   fi
   log "mc 用ネットワーク: $MC_NETWORK"
 

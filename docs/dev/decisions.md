@@ -29,13 +29,21 @@
 
 - 検証の足場（`tools/e2e/`）は toolbox の中で動かし、ホストのコマンドに依存しない。理由: ホストの PATH にある同名の別物（Docker で包んだ `aws`、snap 製の `jq`、astral でない `uv`）を踏むたびに足場とコメントに回避策を積み上げていた（2026-09-16〜23）。動く場所をコンテナに固定すれば、回避策ごと要らなくなる。（#127、2026-09-23）
 - toolbox は `docker run` の直呼びではなく、ルートの `compose.yml` の dev サービスにして `tools/dev.sh` から `docker compose run` で呼ぶ。理由: 段階 2 で trino などを同じファイルに足す（#126 の方針）。（#127、2026-09-23）
-- 段階 1 の dev サービスは `network_mode: host`。理由: 足場の宛先（`127.0.0.1:<port>`）を変えずに無改造で動かす。段階 3（#129）で外す。（#127、2026-09-23）
+- 段階 1 の dev サービスは `network_mode: host`。理由: 足場の宛先（`127.0.0.1:<port>`）を変えずに無改造で動かす。（#127、2026-09-23。#128 で変更: dev は compose のネットワークに入った）
 - toolbox の HOME はリポジトリの `.toolbox/home`。理由: `tools/e2e/jdbc-drivers/lib.sh` が `$HOME` の下の jar を `docker compose run -v` の元に渡し、デーモンはそのパスをホストのパスとして解決する。ホストと同じ絶対パスでマウントしたリポジトリの中なら、両側で同じパスに実在する。（#127、2026-09-23）
 - cargo の成果物は `.toolbox/cargo` と `.toolbox/target` に置いてホストの `~/.cargo`・`target/` と混ぜず、足場は athena-local の起動パスを `BINARY="${CARGO_TARGET_DIR:-$REPO_ROOT/target}/release/athena-local"` で `CARGO_TARGET_DIR` に追随させる。理由: ホストで作ったバイナリは GLIBC_2.34 までしか要求せず bookworm でも動くので、置き場を共有したりパスを直書きしたりすると、toolbox でビルドした直後にホスト製の古いバイナリを黙って起動する。（#127、2026-09-23）
 - ホストの `/tmp` は toolbox に同じパスで共有する。理由: 足場は証跡を `/tmp/athena-local-issue<番号>-<足場>.XXXXXX` に置いてパスを表示する。共有すればホストからそのまま開け、「実測の進め方」の証跡の置き場の判断もそのまま成り立つ。（#127、2026-09-23）
 - 環境変数は `tools/dev.sh VAR=値 <コマンド>` の形で `env --` に渡し、通す変数の許可リストを持たない。理由: 足場が読む変数は e2e だけで約 30 あり、許可リストは足場が増えるたびに突き合わせる対になる。（#127、2026-09-23）
 - `compose.yml` では `${VAR:?}` を使わない（値は `tools/dev.sh` が必ず代入してから export し、取れなければ `set -e` で止まる）。理由: 使わないサービスの補間エラーでも compose 全体が止まり、足場が toolbox の中から `docker compose up` / `down` を呼べなくなる。（#127、2026-09-23）
 - toolbox に awscli と mc を入れない。理由: e2e の足場はどちらも呼ばない（S3 の確認は compose のネットワークに繋いだ `minio/mc` の使い捨てコンテナ）。`tools/measure/` の `aws` は #129 で扱う。（#127、2026-09-23）
+- 足場の環境（trino・minio・minio-init・tls-proxy・jdbc-client）はルートの 1 本の `compose.yml` にまとめ、足場はサービス名（`trino:8080`、`minio:9000`）で相手を見る。理由: issue ごとの compose 6 本と、衝突を避けるためのポート表の乱立を消す（#126）。（#128、2026-09-23）
+- 足場ごとの隔離は「使うサービスだけ開始時に `down -v` → `up -d`」で保ち、`down` は必ずサービス名を列挙する。理由: 前の走行の残骸で判定が狂う足場が 4 つある（sdk-retry、jdbc-show-metadata、jdbc-drivers、trino-probe）。`--remove-orphans` とサービス名の無い `up` は dev 自身を壊し、anonymous volume を作り直す `-V` は古い volume がリークする。（#128、2026-09-23）
+- 足場の開始時のポートの空き確認は、「同じプロジェクトに自分以外の dev がいたら止まる」判定に置き換えた。理由: 全足場が同じプロジェクトに入るので、並行して流した足場の開始時の `down -v` が相手の Trino を走行の途中で黙って消す。（#128、2026-09-23）
+- 足場の同時実行は `COMPOSE_PROJECT_NAME` で環境ごと分ける（使い方は [development.md](development.md) の「足場の環境と同時実行」）。`trino2` のような 2 号機のサービスは足さない。理由: 2 号機には足場の宛先を振り分ける仕組みが要り、組み合わせが固定される。プロジェクト名なら足場を変えずに環境ごと分かれる。（#128、2026-09-23）
+- tls-proxy の nginx は静的な `proxy_pass http://dev:8087` で athena-local に中継する。理由: 足場は tls-proxy を毎回作り直すので、そのときの dev（`--use-aliases` で別名が付く）を起動時の名前解決で引ける。`resolver` による実行時の解決は要らない。（#128、2026-09-23）
+- compose.yml のサービスに `container_name` と `ports` は置かず、足場はコンテナを `docker compose ps -q <サービス>` の ID で指す。理由: 固定の名前やホストのポートがあると、プロジェクト名で分けた環境どうしが衝突する。（#128、2026-09-23）
+- compose の付属物（カタログ、tls、jdbc-client）は `tools/compose/` に置き、trino-probe の `catalog/` は trino-probe に残す。理由: probe は版ごとのカタログの差を測る道具で、`catalog`・`catalog-legacy`・`catalog-nofsflag` を並べておく方が対称。（#128、2026-09-23）
+- 足場の共通の lib は作らない（Trino を待つ関数などは足場ごとに複製する）。理由: 足場ごとの複製が慣習で、共通化は足場の移行とは別の変更になる（`tools/e2e/jdbc-drivers/lib.sh` の冒頭）。（#128、2026-09-23）
 - #127 は足場の規則そのものを変えたので、CLAUDE.md の注意書き（ホストの `aws`・`jq` の回避策）を toolbox の 1 項目に書き換えた。「実測の進め方」の「CLAUDE.md は記述が事実として誤りになるときだけ追随させる」は挙動を変えない変更の規則で、規則を変える変更はこれに当たらない。（#127、2026-09-23）
 
 ## SQL の字句処理と文の分類

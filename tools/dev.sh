@@ -6,6 +6,7 @@
 #   tools/dev.sh KEEP_UP=1 tools/e2e/minio/verify.sh     # 環境変数は VAR=VALUE をコマンドの前に並べる（env に渡す）
 #   tools/dev.sh bash -c 'cargo test 2>&1 | tail -n 5'   # パイプやリダイレクトをコンテナの中でするときは bash -c
 # `~` や $VAR はホストのシェルが展開してから渡る。コンテナの中で展開したいものは bash -c '...' に書く。
+# 同時に流すなら `COMPOSE_PROJECT_NAME=<名前> tools/dev.sh ...`（ホストの環境変数。`tools/dev.sh VAR=VALUE` の形では dev 自身が既定のプロジェクトに入るので効かない）。
 #
 # コンテナの中の HOME・CARGO_HOME・CARGO_TARGET_DIR はリポジトリの .toolbox/ の下（home / cargo / target）。
 # ホストの ~/.cargo と target/ とは混ぜない。消すときは rm -rf .toolbox（次の実行で作り直される）。
@@ -48,7 +49,8 @@ main() {
 
   # イメージの有無（pull_policy: never で無ければ build）と TTY（stdin と stdout がともに端末のときだけ割り当てる）は
   # compose に任せる。env -- を挟んで、先頭の VAR=VALUE を環境変数として効かせる。
-  exec docker compose -f "$repo/compose.yml" run --rm dev env -- "$@"
+  # tls-proxy が dev:8087 で届くよう、サービス名の別名を付ける。
+  exec docker compose -f "$repo/compose.yml" run --rm --use-aliases dev env -- "$@"
 }
 
 main "$@"

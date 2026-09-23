@@ -3,17 +3,18 @@
 # issue #111 の実測 (10): Trino 482 より古い版で、athena-local が形式判定に使う
 # system.metadata.catalogs の connector_name、probe_sql（src/operation/table_format.rs）の結果、
 # DROP TABLE / ALTER TABLE ... ADD COLUMN の updateType がどう返るかを版ごとに集める。
-# 版ごとに trino-probe の compose を立て、catalog → catalog-legacy → catalog-nofsflag の順に
+# 版ごとにルートの compose.yml の trino を TRINO_TAG と CATALOG_DIR で作り直し（down -v trino → up -d trino）、
+# catalog → catalog-legacy → catalog-nofsflag の順に
 # 「SHOW SCHEMAS FROM hive / iceberg が error 無しで返る」構成を探して採用し、probe.sh を流す。
 # 本物の AWS は使わない。
 #
 # 使い方: tools/dev.sh tools/e2e/trino-probe/versions.sh
 # 環境変数:
 #   TRINO_TAGS="480 475 470 440 400"  測る版（482 は対照。trino.md の #39 の表と完全一致で PASS）
-#   TRINO_PORT=8104                   Trino のホスト側ポート（compose の既定 8090 は request-errors と重複）
 #   START_TIMEOUT=120                 /v1/info の starting:false を待つ秒数（1 試行あたり）
 #   PULL_TIMEOUT=600                  手元に無いイメージの pull を待つ秒数
-#   KEEP_UP=1                         最後の版の compose を残す（デバッグ用）
+#   KEEP_UP=1                         最後の版の trino を残す（デバッグ用）
+# 同じ compose プロジェクトで別の足場（dev）が動いていたら止まる（down -v trino が相手の Trino を消すため）。
 # 状態: 482 は期待と完全一致で PASS。旧版は値をそのまま記録して INFO（482 との差は列に出す）。
 # FAIL は nodeVersion がタグと違うときと 482 の不一致だけ。採用できる catalog が無い・
 # イメージが取れない版は SKIP。終了コードは FAIL の件数。
@@ -22,11 +23,10 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
-CONTAINER="athena-local-issue39-trino"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+COMPOSE_FILE="$REPO_ROOT/compose.yml"
 TRINO_TAGS="${TRINO_TAGS:-480 475 470 440 400}"
-TRINO_PORT="${TRINO_PORT:-8104}"
-BASE="http://127.0.0.1:$TRINO_PORT"
+BASE="http://trino:8080"
 START_TIMEOUT="${START_TIMEOUT:-120}"
 PULL_TIMEOUT="${PULL_TIMEOUT:-600}"
 CATALOG_DIRS="catalog catalog-legacy catalog-nofsflag"
@@ -37,11 +37,12 @@ EXPECTED=(hive iceberg '[["hive",1]]' '[["iceberg",1]]' '[["hive",0]]' '[["icebe
 COLUMNS_HDR=("A2 hive" "A2 iceberg" D1 D2 D3 D4 C1 C2)
 
 command -v jq >/dev/null || { echo "jq が要る"; exit 1; }
-if [ -n "$(docker ps -aq --filter "name=^${CONTAINER}$")" ]; then
-  echo "コンテナ $CONTAINER が既にある（他の作業が使っている可能性）。止めて報告する"; exit 1
-fi
-if ss -ltnH "sport = :$TRINO_PORT" | grep -q .; then
-  echo "ポート $TRINO_PORT が使用中。止めて報告する"; exit 1
+# 同じプロジェクトに自分以外の dev（別の足場）がいたら止まる（hostname は自分のコンテナ ID の先頭 12 桁）。
+PROJECT=$(docker compose -f "$COMPOSE_FILE" config --format json 2>/dev/null | jq -r '.name // empty')
+[ -n "$PROJECT" ] || { echo "compose のプロジェクト名を取れない（docker compose config が失敗した）。止めて報告する"; exit 1; }
+others=$(docker ps -q --filter "label=com.docker.compose.project=$PROJECT" --filter label=com.docker.compose.service=dev | grep -v "^$(hostname)" | wc -l)
+if [ "$others" != "0" ]; then
+  echo "同じプロジェクト（$PROJECT）で別の足場が動いている。COMPOSE_PROJECT_NAME で分けるか、終わるのを待つ"; exit 1
 fi
 
 EVIDENCE_DIR="$(mktemp -d /tmp/athena-local-issue111-trino.XXXXXX)"
@@ -49,7 +50,9 @@ SUMMARY="$EVIDENCE_DIR/summary.md"
 FAILS=0
 
 compose() { docker compose -f "$COMPOSE_FILE" "$@"; }
-down() { compose down -v >/dev/null 2>&1; }
+down() { compose down -v trino >/dev/null 2>&1; }
+# 止まったコンテナのログも読むので -a を付ける。
+trino_id() { compose ps -aq trino; }
 cleanup() {
   [ "${KEEP_UP:-0}" = "1" ] || down
   echo "evidence: $EVIDENCE_DIR"
@@ -91,7 +94,7 @@ run_query() {
 wait_ready() {
   local waited=0
   while [ "$waited" -lt "$START_TIMEOUT" ]; do
-    [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null)" = "true" ] || return 1
+    [ "$(docker inspect -f '{{.State.Running}}' "$(trino_id)" 2>/dev/null)" = "true" ] || return 1
     [ "$(curl -s "$BASE/v1/info" | jq -r '.starting' 2>/dev/null)" = "false" ] && return 0
     sleep 2; waited=$((waited + 2))
   done
@@ -114,10 +117,10 @@ try_catalogs() {
   ADOPTED=""; NOTES=""; NODE_VERSION="-"
   for dir in $CATALOG_DIRS; do
     att="$ev/attempt-$dir"; mkdir -p "$att"; down
-    TRINO_TAG="$tag" TRINO_PORT="$TRINO_PORT" CATALOG_DIR="$SCRIPT_DIR/$dir" \
-      compose up -d --pull never >"$att/compose-up.log" 2>&1
+    TRINO_TAG="$tag" CATALOG_DIR="$SCRIPT_DIR/$dir" \
+      compose up -d --pull never trino >"$att/compose-up.log" 2>&1
     if ! wait_ready; then
-      docker logs --tail 60 "$CONTAINER" >"$att/startup.log" 2>&1
+      docker logs --tail 60 "$(trino_id)" >"$att/startup.log" 2>&1
       NOTES+="$dir: 起動せず（$(startup_reason "$att")）; "
       continue
     fi
@@ -127,7 +130,7 @@ try_catalogs() {
     err_h=$(run_query "SHOW SCHEMAS FROM hive" "$att" show_schemas_hive)
     err_i=$(run_query "SHOW SCHEMAS FROM iceberg" "$att" show_schemas_iceberg)
     if [ -z "$err_h$err_i" ]; then ADOPTED="$dir"; return 0; fi
-    docker logs --tail 60 "$CONTAINER" >"$att/startup.log" 2>&1
+    docker logs --tail 60 "$(trino_id)" >"$att/startup.log" 2>&1
     NOTES+="$dir: hive=$(echo "${err_h:-ok}" | cell) iceberg=$(echo "${err_i:-ok}" | cell); "
   done
   return 1

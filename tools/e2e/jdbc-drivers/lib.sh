@@ -1,26 +1,27 @@
 # shellcheck shell=bash
 # issue #111: jdbc-drivers/verify.sh の環境まわりの関数（compose・証明書・ドライバ・athena-local・JVM の実行）。
-# 足場は tools/e2e/minio/ をそのまま使う。関数の多くは tools/measure/jdbc-show-metadata.sh の複製
+# 環境はルートの compose.yml の trino / minio / minio-init / tls-proxy と jdbc-client。関数の多くは tools/measure/jdbc-show-metadata.sh の複製
 # （共通化は #111 の範囲外）。違いは版を引数に取ることと、JVM を timeout で包むこと。verify.sh から source する。
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$LIB_DIR/../../.." && pwd)"
 # cargo の成果物の置き場。tools/dev.sh は CARGO_TARGET_DIR を .toolbox/target にする
 BINARY="${CARGO_TARGET_DIR:-$REPO_ROOT/target}/release/athena-local"
-E2E_DIR="$REPO_ROOT/tools/e2e/minio"
-COMPOSE_FILE="$E2E_DIR/docker-compose.yml"
-COMPOSE_PROJECT="athena-local-issue39-e2e"
+TLS_DIR="$REPO_ROOT/tools/compose/tls"
+COMPOSE_FILE="$REPO_ROOT/compose.yml"
+# 開始時に down -v → up -d で作り直し、後始末で落とすサービス（jdbc-client は run の使い捨てなので入れない）。
+SERVICES=(trino minio minio-init tls-proxy)
 
-TRINO_BASE="http://127.0.0.1:8092"
+TRINO_BASE="http://trino:8080"
 ATHENA_BASE="http://127.0.0.1:8087"
 BUCKET="athena-results"
 PREFIX_ROOT="e2e-jdbc111"
-USED_PORTS="8087 8092 9002 9003 8443 9443"
 
 DRIVER_CACHE_DIR="$HOME/.cache/athena-local-jdbc"
 DRIVER_MOUNT="/driver/athena-jdbc.jar"
 MC_IMAGE="quay.io/minio/mc:latest"
-MC_NETWORK="${COMPOSE_PROJECT}_default"
+# compose_up が minio のコンテナが繋がっているネットワークを調べて入れる（プロジェクト名で変わるため）。
+MC_NETWORK=""
 MC_ALIAS_CMD='mc alias set local http://minio:9000 minioadmin minioadmin >/dev/null 2>&1'
 
 ATHENA_PID=""
@@ -40,9 +41,9 @@ retry() {
   return 1
 }
 
-# 前提の確認（存在ではなく実際に使えるかで判定する）と、使うポートが空いているか。
+# 前提の確認（存在ではなく実際に使えるかで判定する）と、同じプロジェクトで別の足場が動いていないか。
 preflight_tools() {
-  local missing=() p
+  local missing=() p project others
   docker info >/dev/null 2>&1 || missing+=("docker（デーモンに繋がらない）")
   docker compose version >/dev/null 2>&1 || missing+=("docker compose")
   for p in curl jq openssl python3 timeout; do
@@ -52,21 +53,27 @@ preflight_tools() {
     record "preflight" FAIL "使えないもの: ${missing[*]}"
     return 1
   fi
-  for p in $USED_PORTS; do
-    if timeout 1 bash -c "exec 3<>/dev/tcp/127.0.0.1/$p" 2>/dev/null; then
-      record "preflight" FAIL "ポート $p が使用中（minio の足場が動いていないか確かめる。他のプロジェクトには触らない）"
-      return 1
-    fi
-  done
-  record "preflight" PASS "docker・compose・curl・jq・openssl・python3・timeout。ポート $USED_PORTS は空き"
+  # 開始時の down -v が相手の環境を消すので、同じプロジェクトに自分以外の dev がいたら止まる
+  # （hostname は自分のコンテナ ID の先頭 12 桁）。
+  project=$(dc config --format json 2>/dev/null | jq -r '.name // empty')
+  if [ -z "$project" ]; then
+    record "preflight" FAIL "compose のプロジェクト名を取れない（docker compose config が失敗した）"
+    return 1
+  fi
+  others=$(docker ps -q --filter "label=com.docker.compose.project=$project" --filter label=com.docker.compose.service=dev | grep -v "^$(hostname)" | wc -l)
+  if [ "$others" != "0" ]; then
+    record "preflight" FAIL "同じプロジェクト（$project）で別の足場が動いている。COMPOSE_PROJECT_NAME で分けるか、終わるのを待つ"
+    return 1
+  fi
+  record "preflight" PASS "docker・compose・curl・jq・openssl・python3・timeout。同じプロジェクト（$project）に別の dev は無い"
 }
 
 prepare_cert() {
-  if [ ! -f "$E2E_DIR/tls/server.key" ] || [ ! -f "$E2E_DIR/tls/server.crt" ]; then
+  if [ ! -f "$TLS_DIR/server.key" ] || [ ! -f "$TLS_DIR/server.crt" ]; then
     log "自己署名証明書を作る"
-    bash "$E2E_DIR/tls/make-cert.sh" >>"$OUT_ROOT/make-cert.log" 2>&1 || { record "TLS 証明書" FAIL "make-cert.sh が失敗"; return 1; }
+    bash "$TLS_DIR/make-cert.sh" >>"$OUT_ROOT/make-cert.log" 2>&1 || { record "TLS 証明書" FAIL "make-cert.sh が失敗"; return 1; }
   fi
-  chmod 644 "$E2E_DIR/tls/server.crt" 2>/dev/null || true
+  chmod 644 "$TLS_DIR/server.crt" 2>/dev/null || true
 }
 
 driver_path() { echo "$DRIVER_CACHE_DIR/athena-jdbc-$1-with-dependencies.jar"; }
@@ -133,14 +140,16 @@ mc_run() {
   docker run --rm --network "$MC_NETWORK" --entrypoint sh "$MC_IMAGE" -c "$MC_ALIAS_CMD && $1"
 }
 
-# サービスを指定して立てる（jdbc-client は常駐させない）。Trino・バケット・スキーマまで用意する。
+# サービスを指定して作り直す（jdbc-client は常駐させない）。Trino・バケット・スキーマまで用意する。
+# tls-proxy も毎回作り直す（nginx は起動時に dev を名前解決する。judge はログの全履歴を数える）。
 compose_up() {
-  local net
-  log "docker compose up -d trino minio minio-init tls-proxy"
-  dc up -d trino minio minio-init tls-proxy >"$OUT_ROOT/compose-up.log" 2>&1 \
+  log "docker compose down -v / up -d ${SERVICES[*]}"
+  dc down -v "${SERVICES[@]}" >"$OUT_ROOT/compose-down.log" 2>&1 \
+    || { record "compose 起動" FAIL "down -v が失敗（ログ: $OUT_ROOT/compose-down.log）"; return 1; }
+  dc up -d "${SERVICES[@]}" >"$OUT_ROOT/compose-up.log" 2>&1 \
     || { record "compose 起動" FAIL "up が失敗（ログ: $OUT_ROOT/compose-up.log）"; return 1; }
-  net=$(docker inspect "${COMPOSE_PROJECT}-minio" --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}' 2>/dev/null)
-  [ -n "$net" ] && MC_NETWORK="$net"
+  MC_NETWORK=$(docker inspect "$(dc ps -q minio)" --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}' 2>/dev/null)
+  [ -n "$MC_NETWORK" ] || { record "compose 起動" FAIL "minio のコンテナのネットワークを取れなかった（mc を繋ぐ先が無い）"; return 1; }
   retry 60 trino_exec "SELECT 1" system runtime || { record "Trino 起動" FAIL "起動しなかった"; return 1; }
   retry 60 mc_run "mc ls 'local/$BUCKET' >/dev/null" || { record "バケット用意" FAIL "できなかった"; return 1; }
   trino_exec "CREATE SCHEMA IF NOT EXISTS hive.default" hive default
@@ -159,7 +168,7 @@ start_athena_local() {
   (
     cd "$REPO_ROOT" && exec env ATHENA_LOCAL_BIND="0.0.0.0:8087" TRINO_URL="$TRINO_BASE" \
       TRINO_USER="athena-local-issue111" TRINO_CATALOG="iceberg" TRINO_SCHEMA="default" \
-      ATHENA_LOCAL_RESULTS="s3" AWS_ENDPOINT_URL_S3="http://127.0.0.1:9002" \
+      ATHENA_LOCAL_RESULTS="s3" AWS_ENDPOINT_URL_S3="http://minio:9000" \
       AWS_ACCESS_KEY_ID="minioadmin" AWS_SECRET_ACCESS_KEY="minioadmin" \
       ATHENA_LOCAL_OUTPUT_LOCATION="s3://$BUCKET/$PREFIX_ROOT/default/" \
       "$BINARY"
@@ -186,8 +195,8 @@ build_jdbc_client() {
 # JDBC の実行は jdbc-show-metadata.sh と同じ形（/etc/hosts に tls-proxy を固定、keytool で証明書を取り込む）。
 # 値は位置引数で渡す（-e は使わない）。1 回を timeout で包み、終了コードを返す（124 はハング）。
 run_jvm() {
-  local proxy_ip rc
-  proxy_ip=$(docker inspect "${COMPOSE_PROJECT}-tls-proxy" --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null)
+  local proxy_ip rc project
+  proxy_ip=$(docker inspect "$(dc ps -q tls-proxy)" --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null)
   timeout "${JVM_TIMEOUT:-300}" docker compose -f "$COMPOSE_FILE" run --rm -T \
     -v "$(driver_path "$1"):$DRIVER_MOUNT:ro" --entrypoint sh jdbc-client -c "
     echo '$proxy_ip tls-proxy athena-results.tls-proxy' >> /etc/hosts
@@ -196,8 +205,11 @@ run_jvm() {
   " </dev/null >"$6" 2>&1
   rc=$?
   if [ "$rc" = "124" ]; then
-    # timeout が止めたのは compose の CLI だけのことがあるので、自分のプロジェクトの使い捨てコンテナだけを消す。
-    docker ps -aq --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" \
+    # timeout が止めたのは compose の CLI だけのことがあるので、自分のプロジェクトの jdbc-client の使い捨てコンテナだけを消す
+    # （dev も run の使い捨てなので、service で絞らないと自分自身を消す）。
+    project=$(dc config --format json 2>/dev/null | jq -r '.name // empty')
+    [ -n "$project" ] && docker ps -aq --filter "label=com.docker.compose.project=$project" \
+      --filter "label=com.docker.compose.service=jdbc-client" \
       --filter "label=com.docker.compose.oneoff=True" | xargs -r docker rm -f >/dev/null 2>&1
   fi
   return "$rc"

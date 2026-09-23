@@ -12,8 +12,9 @@ tools/dev.sh SKIP_BUILD=1 DURATION=3600 ROWS=100 tools/e2e/retention/verify.sh  
 - 前提コマンドは `tools/dev.sh` 経由で動かす（toolbox に全部入っている。`docs/dev/development.md` の「検証の足場（toolbox）」）。
   環境変数は上のように `tools/dev.sh` とコマンドの間に並べる。
 
-- compose は `../sdk-retry/docker-compose.yml`（Trino 482 + memory、8095、`athena-local-issue94-e2e`）を流用する。
-  sdk-retry の `verify.sh` とは同時に流せない。athena-local は `$CARGO_TARGET_DIR`（`tools/dev.sh` では `.toolbox/target`）の release/athena-local を 127.0.0.1:8101 で起動する。
+- 環境はルートの `compose.yml` の `trino`（Trino 482。memory カタログを使う）で、開始時に `down -v trino` → `up -d trino` で作り直す。
+  同じ compose プロジェクトでは他の足場と同時に流せない（別の足場が動いていれば開始時に止まる。同時実行は `docs/dev/development.md` の「足場の環境と同時実行」）。
+  athena-local は `$CARGO_TARGET_DIR`（`tools/dev.sh` では `.toolbox/target`）の release/athena-local を dev 内の 127.0.0.1:8101 で起動する。
 - 負荷（`load.py`）: 逐次 1 本で Start → GetQueryExecution を 0.1 秒ごと → GetQueryResults 1 ページ。
   SQL は `SELECT x, lpad(cast(x AS varchar), 1000, 'x') AS pad FROM UNNEST(sequence(1, 2000)) AS t(x)`（約 2.2MiB/件）。
   5 秒ごとに `/proc/<pid>/status` の VmRSS/VmHWM と完了数を CSV に書く。最初の `WARMUP` 秒は判定から外す。
