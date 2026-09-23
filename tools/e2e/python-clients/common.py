@@ -6,8 +6,9 @@
 # - 中継のログの形式は tools/e2e/sdk-retry/drop_proxy.py:11-12 の
 #   `proxy: <relay|drop> target=<X-Amz-Target か -> token=<ClientRequestToken か ->`（STS・S3 は target=-）。
 # - trace は `mc admin trace --json` の 1 行 1 JSON（"api":"s3.GetObject"、"path":"/<bucket>/<key>"）。
+#   toolbox 内のバックグラウンドプロセスとして流し、ファイルに書く（#129。旧: 使い捨てコンテナの docker logs）。
 #
-# 環境変数: PROXY_LOG（中継の標準エラーの保存先）、TRACE_CONTAINER（trace を流す mc のコンテナ名）
+# 環境変数: PROXY_LOG（中継の標準エラーの保存先）、TRACE_LOG（trace の出力先ファイル）、TRACE_PID（trace のプロセス ID）
 # コマンドとしても使う（check_dbt.sh から）:
 #   common.py mark                 → `<中継の行数> <trace の行数>` を出す
 #   common.py count <起点> <正規表現> → 起点より後の中継の行のうち正規表現に一致する件数を出す
@@ -57,15 +58,16 @@ def proxy_lines():
 
 
 def trace_lines():
-    # trace のコンテナ（--rm）が途中で消えると docker logs が失敗して空になり、「GET 0 件」が偽の PASS になる。
-    # 失敗は例外にして check を異常終了させる（verify.sh の run_check が FAIL に数える）。
-    out = subprocess.run(
-        ["docker", "logs", os.environ["TRACE_CONTAINER"]],
-        capture_output=True, text=True, check=False,
-    )
-    if out.returncode != 0:
-        raise RuntimeError(f"trace のコンテナのログを読めない: {out.stderr.strip()[:200]}")
-    return [line for line in out.stdout.splitlines() if line.startswith("{")]
+    # trace（バックグラウンドプロセス、TRACE_PID）が途中で死ぬとファイルへの書き出しが止まり、
+    # 「GET 0 件」が偽の PASS になる。失敗は例外にして check を異常終了させる
+    # （verify.sh の run_check が FAIL に数える）。
+    pid = int(os.environ["TRACE_PID"])
+    try:
+        os.kill(pid, 0)
+    except OSError as exc:
+        raise RuntimeError(f"trace のプロセス（PID {pid}）が死んでいる: {exc}") from exc
+    with open(os.environ["TRACE_LOG"], encoding="utf-8", errors="replace") as f:
+        return [line for line in f.read().splitlines() if line.startswith("{")]
 
 
 class Window:
@@ -129,12 +131,9 @@ def wait_query(client, query_id, timeout=60):
 
 
 def mc_exists(key):
-    """MinIO に <bucket>/<key> があるか（compose のネットワークに繋いだ mc の使い捨てコンテナで。trace にも出る）。"""
-    cmd = ("mc alias set local http://minio:9000 minioadmin minioadmin >/dev/null && "
-           f"mc stat 'local/{key}' >/dev/null")
+    """MinIO に <bucket>/<key> があるか（toolbox の mc で直接。trace にも出る。alias local は verify.sh が設定済み）。"""
     out = subprocess.run(
-        ["docker", "run", "--rm", "--network", os.environ["MC_NETWORK"], "--entrypoint", "sh",
-         "quay.io/minio/mc:latest", "-c", cmd],
+        ["mc", "stat", f"local/{key}"],
         capture_output=True, text=True, check=False,
     )
     return out.returncode == 0

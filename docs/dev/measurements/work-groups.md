@@ -31,6 +31,21 @@
   - **`ListWorkGroups`** は 3 件返った（別 issue の材料）。
 - 備考: **実測値は「工場出荷時の既定」とは限らない。** 過去にコンソールから設定を変えていれば、その変更後の値が出る。`EnforceWorkGroupConfiguration = false` と `EngineVersion` は製品共通の既定である可能性が高いが断定はできない（既定のままかカスタマイズ済みか不明）。`summary.txt` で `CreationTime` の仮数部が `<ACCOUNT_ID>` に置換されているのは、マスクが 12 桁の数列を一律に伏せた副作用で、アカウント ID ではない。「出力先が設定されたワークグループの見え方」は測れていない。
 
+### GetWorkGroup の応答（toolbox の awscli 2.37.0 で測り直し）
+- 日付: 2026-09-23 ／ issue: #129 ／ スクリプト: `tools/measure/get-work-group.sh`（`tools/dev.sh` 経由。toolbox の awscli 2.37.0） ／ 生データ: `$HOME/athena-workgroup-measurements/run-20260923-160413`
+- 相手: 本物の Athena（ap-northeast-1）
+- 投げたもの: `GetWorkGroup`（`WORKGROUP` 1 つ。`WORKGROUP2` は未設定で skip）、存在しないワークグループ名で `GetWorkGroup`、`ListWorkGroups`。`--debug` の生ログからワイヤ上の応答を抜いた
+- 返ったもの: 2026-09-17 の項目と同じ形・同じ値（`WorkGroup` 直下のキー、`Configuration` 直下のキー、`State`、`EngineVersion`、`ResultConfiguration` が `{}`、`CreationTime` はワイヤ上は epoch 秒の数値、存在しない名前は 400 / `InvalidRequestException` / `INVALID_INPUT` / `WorkGroup is not found.`、`x-amzn-errortype` ヘッダは採取できず）。加えて、ワイヤ上の応答（`workgroup1.wire.txt`）に次があった。
+
+  | 項目 | 実測値 |
+  | --- | --- |
+  | `Configuration.EnableMinimumEncryptionConfiguration` | `false`（2026-09-17 は値が採れていなかった） |
+  | `Configuration.QuerySchedulingType` | `"DEFAULT"`（2026-09-17 の記録に無いキー。CLI の JSON 出力（`workgroup1.get-work-group.json`）には出ない。awscli 2.37.0 の botocore のモデルに無いため落とされる） |
+  | `Configuration.EngineVersion.Category` | `"Presto"`（ListWorkGroups の項目と同じく CLI の出力には出ない） |
+
+  ワイヤ上の本文: `{"WorkGroup":{"Configuration":{"EnableMinimumEncryptionConfiguration":false,"EnforceWorkGroupConfiguration":false,"EngineVersion":{"Category":"Presto","EffectiveEngineVersion":"Athena engine version 3","SelectedEngineVersion":"AUTO"},"PublishCloudWatchMetricsEnabled":false,"QuerySchedulingType":"DEFAULT","RequesterPaysEnabled":false,"ResultConfiguration":{}},"CreationTime":1.<12 桁>E9,"Name":"primary","State":"ENABLED"}}`
+- 備考: toolbox（`tools/dev.sh`、資格情報はホストのシェルの環境変数）から本物の Athena に届き、出力がホストの `~` に出ることの確認を兼ねた（#129 の受け入れ条件）。athena-local の `GetWorkGroup` は `EnableMinimumEncryptionConfiguration` を「値が採れていない」として省いている（`src/operation/work_group.rs:37`）。`QuerySchedulingType` と合わせて返すかは #137 で扱う。
+
 ### 存在しないワークグループのエラー
 - 日付: 2026-09-17 ／ issue: #2 ／ スクリプト: `tools/measure/get-work-group.sh`（旧 `2-measure-workgroup.sh`） ／ 生データ: `$HOME/athena-workgroup-measurements/run-20260917-064427`
 - 相手: 本物の Athena

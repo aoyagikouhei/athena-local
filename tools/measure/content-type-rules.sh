@@ -17,7 +17,8 @@
 # そこで今回は「条件を 1 つだけ変えた対」を同じラウンドに入れて、規則を決めにいく。
 #
 # 使い方:
-#   OUTPUT=s3://your-bucket/prefix/ DB=your_db TABLE=small_table bash content-type-rules.sh
+#   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db TABLE=small_table bash tools/measure/content-type-rules.sh
+#   （資格情報はホストのシェルで AWS_ACCESS_KEY_ID などを export してから。または ~/.aws/credentials）
 #
 # ** 課金の注意（先に読むこと） **
 #   テーブルを読むのは項目 b13（`SELECT 1 FROM <db>.<t> LIMIT 1`）と h3（`SHOW STATS FOR <db>.<t>`。
@@ -43,7 +44,7 @@
 #               省略すると c7（SHOW VIEWS IN <DB>）の 1 件目を使い、1 件も無ければ f2 を未測定にする。
 #   CATALOG     既定 AwsDataCatalog
 #   REGION      既定 ap-northeast-1
-#   OUT_DIR     既定 $HOME/athena-content-type-measurements（実名が入るのでリポジトリの外に出す）
+#   OUT_DIR     既定 ${DEV_HOST_HOME:-$HOME}/athena-content-type-measurements（実名が入るのでリポジトリの外に出す）
 #   POLL_TIMEOUT 終端状態を待つ上限（秒）。既定 300
 #                （d 系は 100 万〜300 万行を書き出すので 30 秒程度かかりうる）
 #   RETRY_MAX   名前解決・接続など一時的な失敗を再試行する回数の上限。既定 4
@@ -157,7 +158,8 @@ TABLE=${TABLE:-}
 VIEW=${VIEW:-}
 CATALOG=${CATALOG:-AwsDataCatalog}
 REGION=${REGION:-ap-northeast-1}
-OUT_DIR=${OUT_DIR:-$HOME/athena-content-type-measurements}
+# toolbox（tools/dev.sh）ではホストのホーム（DEV_HOST_HOME）。#129
+OUT_DIR=${OUT_DIR:-${DEV_HOST_HOME:-$HOME}/athena-content-type-measurements}
 POLL_TIMEOUT=${POLL_TIMEOUT:-300}
 RETRY_MAX=${RETRY_MAX:-4}
 RETRY_DELAY=${RETRY_DELAY:-5}

@@ -7,7 +7,7 @@
 #   E3 dbt run --select m111（INFO）       … Glue・STS を要求してどこで止まるかを記録する
 # dbt-athena の impl の client は profile の endpoint_url を受け取らない（impl.py:347-351）ので、
 # endpoint_url は profile に書かず、env.sh の AWS_ENDPOINT_URL* で向ける。
-# 前提: verify.sh が env.sh を source 済みで、EVIDENCE_DIR・PROXY_LOG・TRACE_CONTAINER・DBT_BIN が決まっていること。
+# 前提: verify.sh が env.sh を source 済みで、EVIDENCE_DIR・PROXY_LOG・DBT_BIN が決まっていること。
 # 出力は `PASS|FAIL|SKIP|INFO <名前>: <詳細>` の行。終了コードは FAIL の件数。
 
 set -uo pipefail

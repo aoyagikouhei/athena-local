@@ -16,11 +16,14 @@
   D. 参考: GetQueryResults の MaxResults が Integer の範囲外（#87 の項目 7。上限 1000 の文言になるか）。
 
 使い方:
-    OUTPUT=s3://your-bucket/prefix/ <botocore 入りの python3> raw-paging-leftovers.py
+    tools/dev.sh OUTPUT=s3://your-bucket/prefix/ python3 tools/measure/raw-paging-leftovers.py
+    （botocore が要る。toolbox（tools/dev.sh）の python3 には入っている。ホストで流すなら botocore 入りの python3 で）
+    （資格情報はホストのシェルで AWS_ACCESS_KEY_ID などを export してから。または ~/.aws/credentials）
 
 任意の環境変数:
     REGION        既定 ap-northeast-1
-    OUT_DIR       既定 $HOME/athena-paging-leftovers-measurements（実名が入りうるのでリポジトリの外）
+    OUT_DIR       既定 ${DEV_HOST_HOME:-$HOME}/athena-paging-leftovers-measurements
+                  （実名が入りうるのでリポジトリの外。toolbox（tools/dev.sh）ではホストのホーム。#129）
     POLL_TIMEOUT  終端状態を待つ上限（秒）。既定 120
     HEAVY_ROWS    重いクエリの片側の行数。既定 50000（sequence の上限。3 方向の CROSS JOIN で 1.25e14 行を数えるので途中で止める）
 
@@ -144,8 +147,13 @@ def gqr_cases(number, label_prefix, query_id):
 def main():
     region = os.environ.get("REGION", "ap-northeast-1")
     output = os.environ.get("OUTPUT", "")
+    # toolbox（tools/dev.sh）ではホストのホーム（DEV_HOST_HOME）。#129
     out_dir = os.environ.get(
-        "OUT_DIR", os.path.join(os.path.expanduser("~"), "athena-paging-leftovers-measurements")
+        "OUT_DIR",
+        os.path.join(
+            os.environ.get("DEV_HOST_HOME") or os.path.expanduser("~"),
+            "athena-paging-leftovers-measurements",
+        ),
     )
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     run_dir = os.path.join(out_dir, "raw-{}".format(stamp))

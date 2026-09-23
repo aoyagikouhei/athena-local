@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # issue #24 で作成（tools/ へ移す前の名前は 24-verify-metadata-form.sh）
 # README に書く数値を、保存済みの実測バイト列から再導出して検証する。
+# ホストで `bash tools/measure/opaque-metadata-form.sh`（xxd を使う。toolbox には無い）。#129
 set -u
 fail=0
 check() { if [ "$2" = "$3" ]; then echo "ok   $1: $2"; else echo "NG   $1: 期待 $3 / 実際 $2"; fail=1; fi; }

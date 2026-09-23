@@ -13,7 +13,8 @@
 # WITH 句の中にコメントを挟んだ Iceberg の CTAS（E。athena-local は今これを Hive と判定する）も測る。
 #
 # 使い方:
-#   OUTPUT=s3://your-bucket/prefix/ DB=your_db bash tools/measure/ctas-iceberg-detection.sh
+#   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db bash tools/measure/ctas-iceberg-detection.sh
+#   （資格情報はホストのシェルで AWS_ACCESS_KEY_ID などを export してから。または ~/.aws/credentials）
 #
 # 必要な環境変数:
 #   OUTPUT    結果の出力先。s3://bucket/prefix/ の形（末尾の / を付ける）。
@@ -22,7 +23,7 @@
 # 任意の環境変数:
 #   CATALOG      既定 AwsDataCatalog
 #   REGION       既定 ap-northeast-1
-#   OUT_DIR      既定 $HOME/athena-iceberg-measurements（実名が入るのでリポジトリの外に出す）
+#   OUT_DIR      既定 ${DEV_HOST_HOME:-$HOME}/athena-iceberg-measurements（実名が入るのでリポジトリの外に出す）
 #   POLL_TIMEOUT 終端状態を待つ上限（秒）。既定 180
 #   RETRY_MAX    名前解決・接続など一時的な失敗を再試行する回数の上限。既定 4
 #   RETRY_DELAY  再試行の間隔（秒）。既定 5
@@ -74,7 +75,8 @@ set -uo pipefail
 : "${DB:?DB にデータベース名を設定してください}"
 CATALOG=${CATALOG:-AwsDataCatalog}
 REGION=${REGION:-ap-northeast-1}
-OUT_DIR=${OUT_DIR:-$HOME/athena-iceberg-measurements}
+# toolbox（tools/dev.sh）ではホストのホーム（DEV_HOST_HOME）。#129
+OUT_DIR=${OUT_DIR:-${DEV_HOST_HOME:-$HOME}/athena-iceberg-measurements}
 POLL_TIMEOUT=${POLL_TIMEOUT:-180}
 RETRY_MAX=${RETRY_MAX:-4}
 RETRY_DELAY=${RETRY_DELAY:-5}

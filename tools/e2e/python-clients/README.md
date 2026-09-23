@@ -21,7 +21,8 @@ awswrangler 3.17.1・PyAthena 3.36.0・dbt-athena 1.11.1 を、athena-local の 
 |---|---|---|
 | Trino（`trino`） | `trinodb/trino:482` | `trino:8080` |
 | MinIO（`minio`） | `quay.io/minio/minio:latest` | `minio:9000`（S3 API） |
-| MinIO 初期化（`minio-init`）・trace | `quay.io/minio/mc:latest` | 無し（使い捨て。trace のコンテナ名は実行ごとに `athena-local-py-trace-<RUN_ID>`） |
+| MinIO 初期化（`minio-init`） | `quay.io/minio/mc:latest` | 無し（使い捨て） |
+| trace | toolbox の `mc`（バックグラウンドプロセス。#129） | `minio:9000` |
 | athena-local（s3 モード） | `$CARGO_TARGET_DIR`（`tools/dev.sh` では `.toolbox/target`）の release/athena-local | dev 内の `127.0.0.1:8098` |
 | athena-local（none モード） | 同上 | dev 内の `127.0.0.1:8099` |
 | 中継（`../sdk-retry/drop_proxy.py`、`DROP_COUNT=0`） | toolbox の `python3` | dev 内の `127.0.0.1:8102` → `8098` |
@@ -45,7 +46,7 @@ tools/dev.sh SKIP_BUILD=1 tools/e2e/python-clients/verify.sh  # release バイ�
 2. `docker compose -f compose.yml down -v trino minio minio-init` → 同じサービスの `up -d`、Trino に `hive.default`・`iceberg.default` を作る
 3. athena-local を s3 モード（8098）と none モード（8099）で起動し、s3 側の手前に中継を置く。
    中継は 1 リクエスト 1 行で `X-Amz-Target`（STS・S3 は `-`）をログに残す
-4. MinIO の `mc admin trace --json` を流すコンテナを立て、既知のオブジェクトの GET が trace に出ることを確かめる
+4. toolbox 内で MinIO の `mc admin trace --json` をバックグラウンドで流し、既知のオブジェクトの GET が trace に出ることを確かめる
 5. canary: boto3 の STS と Glue が中継に届いて athena-local が 4xx を返すこと、S3 の client が MinIO を指すこと
    （本物の AWS に漏れない証拠。summary の冒頭に「漏れ: 無し（canary で確認）」と出る）
 6. check を逐次に流す（awswrangler → PyAthena → dbt）。中継のログと trace は check ごとに開始時の行数を控え、

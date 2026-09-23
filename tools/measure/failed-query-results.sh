@@ -4,7 +4,8 @@
 # 置かれるかを実測する。#5 の result-metadata.sh を雛形にしている。
 #
 # 使い方:
-#   OUTPUT=s3://your-bucket/prefix/ DB=your_db bash failed-query-results.sh
+#   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db bash tools/measure/failed-query-results.sh
+#   （資格情報はホストのシェルで AWS_ACCESS_KEY_ID などを export してから。または ~/.aws/credentials）
 #
 # 必要な環境変数:
 #   OUTPUT    結果の出力先。s3://bucket/prefix/ の形（末尾の / を付ける）。
@@ -14,7 +15,7 @@
 #   TABLE     省略すると SHOW TABLES の 1 件目を使う。
 #   CATALOG   既定 AwsDataCatalog
 #   REGION    既定 ap-northeast-1
-#   OUT_DIR   既定 $HOME/athena-failed-measurements（実名が入るのでリポジトリの外に出す）
+#   OUT_DIR   既定 ${DEV_HOST_HOME:-$HOME}/athena-failed-measurements（実名が入るのでリポジトリの外に出す）
 #   POLL_TIMEOUT    終端状態を待つ上限（秒）。既定 180
 #   LONG_QUERY_SQL  取り消し用の重いクエリ。既定は 30000 x 30000 の UNNEST(sequence) の
 #                   CROSS JOIN。#3 の実測で 5000 x 5000 は速すぎて取り消せなかったので、
@@ -77,7 +78,8 @@ set -uo pipefail
 TABLE=${TABLE:-}
 CATALOG=${CATALOG:-AwsDataCatalog}
 REGION=${REGION:-ap-northeast-1}
-OUT_DIR=${OUT_DIR:-$HOME/athena-failed-measurements}
+# toolbox（tools/dev.sh）ではホストのホーム（DEV_HOST_HOME）。#129
+OUT_DIR=${OUT_DIR:-${DEV_HOST_HOME:-$HOME}/athena-failed-measurements}
 POLL_TIMEOUT=${POLL_TIMEOUT:-180}
 LONG_QUERY_SQL=${LONG_QUERY_SQL:-"SELECT count(*) FROM UNNEST(sequence(1, 30000)) AS a(x) CROSS JOIN UNNEST(sequence(1, 30000)) AS b(y)"}
 PROBE_DDL=${PROBE_DDL:-0}

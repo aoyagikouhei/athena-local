@@ -51,7 +51,7 @@ sed -n '/^## \[Unreleased\]/,/^## \[/p' CHANGELOGS.md   # [Unreleased] が空で
 で直書きが増えていないか確かめる。
 
 1. **Cargo.toml**: `version = "X.Y.Z"`。
-2. **Cargo.lock**: `cargo build` を 1 回走らせて `athena-local` の項の version を追随させる（`--locked` は付けない。
+2. **Cargo.lock**: `tools/dev.sh cargo build` を 1 回走らせて `athena-local` の項の version を追随させる（`--locked` は付けない。
    ほかの依存は動かない。差分が `name = "athena-local"` の直下の 1 行だけであることを `git diff Cargo.lock` で見る）。
 3. **README.md**: compose 例の `image: aoyagikouhei/athena-local:X.Y.Z`。
 4. **CHANGELOGS.md**:
@@ -63,10 +63,10 @@ sed -n '/^## \[Unreleased\]/,/^## \[/p' CHANGELOGS.md   # [Unreleased] が空で
 検証:
 
 ```bash
-cargo fmt --check
-cargo clippy --all-targets --locked -- -D warnings
-cargo test --locked
-docker build -t aoyagikouhei/athena-local:dev .     # 任意。Dockerfile が壊れていないことを手元で見る（数分かかる）
+tools/dev.sh cargo fmt --check
+tools/dev.sh cargo clippy --all-targets --locked -- -D warnings
+tools/dev.sh cargo test --locked
+tools/dev.sh docker build -t aoyagikouhei/athena-local:dev .     # 任意。Dockerfile が壊れていないことを手元で見る（数分かかる）
 git diff --stat                                     # 4 ファイル（Cargo.lock を含む）だけ
 ```
 

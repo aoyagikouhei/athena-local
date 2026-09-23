@@ -50,13 +50,9 @@ DRIVER_CACHE="$DRIVER_CACHE_DIR/athena-jdbc-${DRIVER_VERSION}-with-dependencies.
 # ホスト側から書けない。classpath に直接マウントして渡す。
 DRIVER_MOUNT="/driver/athena-jdbc.jar"
 
-MC_IMAGE="quay.io/minio/mc:latest"
-# compose を上げた後、minio のコンテナが繋がっているネットワークを調べて入れる（プロジェクト名で変わるため）。
-MC_NETWORK=""
-MC_ALIAS_CMD='mc alias set local http://minio:9000 minioadmin minioadmin >/dev/null 2>&1'
-
 # 出力はリポジトリの外に置く（生ログを追跡しない）。
-OUT_ROOT="$HOME/athena-local-issue46-measurements/run-$(date +%Y%m%d-%H%M%S)"
+# toolbox（tools/dev.sh）ではホストのホーム（DEV_HOST_HOME）。#129
+OUT_ROOT="${DEV_HOST_HOME:-$HOME}/athena-local-issue46-measurements/run-$(date +%Y%m%d-%H%M%S)"
 SUMMARY="$OUT_ROOT/summary.txt"
 ATHENA_LOG="$OUT_ROOT/athena-local.log"
 BUILD_LOG="$OUT_ROOT/cargo-build.log"
@@ -154,8 +150,9 @@ wait_for_trino() {
   return 1
 }
 
+# alias local は本体の compose 起動の直後に 1 回設定する（#129。toolbox の mc で minio:9000 を直接見る）。
 mc_run() {
-  docker run --rm --network "$MC_NETWORK" --entrypoint sh "$MC_IMAGE" -c "$MC_ALIAS_CMD && $1"
+  bash -c "$1"
 }
 
 wait_for_bucket() {
@@ -420,13 +417,11 @@ if ! "${COMPOSE[@]}" up -d "${SERVICES[@]}" >"$OUT_ROOT/compose-up.log" 2>&1; th
   record "compose 起動" FAIL "docker compose up -d が失敗した（ログ: $OUT_ROOT/compose-up.log）"
   exit 1
 fi
-MC_NETWORK=$(docker inspect "$("${COMPOSE[@]}" ps -q minio)" \
-  --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}' 2>/dev/null)
-if [ -z "$MC_NETWORK" ]; then
-  record "compose 起動" FAIL "minio のコンテナのネットワークを取れなかった（mc を繋ぐ先が無い）"
+if ! mc alias set local http://minio:9000 minioadmin minioadmin >/dev/null; then
+  record "compose 起動" FAIL "mc alias set が失敗した（minio:9000 に繋がらない）"
   exit 1
 fi
-record "compose 起動" PASS "trino・minio・tls-proxy（ネットワーク: $MC_NETWORK）"
+record "compose 起動" PASS "trino・minio・tls-proxy"
 
 wait_for_trino || { record "Trino 起動" FAIL "起動しなかった"; exit 1; }
 record "Trino 起動" PASS "SELECT 1 が通った"

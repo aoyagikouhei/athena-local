@@ -3,7 +3,8 @@
 # 本物の Athena で、GetWorkGroup の挙動を実測する（issue #2）。
 #
 # 使い方:
-#   bash get-work-group.sh
+#   tools/dev.sh bash tools/measure/get-work-group.sh
+#   （資格情報はホストのシェルで AWS_ACCESS_KEY_ID などを export してから。または ~/.aws/credentials）
 #
 # 任意の環境変数:
 #   REGION            既定 ap-northeast-1
@@ -14,7 +15,7 @@
 #   DB, OUTPUT        3 の StartQueryExecution に要る（DB=データベース名、
 #                     OUTPUT=s3://bucket/prefix/）。どちらか片方でも未設定なら
 #                     その項目だけ skip し、その旨を出す。
-#   OUT_DIR           既定 $HOME/athena-workgroup-measurements
+#   OUT_DIR           既定 ${DEV_HOST_HOME:-$HOME}/athena-workgroup-measurements
 #                     （実名が入るのでリポジトリの外に出す）
 #
 # 実行ごとに $OUT_DIR/run-<日時>/ を作り、その中だけに書く。前の回の結果と混ざらない。
@@ -60,7 +61,8 @@ WORKGROUP2=${WORKGROUP2:-}
 MISSING_WORKGROUP=${MISSING_WORKGROUP:-athena-local-nonexistent-workgroup-probe}
 DB=${DB:-}
 OUTPUT=${OUTPUT:-}
-OUT_DIR=${OUT_DIR:-$HOME/athena-workgroup-measurements}
+# toolbox（tools/dev.sh）ではホストのホーム（DEV_HOST_HOME）。#129
+OUT_DIR=${OUT_DIR:-${DEV_HOST_HOME:-$HOME}/athena-workgroup-measurements}
 
 RUN_DIR="$OUT_DIR/run-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$RUN_DIR"

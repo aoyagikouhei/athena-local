@@ -3,13 +3,14 @@
 # 本物の Athena で、DDL と SHOW の結果ファイル <id>.txt を実測する。
 #
 # 使い方:
-#   OUTPUT=s3://your-bucket/prefix/ DB=your_db bash txt-result.sh
+#   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db bash tools/measure/txt-result.sh
+#   （資格情報はホストのシェルで AWS_ACCESS_KEY_ID などを export してから。または ~/.aws/credentials）
 #
 # 任意の環境変数:
 #   TABLE     省略すると SHOW TABLES の 1 件目を使う。
 #   CATALOG   既定 AwsDataCatalog
 #   REGION    既定 ap-northeast-1
-#   OUT_DIR   既定 $HOME/athena-txt-measurements（実名が入るのでリポジトリの外に出す）
+#   OUT_DIR   既定 ${DEV_HOST_HOME:-$HOME}/athena-txt-measurements（実名が入るのでリポジトリの外に出す）
 #   PROBE_DDL 1 にすると CREATE TABLE / ALTER TABLE / DROP TABLE も測る。
 #             OUTPUT の下にテーブルを 1 つ作って消す。
 #
@@ -36,7 +37,8 @@ set -uo pipefail
 TABLE=${TABLE:-}
 CATALOG=${CATALOG:-AwsDataCatalog}
 REGION=${REGION:-ap-northeast-1}
-OUT_DIR=${OUT_DIR:-$HOME/athena-txt-measurements}
+# toolbox（tools/dev.sh）ではホストのホーム（DEV_HOST_HOME）。#129
+OUT_DIR=${OUT_DIR:-${DEV_HOST_HOME:-$HOME}/athena-txt-measurements}
 PROBE_DDL=${PROBE_DDL:-0}
 
 RUN_DIR="$OUT_DIR/run-$(date +%Y%m%d-%H%M%S)"

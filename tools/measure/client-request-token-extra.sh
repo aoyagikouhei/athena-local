@@ -17,9 +17,10 @@
 # トークンの有効期間）は1回目で測れているので、ここでは測らない。
 #
 # 使い方:
-#   DB=<データベース名> OUTPUT=s3://<バケット>/<プレフィックス>/ \
+#   tools/dev.sh DB=<データベース名> OUTPUT=s3://<バケット>/<プレフィックス>/ \
 #     WORKGROUP2=<実在する別WG名> \
-#     bash client-request-token-extra.sh
+#     bash tools/measure/client-request-token-extra.sh
+#   （資格情報はホストのシェルで AWS_ACCESS_KEY_ID などを export してから。または ~/.aws/credentials）
 #
 # 必須の環境変数（どちらか片方でも無ければ、何も実行せず使い方を出して終了する）:
 #   DB      StartQueryExecution の QueryExecutionContext.Database に使うデータベース名
@@ -38,7 +39,7 @@
 #                    最小課金のみ）。それでも速すぎる／遅すぎる場合は差し替える
 #   POLL_TIMEOUT    GetQueryExecution のポーリング上限秒。既定 180（重いクエリを想定して
 #                    本体スクリプトより長め）
-#   OUT_DIR         既定 $HOME/athena-client-request-token-measurements
+#   OUT_DIR         既定 ${DEV_HOST_HOME:-$HOME}/athena-client-request-token-measurements
 #                    （本体スクリプトと同じ場所。実名が入るのでリポジトリの外に出す）
 #   ONLY_RAW        1 にすると、生 HTTP の項目 (a)（トークン無し・空文字・長さの境界の
 #                    6件）だけを実行して終わる。(b)(c)(d)（実行中／CANCELLED の再送、
@@ -103,8 +104,8 @@ set -uo pipefail
 if [ -z "${DB:-}" ] || [ -z "${OUTPUT:-}" ]; then
   cat <<'USAGE'
 使い方:
-  DB=<データベース名> OUTPUT=s3://<バケット>/<プレフィックス>/ \
-    bash client-request-token-extra.sh
+  tools/dev.sh DB=<データベース名> OUTPUT=s3://<バケット>/<プレフィックス>/ \
+    bash tools/measure/client-request-token-extra.sh
 
 DB と OUTPUT は必須です（どちらか片方でも無いと何も実行しません）。
 任意の環境変数はスクリプト冒頭のコメントを参照してください。
@@ -118,7 +119,8 @@ WORKGROUP2=${WORKGROUP2:-}
 QUERY_BASELINE=${QUERY_BASELINE:-"SELECT 1"}
 LONG_QUERY_SQL=${LONG_QUERY_SQL:-"SELECT count(*) FROM UNNEST(sequence(1, 30000)) AS a(x) CROSS JOIN UNNEST(sequence(1, 30000)) AS b(y)"}
 POLL_TIMEOUT=${POLL_TIMEOUT:-180}
-OUT_DIR=${OUT_DIR:-$HOME/athena-client-request-token-measurements}
+# toolbox（tools/dev.sh）ではホストのホーム（DEV_HOST_HOME）。#129
+OUT_DIR=${OUT_DIR:-${DEV_HOST_HOME:-$HOME}/athena-client-request-token-measurements}
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RAW_SCRIPT="$SCRIPT_DIR/raw-client-request-token.py"
@@ -155,7 +157,7 @@ trap 'rm -f "$RUN_DIR"/.tmp-*; rm -rf "$RUN_DIR"/.venv-botocore' EXIT
 # （`uv --version` の出力が `uv <数字>` で始まるときだけ。**このホストには `uv` という
 # 名前の、astral の uv とは無関係な独自コマンドがあり、名前だけで判断すると誤動作する**
 # ため）、(c) $RUN_DIR に作る venv。どれも使えなければ、項目 (a) は skip し、試した候補
-# と失敗理由を summary に書く。
+# と失敗理由を summary に書く。toolbox（tools/dev.sh）では python3 に botocore が入っているので (a) で通る。#129
 
 PY_RUNNER=()
 PY_RUNNER_LOG=()

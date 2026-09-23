@@ -6,7 +6,7 @@
 #
 # 前提コマンド: tools/dev.sh 経由で動かす（toolbox に全部入っている）
 # 環境はルートの compose.yml の trino / minio / minio-init。開始時に down -v → up -d で作り直す。
-# S3（MinIO）側の確認は、compose と同じネットワークに繋いだ minio/mc の使い捨てコンテナで行う。
+# S3（MinIO）側の確認は、toolbox の mc で minio:9000 を直接見る（#129）。
 #
 # 使い方:
 #   tools/dev.sh tools/e2e/minio/verify.sh
@@ -34,11 +34,6 @@ BUCKET="athena-results"
 PREFIX="e2e"
 OUTPUT_LOCATION="s3://${BUCKET}/${PREFIX}/"
 RUN_ID="$(date +%s)"
-
-MC_IMAGE="quay.io/minio/mc:latest"
-# docker compose up -d の後、minio のコンテナが繋がっているネットワークを調べて入れる（プロジェクト名で変わるため）。
-MC_NETWORK=""
-MC_ALIAS_CMD='mc alias set local http://minio:9000 minioadmin minioadmin >/dev/null 2>&1'
 
 EVIDENCE_DIR="$(mktemp -d /tmp/athena-local-issue39-e2e.XXXXXX)"
 ATHENA_LOG="$EVIDENCE_DIR/athena-local.log"
@@ -133,8 +128,7 @@ wait_for_trino() {
 wait_for_bucket() {
   log "MinIO バケットの用意待ち"
   for _ in $(seq 1 60); do
-    if docker run --rm --network "$MC_NETWORK" --entrypoint sh "$MC_IMAGE" \
-      -c "$MC_ALIAS_CMD && mc ls 'local/$BUCKET' >/dev/null" >/dev/null 2>&1; then
+    if mc ls "local/$BUCKET" >/dev/null 2>&1; then
       log "バケット確認: $BUCKET"
       return 0
     fi
@@ -255,7 +249,7 @@ athena_wait() {
   return 1
 }
 
-# --- S3（MinIO）側の検証（minio/mc の使い捨てコンテナ経由） ---
+# --- S3（MinIO）側の検証（toolbox の mc で minio:9000 を直接見る。#129） ---
 
 # `mc stat --json <key>` を実行して、その key ちょうど一致するオブジェクトの JSON を 1 行返す。
 # 無ければ {"status":"error"} を返す。
@@ -268,8 +262,7 @@ mc_stat() {
   local key="$1" name
   name=$(basename "$key")
   local raw
-  raw=$(docker run --rm --network "$MC_NETWORK" --entrypoint sh "$MC_IMAGE" \
-    -c "$MC_ALIAS_CMD && mc stat --json 'local/$BUCKET/$key'" 2>/dev/null)
+  raw=$(mc stat --json "local/$BUCKET/$key" 2>/dev/null)
   if [ -z "$raw" ]; then
     echo '{"status":"error"}'
     return
@@ -288,8 +281,7 @@ mc_exists() {
 # オブジェクトの中身をバイト単位そのまま $out に落とす。
 mc_get() {
   local key="$1" out="$2"
-  docker run --rm --network "$MC_NETWORK" --entrypoint sh "$MC_IMAGE" \
-    -c "$MC_ALIAS_CMD && mc cat 'local/$BUCKET/$key'" >"$out" 2>/dev/null
+  mc cat "local/$BUCKET/$key" >"$out" 2>/dev/null
 }
 
 # 本体（.txt / .csv）を検証する。期待するバイト数・Content-Type・「改行 1 つか」を確かめる。
@@ -513,12 +505,10 @@ main() {
     return 1
   fi
 
-  MC_NETWORK=$(docker inspect "$("${COMPOSE[@]}" ps -q minio)" --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}' 2>/dev/null)
-  if [ -z "$MC_NETWORK" ]; then
-    record "MinIOバケット" FAIL "minio のコンテナのネットワークを取れなかった（mc を繋ぐ先が無い）"
+  if ! mc alias set local http://minio:9000 minioadmin minioadmin >/dev/null; then
+    record "MinIOバケット" FAIL "mc alias set が失敗した（minio:9000 に繋がらない）"
     return 1
   fi
-  log "mc 用ネットワーク: $MC_NETWORK"
 
   if ! wait_for_trino; then
     record "Trino起動" FAIL "Trino が起動しなかった"
