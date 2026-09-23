@@ -41,8 +41,8 @@ count_gets() {
 # nginx のログに `GET /e2e-jdbc111/preflight/<id>.csv` の形で出るかを確かめる。出なければ判定の前提が崩れる。
 check_nginx_log_format() {
   local body id state i n
-  # ClientRequestToken は必須（athena-local も本物と同じく無いと INVALID_INPUT）。
-  body=$(jq -n --arg o "s3://$BUCKET/$PREFIX_ROOT/preflight/" --arg t "issue111-preflight-$$-$(date +%s)" \
+  # ClientRequestToken は必須で 32 文字以上（athena-local も本物と同じく、無い・短いと INVALID_INPUT。#133）。uuidgen は 36 文字。
+  body=$(jq -n --arg o "s3://$BUCKET/$PREFIX_ROOT/preflight/" --arg t "$(uuidgen)" \
     '{QueryString: "SELECT 1 AS n", ClientRequestToken: $t, ResultConfiguration: {OutputLocation: $o}}')
   athena_call StartQueryExecution "$body" >"$OUT_ROOT/preflight-start.json"
   id=$(jq -r '.QueryExecutionId // empty' <"$OUT_ROOT/preflight-start.json")
