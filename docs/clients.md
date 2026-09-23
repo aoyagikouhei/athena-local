@@ -1,6 +1,7 @@
 # Clients
 
-Notes on running specific Athena clients against athena-local.
+Notes on running specific Athena clients against athena-local: which parts of
+the API or the result files they depend on, and how to connect them.
 
 ## Athena JDBC 3.x needs a TLS terminator in front
 
@@ -125,3 +126,15 @@ driver addresses the bucket in virtual-host style and MinIO otherwise answers
 because the AWS SDK bundled in the driver raises `UnknownHostException` for a
 name that Docker's embedded resolver serves (`search .`, `ndots:0`) even though
 `getent hosts` and `java.net.InetAddress.getByName` both resolve it.
+
+## PyAthena
+
+PyAthena's pandas and arrow cursors read the result file rather than
+`GetQueryResults`, so DDL, `SHOW` and `DESCRIBE` need `ATHENA_LOCAL_RESULTS=s3`,
+which writes their `<id>.txt` (see [Result files](result-files.md#result-files)).
+
+## awswrangler and Grafana
+
+Both call `GetWorkGroup` before a query and read fields out of the response
+without checking that they are there, so they depend on
+[`GetWorkGroup`](api.md#supported-api) being supported.

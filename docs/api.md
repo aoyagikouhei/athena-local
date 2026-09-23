@@ -5,10 +5,10 @@ The Athena operations athena-local answers, and the Athena behaviour it reproduc
 | Operation | Notes |
 | --- | --- |
 | `StartQueryExecution` | Returns an id immediately; the query runs in the background. `ExecutionParameters` are supported (see [`ExecutionParameters`](parameters.md)). `ClientRequestToken` is required and makes retries idempotent (see below) |
-| `GetQueryExecution` | `QUEUED` → `RUNNING` → `SUCCEEDED` / `FAILED` / `CANCELLED`. Trino errors land in `Status.StateChangeReason` |
+| `GetQueryExecution` | `QUEUED` → `RUNNING` → `SUCCEEDED` / `FAILED` / `CANCELLED`. Trino errors land in `Status.StateChangeReason`. `WorkGroup` is the name `StartQueryExecution` was given, or `primary` when it was omitted |
 | `GetQueryResults` | Paginated with `MaxResults` / `NextToken` (1..1000, default 1000 rows including the header row). Out-of-range `MaxResults` and malformed `NextToken` fail the way Athena does (see [Caveats](caveats.md#paging)) |
 | `StopQueryExecution` | Marks a queued or running query `CANCELLED` immediately and sends `DELETE` to Trino's `nextUri`. Stopping a finished query succeeds and changes nothing |
-| `GetWorkGroup` | Accepts any workgroup name and returns the same configuration for all of them. `Configuration.ResultConfiguration.OutputLocation` reflects `ATHENA_LOCAL_OUTPUT_LOCATION` when it is set |
+| `GetWorkGroup` | Accepts any workgroup name and returns the same configuration for all of them. `Configuration.ResultConfiguration.OutputLocation` reflects `ATHENA_LOCAL_OUTPUT_LOCATION` when it is set. `Configuration.ResultConfiguration` is always present, and is `{}` when `ATHENA_LOCAL_OUTPUT_LOCATION` is not set |
 | `ListWorkGroups` | Lists the names from `ATHENA_LOCAL_WORK_GROUPS` (just `primary` when unset) in name order, with the same `State` and `EngineVersion` as `GetWorkGroup`. Paginated with `MaxResults` / `NextToken`; out-of-range `MaxResults` and malformed `NextToken` fail the way Athena does |
 
 Behaviour that matches real Athena:
@@ -90,6 +90,7 @@ Behaviour that matches real Athena:
   (measured 2026-09-23), `CREATE TABLE ... AS SELECT` is `DDL` /
   `CREATE_TABLE_AS_SELECT`, and so on. Trino spellings map to Athena's
   (`CREATE SCHEMA` is `CREATE_DATABASE`, `SHOW SCHEMAS` is `SHOW_DATABASES`).
+  `VACUUM` is `DML` and `OPTIMIZE` is `DDL`.
   Statements whose `SubstatementType` was not measured leave the field out.
   Leading whitespace and comments (`-- ...`, `/* ... */`, possibly interleaved)
   are skipped before the classification keyword is read, the same way Athena
