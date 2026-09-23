@@ -31,8 +31,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 COMPOSE=(docker compose -f "$REPO_ROOT/compose.yml")
 SERVICES=(trino)
-# 別の足場を見つけて止まるときは、相手のサービスを後始末で落とさない。
-COMPOSE_OWNED=1
+# 自分で環境を作り直した（down -v → up -d した）ときだけ後始末で落とす。判定より前に止まった経路で相手の環境を消さない。
+COMPOSE_OWNED=0
 # cargo の成果物の置き場。tools/dev.sh は CARGO_TARGET_DIR を .toolbox/target にする
 BINARY="${CARGO_TARGET_DIR:-$REPO_ROOT/target}/release/athena-local"
 
@@ -113,16 +113,15 @@ fi
 # 同じプロジェクトに自分以外の dev（別の足場）がいたら止まる（hostname は自分のコンテナ ID の先頭 12 桁）。
 PROJECT=$("${COMPOSE[@]}" config --format json 2>/dev/null | jq -r '.name // empty')
 if [ -z "$PROJECT" ]; then
-  COMPOSE_OWNED=0
   echo "FAIL compose のプロジェクト名を取れない（docker compose config が失敗した）"; exit 1
 fi
 others=$(docker ps -q --filter "label=com.docker.compose.project=$PROJECT" --filter label=com.docker.compose.service=dev | grep -v "^$(hostname)" | wc -l)
 if [ "$others" != "0" ]; then
-  COMPOSE_OWNED=0
   echo "FAIL 同じプロジェクト（$PROJECT）で別の足場が動いている。COMPOSE_PROJECT_NAME で分けるか、終わるのを待つ"; exit 1
 fi
 
 echo "== trino"
+COMPOSE_OWNED=1
 "${COMPOSE[@]}" down -v "${SERVICES[@]}" >"$EVIDENCE_DIR/compose-down.log" 2>&1 || {
   echo "FAIL docker compose down -v ${SERVICES[*]}（$EVIDENCE_DIR/compose-down.log）"; exit 1; }
 "${COMPOSE[@]}" up -d "${SERVICES[@]}" >"$EVIDENCE_DIR/compose-up.log" 2>&1 || {

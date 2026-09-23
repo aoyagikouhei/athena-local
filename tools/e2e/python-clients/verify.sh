@@ -27,8 +27,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 BINARY="${CARGO_TARGET_DIR:-$REPO_ROOT/target}/release/athena-local"
 COMPOSE=(docker compose -f "$REPO_ROOT/compose.yml")
 SERVICES=(trino minio minio-init)
-# 別の足場を見つけて止まるときは、相手のサービスを後始末で落とさない。
-COMPOSE_OWNED=1
+# 自分で環境を作り直した（down -v → up -d した）ときだけ後始末で落とす。判定より前に止まった経路で相手の環境を消さない。
+COMPOSE_OWNED=0
 VENV_ROOT="${VENV_ROOT:-$HOME/.cache/athena-local-111}"
 PY_WR="$VENV_ROOT/venv-wr/bin/python"
 export DBT_BIN="$VENV_ROOT/venv-dbt/bin/dbt"
@@ -76,10 +76,9 @@ preflight() {
   [ -x "$BINARY" ] || { log "$BINARY が無い"; return 1; }
   # 同じプロジェクトに自分以外の dev（別の足場）がいたら止まる（hostname は自分のコンテナ ID の先頭 12 桁）。
   project=$("${COMPOSE[@]}" config --format json 2>/dev/null | jq -r '.name // empty')
-  [ -n "$project" ] || { COMPOSE_OWNED=0; log "compose のプロジェクト名を取れない（docker compose config が失敗した）"; return 1; }
+  [ -n "$project" ] || { log "compose のプロジェクト名を取れない（docker compose config が失敗した）"; return 1; }
   others=$(docker ps -q --filter "label=com.docker.compose.project=$project" --filter label=com.docker.compose.service=dev | grep -v "^$(hostname)" | wc -l)
   if [ "$others" != "0" ]; then
-    COMPOSE_OWNED=0
     log "同じプロジェクト（$project）で別の足場が動いている。COMPOSE_PROJECT_NAME で分けるか、終わるのを待つ"; return 1
   fi
   "$PY_WR" -m pip freeze >"$EVIDENCE_DIR/freeze-wr.txt"
@@ -100,6 +99,7 @@ trino_exec() {
 start_env() {
   # 前の走行の残骸（テーブル、結果ファイル）を持ち越さないよう、使うサービスを作り直す。
   log "compose down -v / up -d ${SERVICES[*]}"
+  COMPOSE_OWNED=1
   "${COMPOSE[@]}" down -v "${SERVICES[@]}" >"$EVIDENCE_DIR/compose-down.log" 2>&1 \
     || { record FAIL "compose起動" "docker compose down -v ${SERVICES[*]} が失敗した（$EVIDENCE_DIR/compose-down.log）"; return 1; }
   "${COMPOSE[@]}" up -d "${SERVICES[@]}" >"$EVIDENCE_DIR/compose-up.log" 2>&1 || { log "compose up 失敗"; return 1; }
