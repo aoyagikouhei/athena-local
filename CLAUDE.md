@@ -72,4 +72,4 @@ CI（`.github/workflows/ci.yml`）は `fmt --check`、`clippy -D warnings`、`te
   絶対パスへの書き出しはコンテナの中に消えるうえ終了コードは 0 になる。取得は `aws s3 cp <src> -` で標準出力に流し、
   リダイレクトはシェルが行う（2026-09-16 に実測スクリプトで、2026-09-21 に実機検証で踏んだ）。
   同じ理由で compose のネットワークにも入れないので、compose 内のサービス（MinIO など）を触るときは
-  `--network` を付けた使い捨てコンテナから叩く（`.claude/issue-notes/39-e2e/verify.sh`）。
+  `--network` を付けた使い捨てコンテナから叩く（`tools/e2e/minio/verify.sh`）。

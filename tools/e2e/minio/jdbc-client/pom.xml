@@ -1,0 +1,51 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>local.athenajdbccheck</groupId>
+  <artifactId>athena-jdbc-check</artifactId>
+  <version>1.0</version>
+  <packaging>jar</packaging>
+
+  <properties>
+    <maven.compiler.source>17</maven.compiler.source>
+    <maven.compiler.target>17</maven.compiler.target>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+  </properties>
+
+  <dependencies>
+    <!-- 公式 Athena JDBC ドライバ 3.x は Maven Central に無く、AWS の配布 URL から
+         直接取る（issue #46 で入手経路を特定した。2026-09-21 実測）:
+           https://downloads.athena.us-east-1.amazonaws.com/drivers/JDBC/3.8.1/athena-jdbc-3.8.1-with-dependencies.jar
+         `tools/measure/jdbc-metadata.sh` がこれを target/dependency/ に置くので、
+         Maven の依存としては宣言しない（Main.java は java.sql しか使わず、
+         ドライバは実行時に ServiceLoader が拾う）。
+         Maven Central の `com.amazonaws:athena-jdbc`（calver）は名前が似ているが
+         Athena Federated Query の JDBC コネクタで、java.sql.Driver を持たない別物。 -->
+    <!-- ドライバのログ（INFO を含む）を標準エラーに出すため -->
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-simple</artifactId>
+      <version>2.0.13</version>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <finalName>app</finalName>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-dependency-plugin</artifactId>
+        <version>3.6.1</version>
+        <executions>
+          <execution>
+            <id>copy-deps</id>
+            <phase>prepare-package</phase>
+            <goals><goal>copy-dependencies</goal></goals>
+            <configuration>
+              <outputDirectory>${project.build.directory}/dependency</outputDirectory>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>

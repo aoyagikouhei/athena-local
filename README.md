@@ -585,7 +585,7 @@ returned from `execute()` normally. The same run covered a `DROP TABLE` that
 writes no companion at all (the driver logs `does not have query result
 metadata` and carries on) and a `SELECT` for regression (verified against
 athena-local on 2026-09-21 with
-`.claude/issue-notes/46-verify-jdbc-metadata.sh`).
+`tools/measure/jdbc-metadata.sh`).
 
 Write `ADD COLUMN` (singular) to reach the `ADD COLUMNS` row from
 athena-local: Trino's grammar rejects Athena's `ADD COLUMNS` at the syntax

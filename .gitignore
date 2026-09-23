@@ -1,10 +1,10 @@
 /target
 /athena-txt-measurements
 
-# ネストしたビルド成果物（例: .claude/issue-notes/*/jdbc-client/target）
+# ネストしたビルド成果物（例: tools/e2e/*/jdbc-client/target）
 target/
 
 # 検証用の自己署名証明書と秘密鍵（make-cert.sh で作る。リポジトリには入れない）
-.claude/issue-notes/39-e2e/tls/server.key
-.claude/issue-notes/39-e2e/tls/server.crt
+tools/e2e/minio/tls/server.key
+tools/e2e/minio/tls/server.crt
 __pycache__/
