@@ -4,18 +4,21 @@ athena-local をビルド・テスト・リリースするための手順（コ�
 
 ## コマンド
 
-ホストで直接でも toolbox（下の「検証の足場（toolbox）」）でも動く（`tools/dev.sh cargo test` のように前に付ける）。
+ホストで直接でも toolbox（下の「検証の足場（toolbox）」）でも動く（`tools/dev.sh cargo test` のように前に付ける）。既定は toolbox。ホストに rust があればホスト直でも動く（`target/` は toolbox の `.toolbox/target` と別）。
 
 ```bash
-cargo run                                          # 実行には到達できる Trino（TRINO_URL）が要る
-cargo test                                         # Trino も AWS も要らない（テスト内で偽物を立てる）
-cargo test --test parameters                       # 結合テストを 1 ファイルだけ（tests/<名前>.rs）
-cargo test --test select ページング                  # テスト名の一部で絞る（テスト名は日本語）
-cargo test --lib config::tests                     # src 内のユニットテストだけ
-cargo fmt --check
-cargo clippy --all-targets --locked -- -D warnings
-docker build -t aoyagikouhei/athena-local:dev .
+tools/dev.sh cargo run                             # 実行には到達できる Trino が要る。既定の TRINO_URL は http://trino:8080（先に `docker compose -f compose.yml up -d trino`）
+tools/dev.sh cargo test                            # Trino も AWS も要らない（テスト内で偽物を立てる）
+tools/dev.sh cargo test --test parameters          # 結合テストを 1 ファイルだけ（tests/<名前>.rs）
+tools/dev.sh cargo test --test select ページング      # テスト名の一部で絞る（テスト名は日本語）
+tools/dev.sh cargo test --lib config::tests        # src 内のユニットテストだけ
+tools/dev.sh cargo fmt --check
+tools/dev.sh cargo clippy --all-targets --locked -- -D warnings
+tools/dev.sh docker build -t aoyagikouhei/athena-local:dev .
+tools/dev.sh tools/e2e/minio/verify.sh             # 検証の足場（tools/e2e）。環境は compose.yml の trino / minio など。同時に流すなら COMPOSE_PROJECT_NAME
 ```
+
+CI（`.github/workflows/ci.yml`）はホストランナーで直に cargo のまま（#130）。
 
 ## 検証の足場（toolbox）
 

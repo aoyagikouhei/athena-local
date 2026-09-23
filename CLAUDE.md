@@ -8,20 +8,21 @@ AWS Athena API（`awsJson1.1`）のローカル代役。受け取った SQL を 
 
 ## コマンド
 
+既定は toolbox（`tools/dev.sh` 経由。compose.yml の dev サービスの中で動く。docs/dev/development.md）。ホストに rust があればホスト直でも動く（`target/` は toolbox の `.toolbox/target` と別）。
+
 ```bash
-cargo run                                          # 実行には到達できる Trino（TRINO_URL）が要る
-cargo test                                         # Trino も AWS も要らない（テスト内で偽物を立てる）
-cargo test --test parameters                       # 結合テストを 1 ファイルだけ（tests/<名前>.rs）
-cargo test --test select ページング                  # テスト名の一部で絞る（テスト名は日本語）
-cargo test --lib config::tests                     # src 内のユニットテストだけ
-cargo fmt --check
-cargo clippy --all-targets --locked -- -D warnings
-docker build -t aoyagikouhei/athena-local:dev .
-tools/dev.sh cargo test                            # 検証の足場は toolbox（compose.yml の dev サービス）の中で動かす（docs/dev/development.md）
-tools/dev.sh tools/e2e/minio/verify.sh             # 環境は compose.yml の trino / minio など。同時に流すなら COMPOSE_PROJECT_NAME（docs/dev/development.md）
+tools/dev.sh cargo run                             # 実行には到達できる Trino が要る。既定の TRINO_URL は http://trino:8080（先に `docker compose -f compose.yml up -d trino`）
+tools/dev.sh cargo test                            # Trino も AWS も要らない（テスト内で偽物を立てる）
+tools/dev.sh cargo test --test parameters          # 結合テストを 1 ファイルだけ（tests/<名前>.rs）
+tools/dev.sh cargo test --test select ページング      # テスト名の一部で絞る（テスト名は日本語）
+tools/dev.sh cargo test --lib config::tests        # src 内のユニットテストだけ
+tools/dev.sh cargo fmt --check
+tools/dev.sh cargo clippy --all-targets --locked -- -D warnings
+tools/dev.sh docker build -t aoyagikouhei/athena-local:dev .
+tools/dev.sh tools/e2e/minio/verify.sh             # 検証の足場（tools/e2e）。環境は compose.yml の trino / minio など。同時に流すなら COMPOSE_PROJECT_NAME（docs/dev/development.md）
 ```
 
-CI（`.github/workflows/ci.yml`）は `fmt --check`、`clippy -D warnings`、`test --locked` を回す。`v*` タグを push すると `docker.yml` が amd64 / arm64 のイメージを Docker Hub に publish する。リリースの手順（版の書き換えからタグと publish の確認まで）は `.claude/skills/release/SKILL.md`（`/release X.Y.Z`）に従う。
+CI（`.github/workflows/ci.yml`）は toolbox を使わず、ホストランナーで直に `fmt --check`、`clippy -D warnings`、`test --locked` を回す（toolbox に寄せるかは #130）。`v*` タグを push すると `docker.yml` が amd64 / arm64 のイメージを Docker Hub に publish する。リリースの手順（版の書き換えからタグと publish の確認まで）は `.claude/skills/release/SKILL.md`（`/release X.Y.Z`）に従う。
 
 ## アーキテクチャ
 

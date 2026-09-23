@@ -42,7 +42,9 @@ main() {
   DEV_UID=$(id -u)
   DEV_GID=$(id -g)
   DEV_USER=$(id -un)
-  export DEV_REPO DEV_CWD DEV_UID DEV_GID DEV_USER DOCKER_GID TOOLBOX_TAG
+  # 実測（tools/measure）の出力先と `~/.aws` の既定に使う、ホストのホーム。
+  DEV_HOST_HOME=$HOME
+  export DEV_REPO DEV_CWD DEV_UID DEV_GID DEV_USER DOCKER_GID TOOLBOX_TAG DEV_HOST_HOME
 
   # HOME だけ先に作る（HOME が無いとその下に書くもの（pip、venv の置き場）が落ちる。cargo と target は cargo が自分で作る）。
   mkdir -p "$repo/.toolbox/home"

@@ -45,6 +45,9 @@
 - compose の付属物（カタログ、tls、jdbc-client）は `tools/compose/` に置き、trino-probe の `catalog/` は trino-probe に残す。理由: probe は版ごとのカタログの差を測る道具で、`catalog`・`catalog-legacy`・`catalog-nofsflag` を並べておく方が対称。（#128、2026-09-23）
 - 足場の共通の lib は作らない（Trino を待つ関数などは足場ごとに複製する）。理由: 足場ごとの複製が慣習で、共通化は足場の移行とは別の変更になる（`tools/e2e/jdbc-drivers/lib.sh` の冒頭）。（#128、2026-09-23）
 - #127 は足場の規則そのものを変えたので、CLAUDE.md の注意書き（ホストの `aws`・`jq` の回避策）を toolbox の 1 項目に書き換えた。「実測の進め方」の「CLAUDE.md は記述が事実として誤りになるときだけ追随させる」は挙動を変えない変更の規則で、規則を変える変更はこれに当たらない。（#127、2026-09-23）
+- cargo と docker build の既定のコマンドも toolbox（`tools/dev.sh`）に寄せる。ホストに rust があればホスト直でも動く。理由: 新しい開発者は Docker だけで開発できる。CI はホストランナーで直に cargo（#130）。（#129、2026-09-23）
+- 実測（tools/measure）の生データはホストの `~/athena-*-measurements` に書く（dev にホストのホームを同じパスでマウントし、`DEV_HOST_HOME` を既定の出力先にする）。理由: 過去の記録と同じ場所で、`rm -rf .toolbox` で消えない。（#129、2026-09-23）
+- AWS の資格情報は設定されているときだけ dev に渡す（compose の値無しキー）。理由: `${VAR:-}` だと空文字が渡る。（#129、2026-09-23）
 
 ## SQL の字句処理と文の分類
 
