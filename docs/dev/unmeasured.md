@@ -72,7 +72,7 @@
 
 ## Trino（[measurements/trino.md](measurements/trino.md)）
 
-- [ ] Trino 482 より古いバージョンの `system.metadata.catalogs` の `connector_name` などの値（#39。483 は 482 と同じと確認）
+- [ ] Trino 470 以前の `updateType` と 400 以前の値（#111 の足場で 480・475 は測れたが、470 はローカル FS の設定名が無く、400 は cgroup v2 で JVM が落ち、440 は file メタストアに書けず `updateType` だけ残った）
 
 ## 済み
 
@@ -100,3 +100,4 @@
 - 末尾が改行で終わらない `EXPLAIN (FORMAT JSON)`／`EXPLAIN (TYPE IO)` の行数と `EXPLAIN ANALYZE`（#73）→ #92
 - `GetQueryResults` のページング検証の 3 点（`ListWorkGroups` の上限と空文字の同時、RUNNING／CANCELLED のクエリへの不正な `NextToken`、0 行の結果への `NextToken`。#83）→ #85
 - リクエスト本文の型違いなどの未実測の組み合わせ（#84）→ #87
+- Trino 482 より古いバージョンの `system.metadata.catalogs` の `connector_name` などの値（#39）→ #111（2026-09-23。480・475 は 482 と同じ。440 は `connector_name` が同じで、`updateType` は書き込みができず未測定。470・400 は手元で起動できず未測定。足場は `tools/e2e/trino-probe/versions.sh`。[measurements/trino.md](measurements/trino.md)）

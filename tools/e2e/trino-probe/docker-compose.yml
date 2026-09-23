@@ -6,7 +6,7 @@ services:
     image: trinodb/trino:${TRINO_TAG:-482}
     container_name: athena-local-issue39-trino
     ports:
-      - "8090:8080"
+      - "${TRINO_PORT:-8090}:8080"
     volumes:
       # 古いバージョンは fs.local.enabled が無く fs.native-local.enabled が要るため、
       # ${CATALOG_DIR:-./catalog} で差し替えられるようにしてある（./catalog-legacy を用意）。
