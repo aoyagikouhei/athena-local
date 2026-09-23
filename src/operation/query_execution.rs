@@ -89,7 +89,7 @@ pub fn get_query_results(app: &App, body: &Bytes) -> Response {
     }
     // 発行するのは 1 <= end <= len の 10 進（列名行を外した後の rows が基準。満杯のページの次は
     // end == len の空のページになる）なので、それ以外は本物と同じく弾く（"0"、先頭ゼロ、"+2" も
-    // 通るが、返すページは正当なので厳密化しない。ListWorkGroups と同じ式で、文言だけ違う。2026-09-23 実測）。
+    // 通るが、返すページは正当なので厳密化しない。ListWorkGroups は `< len` で満杯の規則も無く、文言も違う。2026-09-23 実測）。
     // 行が 1 つも無い（UTILITY で 0 行）ときは本物はトークンを見ず 200 で 0 行を返す（2026-09-23 実測。#85。
     // 列名行だけの DML は行が 1 つあるので Malformed になる）。
     let offset = match &request.next_token {
