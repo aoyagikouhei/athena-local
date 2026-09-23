@@ -425,7 +425,7 @@ run e "CREATE TABLE $DB.${PREFIX}_e WITH (table_type /* c */ = 'ICEBERG', locati
 
 # F. WITH 句の外（WHERE 句）に table_type = 'ICEBERG'。テーブル自体は Hive。
 #    コメントと文字列リテラルを読み飛ばすだけの直し方では救えない形なので、
-#    README の Caveats にどう書くかがこの結果で決まる。
+#    docs/caveats.md にどう書くかがこの結果で決まる。
 run f "CREATE TABLE $DB.${PREFIX}_f AS SELECT * FROM (VALUES ('HIVE')) AS t(table_type) WHERE t.table_type = 'ICEBERG'" keys
 
 # 作られたテーブルの実際の形式を裏取りする（CTAS が成功したものだけ）。

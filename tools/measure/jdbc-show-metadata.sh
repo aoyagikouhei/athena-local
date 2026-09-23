@@ -4,7 +4,7 @@
 # ドライバ 3.8.1 の既定 ResultFetcher=auto が例外なく読めるかを確かめる。
 #
 # 本物の Athena は SHOW TABLES / SHOW DATABASES / SHOW COLUMNS / SHOW PARTITIONS / SHOW TBLPROPERTIES の
-# .txt.metadata に不透明な形式（README の Caveats）を置くが、athena-local は素の protobuf を置く。
+# .txt.metadata に不透明な形式（docs/caveats.md）を置くが、athena-local は素の protobuf を置く。
 # JDBC が読めることを実機で確かめたのは SHOW TABLES だけ（#5）だったので、残りを測る。
 #
 # Trino の文法には SHOW DATABASES / SHOW PARTITIONS / SHOW TBLPROPERTIES が無い。そこで同じラウンドに
