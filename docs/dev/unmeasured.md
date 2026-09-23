@@ -58,7 +58,6 @@
 
 - [ ] dbt-athena で `work_group` を設定して 1 回通す（#2 の人間検証リスト。Grafana は #9 で実施済み）
 - [ ] awswrangler の `read_sql_query(ctas_approach=False)` を athena-local + Trino + MinIO で流し、`GetWorkGroup` の応答で例外にならないこと（#2 の人間検証リスト）
-- [ ] 実 SDK でネットワーク断からのリトライを誘発し、同じ `ClientRequestToken` が再送されて `INSERT` が 2 回実行されないこと。同じトークンの高多重度の同時送信も（#3 の人間検証リスト。結合テストは 2 並列まで。#94）
 - [ ] 失敗した DDL の `<id>.txt`（`FAILED: ` + 理由）を結果ファイルを読むクライアント（PyAthena、JDBC 3.x）が読んでも壊れないこと（#6 の人間検証リスト。どれも FAILED を先に見る想定）
 - [ ] `ATHENA_LOCAL_RESULTS=s3` と保持期限の組み合わせ（捨てた後も結果 CSV は残る想定だが未確認）
 - [ ] 長時間運用でメモリが実際に頭打ちになるか（保持期限による破棄の実効性）

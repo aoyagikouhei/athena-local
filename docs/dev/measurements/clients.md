@@ -24,6 +24,18 @@
   含意: SDK / CLI 経由では **32 文字未満は絶対に届かない**。athena-local 側の長さ検証が効くのは **128 超と生 HTTP クライアントだけ**。
 - 備考: `aws` は Docker ラッパ（`~/.local/bin/aws` が `docker run ... amazon/aws-cli:latest`）で、`127.0.0.1` も `host.docker.internal` も届かず、ホストの LAN IP が要った。
 
+## boto3 のリトライ
+
+### boto3 がネットワーク断で同じ ClientRequestToken を再送するか（実機検証）
+- 日付: 2026-09-23 ／ issue: #94 ／ スクリプト: `tools/e2e/sdk-retry/verify.sh`（`drop_proxy.py` と `check.py`） ／ 生データ: verify.sh が `/tmp/athena-local-issue94-e2e.*` に残す
+- 相手: boto3 1.43.100（botocore 1.43.100。リトライは `mode=standard`、`max_attempts=5`）。athena-local の release ビルドと手元の Trino 482（memory コネクタ）。本物の Athena ではない
+- 投げたもの: `start_query_execution`（`ClientRequestToken` 無し、INSERT 1 文）を、目印付きの `StartQueryExecution` の応答を最初の 2 回だけ落とす TCP の代理（リクエストは athena-local に届けて処理させ、応答を返さずに接続を閉じる）越しに 1 回呼ぶ。別に、同じトークンの `StartQueryExecution` を 50 スレッドから athena-local に直接同時に送る
+- 返ったもの:
+  - botocore が `ClientRequestToken` を UUID で補い、接続を 2 回閉じられても 3 回とも同じトークンで再送した（代理のログは drop・drop・relay の 3 行でトークンは同一）。`start_query_execution` は 1.3 秒で 1 つの ID を返し、クエリは SUCCEEDED
+  - Trino に届いた構文チェックの `PREPARE` は 3 回（試行ごと。照合は構文チェックの後）、INSERT 本体は 1 回、表の行は 1 行
+  - 50 並列: 全部 200、`QueryExecutionId` は 1 つ、所要 0.15 秒、Trino に届いた SELECT は 1 回。対照の違うトークン 2 つは ID が 2 つ
+- 備考: 照合を外したビルド（`Store::submit` のトークン検索を常に空にする）で同じ足場を流すと INSERT 3 回・行 3・ID 50 個で 4 項目が FAIL になり、足場が欠陥を検知することを確かめた。結合テスト `tests/idempotency.rs` の `同じトークンを50本同時に送っても_id_は1つで実行は1本になる` が multi_thread ランタイムで同じ性質を固定する
+
 ## クライアントのソース読み
 
 ### クライアントが GetWorkGroup の応答から読む項目（ソースの読み取り）

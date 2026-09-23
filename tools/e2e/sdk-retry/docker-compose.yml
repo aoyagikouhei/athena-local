@@ -1,0 +1,19 @@
+# issue #94 の実機検証の足場。
+# 本物の Trino（trinodb/trino:482）だけを立てる。athena-local と応答を落とす代理はホスト上のプロセス。
+# INSERT の副作用を数えるために memory コネクタのカタログを使う（S3 も MinIO も要らない）。
+# 本物の AWS は一切使わない。
+#
+# ポート（ホスト側）:
+#   Trino         8095（paging-validation は 8094、result-content-type は 8093、minio は 8092、trino-probe は 8090）
+#   athena-local  8091（compose ではなくホスト上のプロセス。paging-validation は 8089、trino-probe は 8090）
+#   代理          8096（ホスト上のプロセス。SDK はここに向け、代理が athena-local に転送する）
+name: athena-local-issue94-e2e
+
+services:
+  trino:
+    image: trinodb/trino:482
+    container_name: athena-local-issue94-e2e-trino
+    ports:
+      - "8095:8080"
+    volumes:
+      - ./catalog:/etc/trino/catalog:ro

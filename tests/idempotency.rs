@@ -58,6 +58,41 @@ async fn 同時に2回呼んでも実行は1本だけになる() {
     assert_eq!(harness.trino_sqls().len(), 1);
 }
 
+/// 同じトークンを 50 本同時に送っても ID は 1 つで、Trino への本体は 1 回になる。
+/// 上のテストと違い `multi_thread` のランタイムで OS のスレッドからも同時に届かせ、
+/// `Store::submit` のロックで詰まらずに全部返ることを固定する（#94）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn 同じトークンを50本同時に送っても_id_は1つで実行は1本になる() {
+    let harness = std::sync::Arc::new(Harness::start(select_response()).await);
+    let body = json!({
+        "QueryString": "SELECT 1",
+        "ClientRequestToken": token("parallel"),
+    });
+
+    let tasks: Vec<_> = (0..50)
+        .map(|_| {
+            let harness = std::sync::Arc::clone(&harness);
+            let body = body.clone();
+            tokio::spawn(async move { harness.call("StartQueryExecution", body).await })
+        })
+        .collect();
+
+    let mut ids = std::collections::HashSet::new();
+    for task in tasks {
+        let (status, response) = task.await.expect("タスクが落ちない");
+        assert_eq!(status, 200, "{response}");
+        ids.insert(
+            response["QueryExecutionId"]
+                .as_str()
+                .expect("ID がある")
+                .to_string(),
+        );
+    }
+
+    assert_eq!(ids.len(), 1, "ID は 1 つ: {ids:?}");
+    assert_eq!(harness.trino_sqls().len(), 1, "本体は 1 回だけ");
+}
+
 #[tokio::test]
 async fn 同じトークンでクエリを変えると_idempotent_parameter_mismatch_になる() {
     let harness = Harness::start(select_response()).await;
