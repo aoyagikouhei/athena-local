@@ -19,7 +19,7 @@ cargo clippy --all-targets --locked -- -D warnings
 docker build -t aoyagikouhei/athena-local:dev .
 ```
 
-CI（`.github/workflows/ci.yml`）は `fmt --check`、`clippy -D warnings`、`test --locked` を回す。`v*` タグを push すると `docker.yml` が amd64 / arm64 のイメージを Docker Hub に publish する。
+CI（`.github/workflows/ci.yml`）は `fmt --check`、`clippy -D warnings`、`test --locked` を回す。`v*` タグを push すると `docker.yml` が amd64 / arm64 のイメージを Docker Hub に publish する。リリースの手順（版の書き換えからタグと publish の確認まで）は `.claude/skills/release/SKILL.md`（`/release X.Y.Z`）に従う。
 
 ## アーキテクチャ
 
