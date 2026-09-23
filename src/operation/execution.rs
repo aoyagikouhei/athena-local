@@ -115,7 +115,7 @@ fn submit_response(app: &App, id: String, outcome: SubmitOutcome) -> Response {
 
 /// ClientRequestToken を検証する（2026-09-17 実測、判断 2・11）。本物と同じく必須で、
 /// 長さは 32 以上 128 以下。文字数は chars().count()（本物がバイトか文字かは ASCII でしか
-/// 測っていない。README 参照）。
+/// 測っていない。docs/caveats.md の Query lifecycle 参照）。
 fn client_request_token(request: &StartQueryExecutionRequest) -> Result<String, Box<Response>> {
     let Some(token) = request.client_request_token.clone() else {
         return Err(Box::new(invalid_request_with_code(

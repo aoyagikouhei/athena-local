@@ -43,7 +43,7 @@ pub fn get_work_group(app: &App, body: &Bytes) -> Response {
     };
 
     // GetWorkGroup の応答にも StartQueryExecution と同じ既定の出力先を反映する
-    // (ATHENA_LOCAL_OUTPUT_LOCATION。README:71、config.rs の S3Settings.default_output_location と同じ値)。
+    // (ATHENA_LOCAL_OUTPUT_LOCATION。docs/configuration.md の環境変数の表、config.rs の S3Settings.default_output_location と同じ値)。
     let output_location = match &app.config.results {
         ResultsMode::S3(settings) => settings.default_output_location.clone(),
         ResultsMode::None => None,
