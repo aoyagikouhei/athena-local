@@ -18,7 +18,7 @@
 | [clients.md](clients.md) | クライアント（AWS CLI、Athena JDBC 3.x、Grafana、awswrangler、PyAthena、dbt-athena）の挙動とソース読み。本物の Athena ではない | [clients.md](../../clients.md)、[caveats.md](../../caveats.md) |
 | [trino.md](trino.md) | 手元の Trino 482／483 での実測。本物の Athena ではない | — |
 
-`ExecutionParameters` を本物で測った記録はまだ無いので、`parameters.md` は置いていない。
+`ExecutionParameters` の値そのものを本物で測った記録はまだ無いので、`parameters.md` は置いていない。分類にからむ疑問（括弧で始まる `SELECT` の扱い）は #113 で [statements.md](statements.md) に記録した。
 
 ## 書き方
 

@@ -7,7 +7,6 @@
 ## 結果ファイル（[measurements/result-files.md](measurements/result-files.md)）
 
 - [ ] `CREATE TABLE` の重複の結果ファイル（Hive テーブルへの `ALTER TABLE` 失敗は #43 で実測済み: `RENAME TO` が理由を `<id>.txt` に書いた。失敗した `EXPLAIN` は #92 で実測済み: 何も置かない）
-- [ ] 失敗時の `GetQueryResults` が本物は文ごとに割れる（空の ResultSet／`INVALID_QUERY_EXECUTION_STATE`／`RESULT_NOT_FOUND`）。athena-local は常に `INVALID_QUERY_EXECUTION_STATE`
 - [ ] `.txt` の値に区切り文字（タブ）や改行が入るときのエスケープと、NULL の書き方（#1。1 回目で「まだ測れていない」とし、4 回目の記述では触れていない）
 - [ ] 失敗した `SHOW FUNCTIONS` が結果ファイルを置くか（#80）
 - [ ] `SHOW CREATE VIEW` の Content-Type（#76 のラウンドでは DB にビューが無く SKIPPED）
@@ -18,7 +17,6 @@
 - [ ] 更新件数 0 の `UPDATE` / `DELETE` / `MERGE`（`DELETE ... WHERE false` など）で本物が更新件数の field 3 を出すか（athena-local は `18 00` を書く。0 行の `INSERT` は Hive・Iceberg とも `18 00` を書くと実測済み。#35・#91）
 - `SHOW` 5 文（`SHOW TABLES` / `DATABASES` / `COLUMNS` / `PARTITIONS` / `TBLPROPERTIES`）の本物の `.txt.metadata` は不透明な形式（base64 で 312 文字）。#24 で解析したが特定できず、AWS 側の仕様が公開されない限り埋まらないので測る対象から外す。athena-local は素の protobuf を置く（[docs/caveats.md](../caveats.md) に記載済み。JDBC が読めるかは下の「実クライアントでの疎通」）
 - [ ] 0 行の CTAS（更新件数 0）で本物が field 3 を出すか（#5）
-- [ ] 列の field 2 / 3 が本当に SchemaName / TableName か（#5。公開情報でも推測で未観測）
 - [ ] 列の Nullable（field 9）の 1（NOT_NULL）と 2（NULLABLE）（#5。観測したのは 3 = UNKNOWN だけ）
 
 ## 文の種類（[measurements/statements.md](measurements/statements.md)）
@@ -40,22 +38,20 @@
 ## ワークグループ（[measurements/work-groups.md](measurements/work-groups.md)）
 
 - [ ] 出力先が設定されたワークグループの `GetWorkGroup` の `ResultConfiguration` の形
-- [ ] `ListWorkGroups` の `MaxResults` 未指定時の既定ページサイズ（athena-local は 50）
-- [ ] `ListWorkGroups` の順序が名前順であること（3 件だけの根拠）
+- [ ] `ListWorkGroups` の順序が名前順であること（3 件だけの根拠のまま。作成・削除を伴うので #113 では測らない）
 
 ## エラー応答（[measurements/errors.md](measurements/errors.md)）
 
 - [ ] `QUEUED` のクエリへの `GetQueryResults` の文言（`RUNNING` のときの `Query has not yet finished. Current state: RUNNING` だけ実測。athena-local は `Current state: QUEUED` を返す。#102）
-- [ ] `x-amzn-errortype` ヘッダ。#2、#3、#9 の実測で本物の応答に見つからなかったが、athena-local は送り続けている
-- [ ] 構文エラー（`MALFORMED_QUERY`）など、冪等性の衝突とトークンの検証以外の `AthenaErrorCode` 付きエラーの本文に `ErrorCode` キーが付くか（#3。`ErrorCode` 付きの形を確かめたのはこの 2 つと、#83 の `GetQueryResults` の検証エラー）
+- [ ] 構文エラー（`MALFORMED_QUERY`）など、冪等性の衝突とトークンの検証以外の `AthenaErrorCode` 付きエラーの本文に `ErrorCode` キーが付くか（#3。`ErrorCode` 付きの形を確かめたのはこの 2 つと、#83 の `GetQueryResults` の検証エラー、#87 の `ExecutionParameters` の要素が `null` のケース（[measurements/errors.md](measurements/errors.md) の「#84 で未実測だった型違いなどの組み合わせ」に追記済み）。ただし後者は `StartQueryExecution` の構文チェックの経路そのものを狙って測ったものではない。構文エラーの経路は #113 のバッチで測る）
 
 ## 実クライアントでの疎通（[measurements/clients.md](measurements/clients.md)）
 
 - [ ] Athena JDBC 3.0.0〜3.3.0 が素の protobuf の `.txt.metadata` を解けるか（#111 で測ったのは auto のある 3.4.0・3.5.0 だけ。3.3.0 以下は auto が無く、`ResultFetcher=S3` は `.txt.metadata` を取りに行かない。既定の経路 GetQueryResultsStream は athena-local が持たないので手元では測れない）
 
-## `ExecutionParameters`（本物で測った記録はまだ無い）
+## `ExecutionParameters`（値そのものを本物で測った記録はまだ無い。分類にからむ記録は [measurements/statements.md](measurements/statements.md) にある）
 
-- [ ] 括弧で始まるクエリ（`( SELECT 1 )`）を本物がどう分類するか。athena-local は式として通す（CHANGELOG の Unreleased / Fixed の項目。レビューで見つけた）
+- [ ] 空白入りの括弧で始まるクエリ（`( SELECT 1 )`）を本物がどう分類するか。括弧の直後にスペースが無い `(SELECT 1)` は #76 の生データの読み直しで `StatementType: DML`／`SubstatementType: SELECT` と確認済み（#113、[measurements/statements.md](measurements/statements.md)）。athena-local は式として通す（CHANGELOG の Unreleased / Fixed の項目。レビューで見つけた）。空白入りの `( SELECT 1 )` は #113 のバッチで測る
 
 ## Trino（[measurements/trino.md](measurements/trino.md)）
 
@@ -74,6 +70,7 @@
 - `MERGE` の `.metadata`（#5）→ #35 で置き場所、#41 でバイト列（74 バイト、field 2 が `MERGE`）
 - 失敗した `EXPLAIN` の結果ファイル（#6）→ #92（本体も `.metadata` も無し）
 - Hive テーブルへの `ALTER TABLE` の失敗（#6）→ #43（`RENAME TO` が理由を `<id>.txt` に書いた）
+- 失敗時の `GetQueryResults` が本物は文ごとに割れるか（空の ResultSet／`INVALID_QUERY_EXECUTION_STATE`／`RESULT_NOT_FOUND`）→ 既に #6（2026-09-17）で実測済みだった（[measurements/result-files.md](measurements/result-files.md) の「失敗・取り消し時に本物が置く結果ファイル」）。`docs/caveats.md` の「Failed queries」にも反映済み。この一覧への「済み」への移動だけが漏れていたので #113（2026-09-24）で消す
 - `ListWorkGroups` で `MaxResults` と `NextToken` が両方不正なときの順序（#9）→ #83（`2 validation errors detected: ...` の 1 文）
 - `SHOW` 5 文それぞれを JDBC で読ませた場合（#24）→ #57（JDBC 経由で athena-local に届く `SHOW` は 3 文で、どれも例外なく読む。[measurements/clients.md](measurements/clients.md)）
 - INSERT の `<id>` の再実測（#26）→ #35
@@ -106,3 +103,5 @@
 - `.metadata` の空の列名の扱い（#5）。本物では空の列名の列を作れないので観測できない。athena-local は空の列名でも列の field を出す
 - `AthenaErrorCode` の無い経路のうち `InternalServerException` の本文の形。本物ではサーバ側の障害でしか出ず、クライアントから誘発できない（パース失敗と未対応オペレーションは #84 で実測: `SerializationException`・`UnknownOperationException` はどちらも `AthenaErrorCode` 無し）。athena-local は `AthenaErrorCode` も `ErrorCode` も付けずに返す（[docs/caveats.md](../caveats.md) の「Error body key casing」）
 - `GetWorkGroup` の実測値（`EnforceWorkGroupConfiguration=false` 等）が工場出荷時の既定か、コンソールで変えた後の値か。測ったアカウントの `primary` は過去に設定を変えた可能性があり、新しいアカウントを作らないと区別できない（[measurements/work-groups.md](measurements/work-groups.md) の備考）
+- 列の field 2 / 3（SchemaName / TableName）が本物で出るか（#5）。実テーブルの `SELECT` でも出ないこと（`ColumnInfo` も空）は観測済み（[measurements/metadata.md](measurements/metadata.md)）だが、出す条件があるかどうかまでは本物では観測できない（判断: #113、2026-09-24）
+- `ListWorkGroups` の `MaxResults` 未指定時の既定ページサイズ（athena-local は 50）。51 個のワークグループを用意しないと境界が見えず、実アカウントに 51 件のワークグループを作ることになるのでユーザー判断で測らない（#113、2026-09-24）
