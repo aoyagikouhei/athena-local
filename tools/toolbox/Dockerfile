@@ -2,6 +2,11 @@
 # #127。tools/dev.sh がタグを Dockerfile の sha256 から決めるので、このファイルを変えると次の実行で作り直される。
 # COPY するファイルを足すときは、tools/dev.sh のタグの計算にもそのファイルを入れる。
 
+# mc はマルチアーキの manifest list のダイジェストで固定する（:latest だと toolbox のタグ（Dockerfile の sha256）を
+# 変えないまま中身が変わる）。#129。版を上げるときは `docker buildx imagetools inspect quay.io/minio/mc:latest` で
+# ダイジェストを取り直す。
+FROM quay.io/minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727 AS mc
+
 # ルートの Dockerfile の builder と同じタグにする。変えるときは両方。
 FROM rust:1.98-bookworm
 
@@ -24,3 +29,6 @@ RUN install -m 0755 -d /etc/apt/keyrings \
  && apt-get update \
  && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin \
  && rm -rf /var/lib/apt/lists/*
+
+# mc（#129）。足場は compose のネットワークに直接繋いで minio:9000 を見るので、使い捨てコンテナが要らない。
+COPY --from=mc /usr/bin/mc /usr/local/bin/mc

@@ -32,7 +32,7 @@ tools/dev.sh KEEP_UP=1 SKIP_BUILD=1 tools/e2e/minio/verify.sh   # 環境変数�
 tools/dev.sh bash -c 'cargo test 2>&1 | tail -n 5'             # パイプやリダイレクトは bash -c の中に書く
 ```
 
-- 入っているもの（[tools/toolbox/Dockerfile](../../tools/toolbox/Dockerfile)）: Rust（`rust:1.98-bookworm`。clippy・rustfmt 付き）、jq、python3（venv・pip・boto3）、docker CLI と compose、curl、uuidgen、ss、openssl。awscli と mc は入れていない（足場は使わない。S3 の確認は `minio/mc` の使い捨てコンテナ）。
+- 入っているもの（[tools/toolbox/Dockerfile](../../tools/toolbox/Dockerfile)）: Rust（`rust:1.98-bookworm`。clippy・rustfmt 付き）、jq、python3（venv・pip・boto3）、docker CLI と compose、curl、uuidgen、ss、openssl、mc（マルチアーキの manifest list のダイジェストで固定。#129。S3 の確認は `mc alias set local http://minio:9000 ...` で直接見る）。awscli は入れていない（`tools/measure` の `aws` は #129 のこの段階では扱わない。フェーズ 3）。
 - 環境変数は `tools/dev.sh VAR=値 <コマンド>` の形で渡す（`env` の代入として効く）。`KEEP_UP=1 tools/dev.sh ...` のようにホスト側で前に置いても、コンテナには届かない。
 - 引数の `~` や `$VAR` はホストのシェルが展開してから渡る。コンテナの中で展開したいもの、パイプ、リダイレクトは `bash -c '...'` に書く。
 - リポジトリの中のどこからでも呼べて、cwd はそのままコンテナに引き継ぐ。リポジトリの外では止まる。

@@ -33,8 +33,8 @@ MinIO のイメージは 2024 年以降 `minio/minio` / `minio/mc`（Docker Hub�
 
 `tools/dev.sh` 経由で動かす（toolbox に全部入っている。`docs/dev/development.md` の「検証の足場（toolbox）」）。
 
-S3 側の確認（`.txt` や `.metadata` のバイト数・Content-Type・中身）は、compose と同じ Docker ネットワークに繋いだ
-`minio/mc` の使い捨てコンテナで行う（ホストの aws は使わない）。
+S3 側の確認（`.txt` や `.metadata` のバイト数・Content-Type・中身）は、toolbox に入っている `mc` で
+`minio:9000` を直接見る（`mc alias set local http://minio:9000 ...`。ホストの aws は使わない。#129）。
 
 ## 実行方法
 
@@ -62,7 +62,7 @@ tls-proxy など他のコンテナからは届かず、JDBC の検証には使�
 3. `cargo build --release --locked` を実行し、`$CARGO_TARGET_DIR`（`tools/dev.sh` では `.toolbox/target`）の release/athena-local を起動する
    （Trino・MinIO にはサービス名の `trino:8080` / `minio:9000` で繋ぐ）
 4. Athena API（`POST /` に `X-Amz-Target: AmazonAthena.StartQueryExecution` など）を叩いてケース 1〜5 を実行し、
-   結果ファイルを `minio/mc` 経由で取得してバイト数・Content-Type・中身を確かめる
+   結果ファイルを `mc` 経由で取得してバイト数・Content-Type・中身を確かめる
 5. ケース 14 の前に athena-local を `ATHENA_LOCAL_RETENTION_SECONDS=1` で再起動する（ログは `athena-local-retention.log`）
 6. 結果を PASS / FAIL / SKIP の表にして表示する
 7. athena-local プロセスを止め、使ったサービスだけ `docker compose down -v trino minio minio-init` で後始末する（`trap` で必ず実行される。dev は残す）

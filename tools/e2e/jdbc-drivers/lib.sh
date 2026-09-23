@@ -19,10 +19,6 @@ PREFIX_ROOT="e2e-jdbc111"
 
 DRIVER_CACHE_DIR="$HOME/.cache/athena-local-jdbc"
 DRIVER_MOUNT="/driver/athena-jdbc.jar"
-MC_IMAGE="quay.io/minio/mc:latest"
-# compose_up が minio のコンテナが繋がっているネットワークを調べて入れる（プロジェクト名で変わるため）。
-MC_NETWORK=""
-MC_ALIAS_CMD='mc alias set local http://minio:9000 minioadmin minioadmin >/dev/null 2>&1'
 
 ATHENA_PID=""
 
@@ -136,8 +132,10 @@ trino_exec() {
   done
 }
 
+# $1 = mc の呼び出しを含む文字列（judge.sh:117 の `mc_run "mc ls --recursive '...'"` のように渡す）。
+# alias local は compose_up が 1 回だけ設定する（#129。toolbox の mc で minio:9000 を直接見る）。
 mc_run() {
-  docker run --rm --network "$MC_NETWORK" --entrypoint sh "$MC_IMAGE" -c "$MC_ALIAS_CMD && $1"
+  bash -c "$1"
 }
 
 # サービスを指定して作り直す（jdbc-client は常駐させない）。Trino・バケット・スキーマまで用意する。
@@ -148,13 +146,13 @@ compose_up() {
     || { record "compose 起動" FAIL "down -v が失敗（ログ: $OUT_ROOT/compose-down.log）"; return 1; }
   dc up -d "${SERVICES[@]}" >"$OUT_ROOT/compose-up.log" 2>&1 \
     || { record "compose 起動" FAIL "up が失敗（ログ: $OUT_ROOT/compose-up.log）"; return 1; }
-  MC_NETWORK=$(docker inspect "$(dc ps -q minio)" --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}' 2>/dev/null)
-  [ -n "$MC_NETWORK" ] || { record "compose 起動" FAIL "minio のコンテナのネットワークを取れなかった（mc を繋ぐ先が無い）"; return 1; }
+  mc alias set local http://minio:9000 minioadmin minioadmin >/dev/null \
+    || { record "compose 起動" FAIL "mc alias set が失敗した（minio:9000 に繋がらない）"; return 1; }
   retry 60 trino_exec "SELECT 1" system runtime || { record "Trino 起動" FAIL "起動しなかった"; return 1; }
   retry 60 mc_run "mc ls 'local/$BUCKET' >/dev/null" || { record "バケット用意" FAIL "できなかった"; return 1; }
   trino_exec "CREATE SCHEMA IF NOT EXISTS hive.default" hive default
   trino_exec "CREATE SCHEMA IF NOT EXISTS iceberg.default" iceberg default
-  record "compose 起動" PASS "trino・minio・tls-proxy・バケット・スキーマ（ネットワーク: $MC_NETWORK）"
+  record "compose 起動" PASS "trino・minio・tls-proxy・バケット・スキーマ"
 }
 
 athena_call() {

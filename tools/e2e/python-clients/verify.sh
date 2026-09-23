@@ -10,7 +10,8 @@
 # 構成: athena-local を 2 本（s3 モード 8098・none モード 8099）。s3 側の手前に中継
 # （../sdk-retry/drop_proxy.py を DROP_COUNT=0 で。全部そのまま通し、1 リクエスト 1 行の X-Amz-Target を残す）を 8102 に置く。
 # クライアントの向け先は env.sh（AWS_ENDPOINT_URL と _ATHENA → 中継、_S3 → MinIO（minio:9000））。
-# MinIO へのアクセスは `mc admin trace --json` を流す使い捨てコンテナで記録し、check ごとの区間だけを数える（common.py）。
+# MinIO へのアクセスは toolbox 内の `mc admin trace --json local` をバックグラウンドで流してファイルに記録し、
+# check ごとの区間だけを数える（common.py。#129）。
 #
 # 環境はルートの compose.yml の trino / minio / minio-init。開始時に down -v → up -d で作り直す。
 # 同じ compose プロジェクトで別の足場（dev）が動いていたら止まる（開始時の down -v が相手の環境を消すため）。
@@ -38,10 +39,7 @@ export MINIO_ENDPOINT="http://minio:9000"
 ATHENA_S3="127.0.0.1:8098"
 ATHENA_NONE="127.0.0.1:8099"
 export PROXY_BIND="127.0.0.1:8102"
-MC_IMAGE="quay.io/minio/mc:latest"
 export RUN_ID="$(date +%s)"
-# プロジェクト名で分けて同時に流したとき、相手の trace コンテナと名前が衝突しない（後始末で消さない）よう RUN_ID を入れる。
-export TRACE_CONTAINER="athena-local-py-trace-$RUN_ID"
 
 export EVIDENCE_DIR="$(mktemp -d /tmp/athena-local-issue111-py.XXXXXX)"
 export PROXY_LOG="$EVIDENCE_DIR/proxy.log"
@@ -54,7 +52,6 @@ record() { echo "$1 $2: $3" | tee -a "$RESULTS"; }
 
 cleanup() {
   for pid in "${PIDS[@]}"; do kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; done
-  docker rm -f "$TRACE_CONTAINER" >/dev/null 2>&1
   if [ "${KEEP_UP:-0}" = "1" ]; then
     log "KEEP_UP=1 のため残す（後で tools/dev.sh docker compose -f $REPO_ROOT/compose.yml down -v ${SERVICES[*]}）"
   elif [ "$COMPOSE_OWNED" = "1" ]; then
@@ -107,9 +104,8 @@ start_env() {
   trino_exec "SELECT 1" || { log "Trino が起動しない"; return 1; }
   curl -s "$TRINO_BASE/v1/info" >"$EVIDENCE_DIR/trino-info.json"
   trino_exec "CREATE SCHEMA IF NOT EXISTS hive.default" && trino_exec "CREATE SCHEMA IF NOT EXISTS iceberg.default" || return 1
-  MC_NETWORK=$(docker inspect "$("${COMPOSE[@]}" ps -q minio)" --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}' 2>/dev/null)
-  [ -n "$MC_NETWORK" ] || { record FAIL "MinIOネットワーク" "minio のコンテナのネットワークを取れなかった（mc を繋ぐ先が無い）"; return 1; }
-  export MC_NETWORK
+  mc alias set local http://minio:9000 minioadmin minioadmin >/dev/null \
+    || { record FAIL "MinIOネットワーク" "mc alias set が失敗した（minio:9000 に繋がらない）"; return 1; }
 }
 
 start_athena_local() {
@@ -133,15 +129,19 @@ start_proxy_and_trace() {
   LISTEN="$PROXY_BIND" UPSTREAM="$ATHENA_S3" DROP_COUNT=0 MARKER="никогда-issue111" \
     python3 "$SCRIPT_DIR/../sdk-retry/drop_proxy.py" 2>"$PROXY_LOG" &
   PIDS+=($!)
-  docker run -d --rm --name "$TRACE_CONTAINER" --network "$MC_NETWORK" --entrypoint sh "$MC_IMAGE" -c \
-    "mc alias set local http://minio:9000 minioadmin minioadmin >/dev/null && mc admin trace --json local" >/dev/null || return 1
+  # trace は toolbox 内のバックグラウンドプロセスとして流し、ファイルに書く（#129）。
+  # alias local は start_env の mc alias set が設定済み。
+  export TRACE_LOG="$EVIDENCE_DIR/trace.jsonl"
+  mc admin trace --json local >"$TRACE_LOG" 2>"$EVIDENCE_DIR/trace.err" &
+  TRACE_PID=$!
+  PIDS+=("$TRACE_PID")
+  export TRACE_PID
   sleep 3
   # 既知のオブジェクトを置いて 1 回 GET し、trace にその GET が出ることを確かめる（「GET 0 件」を判定する前提）。
   local key="athena-results/py/preflight-$RUN_ID.txt"
-  docker run --rm --network "$MC_NETWORK" --entrypoint sh "$MC_IMAGE" -c \
-    "mc alias set local http://minio:9000 minioadmin minioadmin >/dev/null && echo probe | mc pipe local/$key >/dev/null && mc cat local/$key >/dev/null" || return 1
+  { echo probe | mc pipe "local/$key" >/dev/null && mc cat "local/$key" >/dev/null; } || return 1
   sleep 2
-  docker logs "$TRACE_CONTAINER" 2>/dev/null | grep -F '"s3.GetObject"' | grep -qF "\"/$key\"" || { log "trace に既知の GET が出ない"; return 1; }
+  grep -F '"s3.GetObject"' "$TRACE_LOG" 2>/dev/null | grep -qF "\"/$key\"" || { log "trace に既知の GET が出ない"; return 1; }
 }
 
 run_check() {

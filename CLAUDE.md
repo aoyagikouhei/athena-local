@@ -92,6 +92,6 @@ CI（`.github/workflows/ci.yml`）は toolbox を使わず、ホストランナ�
 - **検証の足場（`tools/e2e`）はホストで直接叩かず `tools/dev.sh` 経由で toolbox の中で動かす**（`tools/measure` のうち本物の AWS に
   `aws` で投げるものは、toolbox に移す #129 まではホストのまま）。
   ホストの PATH にある同名の別物（Docker で包んだ `aws`、snap 製の `jq`、astral でない `uv`）を踏んで回避策を積み上げた経緯があり
-  （2026-09-16〜23）、足場が動く場所をコンテナに固定した（#127）。足場は `aws` を使わない（S3 の確認は compose のネットワークに繋いだ
-  `minio/mc` の使い捨てコンテナ）。人間が対話で本物の AWS に投げる `aws` もホストのまま。toolbox の HOME と cargo の成果物は
+  （2026-09-16〜23）、足場が動く場所をコンテナに固定した（#127）。足場は `aws` を使わない（S3 の確認は toolbox の `mc` で
+  `minio:9000` を直接見る。#129）。人間が対話で本物の AWS に投げる `aws` もホストのまま。toolbox の HOME と cargo の成果物は
   リポジトリの `.toolbox/` の下で、ホストの `target/` とは混ぜない（足場は `BINARY` 変数で `CARGO_TARGET_DIR` に追随する）。詳細は `docs/dev/development.md`。
