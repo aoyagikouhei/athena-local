@@ -1,0 +1,3 @@
+# issue #111: awswrangler と PyAthena の検証用（venv-wr）。dbt-athena とは pyathena の要求が衝突するので venv を分ける
+awswrangler==3.17.1
+pyathena[pandas]==3.36.0

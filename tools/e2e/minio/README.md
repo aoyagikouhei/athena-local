@@ -10,7 +10,8 @@ DROP TABLE の結果ファイルがテーブルの形式（Hive / Iceberg）で�
 - `docker-compose.yml` — Trino（Hive カタログ・Iceberg カタログ）と MinIO、バケットを作る
   使い捨てコンテナ（`minio-init`）
 - `catalog/hive.properties` / `catalog/iceberg.properties` — `trino-probe` からコピーしたもの
-- `verify.sh` — 起動からケース 1〜5 の判定、後始末までを 1 本でやるスクリプト
+- `verify.sh` — 起動からケースの判定、後始末までを 1 本でやるスクリプト
+- `cases-dml-retention.sh` — ケース 10〜12・14（issue #111）の関数。`verify.sh` が `source` する（単独では実行しない）
 
 ## 使っているポート・イメージ
 
@@ -65,8 +66,11 @@ tls-proxy コンテナから届かず、JDBC の検証には使えない（46 �
    （Trino・MinIO ともホストにマップしたポート `127.0.0.1:8092` / `127.0.0.1:9002` に繋ぐ）
 4. Athena API（`POST /` に `X-Amz-Target: AmazonAthena.StartQueryExecution` など）を叩いてケース 1〜5 を実行し、
    結果ファイルを `minio/mc` 経由で取得してバイト数・Content-Type・中身を確かめる
-5. 結果を PASS / FAIL / SKIP の表にして表示する
-6. athena-local プロセスを止め、`docker compose down -v` で後始末する（`trap` で必ず実行される）
+5. ケース 14 の前に athena-local を `ATHENA_LOCAL_RETENTION_SECONDS=1` で再起動する（ログは `athena-local-retention.log`）
+6. 結果を PASS / FAIL / SKIP の表にして表示する
+7. athena-local プロセスを止め、`docker compose down -v` で後始末する（`trap` で必ず実行される）
+
+終了コードは結果表の FAIL の件数（issue #111。SKIP は数えない）。起動の失敗などで途中で止まったときは 1。
 
 ## 環境変数
 
@@ -92,6 +96,10 @@ tls-proxy コンテナから届かず、JDBC の検証には使えない（46 �
 | 7 | `ALTER TABLE ... ADD COLUMN`（Iceberg） | `<id>.txt` が 0 バイト、`.metadata` 無し |
 | 8 | `ALTER TABLE ... SET PROPERTIES`（Iceberg） | 対象外の ALTER が巻き込まれていないこと。`<id>.txt` が 0 バイト、`.metadata` 無し |
 | 9 | `MERGE INTO ... USING (VALUES ...)`（Iceberg。issue #56） | `<id>.csv` は置かれず、`<id>.csv.metadata` の field 2 が `MERGE`、field 3 が 2、以降が本物の Athena の `rows bigint` 列とバイト単位で同じ（Trino 482 で 2026-09-22 実測） |
+| 10 | `UPDATE ... SET s = 'z' WHERE n = 1`（Iceberg。issue #111） | ケース 9 と同じ形で、field 2 が `UPDATE`、field 3 が 1（結果の詳細に `.metadata` のバイト数も出す） |
+| 11 | `DELETE FROM ... WHERE n = 2`（Iceberg。issue #111） | ケース 9 と同じ形で、field 2 が `DELETE`、field 3 が 1 |
+| 12 | `UPDATE`（Hive。非 ACID。issue #111） | Trino が拒否して FAILED。`<id>.csv` も `<id>.csv.metadata` も置かれない（SUCCEEDED なら FAIL） |
+| 14 | 保持期限 1 秒で再起動して `SELECT 1 AS n`（issue #111） | SUCCEEDED の 2.5 秒後の `GetQueryExecution` が 400 `QUERY_EXECUTION_NOT_FOUND`、その後も `<id>.csv` と `<id>.csv.metadata` が残る。400 にならなければ FAIL（保持期限の破棄の退行） |
 
 ケース 3 が FAIL の場合は「Phase 1 時点では失敗が想定どおり」という注記を結果表に自動で足す
 （スクリプトは止めずに続ける）。

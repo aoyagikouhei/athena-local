@@ -10,6 +10,10 @@
 
 - 挙動を決める issue では、本物で実測してから計画を確定する（失敗時・取り消し時の扱いもそうした）。（#5・#6、2026-09-17）
 - 実測が過去の実測と食い違ったときは、どちらを採るかをユーザーに 1 問聞いて決める。（#26、2026-09-19。このときは当日の実測を採った）
+- 本物の Athena が要らない未実測（クライアントや Trino の挙動、athena-local 自身の観測）は、手元の Trino + MinIO の e2e 足場（`tools/e2e/`）で測る。クライアント相手は measurements の `clients.md`、Trino 相手は `trino.md` に書き、athena-local 自身の観測（保持期限で捨てた後の S3 の結果、メモリの頭打ちなど）は measurements に書かず `docs/caveats.md` の該当の記述を実測済みに直して `unmeasured.md` の「済み」に足場のパスを添える。（#111、2026-09-23）
+- e2e の足場で「無いことの証拠」（GET 0 件・STS の呼び出し 0 件）を合否にするときは、数える範囲を check ごとの区間（ログの開始行）と接頭辞の前方一致（`.txt` なら `.txt.metadata` も）で閉じ、対照（オブジェクトが置かれていること、canary が中継に届くこと）と対で判定する。旧版のクライアントを相手にするときは、文書に載っている既知の不具合（3.5.1 未満の DDL の NoSuchKey など）を測りたい項目の判定に混ぜず、その項目の出力行だけで合否を決める。状態の語は PASS / FAIL / SKIP / INFO の 4 つ、終了コードは FAIL の件数、証跡は `/tmp/athena-local-issue<番号>-<足場>.XXXXXX`。（#111、2026-09-23）
+- Python のクライアント（awswrangler・PyAthena・dbt-athena）を athena-local に向けるときは `endpoint_url` を渡さず、`AWS_ENDPOINT_URL`（全サービス）・`AWS_ENDPOINT_URL_ATHENA`・`AWS_ENDPOINT_URL_S3` の環境変数で向ける。理由: PyAthena は `connect(endpoint_url=)` を S3 の client にも流用し、dbt-athena の impl の client は profile の `endpoint_url` を受け取らない。`AWS_ENDPOINT_URL` を手元に向けておけば STS・Glue が本物に漏れない。（#111、2026-09-23）
+- 長時間の負荷でメモリの頭打ちを判定するときは、同じ負荷を保持期限の長短で流した対照つきで見る（RSS は glibc が返さないので「下がる」ではなく「伸びが止まる」を見る）。1 本の長時間実行だけで判定しない。（#111、2026-09-23）
 - 外部クライアント（ドライバ・SDK）を相手にする実測では、そのクライアント自身で最小の 1 本（例: `SELECT 1`）を通すことを preflight にする。理由: コマンドの有無だけの preflight では、条件を 1 つずつ変える無駄なラウンドを畳めなかった。（#46、2026-09-21）
 - JDBC の足場のドライバは Maven の依存にせず、実測スクリプトが取得してコンテナにマウントする（`Main.java` は `java.sql` しか使わず、実行時に `ServiceLoader` が拾う）。（#46、2026-09-21）
 - 利用者向けの文書に書いた実測の主張は、保存済みの実測バイト列から再導出するスクリプトで固定する（`tools/measure/opaque-metadata-form.sh`）。（#24、2026-09-19）

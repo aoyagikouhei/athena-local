@@ -27,14 +27,25 @@ import java.util.Properties;
  *                  Athena の原文をそのまま投げて、athena-local がどう弾くかを記録する（REJECTED は失敗に数えない）。
  *                  各ケースは機械可読な 1 行 `RESULT <label> rows=<n> cols=<c> status=<...>` を出し、
  *                  スクリプト側が ResultFetcher の違いで行数が変わらないことを突き合わせる。
+ *   "111"       -> 失敗した DDL の <id>.txt を読みに行かないか（issue #111。FailedDdlScenario）
+ *
+ * 3 つ目の引数は OutputLocation、4 つ目は JDBC URL（issue #111。旧版ドライバのループで版ごとに
+ * 出力先を分け、URL を jdbc:athena:// にそろえるため）。無い・空なら従来の値のまま。
+ * 実際に使った値を `CONFIG fetcher=<x> scenario=<y> url=<z> output=<w>` の 1 行で出し（未指定の
+ * fetcher は `-`）、スクリプト側が要求と照合して引数の受け渡しの誤りを見つける。
+ * 接続の直後に `SELECT 1` を 1 本流して `PREFLIGHT ok` か `PREFLIGHT failed: <例外の 1 行目>` を出す。
+ * 接続そのものの失敗も PREFLIGHT failed に数え、そのときは終了コード 3 で止まる。
  */
 public final class Main {
-    private static int failures = 0;
+    // FailedDdlScenario（issue #111）から数えるため package-private にしている。
+    static int failures = 0;
 
     public static void main(String[] args) throws Exception {
         // 引数なしは「明示しない」= 既定の auto。空文字も同じ扱いにする。
         String fetcher = (args.length > 0 && !args[0].isEmpty()) ? args[0] : null;
         String scenario = (args.length > 1 && !args[1].isEmpty()) ? args[1] : "46";
+        String output = (args.length > 2 && !args[2].isEmpty()) ? args[2] : "s3://athena-results/e2e-jdbc/";
+        String url = (args.length > 3 && !args[3].isEmpty()) ? args[3] : "jdbc:awsathena://";
         String runId = Long.toString(System.currentTimeMillis());
         String tIcebergDrop = "t_jdbc_drop_iceberg_" + runId;
         String tHiveDrop = "t_jdbc_drop_hive_" + runId;
@@ -44,7 +55,7 @@ public final class Main {
         props.setProperty("Region", "ap-northeast-1");
         props.setProperty("AthenaEndpoint", "https://tls-proxy:8443");
         props.setProperty("S3Endpoint", "https://tls-proxy:9443");
-        props.setProperty("OutputLocation", "s3://athena-results/e2e-jdbc/");
+        props.setProperty("OutputLocation", output);
         props.setProperty("User", "minioadmin"); // ローカル専用のダミー。本物の AWS 認証情報ではない。
         props.setProperty("Password", "minioadmin");
         props.setProperty("Catalog", "iceberg");
@@ -55,13 +66,24 @@ public final class Main {
         // 引数なしのときは ResultFetcher を指定しない = 既定の "auto"（今回の焦点）。
 
         System.out.println("=== 接続 ===");
+        System.out.println("CONFIG fetcher=" + (fetcher == null ? "-" : fetcher) + " scenario=" + scenario
+                + " url=" + url + " output=" + output);
         System.out.println("ResultFetcher: " + (fetcher == null ? "(未指定 = 既定の auto)" : fetcher));
-        System.out.println("URL: jdbc:awsathena://  (AthenaEndpoint/S3Endpoint は上記 Properties 経由)");
-        try (Connection conn = DriverManager.getConnection("jdbc:awsathena://", props)) {
+        System.out.println("URL: " + url + "  (AthenaEndpoint/S3Endpoint は上記 Properties 経由)");
+        Connection opened = openWithPreflight(url, props);
+        if (opened == null) {
+            failures++;
+            System.out.println();
+            System.out.println("=== 総括 === failures=" + failures);
+            System.exit(3);
+        }
+        try (Connection conn = opened) {
             System.out.println("接続成功: " + conn.getClass());
 
             if (scenario.equals("57")) {
                 runShowScenario(conn, runId);
+            } else if (scenario.equals("111")) {
+                FailedDdlScenario.run(conn, runId);
             } else {
                 runZeroColumnScenario(conn, tIcebergDrop, tHiveDrop, tHiveAlter);
             }
@@ -76,6 +98,44 @@ public final class Main {
         if (failures > 0) {
             System.exit(1);
         }
+    }
+
+    /**
+     * 接続して SELECT 1 を最後まで読む（issue #111）。旧版ドライバが接続や .csv / .csv.metadata の読み取りで
+     * 止まるかを、シナリオの前に 1 行で分かるようにする。失敗したら null を返す。
+     */
+    private static Connection openWithPreflight(String url, Properties props) {
+        Connection conn = null;
+        try {
+            // 3.0.0 と 3.1.0 の jar には ServiceLoader の登録（META-INF/services/java.sql.Driver）が無いので、
+            // クラスを明示して読み込む（登録のある版でも無害。クラスが無ければ PREFLIGHT failed）。
+            Class.forName("com.amazon.athena.jdbc.AthenaDriver");
+            conn = DriverManager.getConnection(url, props);
+            try (Statement st = conn.createStatement();
+                 ResultSet rs = st.executeQuery("SELECT 1 AS preflight")) {
+                while (rs.next()) {
+                    rs.getString(1);
+                }
+            }
+            System.out.println("PREFLIGHT ok");
+            return conn;
+        } catch (Exception e) {
+            System.out.println("PREFLIGHT failed: " + firstLine(e));
+            e.printStackTrace(System.out);
+            if (conn != null) {
+                try {
+                    conn.close();
+                } catch (Exception ignored) {
+                    // 閉じられなくても判定は PREFLIGHT failed のまま変わらない。
+                }
+            }
+            return null;
+        }
+    }
+
+    /** 例外の「クラス名: メッセージ」の 1 行目（判定の行を 1 行に保つため）。 */
+    static String firstLine(Throwable e) {
+        return String.valueOf(e).split("\\R", 2)[0];
     }
 
     // ---------------- issue #46: 列 0 個の .metadata ----------------
@@ -222,7 +282,8 @@ public final class Main {
         }
     }
 
-    private static void runSelectCase(Connection conn, String label, String sql) {
+    // FailedDdlScenario（issue #111）の後続の SELECT 1 に使うため package-private にしている。
+    static void runSelectCase(Connection conn, String label, String sql) {
         System.out.println();
         System.out.println("--- " + label + " ---");
         System.out.println("SQL: " + sql);

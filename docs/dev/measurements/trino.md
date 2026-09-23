@@ -29,12 +29,41 @@
 
 - 備考: それより古いバージョンは確かめていない（`fs.local.enabled` が 482 で正式名になった等の設定差があり、`./catalog-legacy` を用意する途中で止めた）
 
+### Trino の旧版（400〜480）の system.metadata.catalogs と updateType
+- 日付: 2026-09-23 ／ issue: #111 ／ スクリプト: `tools/e2e/trino-probe/versions.sh`（`probe.sh` を版ごとに呼ぶ。生データは実行ごとの `/tmp/athena-local-issue111-trino.*` に残る）
+- 相手: 手元の Trino 480 / 475 / 470 / 440 / 400（`trinodb/trino:<版>`。`tools/e2e/trino-probe/` の compose を `TRINO_TAG` で差し替え、WSL2 上の Docker）。対照は同じ足場の 482
+- 投げたもの: 版ごとに catalog の設定を `catalog`（`fs.local.enabled=true`）→ `catalog-legacy`（`fs.native-local.enabled=true`）→ `catalog-nofsflag`（行無し）の順に試して起動した。`SHOW SCHEMAS FROM hive` と `SHOW SCHEMAS FROM iceberg` が `error` 無しで返った構成を採用し、`probe.sh` を流した。表の列は、`SELECT * FROM system.metadata.catalogs`（A2）、`probe_sql` と同じ形の 4 本（D1 存在する Hive、D2 存在する Iceberg、D3 存在しない Hive、D4 存在しない Iceberg）、`DROP TABLE`（C1）、`ALTER TABLE ... ADD COLUMN`（C2）
+- 返ったもの（`versions.sh` の summary。`error:` は Trino のエラー文言の先頭 80 文字。詳細の列は長いので要点に絞った。全文は下の備考）:
+
+| 版 | 状態 | 採用 catalog | nodeVersion | A2 hive | A2 iceberg | D1 | D2 | D3 | D4 | C1 | C2 | 482 と同じか |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 482（対照） | PASS | catalog | 482 | hive | iceberg | [["hive",1]] | [["iceberg",1]] | [["hive",0]] | [["iceberg",0]] | DROP TABLE | ADD COLUMN | 同じ |
+| 480 | INFO | catalog-legacy | 480 | hive | iceberg | [["hive",1]] | [["iceberg",1]] | [["hive",0]] | [["iceberg",0]] | DROP TABLE | ADD COLUMN | 同じ |
+| 475 | INFO | catalog-legacy | 475 | hive | iceberg | [["hive",1]] | [["iceberg",1]] | [["hive",0]] | [["iceberg",0]] | DROP TABLE | ADD COLUMN | 同じ |
+| 470 | SKIP | - | 470 | - | - | - | - | - | - | - | - | - |
+| 440 | INFO | catalog-nofsflag | 440 | hive | iceberg | [["hive",0]] | [["iceberg",0]] | [["hive",0]] | [["iceberg",0]] | hive=error: line 1:1: Table 'hive.default.t_drop' does not exist iceberg=error: | hive=error: line 1:1: Table 'hive.default.t_alter' does not exist iceberg=error: | 差あり |
+| 400 | SKIP | - | - | - | - | - | - | - | - | - | - | - |
+
+- 起動と採用の経過（詳細の列）:
+  - 480・475: `catalog` は `Configuration property 'fs.local.enabled' was not used` で起動せず、`catalog-legacy` で起動した
+  - 470: `catalog` は `fs.local.enabled`、`catalog-legacy` は `fs.native-local.enabled` が `was not used` で起動しなかった。`catalog-nofsflag` は起動したが `SHOW SCHEMAS` が `No factory for location: file:///data/hive`（iceberg も同じ）で、`file://` を扱えなかった
+  - 440: `catalog`・`catalog-legacy` は 470 と同じ理由で起動しなかった。`catalog-nofsflag` は起動して `SHOW SCHEMAS` も通ったが、`CREATE SCHEMA` が `Could not write database schema` で失敗した。対照テーブルを作れず、D1・D2・C1・C2 は準備の失敗による値（Trino の挙動の差ではない）
+  - 400: JVM の起動時に `NullPointerException: Cannot invoke "jdk.internal.platform.CgroupInfo.getMountPoint()" because "anyController" is null`。イメージ同梱の JDK がこの環境の cgroup v2 で落ちた（catalog 設定とは無関係）
+- 備考: 本物の Athena ではない。値を取れた 480・475 は、`connector_name`（`hive` / `iceberg` の小文字）・probe_sql の結果・`updateType` のすべてが 482 と同じ。440 は `system.metadata.catalogs` に `connector_name` 列があり、`hive` / `iceberg`（小文字）を返し、存在しないテーブルへの probe（D3・D4）も 482 と同じ形。存在するテーブルへの probe と `updateType` は、書き込みができず未測定。470 と 400 はこの足場では起動条件が整わず未測定。A2 の列は 480・475・440 とも `catalog_name, connector_id, connector_name`
+
 ### MERGE の updateType と `.metadata`
 - 日付: 不明（ノートに日付が無い。時系列は 19:00〜19:07。#49（2026-09-22 17:2x）で 17 項目だった verify.sh が 19 項目になっているので 2026-09-22 と推定） ／ issue: #56 ／ スクリプト: `tools/e2e/minio/verify.sh`（旧 `39-e2e/verify.sh`）（ケース 9 を追加）
 - 相手: 手元の Trino 482 + MinIO（`tools/e2e/minio/`（旧 `39-e2e/`） の足場、athena-local 経由）
 - 投げたもの: Iceberg のテーブルへの `MERGE`
 - 返ったもの: `updateType=MERGE`、count=2、field 3 より後ろが本物の Athena の `rows bigint` 列と同じバイト列。`.metadata` は 74 バイト。verify.sh 全 19 項目 PASS
 - 備考: 本物の Athena ではなく Trino 相手。#41 が未検証として残した「Trino が MERGE に `updateType: "MERGE"` を返すか」を解消
+
+### UPDATE / DELETE の updateType と `.metadata`
+- 日付: 2026-09-23 ／ issue: #111 ／ スクリプト: `tools/e2e/minio/verify.sh`（ケース 10〜12。関数は `tools/e2e/minio/cases-dml-retention.sh`）
+- 相手: 手元の Trino 482 + MinIO（`tools/e2e/minio/` の足場、athena-local 経由）
+- 投げたもの: Iceberg のテーブル（`(1,'a'),(2,'b')` を CTAS）への `UPDATE ... SET s = 'z' WHERE n = 1` と `DELETE FROM ... WHERE n = 2`。Hive（非 ACID）のテーブルへの `UPDATE ... SET n = 2 WHERE n = 1`
+- 返ったもの: `UPDATE` は `updateType=UPDATE`、count=1、`DELETE` は `updateType=DELETE`、count=1。どちらも本体（`<id>.csv`）は置かれず `.metadata` だけで 75 バイト、field 3 より後ろは MERGE と同じ `rows bigint` の列（本物の Athena の実測と同じバイト列）。UPDATE の hex は `0a1b<Trino のクエリ ID 27 バイト>1206555044415445180122220a04686976652204726f77732a04726f77733206626967696e743813400048035000`（DELETE は field 2 が `44454c455445`）。Hive への `UPDATE` は Trino が `NOT_SUPPORTED: Modifying Hive table rows is only supported for transactional tables` で拒否し、FAILED で `<id>.csv` も `<id>.csv.metadata` も置かれない。verify.sh 全 24 項目 PASS（証跡は verify.sh が `/tmp/athena-local-issue39-e2e.*` に残す）
+- 備考: 本物の Athena ではなく Trino 相手。74 バイトの MERGE との差は updateType の長さ（5→6 バイト）だけ。#5 が結合テストに委ねた「UPDATE / DELETE の実機確認」を解消（Trino の `memory` コネクタは UPDATE / DELETE を持たない）
 
 ### 同じ INSERT の Trino の応答
 - 日付: 2026-09-23（待ち時間） ／ issue: #91 ／ スクリプト: 無し

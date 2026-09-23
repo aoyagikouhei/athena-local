@@ -75,7 +75,98 @@
   - 一覧は設定画面でだけ呼ばれる（クエリ実行時は `GetWorkGroup`）。保存済みの名前が一覧に無いと候補から消えて入力欄が空表示になるが、クエリは動く。
 - 備考: 検証 10 件すべて PASS。本物の実測ではない。awswrangler／dbt-athena／PyAthena は `ListWorkGroups` を呼ばない（ソースで裏取り。awswrangler はテストで `WorkGroups[].Name` を読むだけ）。botocore の `service-2.json`: `MaxWorkGroupsCount` は min 1／max 50、`Token` は min 1／max 1024 で pattern 無し、`paginators-1.json` に `ListWorkGroups` は無い。
 
-## Athena JDBC 3.8.1
+## dbt-athena
+
+### dbt-athena 1.11.1 を work_group 付きで athena-local につなぐ
+- 日付: 2026-09-23 ／ issue: #111 ／ スクリプト: `tools/e2e/python-clients/verify.sh`（`check_dbt.sh`、`dbt/`） ／ 生データ: verify.sh が `/tmp/athena-local-issue111-py.*` に残す
+- 相手: dbt-core 1.12.5 + dbt-athena 1.11.1（dbt-adapters 1.24.5、PyAthena 3.34.0、boto3/botocore 1.43.100、Python 3.14.6）。athena-local の release ビルド（s3 モード、`TRINO_CATALOG_MAP=awsdatacatalog=iceberg,AwsDataCatalog=iceberg`）と手元の Trino 482 + MinIO。本物の Athena ではない
+- 投げたもの: profile は `type: athena`、`region_name: us-east-1`、`s3_staging_dir: s3://athena-results/dbt/`、`s3_data_dir: s3://athena-results/dbt-data/`、`database: awsdatacatalog`、`schema: default`、`work_group: wg111`、`threads: 1`（`endpoint_url` は書かず、`AWS_ENDPOINT_URL` と `AWS_ENDPOINT_URL_ATHENA` を X-Amz-Target を記録する中継に、`AWS_ENDPOINT_URL_S3` を MinIO に向けた）。`dbt debug`、`adapter.is_work_group_output_location_enforced()` の値をログに出すマクロを `dbt run-operation check_work_group`、`materialized='table'` の 1 モデルを `dbt run --select m111`
+- 返ったもの:
+
+  | コマンド | rc | 中継に届いたもの | 結果 |
+  | --- | --- | --- | --- |
+  | `dbt debug` | 0 | StartQueryExecution 1、GetQueryExecution 2、GetQueryResults 1 | 接続テスト（`select 1 as id`）が通った |
+  | `dbt run-operation check_work_group` | 0 | GetWorkGroup 1（ほかは無し） | ログに `ENFORCED=False` |
+  | `dbt run --select m111` | 2 | `AWSGlue.GetDatabases` 1（STS 0、Athena 0） | `An error occurred (UnknownOperationException) when calling the GetDatabases operation:`。スタックは `dbt/task/run.py:1313 before_run` → `runnable.py:883 create_schemas` → `runnable.py:858 list_schemas` → `dbt/adapters/athena/impl.py:1431 list_schemas`。SQL は 1 本も投げずに止まった |
+
+- 備考: `dbt run-operation` は Glue も STS も呼ばず、`is_work_group_output_location_enforced()` の中で GetWorkGroup を 1 回だけ呼んだ（athena-local は `EnforceWorkGroupConfiguration=false` を返すので値は偽）。`dbt run` は Glue の `GetDatabases`（スキーマの一覧）が最初の壁で、CTAS の方言（`table_type`/`is_external`）までは届かない。Glue・STS の代役は範囲外（#111 の設計判断）。dbt-athena の impl が作る client は profile の `endpoint_url` を使わないので、`AWS_ENDPOINT_URL*` で向けないと本物の AWS に出る（`AWS_ENDPOINT_URL` を中継に向けた状態で Glue が中継に届いたことで確かめた）
+
+## awswrangler
+
+### awswrangler 3.17.1 の read_sql_query(ctas_approach=False)
+- 日付: 2026-09-23 ／ issue: #111 ／ スクリプト: `tools/e2e/python-clients/verify.sh`（`check_awswrangler.py`） ／ 生データ: verify.sh が `/tmp/athena-local-issue111-py.*` に残す
+- 相手: awswrangler 3.17.1（pandas 3.0.6、boto3/botocore 1.43.100、Python 3.14.6）。athena-local の release ビルド 2 本（s3 モードは `ATHENA_LOCAL_OUTPUT_LOCATION=s3://athena-results/py/`、none モード）と手元の Trino 482 + MinIO。本物の Athena ではない
+- 投げたもの: `wr.config` は空のまま、`AWS_ENDPOINT_URL` と `AWS_ENDPOINT_URL_ATHENA` を X-Amz-Target を記録する中継（s3 モードの手前）に、`AWS_ENDPOINT_URL_S3` を MinIO に向けた。`read_sql_query("SELECT 1 AS n, 'a' AS s", database="default", ctas_approach=False)` を、F1 `s3_output`・`workgroup` とも未指定、F2 `workgroup="wg111"`、F3 F1 と同じで `AWS_ENDPOINT_URL_ATHENA` だけ none モードの athena-local に向けて（STS は中継のまま）
+- 返ったもの:
+
+  | 回 | 結果 | 中継に届いたもの |
+  | --- | --- | --- |
+  | F1 | 例外なし、DataFrame `[[1, 'a']]` | GetWorkGroup 1、StartQueryExecution、GetQueryExecution、GetQueryResults。STS 0 |
+  | F2 | 同上 | 同上 |
+  | F3 | `ResponseParserError: Unable to parse response (not well-formed (invalid token): line 1, column 0), invalid XML received.` | STS（X-Amz-Target 無し）1 だけ |
+
+- 備考: GetWorkGroup の `OutputLocation`（s3 モードの athena-local が返す）を出力先に使い、`create_athena_bucket()`（STS と S3）に入らなかった。F3 はワークグループに `OutputLocation` が無いので `create_athena_bucket()` が STS の `GetCallerIdentity` を呼んだ（`AWS_ENDPOINT_URL` を手元に向けていなければ本物の STS に出る。`docs/caveats.md` の出力先の注意と同じ経路）。[ソース読みの項目](#クライアントが-getworkgroup-の応答から読む項目ソースの読み取り)の `_read.py:602` の経路を実機で確かめた
+
+### awswrangler が GetQueryResults を読む経路の先頭行
+- 日付: 2026-09-23 ／ issue: #111 ／ スクリプト: `tools/e2e/python-clients/verify.sh`（`check_awswrangler.py none`） ／ 生データ: verify.sh が `/tmp/athena-local-issue111-py.*` に残す
+- 相手: awswrangler 3.17.1。athena-local の release ビルド（none モード）と手元の Trino 482。MinIO へのアクセスは `mc admin trace --json` で記録。本物の Athena ではない
+- 投げたもの: boto3 で `OutputLocation` を付けずに `SELECT x FROM UNNEST(sequence(1, 1500)) AS t(x)` と `SELECT 'c' AS c` を開始し、SUCCEEDED の後に `wr.athena.get_query_results(<id>)`（`StatementType` が DML で `OutputLocation` が無いので `_fetch_api_result` に入る）
+- 返ったもの:
+
+  | クエリ | 行数 | 先頭 | 末尾 | S3 への GET |
+  | --- | --- | --- | --- | --- |
+  | 1500 行 | 1500 | 1 | 1500 | 0 |
+  | 1 行 | 1 | c | c | 0 |
+
+- 備考: awswrangler は 1 ページ目の先頭行を値を見ずに落とす（`_read.py:357`、`:383`）。athena-local は SELECT（DML）の 1 ページ目の先頭に列名行を入れるので、落ちるのは列名行で、ページ境界（1000 行）をまたいでも実データは欠けない。[クライアント側の見出し行の扱い](#クライアント側の見出し行の扱い)（#60）の「awswrangler は GetQueryResults の経路は未確認」をこれで埋めた
+
+### PyAthena 3.36.0・awswrangler 3.17.1 の回帰確認
+- 日付: 2026-09-23 ／ issue: #111 ／ スクリプト: `tools/e2e/python-clients/verify.sh`（`check_pyathena.py`、`check_awswrangler.py s3`） ／ 生データ: verify.sh が `/tmp/athena-local-issue111-py.*` に残す
+- 相手: PyAthena 3.36.0（`pyathena[pandas]`、pandas 3.0.6）、awswrangler 3.17.1。athena-local の release ビルド（s3 モード、`TRINO_CATALOG_MAP=awsdatacatalog=iceberg,AwsDataCatalog=iceberg`）と手元の Trino 482 + MinIO。本物の Athena ではない
+- 投げたもの: 型の行 2 行（int、bigint、double、decimal(10,2)、varchar（`,` `"` 改行 タブ 非 ASCII）、boolean、date、timestamp(3)、array、map、NULL）を PyAthena の既定 `Cursor` と `PandasCursor`、awswrangler の `read_sql_query(ctas_approach=False)` で。続けて Iceberg のテーブルに `CREATE TABLE`、`INSERT`、`SHOW TABLES IN iceberg.default`、`DESCRIBE`、CTAS、`DROP TABLE`、`DROP TABLE IF EXISTS`（CTAS 先）をそれぞれで。PyAthena の 2 つのカーソルでは Hive のテーブルの `CREATE TABLE` と `DROP TABLE` も
+- 返ったもの:
+  - 型の行: 3 通りとも 2 行で、int 列 `1, 2` と varchar 列 `a,b"c<改行>d<タブ>é日本`、`plain` が一致した。表記（1 行目）:
+
+    | 読み方 | 1 行目 |
+    | --- | --- |
+    | PyAthena Cursor | `[1, 10, 1.5, Decimal('1.25'), 'a,b"c\nd\té日本', True, datetime.date(2026, 9, 23), datetime.datetime(2026, 9, 23, 12, 34, 56, 789000), [1, 2], {'k': '1'}, None]` |
+    | PyAthena PandasCursor | `[1, 10, 1.5, Decimal('1.25'), 'a,b"c\nd\té日本', True, Timestamp('2026-09-23 00:00:00'), Timestamp('2026-09-23 12:34:56.789000'), '[1, 2]', '{k=1}', nan]` |
+    | awswrangler | `[1, 10, 1.5, Decimal('1.25'), 'a,b"c\nd\té日本', True, datetime.date(2026, 9, 23), Timestamp('2026-09-23 12:34:56.789000'), '[1, 2]', '{k=1}', <NA>]`（dtypes `Int32, Int64, float64, object, string, boolean, object, datetime64[us], object, object, string`） |
+
+  - 文ごと:
+
+    | 文 | PyAthena Cursor | PyAthena PandasCursor | awswrangler |
+    | --- | --- | --- | --- |
+    | CREATE TABLE | 例外なし（0 行） | 例外なし（0 行） | 例外なし（空の DataFrame） |
+    | INSERT | 例外なし（0 行） | 例外なし（0 行） | 例外なし（空） |
+    | SHOW TABLES | 例外なし（1 行） | 例外なし（1 行） | 例外なし（空） |
+    | DESCRIBE | 例外なし（2 行） | 例外なし（2 行） | 例外なし（空） |
+    | CTAS | 例外なし（0 行） | 例外なし（0 行） | 例外なし（空） |
+    | DROP TABLE（Iceberg） | 例外なし（0 行） | `OperationalError: No columns to parse from file` | 例外なし（空） |
+    | DROP TABLE IF EXISTS（Iceberg の CTAS 先） | 例外なし（0 行） | `OperationalError: No columns to parse from file` | 例外なし（空） |
+    | DROP TABLE（Hive） | 例外なし（0 行） | 例外なし（0 行） | （投げていない） |
+
+- 備考: PandasCursor の DROP TABLE の例外は、Iceberg の DROP TABLE の `<id>.txt` が改行 1 個（1 バイト、列 0 個）であることによる。PyAthena の `pandas/result_set.py` の `_read_csv` は長さ 0 のときだけ空の DataFrame を返し、1 バイトだと `names=[]` のまま `pd.read_csv` に渡して pandas の `EmptyDataError` になる。本物も Iceberg の DROP TABLE に改行 1 個を置く（[result-files.md](result-files.md)、2026-09-20・21）ので本物でも同じになる見込み（推測。本物 + PyAthena では未実測）。Hive の DROP TABLE（0 バイトの `.txt`）は PandasCursor でも例外なく 0 行で読めたので、足場は Iceberg の 2 行を INFO（athena-local のずれではない）にし、Hive の DROP TABLE を合否に使う（統括役の判断、2026-09-23）。awswrangler は `ctas_approach=False` で出力先が `.csv` でない文（DDL・SHOW・DESCRIBE）を読まず空の DataFrame を返す。値の表記（date・timestamp・array・map・NULL）は読み方ごとに違うが、突き合わせたのは int と varchar だけ
+
+## PyAthena
+
+### 失敗した DDL の <id>.txt を PyAthena が読むか
+- 日付: 2026-09-23 ／ issue: #111 ／ スクリプト: `tools/e2e/python-clients/verify.sh`（`check_pyathena.py`） ／ 生データ: verify.sh が `/tmp/athena-local-issue111-py.*` に残す
+- 相手: PyAthena 3.36.0（pandas 3.0.6）。athena-local の release ビルド（s3 モード）と手元の Trino 482 + MinIO。MinIO へのアクセスは `mc admin trace --json` で記録。本物の Athena ではない
+- 投げたもの: `DROP TABLE iceberg.default.nope_<run>` と `SHOW COLUMNS FROM hive.default.nope_<run>`（どちらも無いテーブル）を `PandasCursor` と既定 `Cursor` で。続けて `PandasCursor` で `SELECT 1 AS n`
+- 返ったもの:
+
+  | 文 | カーソル | 例外 | `<id>.txt` | `<id>.txt*` への GET/HEAD |
+  | --- | --- | --- | --- | --- |
+  | DROP TABLE（Iceberg） | PandasCursor | `OperationalError: TABLE_NOT_FOUND: line 1:1: Table 'iceberg.default.nope_<run>' does not exist` | あり | 0 |
+  | DROP TABLE（Iceberg） | Cursor | 同上 | あり | 0 |
+  | SHOW COLUMNS（Hive） | PandasCursor | `OperationalError: TABLE_NOT_FOUND: line 1:1: Table 'hive.default.nope_<run>' does not exist` | あり | 0 |
+  | SHOW COLUMNS（Hive） | Cursor | 同上 | あり | 0 |
+
+  後続の `SELECT 1 AS n` は `[[1]]`。
+- 備考: PyAthena は `FAILED` を見た時点で `StateChangeReason` を `OperationalError` にし（`cursor.py:155-166`、`pandas/cursor.py:218-240`）、athena-local が置いた `FAILED: ` の `<id>.txt` も `.txt.metadata` も読みに行かない（trace の区間に GET・HEAD とも 0）。`cursor.query_id` は FAILED でも取れる
+
+## Athena JDBC 3.x
 
 ### Athena JDBC 3.8.1 の読み方
 - 日付: 2026-09-17 ／ issue: #5 ／ スクリプト: 無し（scratchpad の `e2e/Jdbc.java` / `jdbc.sh`）
@@ -172,3 +263,53 @@
   - GetQueryResults は SHOW（UTILITY）で見出し行をデータとして返す（`SELECT` では読み飛ばす）
   - 余分な `.csv.metadata` 3 個は、ドライバが接続時に流す接続テストの `SELECT`
 - 備考: GetQueryResults 列の「SHOW で +1 行」は当時の athena-local が UTILITY にも列名行を返していたため（#5 の「気づいたこと」4 と同じ観察）。#60 で本物（UTILITY は先頭行＝データ）に合わせて直したので、この +1 行は覆った（athena-local 側の当時の挙動）
+
+### 失敗した DDL の `<id>.txt` を Athena JDBC 3.x が読むか
+- 日付: 2026-09-23 ／ issue: #111 ／ スクリプト: `tools/e2e/jdbc-drivers/verify.sh`（判定は `judge.sh`、JVM 側は `tools/e2e/minio/jdbc-client/src/main/java/local/athenajdbccheck/FailedDdlScenario.java`） ／ 生データ: verify.sh が `/tmp/athena-local-issue111-jdbc.*` に残す
+- 相手: Athena JDBC 3.8.1・3.5.0・3.4.0・3.3.0・3.2.2・3.1.0・3.0.0（athena-local 相手。Trino 482 + MinIO + nginx の TLS 終端。本物の AWS ではない）
+- 投げたもの: 構文チェックは通り Trino が FAILED にする 4 文（`DROP TABLE iceberg.default.nope_<run>`、`SHOW COLUMNS FROM hive.default.nope_<run>`、`DESCRIBE hive.default.nope_<run>`、`ALTER TABLE hive.default.nope_<run> ADD COLUMN m int`）と後続の `SELECT 1`。3.8.1 は `ResultFetcher` 未指定（auto）・`S3`・`GetQueryResults`、3.5.0/3.4.0 は未指定・`S3`、3.3.0 以下は `S3`（auto は 3.4.0 から）。URL は全版 `jdbc:athena://`。回ごとに `OutputLocation` を `s3://athena-results/e2e-jdbc111/<版>/<fetcher>/111/` に分け、athena-local が置いた `<id>.txt`（`FAILED: ` + 理由、`.metadata` 無し）への GET を nginx のアクセスログで数えた
+- 返ったもの:
+
+| 版 | fetcher | 4 文の例外 | 後続の `SELECT 1` | 置かれた `.txt` | `.txt` / `.txt.metadata` への GET | 接頭辞への GET（全体） |
+|---|---|---|---|---|---|---|
+| 3.8.1 | 未指定（auto） | 4 文とも `java.sql.SQLException` | 通った | 4 | 0 | 5（`.csv` と `.csv.metadata`） |
+| 3.8.1 | S3 | 同上 | 通った | 4 | 0 | 5 |
+| 3.8.1 | GetQueryResults | 同上 | 通った | 4 | 0 | 0（S3 を読まない対照） |
+| 3.5.0 | 未指定（auto） | 同上 | 通った | 4 | 0 | 5 |
+| 3.5.0 | S3 | 同上 | 通った | 4 | 0 | 5 |
+| 3.4.0 | 未指定（auto） | 同上 | 通った | 4 | 0 | 5 |
+| 3.4.0 | S3 | 同上 | 通った | 4 | 0 | 5 |
+| 3.3.0 | S3 | 同上 | 通った | 4 | 0 | 5 |
+| 3.2.2 | S3 | 同上 | 通った | 4 | 0 | 5 |
+| 3.1.0 | S3 | 同上 | 通った | 4 | 0 | 5 |
+| 3.0.0 | S3 | 同上 | 通った | 4 | 0 | 5 |
+
+  - 例外の文言は全 11 回・4 文とも `java.sql.SQLException: Query execution failed: TABLE_NOT_FOUND: line 1:1: Table '<catalog>.default.nope_<run>' does not exist`（`GetQueryExecution` の `StateChangeReason` がそのまま入る）
+  - 結論: どの版も FAILED を見て SQLException を投げ、`<id>.txt` も `<id>.txt.metadata` も取りに行かなかった。失敗のあとも同じ接続で `SELECT 1` が通る
+- 備考: athena-local 相手の実機検証で、本物の Athena ではない（ドライバの挙動を測った）。本物が失敗した文に `<id>.txt` を置くことは #43 の `RENAME TO` の実測（`result-files.md`）。3.0.0・3.1.0 の jar には ServiceLoader の登録（`META-INF/services/java.sql.Driver`）が無く、`Class.forName("com.amazon.athena.jdbc.AthenaDriver")` で読み込んだ（3.2.2 から登録がある）
+
+### 旧版の Athena JDBC（3.0.0〜3.5.0）が athena-local の `.txt.metadata` を読むか
+- 日付: 2026-09-23 ／ issue: #111 ／ スクリプト: `tools/e2e/jdbc-drivers/verify.sh`（JVM 側は `tools/e2e/minio/jdbc-client/src/main/java/local/athenajdbccheck/Main.java` のシナリオ 57） ／ 生データ: verify.sh が `/tmp/athena-local-issue111-jdbc.*` に残す
+- 相手: Athena JDBC 3.5.0・3.4.0・3.3.0・3.2.2・3.1.0・3.0.0（各修正の直前の版）と対照の 3.8.1（athena-local 相手）
+- 投げたもの: #57 と同じシナリオ（Hive のパーティション付きテーブルを `CREATE TABLE` と `INSERT` で作り、`SHOW TABLES ... LIKE`・`SHOW SCHEMAS`・`SHOW COLUMNS FROM t`、原文 3 文、`"t$partitions"` の SELECT）。URL は全版 `jdbc:athena://`。fetcher は上の項目と同じ組み合わせ。合否は `SHOW TABLES`・`SHOW SCHEMAS`・`SHOW COLUMNS` の 3 行だけで決め、準備の `CREATE TABLE`（`.metadata` を置かない DDL）の失敗は別に数えた
+- 返ったもの:
+
+| 版 | fetcher | 接続と `SELECT 1` | SHOW TABLES | SHOW SCHEMAS | SHOW COLUMNS | `.txt.metadata` への GET（うち 404） | ドライバが `.txt.metadata` を読み込んだログ | 準備の `CREATE TABLE` |
+|---|---|---|---|---|---|---|---|---|
+| 3.8.1 | 未指定（auto） | 通った | 1 行 | 2 行 | 2 行 | 4（1） | 3 | 404 を INFO で続行 |
+| 3.8.1 | S3 | 通った | 1 行 | 2 行 | 2 行 | 0 | 0 | 通った |
+| 3.8.1 | GetQueryResults | 通った | 1 行 | 2 行 | 2 行 | 0 | 0 | 通った |
+| 3.5.0 | 未指定（auto） | 通った | 1 行 | 2 行 | 2 行 | 4（1） | 3 | `NoSuchKeyException` で SQLException |
+| 3.5.0 | S3 | 通った | 1 行 | 2 行 | 2 行 | 0 | 0 | 通った |
+| 3.4.0 | 未指定（auto） | 通った | 1 行 | 2 行 | 2 行 | 4（1） | 3 | `NoSuchKeyException` で SQLException |
+| 3.4.0 | S3 | 通った | 1 行 | 2 行 | 2 行 | 0 | 0 | 通った |
+| 3.3.0 | S3 | 通った | 1 行 | 2 行 | 2 行 | 0 | 0 | 通った |
+| 3.2.2 | S3 | 通った | 1 行 | 2 行 | 2 行 | 0 | 0 | 通った |
+| 3.1.0 | S3 | 通った | 1 行 | 2 行 | 2 行 | 0 | 0 | 通った |
+| 3.0.0 | S3 | 通った | 1 行 | 2 行 | 2 行 | 0 | 0 | 通った |
+
+  - `ResultSetMetaData` はどの版も S3 から読む経路で `_col0:varchar` の 1 列（GetQueryResults は `Table:string` など）。行数も版で変わらない
+  - 3.5.0・3.4.0 の auto の準備の失敗: `java.sql.SQLException: Query execution failed: Could not load query result metadata from "s3://athena-results/e2e-jdbc111/3.5.0/auto/57/<id>.txt.metadata": software.amazon.awssdk.services.s3.model.NoSuchKeyException: The specified key does not exist. (Service: S3, Status Code: 404, ...)`（原因は `com.amazon.athena.client.error.QueryResultException`）。テーブルは作られていて、後の `INSERT` と SHOW は通った
+  - `S3` を明示するとどの版も `.txt.metadata` を取りに行かない（#57 の 3.8.1 と同じ）ので、準備の NoSuchKey は出ない。3.3.0 以下は auto が無いので、auto での NoSuchKey は 3.4.0・3.5.0 でしか観測していない
+  - 結論: `.txt.metadata` を実際に読み込んだのは auto のある 3.4.0・3.5.0（と対照の 3.8.1）で、どれも素の protobuf を例外なく読んだ（読み込みのログが 3 件）。**3.0.0〜3.3.0 は auto が無く `S3` 明示でしか流しておらず、`S3` 明示はどの版も `.txt.metadata` を取りに行かない（GET 0 件）ので、これらの版が `.txt.metadata` を解けるかは測れていない**（既定の経路は GetQueryResultsStream で athena-local が持たない）。SHOW の本体は 3.0.0〜3.8.1 のすべてで例外なく読めた。壊れるのは `.metadata` の無い DDL だけで、既知の 3.5.1 未満の NoSuchKey（3.4.0・3.5.0 の auto で観測）
+- 備考: 対照の 3.8.1 は #57 の結果（`failures=0`、auto で読み込みのログ 3 件、S3 明示は取りに行かない）と同じ。準備の失敗は `docs/result-files.md` の「3.5.1 未満は `.metadata` の無い DDL で `NoSuchKey`」の athena-local 相手の実測にあたる（3.5.1 のリリースノート「Fixed `NoSuchKeyFound` issue with DDL query metadata handling」と整合）。3.0.0・3.1.0 は `Class.forName` で読み込んだ（上の項目の備考）

@@ -56,15 +56,7 @@
 
 ## 実クライアントでの疎通（[measurements/clients.md](measurements/clients.md)）
 
-- [ ] dbt-athena で `work_group` を設定して 1 回通す（#2 の人間検証リスト。Grafana は #9 で実施済み）
-- [ ] awswrangler の `read_sql_query(ctas_approach=False)` を athena-local + Trino + MinIO で流し、`GetWorkGroup` の応答で例外にならないこと（#2 の人間検証リスト）
-- [ ] 失敗した DDL の `<id>.txt`（`FAILED: ` + 理由）を結果ファイルを読むクライアント（PyAthena、JDBC 3.x）が読んでも壊れないこと（#6 の人間検証リスト。どれも FAILED を先に見る想定）
-- [ ] `ATHENA_LOCAL_RESULTS=s3` と保持期限の組み合わせ（捨てた後も結果 CSV は残る想定だが未確認）
-- [ ] 長時間運用でメモリが実際に頭打ちになるか（保持期限による破棄の実効性）
-- [ ] 暗号化系の `SHOW` に素の protobuf の `.txt.metadata` を返して、Athena JDBC 3.5.1 未満などが壊れないか（#5）
-- [ ] PyAthena・awswrangler で退行が無いこと（#5 の人間検証リスト）
-- [ ] `UPDATE` / `DELETE` の athena-local での実機確認（#5。Trino の `memory` コネクタが持たないため結合テストに委ねた。`MERGE` は #56 で Trino 482 + MinIO で確認）
-- [ ] awswrangler が `GetQueryResults` を読む経路で先頭行をどう扱うか（#60。PyAthena はソースで確認済み）
+- [ ] Athena JDBC 3.0.0〜3.3.0 が素の protobuf の `.txt.metadata` を解けるか（#111 で測ったのは auto のある 3.4.0・3.5.0 だけ。3.3.0 以下は auto が無く、`ResultFetcher=S3` は `.txt.metadata` を取りに行かない。既定の経路 GetQueryResultsStream は athena-local が持たないので手元では測れない）
 
 ## `ExecutionParameters`（本物で測った記録はまだ無い）
 
@@ -72,7 +64,7 @@
 
 ## Trino（[measurements/trino.md](measurements/trino.md)）
 
-- [ ] Trino 482 より古いバージョンの `system.metadata.catalogs` の `connector_name` などの値（#39。483 は 482 と同じと確認）
+- [ ] Trino 470・400 のすべての値と、440 の存在するテーブルへの probe（D1・D2）と `updateType`（#111 の足場で 480・475 は測れたが、470 はローカル FS の設定名が無く、400 は cgroup v2 で JVM が落ち、440 は file メタストアに書けなかった）
 
 ## 済み
 
@@ -100,3 +92,13 @@
 - 末尾が改行で終わらない `EXPLAIN (FORMAT JSON)`／`EXPLAIN (TYPE IO)` の行数と `EXPLAIN ANALYZE`（#73）→ #92
 - `GetQueryResults` のページング検証の 3 点（`ListWorkGroups` の上限と空文字の同時、RUNNING／CANCELLED のクエリへの不正な `NextToken`、0 行の結果への `NextToken`。#83）→ #85
 - リクエスト本文の型違いなどの未実測の組み合わせ（#84）→ #87
+- Trino 482 より古いバージョンの `system.metadata.catalogs` の `connector_name` などの値（#39）→ #111（2026-09-23。480・475 は 482 と同じ。440 は `connector_name` が同じで、`updateType` は書き込みができず未測定。470・400 は手元で起動できず未測定。足場は `tools/e2e/trino-probe/versions.sh`。[measurements/trino.md](measurements/trino.md)）
+- `ATHENA_LOCAL_RESULTS=s3` と保持期限の組み合わせ → #111（保持期限 1 秒で捨てた後、`GetQueryExecution` は 400 `QUERY_EXECUTION_NOT_FOUND` で、`<id>.csv` と `<id>.csv.metadata` は MinIO に残る。足場は `tools/e2e/minio/verify.sh` のケース 14。docs/caveats.md の Query lifecycle に書いた）
+- `UPDATE` / `DELETE` の athena-local での実機確認（#5）→ #111（Trino 482 + MinIO。updateType と件数がそのまま `.metadata` に入り 75 バイト、Hive への `UPDATE` は FAILED で何も置かない。[measurements/trino.md](measurements/trino.md)）
+- dbt-athena で `work_group` を設定して 1 回通す（#2）→ #111（2026-09-23。`dbt debug` と `dbt run-operation` の `is_work_group_output_location_enforced()` は通り、GetWorkGroup は `ENFORCED=False`。`dbt run` は Glue の `GetDatabases` で止まる。[measurements/clients.md](measurements/clients.md)）
+- awswrangler の `read_sql_query(ctas_approach=False)` が `GetWorkGroup` の応答で例外にならないこと（#2）→ #111（2026-09-23。workgroup 既定・`wg111` とも `[[1, 'a']]`、STS は呼ばない。[measurements/clients.md](measurements/clients.md)）
+- PyAthena・awswrangler で退行が無いこと（#5）→ #111（2026-09-23。型の行の行数と int・varchar は 3 通りで一致、DDL・SHOW・DESCRIBE・INSERT・CTAS も例外なし。例外は PyAthena の PandasCursor で Iceberg の DROP TABLE を読んだときの `EmptyDataError`（本物と同じ改行 1 個による。Hive の DROP TABLE は読める）。[measurements/clients.md](measurements/clients.md)）
+- awswrangler が `GetQueryResults` を読む経路で先頭行をどう扱うか（#60）→ #111（2026-09-23。値を見ずに 1 行目を落とすが、athena-local の列名行が落ちるだけで 1500 行・1 行とも欠けない。[measurements/clients.md](measurements/clients.md)）
+- 失敗した DDL の `<id>.txt` を結果ファイルを読むクライアント（PyAthena、JDBC 3.x）が読んでも壊れないこと（#6）→ #111（2026-09-23。JDBC 3.0.0〜3.8.1 も PyAthena 3.36.0 の PandasCursor・Cursor も FAILED を見て例外を投げ、`<id>.txt` も `.txt.metadata` も取りに行かなかった。[measurements/clients.md](measurements/clients.md)。足場は `tools/e2e/jdbc-drivers/` と `tools/e2e/python-clients/`）
+- 暗号化系の `SHOW` に素の protobuf の `.txt.metadata` を返して Athena JDBC 3.5.1 未満が壊れないか（#5）→ #111（`.txt.metadata` を読み込む auto のある 3.4.0・3.5.0 は例外なく読んだ。3.4.0・3.5.0 の auto で準備の `CREATE TABLE` が既知の NoSuchKey。3.0.0〜3.3.0 は下の「実クライアントでの疎通」に残す。[measurements/clients.md](measurements/clients.md)）
+- 長時間運用でメモリが頭打ちになるか（保持期限による破棄の実効性）→ #111（2026-09-23。同じ負荷を 240 秒ずつ流し、保持 1 秒の VmRSS の暖機後の伸びは 17.9MiB（後半 3.1MiB）、保持 3600 秒は 3267.9MiB。最初の ID は 1 秒側で 400。足場は `tools/e2e/retention/verify.sh`。docs/caveats.md の Query lifecycle に書いた。数時間の推移は #121）
