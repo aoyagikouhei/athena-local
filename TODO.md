@@ -90,8 +90,7 @@
 ### 結果ファイル（#1、#5、#6、#39、#43）
 
 - [ ] `.csv` と `.metadata` の Content-Type が実測のたびに `binary/octet-stream` と `application/octet-stream` に割れる（#1・#17）。athena-local は多数派の `application/` 固定。`.txt` の側は #39 で決着した（`.metadata` を置く文だけ `application/`、それ以外は `binary/`。README に表あり）
-- [ ] 失敗した `EXPLAIN` と、`CREATE TABLE` の重複の結果ファイル（Hive テーブルへの `ALTER TABLE` 失敗は #43 で実測済み: `RENAME TO` が理由を `<id>.txt` に書いた）
-- [ ] `EXPLAIN (FORMAT JSON)`／`EXPLAIN (TYPE IO)`／`EXPLAIN ANALYZE` の `Rows` の分け方（#73 は `EXPLAIN SELECT 1` の 1 形だけ実測。#92）
+- [ ] `CREATE TABLE` の重複の結果ファイル（Hive テーブルへの `ALTER TABLE` 失敗は #43 で実測済み: `RENAME TO` が理由を `<id>.txt` に書いた。失敗した `EXPLAIN` は #92 で実測済み: 何も置かない）
 - [ ] `CREATE OR REPLACE TABLE ... AS`（Trino だけの構文）を本物が受け付けるか、受け付けるならファイル名（#24・#26・#35 で未実測のまま。#93）
 - [ ] `.metadata` の `timestamp with time zone`／`time with time zone`／`interval year to month`／`uuid`／`ipaddress` の Precision／Scale／CaseSensitive（field 7／8／10）の有無。**推測で実装している**
 - [ ] 更新件数 0 の `UPDATE` / `DELETE` / `MERGE`（`DELETE ... WHERE false` など）で本物が更新件数の field 3 を出すか（athena-local は `18 00` を書く。0 行の `INSERT` は Hive・Iceberg とも `18 00` を書くと実測済み。#35・#91）

@@ -107,6 +107,7 @@ pub(super) async fn write_result(
 /// 失敗の理由を結果ファイルに置く。中身は `FAILED: ` + StateChangeReason で末尾に改行は付けない
 /// （本物は StateChangeReason そのものを置き、その文言自体が `FAILED: ` で始まる。2026-09-17 実測）。
 /// 置くのは `<id>.txt` の文（DDL / SHOW など）だけで、`.metadata` は置かない（実測）。
+/// `.txt` の文でも EXPLAIN は置かない（本物はクエリエンジンで動く文に失敗時のファイルを置かない。2026-09-23 実測。#92）。
 /// `<id>.csv` の SHOW FUNCTIONS が失敗したときに本物が何を置くかは未測定で、他の `.csv` の文と同じく置かない（#80）。
 /// 書けなくても FAILED と StateChangeReason は Trino のエラーのまま（`.txt` / `.metadata` と同じ扱い）。
 /// `.csv` の PUT が失敗して FAILED になる経路（`write_result`）はここを通らない。
@@ -116,6 +117,11 @@ pub(super) async fn write_failure(app: &App, execution: &Execution, failure: &Fa
     };
     // 途中で止められていれば何も書かない（write_result と同じ。CANCELLED の本物も何も置かない）。
     if execution.cancel.is_requested() {
+        return;
+    }
+    // EXPLAIN は `.txt` の文だが、クエリエンジンで動くので本物は失敗時に本体も `.metadata` も
+    // 置かない（`EXPLAIN` と `EXPLAIN ANALYZE` を 2026-09-23 に実測。#92）。
+    if super::classification::substatement_type(&execution.query) == Some("EXPLAIN") {
         return;
     }
     let Some(location) = location.failed() else {

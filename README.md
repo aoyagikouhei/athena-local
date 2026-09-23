@@ -276,7 +276,14 @@ Behaviour that matches real Athena:
   Athena appends one newline to that text and splits it on `\n`, so
   `EXPLAIN SELECT 1` gives the header row, 11 plan lines and 3 empty rows, 15
   rows in all (measured 2026-09-15 and 2026-09-16, four runs). athena-local
-  splits the same way, for `GetQueryResults` and for the `<id>.txt` file.
+  splits the same way, for `GetQueryResults` and for the `<id>.txt` file. The
+  same rule holds for every `EXPLAIN` form measured on 2026-09-23 in one round:
+  `(FORMAT JSON)` and `(TYPE IO)`, whose plan text ends without a newline, end
+  in one empty row; `(FORMAT GRAPHVIZ)` ends in two; `(TYPE DISTRIBUTED)`,
+  `ANALYZE` and `ANALYZE VERBOSE` end in three like the plain form; and
+  `(TYPE VALIDATE)`, whose single `boolean` value Athena renders as `true`,
+  gives `Valid`, `true` and one empty row. `EXPLAIN ANALYZE` keeps the
+  `SubstatementType` `EXPLAIN`.
 - `double` and `real` values use Java's notation: `1.5`, `0.30000000000000004`,
   `1.0E20`, `1.0E-7`.
 - `array`, `map` and `row` values use Athena's notation rather than JSON:
@@ -479,12 +486,12 @@ and DDL cannot be undone. When the result file itself fails to upload, no
 companion file is attempted.
 
 A failed query writes a result file too, but only for the statements whose
-result file is `<id>.txt` (DDL, `SHOW` other than `SHOW FUNCTIONS`, `DESCRIBE`, `EXPLAIN`), so a client that
+result file is `<id>.txt` (DDL, `SHOW` other than `SHOW FUNCTIONS`, `DESCRIBE`; not `EXPLAIN`), so a client that
 reads the result file can see why it failed. The file holds `FAILED: ` followed
 by `StateChangeReason`, with no trailing newline, and is sent as
 `application/octet-stream` whatever the statement (a successful `SHOW TABLES`
-gets `binary/octet-stream`); no `.metadata` companion is written. `SELECT`, DML and CTAS write
-nothing, and neither does a cancelled query. The upload happens before the query
+gets `binary/octet-stream`); no `.metadata` companion is written. `SELECT`, DML, CTAS and
+`EXPLAIN` (plain or `ANALYZE`, measured 2026-09-23) write nothing, and neither does a cancelled query. The upload happens before the query
 becomes `FAILED`, so a client may read the file as soon as it sees that state;
 an upload that fails logs one line and leaves the state and the reason
 unchanged. Athena writes such a file for fewer statements; see Caveats.
@@ -869,13 +876,10 @@ passed; see Caveats.
   `REPLACE COLUMNS`, `ADD PARTITION` and `SET LOCATION` on an Iceberg table
   wrote no file at all). athena-local runs everything through
   Trino and cannot tell the two apart, so it writes the file for every statement
-  whose result file is `<id>.txt`. A failed `EXPLAIN` was not measured.
-- **`EXPLAIN` row splitting was measured on one plan shape.** Only
-  `EXPLAIN SELECT 1`, whose plan text ends in `\n\n`, was measured; the split
-  rule (append one newline, split on `\n`) is applied to every `EXPLAIN`,
-  including `EXPLAIN ANALYZE` and plans that do not end in a newline such as
-  `EXPLAIN (FORMAT JSON)` or `EXPLAIN (TYPE IO)`, which therefore end in one
-  empty row here. How Athena splits those has not been measured.
+  whose result file is `<id>.txt` except `EXPLAIN`, which runs on the query
+  engine on Athena too and left neither the file nor the `.metadata` companion
+  when it failed (`EXPLAIN` and `EXPLAIN ANALYZE` on a missing table, measured
+  2026-09-23).
 - **The failed result file does not match `StateChangeReason`.** On Athena the
   file is `StateChangeReason` byte for byte, and that text starts with
   `FAILED: ` because it comes from Hive (`FAILED: SemanticException
