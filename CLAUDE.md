@@ -72,7 +72,8 @@ CI（`.github/workflows/ci.yml`）は `fmt --check`、`clippy -D warnings`、`te
 | `CHANGELOGS.md` | 版の間で何が変わったか。1 項目 1〜2 行 | 英語 |
 | `tools/measure/`、`tools/e2e/` | 本物の Athena に投げる実測スクリプトと、compose の実機検証の足場 | — |
 
-- 作業中のノート（`.claude/issue-notes/<番号>.md`）は PR の中だけの一時物。マージ前に、実測の結果表を `docs/dev/measurements/` へ、後の開発でも効く設計判断を `docs/dev/decisions.md` へ、残った未実測を `docs/dev/unmeasured.md` へ写し、ノート自体は消す（古いノートに後で覆った事実が残り、正のドキュメントより先に読まれるのを防ぐ。#98）。過去のノートは git の履歴にある。
+- 作業中のノート（`.claude/issue-notes/<番号>.md` と、その issue の足場）は、いま進めている issue のぶんだけを置く。**新しい issue に着手したら、ブランチを切った直後に過去の issue のノートを `git rm -r .claude/issue-notes` で全部消してから進める**（Skill が新しいノートを書く前に消す。古いノートには後で覆った事実が残っていて、正のドキュメントより先に読まれると誤った前提で開発が進むため。#98・#100）。過去のノートは git の履歴にある。
+- ノートに書いた実測の結果表は `docs/dev/measurements/` へ、後の開発でも効く設計判断は `docs/dev/decisions.md` へ、残った未実測は `docs/dev/unmeasured.md` へ、その issue の PR をマージする前に写す。ノートは PR に残してよいが、正はつねに docs/dev 側で、ノートの記述と食い違ったら docs/dev を信じる。
 - 実測スクリプトは issue 番号の接頭辞を付けず、内容で名前を付けて `tools/measure/` に置き、先頭のコメントに issue 番号を書く。
 
 ## 開発上の約束
