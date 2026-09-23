@@ -99,7 +99,7 @@ tls-proxy コンテナから届かず、JDBC の検証には使えない（46 �
 | 10 | `UPDATE ... SET s = 'z' WHERE n = 1`（Iceberg。issue #111） | ケース 9 と同じ形で、field 2 が `UPDATE`、field 3 が 1（結果の詳細に `.metadata` のバイト数も出す） |
 | 11 | `DELETE FROM ... WHERE n = 2`（Iceberg。issue #111） | ケース 9 と同じ形で、field 2 が `DELETE`、field 3 が 1 |
 | 12 | `UPDATE`（Hive。非 ACID。issue #111） | Trino が拒否して FAILED。`<id>.csv` も `<id>.csv.metadata` も置かれない（SUCCEEDED なら FAIL） |
-| 14 | 保持期限 1 秒で再起動して `SELECT 1 AS n`（issue #111） | SUCCEEDED の 2.5 秒後の `GetQueryExecution` が 400 `QUERY_EXECUTION_NOT_FOUND`、その後も `<id>.csv` と `<id>.csv.metadata` が残る。400 にならなければ SKIP（破棄が起きていないので未測定） |
+| 14 | 保持期限 1 秒で再起動して `SELECT 1 AS n`（issue #111） | SUCCEEDED の 2.5 秒後の `GetQueryExecution` が 400 `QUERY_EXECUTION_NOT_FOUND`、その後も `<id>.csv` と `<id>.csv.metadata` が残る。400 にならなければ FAIL（保持期限の破棄の退行） |
 
 ケース 3 が FAIL の場合は「Phase 1 時点では失敗が想定どおり」という注記を結果表に自動で足す
 （スクリプトは止めずに続ける）。

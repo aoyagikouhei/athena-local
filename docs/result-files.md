@@ -160,8 +160,10 @@ fail on versions before 3.5.1: against athena-local, `CREATE TABLE` raised
 itself had run), while with `ResultFetcher=S3` no version fetched the metadata
 of a DDL or `SHOW` and nothing failed (measured 2026-09-23). 3.8.1 logs the
 missing file (a 404) at INFO level and carries on (measured 2026-09-17). The
-`SHOW` statements, whose companion file athena-local does write, were read
-without error by every version from 3.0.0 to 3.8.1 (measured 2026-09-23). Two
+`SHOW` statements, whose companion file athena-local does write, ran without
+error on every version from 3.0.0 to 3.8.1; 3.4.0, 3.5.0 and 3.8.1 with the
+default fetcher also loaded that companion file, while older versions were only
+run with `ResultFetcher=S3`, which never fetches it (measured 2026-09-23). Two
 combinations are the exception
 and do get a companion file that carries no columns at all; see
 [DDL that depends on the target table's format](ddl.md#ddl-that-depends-on-the-target-tables-format)

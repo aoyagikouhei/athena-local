@@ -670,7 +670,7 @@ main() {
   if restart_athena_local_with_retention 1; then
     run_retention_s3_case
   else
-    record "14 保持期限後もS3の結果は残る" SKIP "未測定: athena-local が保持期限 1 秒で再起動しなかった"
+    record "14 保持期限後もS3の結果は残る" FAIL "athena-local が ATHENA_LOCAL_RETENTION_SECONDS=1 で起動しない（athena-local 側の退行）"
   fi
 
   local status fails=0

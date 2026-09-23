@@ -117,7 +117,8 @@ def load(args):
         sampler.join()
     status, body = call(args.base, "GetQueryExecution", {"QueryExecutionId": first_id}) if first_id else (None, {})
     summary = {
-        "retention": args.retention, "proc_ok": True, "done": counters["done"], "failed": counters["failed"],
+        "retention": args.retention, "proc_ok": True, "elapsed": round(time.time() - started, 1),
+        "done": counters["done"], "failed": counters["failed"],
         "failed_reasons": reasons, "first_id": first_id, "first_id_status": status,
         "first_id_code": body.get("AthenaErrorCode") or body.get("__type"),
     }
@@ -155,10 +156,14 @@ def judge(control_csv, test_csv, warmup):
               f"first_id_status={s.get('first_id_status')} code={s.get('first_id_code')}")
     if not (hi["proc_ok"] and lo["proc_ok"]):
         return report([("SKIP", "(a)-(e)", "/proc を読めず負荷を流していない（未測定）")])
-    # (d) は負荷の量によらないので、対照が成り立たなくても判定する
-    ok_d = lo.get("first_id_status") == 400 and lo.get("first_id_code") == "QUERY_EXECUTION_NOT_FOUND" \
-        and hi.get("first_id_status") == 200
-    results.append(("PASS" if ok_d else "FAIL", "(d)", f"最初の ID: low={lo.get('first_id_status')} high={hi.get('first_id_status')}（期待 400/200）"))
+    # (d) は負荷の量によらないので、対照が成り立たなくても判定する。対照側の 200 は、経過が保持期限未満のときだけ
+    # 求める（DURATION が RETENTION_HIGH 以上だと対照側の最初の ID も正しく捨てられている。最終パスの指摘）。
+    hi_expired = hi.get("elapsed") is None or hi.get("elapsed", 0) >= hi.get("retention", 0)
+    ok_d_low = lo.get("first_id_status") == 400 and lo.get("first_id_code") == "QUERY_EXECUTION_NOT_FOUND"
+    ok_d_high = True if hi_expired else hi.get("first_id_status") == 200
+    high_note = "対照側は経過が保持期限以上なので判定しない" if hi_expired else "期待 200"
+    results.append(("PASS" if ok_d_low and ok_d_high else "FAIL", "(d)",
+                    f"最初の ID: low={lo.get('first_id_status')}（期待 400） high={hi.get('first_id_status')}（{high_note}）"))
     ratio = lo["done"] / hi["done"] if hi["done"] else 0.0
     ok_e = t["JUDGE_DONE_RATIO_MIN"] <= ratio <= t["JUDGE_DONE_RATIO_MAX"]
     results.append(("PASS" if ok_e else "SKIP", "(e)", f"完了数の比 low/high={ratio:.2f}（{t['JUDGE_DONE_RATIO_MIN']}〜{t['JUDGE_DONE_RATIO_MAX']}）"))

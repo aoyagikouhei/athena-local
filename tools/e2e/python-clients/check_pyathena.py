@@ -40,8 +40,13 @@ def failed_ddl(label, sql, cursor_class, status_if_ok):
     query_id = cursor.query_id
     reads = window.reads(f"/athena-results/py/{query_id}.txt")  # .txt.metadata も前方一致で含む
     placed = mc_exists(f"athena-results/py/{query_id}.txt")
+    # mc stat の HeadObject が trace に出ることで、「GET 0 件」を数えた trace が生きていることを確かめる（最終パスの指摘）。
+    alive = any(e.get("api") == "s3.HeadObject" for e in window.reads(f"/athena-results/py/{query_id}.txt"))
     detail = (f"{kind} msg={(error or '')[:200]!r} id={query_id} .txt あり={placed} "
-              f"区間の .txt* への GET/HEAD={len(reads)} {[(e.get('api'), e.get('path')) for e in reads]}")
+              f"区間の .txt* への GET/HEAD={len(reads)} {[(e.get('api'), e.get('path')) for e in reads]} trace 生存={alive}")
+    if not alive:
+        report("SKIP", f"(3) {label}", f"未測定: mc stat の HEAD が trace に出ない（trace が止まっている）。{detail}")
+        return
     ok = kind == "OperationalError" and "does not exist" in (error or "") and placed and not reads
     report(status_if_ok if ok else ("FAIL" if status_if_ok == "PASS" else "INFO"), f"(3) {label}", detail)
 

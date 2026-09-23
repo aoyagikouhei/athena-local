@@ -155,7 +155,7 @@ main() {
   preflight || { record FAIL preflight "前提が揃わない（上のログ）"; return; }
   start_env || { record SKIP "全項目" "未測定: compose・Trino の準備に失敗"; return; }
   start_athena_local "$ATHENA_S3" s3 s3 && start_athena_local "$ATHENA_NONE" none none \
-    || { record SKIP "全項目" "未測定: athena-local が起動しない"; return; }
+    || { record FAIL "全項目" "athena-local が起動しない（athena-local 側の退行。compose と Trino は上がっている）"; return; }
   local trace_ok=1
   start_proxy_and_trace || trace_ok=0
   source "$SCRIPT_DIR/env.sh"

@@ -14,7 +14,8 @@
 # 環境変数:
 #   KEEP_UP=1           終了後に docker compose down -v をしない（デバッグ用）
 #   SKIP_BUILD=1        cargo build を省略し、ビルド済みの target/release/athena-local を使う
-#   DURATION=240        1 回の負荷の秒数（数時間の推移を見るなら 3600 など）
+#   DURATION=240        1 回の負荷の秒数。数時間の推移を見るなら 3600 などにするが、対照側は約 15MiB/秒で伸びて
+#                       メモリを使い切るので、ROWS=100 のように 1 件を小さくすること（README の注意）
 #   WARMUP=20           判定から外す最初の秒数
 #   ROWS=2000           1 クエリの行数（1 行 ≒ 1KiB。1 件 ≒ 2.2MiB の見込み）
 #   RETENTION_HIGH=3600 対照側の保持期限（秒）

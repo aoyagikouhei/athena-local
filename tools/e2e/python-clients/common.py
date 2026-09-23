@@ -57,10 +57,14 @@ def proxy_lines():
 
 
 def trace_lines():
+    # trace のコンテナ（--rm）が途中で消えると docker logs が失敗して空になり、「GET 0 件」が偽の PASS になる。
+    # 失敗は例外にして check を異常終了させる（verify.sh の run_check が FAIL に数える）。
     out = subprocess.run(
         ["docker", "logs", os.environ["TRACE_CONTAINER"]],
         capture_output=True, text=True, check=False,
     )
+    if out.returncode != 0:
+        raise RuntimeError(f"trace のコンテナのログを読めない: {out.stderr.strip()[:200]}")
     return [line for line in out.stdout.splitlines() if line.startswith("{")]
 
 
@@ -88,8 +92,11 @@ class Window:
     def trace(self, settle=1.5):
         # trace は非同期に流れてくるので、読む前に少し待つ。
         time.sleep(settle)
+        lines = trace_lines()
+        if len(lines) < self.trace_from:
+            raise RuntimeError(f"trace の行数が区間の起点より少ない（{len(lines)} < {self.trace_from}）。コンテナが作り直された")
         events = []
-        for line in trace_lines()[self.trace_from:]:
+        for line in lines[self.trace_from:]:
             try:
                 events.append(json.loads(line))
             except ValueError:

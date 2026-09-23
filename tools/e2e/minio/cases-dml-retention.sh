@@ -98,7 +98,7 @@ restart_athena_local_with_retention() {
 
 # ケース 14: 保持期限を過ぎた実行は GetQueryExecution が 400 QUERY_EXECUTION_NOT_FOUND になるが、
 # S3 の <id>.csv と <id>.csv.metadata は残る（athena-local は S3 を消さない）。
-# 400 にならない（破棄が起きていない）ときは、残ることの確かめにならないので SKIP。
+# 400 にならない（破棄が起きていない）のは保持期限の退行（tests/retention.rs が固定する挙動）なので FAIL。
 run_retention_s3_case() {
   local name="14 保持期限後もS3の結果は残る" expect_status=400 expect_code="QUERY_EXECUTION_NOT_FOUND"
   local id resp state status body code
@@ -125,7 +125,7 @@ run_retention_s3_case() {
   # jq には標準入力で渡す（snap の jq は /tmp のファイルを直接開けない。2026-09-23 に踏んだ）。
   code=$(jq -r '.AthenaErrorCode // empty' <"$body" 2>/dev/null)
   if [ "$status" = "200" ] && [ "$expect_status" != "200" ]; then
-    record "$name" SKIP "未測定: 2.5 秒後も GetQueryExecution が 200（保持期限による破棄が起きていない） [id=$id]"
+    record "$name" FAIL "2.5 秒後も GetQueryExecution が 200（保持期限 1 秒の破棄が起きていない） [id=$id]"
     return
   fi
   if [ "$status" != "$expect_status" ] || [ "$code" != "$expect_code" ]; then
