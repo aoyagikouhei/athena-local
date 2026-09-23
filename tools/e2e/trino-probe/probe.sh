@@ -5,7 +5,7 @@
 # /v1/statement を直接叩いて確かめるスクリプト。
 #
 # 前提: ルートの compose.yml の trino を起動済みで、dev（tools/dev.sh）の中から流す
-#       （スキーマ・対照テーブルは本スクリプトが作成する）。
+#       （スキーマ・対照テーブルは本スクリプトが作成する。C 節のテーブルは先に消すので、同じ Trino に何度流してもよい）。
 #
 # バージョンを変えて確かめるときは、このスクリプトではなく compose の trino を
 # 差し替える: TRINO_TAG=<タグ> [CATALOG_DIR=$PWD/tools/e2e/trino-probe/catalog-legacy] docker compose -f compose.yml up -d trino
@@ -87,6 +87,13 @@ post "SELECT * FROM system.metadata.table_properties WHERE table_name = 'nope'" 
 
 echo
 echo "=== C. DDL の updateType ==="
+# C 節は IF NOT EXISTS 無しで CREATE する（素の CREATE の updateType を見るため）。前の実行が残した
+# テーブルを先に消し、同じ Trino に 2 回流しても C2・C3 が「既にある」で error にならないようにする（#117）。
+# ラベルを setup_ にするのは、versions.sh の setup_errors が準備の失敗として拾うため。
+for t in t_drop t_alter t_plain; do
+  post "DROP TABLE IF EXISTS hive.default.$t" "setup_hive_drop_$t"
+  post "DROP TABLE IF EXISTS iceberg.default.$t" "setup_iceberg_drop_$t"
+done
 # C1: DROP TABLE 用に専用テーブルを作る
 post "CREATE TABLE hive.default.t_drop AS SELECT 1 AS n" setup_hive_t_drop
 post "CREATE TABLE iceberg.default.t_drop AS SELECT 1 AS n" setup_iceberg_t_drop
