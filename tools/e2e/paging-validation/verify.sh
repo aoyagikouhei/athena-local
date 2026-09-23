@@ -15,12 +15,11 @@
 #         検証エラーが 1 件分の文言にしかならない）、14（存在確認が先に走って NOT_FOUND になる）、
 #         18（状態エラーが先に走る）、19（ListWorkGroups が 200 で通る）
 #
-# 前提コマンド: docker, docker compose, curl, jq, uuidgen, cargo
-# jq にはファイルを引数でなく標準入力（<）で渡す。このマシンの jq は snap 版で、/tmp の private
-# 名前空間のせいで mktemp -d /tmp/... のファイルを引数で開けない（2026-09-23 に踏んだ）。
+# 前提コマンド: tools/dev.sh 経由で動かす（toolbox に全部入っている）
+# jq にはファイルを引数でなく標準入力（<）で渡す。
 #
 # 使い方:
-#   tools/e2e/paging-validation/verify.sh
+#   tools/dev.sh tools/e2e/paging-validation/verify.sh
 #
 # 環境変数:
 #   KEEP_UP=1        テスト後に docker compose down -v をせず環境を残す（デバッグ用）

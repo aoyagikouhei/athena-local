@@ -15,13 +15,11 @@
 # 変更前の予測: 1 FAIL / 2 PASS / 3 FAIL / 4 FAIL(.metadata だけ不一致) / 5 FAIL / 6 FAIL /
 #               7a PASS / 7b PASS
 #
-# 前提コマンド: docker, docker compose, curl, jq, uuidgen, cargo
-# S3（MinIO）側の確認は aws cli を使わず、compose と同じネットワークに繋いだ
-# quay.io/minio/mc の使い捨てコンテナで行う（このマシンの aws コマンドは docker ラッパーで、
-# ホストにマップしたポートに届かない。2026-09-21 実測）。
+# 前提コマンド: tools/dev.sh 経由で動かす（toolbox に全部入っている）
+# S3（MinIO）側の確認は、compose と同じネットワークに繋いだ quay.io/minio/mc の使い捨てコンテナで行う。
 #
 # 使い方:
-#   tools/e2e/result-content-type/verify.sh
+#   tools/dev.sh tools/e2e/result-content-type/verify.sh
 #
 # 環境変数:
 #   KEEP_UP=1        テスト後に docker compose down -v をせず環境を残す（デバッグ用）

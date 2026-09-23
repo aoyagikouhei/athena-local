@@ -122,7 +122,7 @@ run_retention_s3_case() {
     -H "X-Amz-Target: AmazonAthena.GetQueryExecution" \
     -H "Content-Type: application/x-amz-json-1.1" \
     --data "$(jq -n --arg id "$id" '{QueryExecutionId: $id}')")
-  # jq には標準入力で渡す（snap の jq は /tmp のファイルを直接開けない。2026-09-23 に踏んだ）。
+  # jq にはファイルを引数でなく標準入力で渡す。
   code=$(jq -r '.AthenaErrorCode // empty' <"$body" 2>/dev/null)
   if [ "$status" = "200" ] && [ "$expect_status" != "200" ]; then
     record "$name" FAIL "2.5 秒後も GetQueryExecution が 200（保持期限 1 秒の破棄が起きていない） [id=$id]"

@@ -7,7 +7,7 @@
 # 「SHOW SCHEMAS FROM hive / iceberg が error 無しで返る」構成を探して採用し、probe.sh を流す。
 # 本物の AWS は使わない。
 #
-# 使い方: tools/e2e/trino-probe/versions.sh
+# 使い方: tools/dev.sh tools/e2e/trino-probe/versions.sh
 # 環境変数:
 #   TRINO_TAGS="480 475 470 440 400"  測る版（482 は対照。trino.md の #39 の表と完全一致で PASS）
 #   TRINO_PORT=8104                   Trino のホスト側ポート（compose の既定 8090 は request-errors と重複）
@@ -56,7 +56,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# 表のセル用に 1 行・80 文字に丸め、| を逃がす（snap の jq の正規表現は日本語を壊すので使わない）
+# 表のセル用に 1 行・80 文字に丸め、| を逃がす
 cell() { jq -Rrs 'split("\n") | join(" ") | rtrimstr(" ") | .[0:80] | split("|") | join("\\|")'; }
 
 # $1 ディレクトリ, $2 ラベル: <ラベル>.<ページ>.json をページ順に並べる
@@ -69,7 +69,7 @@ pages() {
 page_error() {
   local files; files=$(pages "$1" "$2")
   [ -n "$files" ] || { echo "応答なし"; return; }
-  # snap の jq は /tmp のファイルを開けないので、ファイルはすべて標準入力で渡す
+  # jq にはファイルを引数でなく標準入力で渡す
   # shellcheck disable=SC2086
   cat $files | jq -rs '[.[] | .error.message // empty][0] // empty' 2>/dev/null || echo "JSON でない応答"
 }

@@ -5,13 +5,10 @@
 # INSERT を 2 回実行しないこと、(2) 同じトークンの 50 並列の同時送信で QueryExecutionId が
 # 1 つになり詰まらないこと、を確かめる。本物の AWS は一切使わない。結果ファイルは書かない。
 #
-# 前提コマンド: docker, docker compose, curl, cargo, boto3 入りの python3（システムの python3 に
-# 無ければ venv を作って PYTHON に指定する:
-#   python3 -m venv /tmp/boto3-venv && /tmp/boto3-venv/bin/pip install boto3
-#   PYTHON=/tmp/boto3-venv/bin/python3 tools/e2e/sdk-retry/verify.sh）
+# 前提コマンド: tools/dev.sh 経由で動かす（toolbox に全部入っている。boto3 は toolbox の python3 に入っている）
 #
 # 使い方:
-#   tools/e2e/sdk-retry/verify.sh
+#   tools/dev.sh tools/e2e/sdk-retry/verify.sh
 #
 # 環境変数:
 #   KEEP_UP=1        テスト後に docker compose down -v をせず環境を残す（デバッグ用）
@@ -37,7 +34,7 @@ PROXY_BIND="127.0.0.1:8096"
 DROP_COUNT="${DROP_COUNT:-2}"
 PYTHON="${PYTHON:-python3}"
 $PYTHON -c "import boto3" 2>/dev/null || {
-  echo "boto3 が要る。python3 -m venv /tmp/boto3-venv && /tmp/boto3-venv/bin/pip install boto3 のあと PYTHON=/tmp/boto3-venv/bin/python3 で呼ぶ"; exit 1; }
+  echo "boto3 が要る（$PYTHON で import できない）。tools/dev.sh 経由で動かすか、boto3 入りの python3 を PYTHON に指定する"; exit 1; }
 
 EVIDENCE_DIR="$(mktemp -d /tmp/athena-local-issue94-e2e.XXXXXX)"
 ATHENA_LOG="$EVIDENCE_DIR/athena-local.log"

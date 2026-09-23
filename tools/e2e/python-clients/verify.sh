@@ -12,7 +12,7 @@
 # クライアントの向け先は env.sh（AWS_ENDPOINT_URL と _ATHENA → 中継、_S3 → MinIO 9006）。
 # MinIO へのアクセスは `mc admin trace --json` を流す使い捨てコンテナで記録し、check ごとの区間だけを数える（common.py）。
 #
-# 前提: docker / docker compose / curl / jq、venv（先に ./setup-venvs.sh）、$CARGO_TARGET_DIR（tools/dev.sh では .toolbox/target）の release/athena-local。
+# 前提: tools/dev.sh 経由で動かす（toolbox に全部入っている）。venv（先に ./setup-venvs.sh）、$CARGO_TARGET_DIR（tools/dev.sh では .toolbox/target）の release/athena-local。
 # 環境変数: KEEP_UP=1（compose を残す）、SKIP_BUILD=1（cargo build をしない）、VENV_ROOT（既定 $HOME/.cache/athena-local-111）
 # 終了コードは FAIL の件数。証跡は /tmp/athena-local-issue111-py.* に残す。
 # 落とすのはこの compose プロジェクト（athena-local-issue111-py）と、このスクリプトが起動したプロセス・trace コンテナだけ。
@@ -143,7 +143,7 @@ summary() {
   echo
   echo "==================== 結果（issue #111 python-clients） ===================="
   if grep -q '^PASS canary' "$RESULTS"; then echo "漏れ: 無し（canary で確認）"; else echo "漏れ: 未確認（canary が PASS していない）"; fi
-  # jq は snap 版だと /tmp のファイルを開けないので標準入力で渡す。
+  # jq にはファイルを引数でなく標準入力で渡す。
   echo "Trino: $(jq -r '.nodeVersion.version // "-"' <"$EVIDENCE_DIR/trino-info.json" 2>/dev/null)"
   grep -iE '^(awswrangler|pyathena|pandas|boto3|botocore)==' "$EVIDENCE_DIR/freeze-wr.txt" 2>/dev/null | tr '\n' ' '; echo
   grep -iE '^(dbt-core|dbt-athena|dbt-adapters|pyathena)==' "$EVIDENCE_DIR/freeze-dbt.txt" 2>/dev/null | tr '\n' ' '; echo

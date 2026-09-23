@@ -4,13 +4,11 @@
 # （MinIO）を相手に athena-local を動かし、DROP TABLE の結果ファイルがテーブルの形式
 # （Hive / Iceberg）で変わることを実際に確かめる。
 #
-# 前提コマンド: docker, docker compose, curl, jq, uuidgen, od, cargo
-# S3（MinIO）側の確認は aws cli を使わず、compose と同じネットワークに繋いだ
-# minio/mc の使い捨てコンテナで行う（環境によって aws cli が docker ラッパーで、
-# ホストにマップしたポートに届かないことがあるため。2026-09-21 実測）。
+# 前提コマンド: tools/dev.sh 経由で動かす（toolbox に全部入っている）
+# S3（MinIO）側の確認は、compose と同じネットワークに繋いだ minio/mc の使い捨てコンテナで行う。
 #
 # 使い方:
-#   tools/e2e/minio/verify.sh
+#   tools/dev.sh tools/e2e/minio/verify.sh
 #
 # 環境変数:
 #   KEEP_UP=1        テスト後に docker compose down -v をせず環境を残す（デバッグ用）

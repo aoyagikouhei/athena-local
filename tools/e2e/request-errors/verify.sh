@@ -25,12 +25,11 @@
 #         それ以外の全部（SerializationException の文言・キー、必須欠落の検証文言、
 #         UnknownOperationException が本物と違う）
 #
-# 前提コマンド: curl, jq, uuidgen, cargo
-# jq にはファイルを引数でなく標準入力（<）で渡す。このマシンの jq は snap 版で、/tmp の private
-# 名前空間のせいで mktemp -d /tmp/... のファイルを引数で開けない（2026-09-23 に踏んだ）。
+# 前提コマンド: tools/dev.sh 経由で動かす（toolbox に全部入っている）
+# jq にはファイルを引数でなく標準入力（<）で渡す。
 #
 # 使い方:
-#   tools/e2e/request-errors/verify.sh
+#   tools/dev.sh tools/e2e/request-errors/verify.sh
 #
 # 環境変数:
 #   SKIP_BUILD=1     cargo build を省略し、既存の $CARGO_TARGET_DIR（tools/dev.sh では .toolbox/target）の release/athena-local をそのまま使う

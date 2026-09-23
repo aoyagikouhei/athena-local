@@ -3,7 +3,7 @@
 """ClientRequestToken の冪等性を、実 SDK のリトライと高多重度の同時送信で確かめる。
 
 verify.sh が Trino・athena-local・応答を落とす代理（drop_proxy.py）を立てたあとに呼ぶ。
-boto3 が要る（verify.sh は `uv run --with boto3` で呼ぶ）。本物の AWS は一切使わない。
+boto3 が要る（toolbox の python3 に入っている。verify.sh は `$PYTHON`（既定 python3）で呼ぶ）。本物の AWS は一切使わない。
 
 確かめること:
   1. boto3 を代理に向けて INSERT を 1 回呼ぶ。代理が最初の 2 回の応答を落とすので、SDK は同じ

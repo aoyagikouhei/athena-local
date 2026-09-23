@@ -17,8 +17,8 @@ athena-local を通さず、手元の Trino（Hive / Iceberg カタログ、ロ�
 ## versions.sh
 
 ```bash
-tools/e2e/trino-probe/versions.sh                     # 既定の 480 475 470 440 400
-TRINO_TAGS=482 tools/e2e/trino-probe/versions.sh      # 対照（docs/dev/measurements/trino.md の #39 の表と完全一致で PASS）
+tools/dev.sh tools/e2e/trino-probe/versions.sh                     # 既定の 480 475 470 440 400
+tools/dev.sh TRINO_TAGS=482 tools/e2e/trino-probe/versions.sh      # 対照（docs/dev/measurements/trino.md の #39 の表と完全一致で PASS）
 ```
 
 - 版ごとに `catalog` → `catalog-legacy` → `catalog-nofsflag` の順に起動し、`SHOW SCHEMAS FROM hive` と
@@ -27,8 +27,8 @@ TRINO_TAGS=482 tools/e2e/trino-probe/versions.sh      # 対照（docs/dev/measur
 - 旧版の値は INFO として記録し、482 と違う列を詳細に出す。終了コードは FAIL の件数
 - 環境変数: `TRINO_TAGS`、`TRINO_PORT`（既定 `8104`。compose の既定 `8090` は request-errors と重なる）、
   `START_TIMEOUT`（既定 120 秒）、`PULL_TIMEOUT`（既定 600 秒）、`KEEP_UP=1`（最後の版を残す）
-- 証跡は `/tmp/athena-local-issue111-trino.XXXXXX`（版ごとの試行の起動ログ・生の JSON・`summary.md`）
+- 証跡は `/tmp/athena-local-issue111-trino.XXXXXX`（toolbox の中でもホストと同じパス。版ごとの試行の起動ログ・生の JSON・`summary.md`）
 - 同じコンテナ名を使うので、`probe.sh` を手で流している最中には走らせない（既にコンテナがあれば止まる）
 - probe.sh の準備（スキーマ・対照テーブル）が `error` になった版は、詳細に「準備の失敗」を出す（D1・D2・C1・C2 の値が Trino の違いではなく準備の失敗で変わるため）
 - 版ごとに `docker compose down -v` する（`probe.sh` の C 節は `IF NOT EXISTS` 無しで CREATE するため）
-- 前提コマンド: docker、docker compose、curl、jq、python3（`probe.sh` が使う）、ss
+- 前提コマンド: `tools/dev.sh` 経由で動かす（toolbox に全部入っている。`docs/dev/development.md` の「検証の足場（toolbox）」）

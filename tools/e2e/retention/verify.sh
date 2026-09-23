@@ -6,10 +6,10 @@
 #
 # compose は新設せず tools/e2e/sdk-retry/docker-compose.yml（Trino 482 + memory カタログ、8095、
 # プロジェクト athena-local-issue94-e2e）を流用する。sdk-retry の verify.sh とは同時に流せない。
-# athena-local はホスト上の release バイナリを 127.0.0.1:8101 で起動する（結果ファイルは書かない）。
+# athena-local は $CARGO_TARGET_DIR（tools/dev.sh では .toolbox/target）の release バイナリを 127.0.0.1:8101 で起動する（結果ファイルは書かない）。
 #
 # 使い方:
-#   tools/e2e/retention/verify.sh
+#   tools/dev.sh tools/e2e/retention/verify.sh
 #
 # 環境変数:
 #   KEEP_UP=1           終了後に docker compose down -v をしない（デバッグ用）
