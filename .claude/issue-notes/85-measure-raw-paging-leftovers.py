@@ -21,16 +21,17 @@
     REGION        既定 ap-northeast-1
     OUT_DIR       既定 $HOME/athena-paging-leftovers-measurements（実名が入りうるのでリポジトリの外）
     POLL_TIMEOUT  終端状態を待つ上限（秒）。既定 120
-    HEAVY_ROWS    重いクエリの片側の行数。既定 200000（CROSS JOIN で 4e10 行を数える。数分かかるので途中で止める）
+    HEAVY_ROWS    重いクエリの片側の行数。既定 50000（sequence の上限。3 方向の CROSS JOIN で 1.25e14 行を数えるので途中で止める）
 
 ** 課金の注意 **
     流すクエリは 3 本で、どれもテーブルは読まない（スキャン 0 バイト）。DDL・書き込みは無い。
       - `SELECT 1 AS n WHERE false`（0 行の DML）
       - `SHOW DATABASES LIKE 'athena_local_issue85_no_such_db'`（0 行の UTILITY。実在しない名前）
-      - `SELECT count(*) FROM UNNEST(sequence(1, N)) a CROSS JOIN UNNEST(sequence(1, N)) b`（重い。RUNNING を測ったら
+      - `SELECT n FROM UNNEST(sequence(1, 5))`（5 行。トークン発行の規則を辿る。2 ラウンド目で追加）
+      - `SELECT count(*) FROM UNNEST(sequence(1, 50000)) a CROSS JOIN ... b CROSS JOIN ... c`（重い。RUNNING を測ったら
         StopQueryExecution で止める。万一止められなくても数分で終わり、スキャンは 0 バイト）
-    結果ファイルが OUTPUT に 2 組置かれる。本物への呼び出しは StartQueryExecution 3 回、GetQueryExecution が数十回、
-    GetQueryResults 約 14 回、StopQueryExecution 1 回、ListWorkGroups 2 回。すべて読み取り（StopQueryExecution は自分のクエリの取り消し）。
+    結果ファイルが OUTPUT に 3 組置かれる。本物への呼び出しは StartQueryExecution 4 回、GetQueryExecution が数十回、
+    GetQueryResults 約 30 回、StopQueryExecution 1 回、ListWorkGroups 2 回。すべて読み取り（StopQueryExecution は自分のクエリの取り消し）。
 
 保存するファイル: run_dir/<prefix>-start.json、<prefix>-execution-<n>.json、case-<n>.json、stop.json、summary.txt（実名マスク済み）。
 標準出力には summary.txt のパスだけを出す。資格情報は botocore の既定の探索順で読み、無ければ no_credentials で止まる。
@@ -56,8 +57,35 @@ EMPTY_UTILITY = "SHOW DATABASES LIKE 'athena_local_issue85_no_such_db'"
 
 
 def heavy_query():
-    n = int(os.environ.get("HEAVY_ROWS", "200000"))
-    return "SELECT count(*) FROM UNNEST(sequence(1, {n})) AS a(x) CROSS JOIN UNNEST(sequence(1, {n})) AS b(y)".format(n=n)
+    # sequence は 50000 件までしか作れない（1 ラウンド目で INVALID_FUNCTION_ARGUMENT。#85）。
+    # 50000^3 = 1.25e14 行を数えるので数分では終わらず、RUNNING を捕まえてから止められる。
+    n = int(os.environ.get("HEAVY_ROWS", "50000"))
+    return (
+        "SELECT count(*) FROM UNNEST(sequence(1, {n})) AS a(x) "
+        "CROSS JOIN UNNEST(sequence(1, {n})) AS b(y) CROSS JOIN UNNEST(sequence(1, {n})) AS c(z)"
+    ).format(n=n)
+
+
+def follow_pages(region, credentials, run_dir, query_id, max_results, label, first_number, limit=6):
+    """MaxResults を固定してページを最後まで辿り、(ケースの列, 結果の列) を返す。
+    本物がトークンを「ページが満杯のとき」に出すのか「残りがあるとき」に出すのかを、
+    行数がちょうど割り切れる組み合わせで確かめる。"""
+    cases, results = [], []
+    token = None
+    for i in range(limit):
+        payload = {"QueryExecutionId": query_id, "MaxResults": max_results}
+        if token:
+            payload["NextToken"] = token
+        result = m83.call(region, credentials, "AmazonAthena.GetQueryResults", payload)
+        number = first_number + i
+        m83.save(run_dir, "case-{}.json".format(number), result)
+        cases.append((number, "{}: MaxResults={} の {} ページ目".format(label, max_results, i + 1), "GetQueryResults", payload))
+        results.append(result)
+        body = m83.parsed_body(result) or {}
+        token = body.get("NextToken") if isinstance(body.get("NextToken"), str) else None
+        if not token:
+            break
+    return cases, results
 
 
 def start_only(region, credentials, run_dir, output, query, prefix):
@@ -172,6 +200,21 @@ def main():
     cases.append((30, "empty-dml: MaxResults=99999999999（Integer の範囲外。#87 の項目 7）", "GetQueryResults",
                   {"QueryExecutionId": dml_id, "MaxResults": 99999999999} if dml_id else None))
 
+    # E. トークン発行の規則（2 ラウンド目で追加）。1 ラウンド目で「列名行だけの結果に MaxResults=1 で
+    # NextToken が付く」と分かった。行数がちょうど割り切れるとき（5 行 + 列名行 = 6 行）に、
+    # MaxResults=6（1 ページで満杯）・3（2 ページで満杯）・4（2 ページ目が半端）でトークンが付くか、
+    # 付いたトークンで次を取ると何が返るかを最後まで辿る。列名行だけの結果も MaxResults=1 で辿る。
+    small_id, state, reason = m83.start_query(region, credentials, run_dir, output, m83.QUERY, "small")
+    lines.append("[準備] {} → 最終状態 = {}{}".format(m83.QUERY, state, "（" + reason + "）" if reason else ""))
+    ids.append(("small", small_id))
+    follow = []
+    if small_id and state == "SUCCEEDED":
+        follow.append((small_id, 6, "small(6 行)", 60))
+        follow.append((small_id, 3, "small(6 行)", 70))
+        follow.append((small_id, 4, "small(6 行)", 80))
+    if dml_id:
+        follow.append((dml_id, 1, "empty-dml(列名行だけ)", 90))
+
     # B. 実行中と取り消し後
     heavy_id, start_result = start_only(region, credentials, run_dir, output, heavy_query(), "heavy")
     ids.append(("heavy", heavy_id))
@@ -195,6 +238,10 @@ def main():
         result = m83.call(region, credentials, "AmazonAthena." + target, payload)
         results.append(result)
         m83.save(run_dir, "case-{}.json".format(number), result)
+    for query_id, max_results, label, first_number in follow:
+        c, r = follow_pages(region, credentials, run_dir, query_id, max_results, label, first_number)
+        cases.extend(c)
+        results.extend(r)
 
     cancelled_ok = False
     if heavy_id is not None:
