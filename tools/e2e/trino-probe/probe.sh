@@ -4,22 +4,22 @@
 # DROP TABLE / ALTER TABLE の updateType がどう出るかを、ローカル Trino の
 # /v1/statement を直接叩いて確かめるスクリプト。
 #
-# 前提: tools/e2e/trino-probe/docker-compose.yml で Trino を起動済み
+# 前提: ルートの compose.yml の trino を起動済みで、dev（tools/dev.sh）の中から流す
 #       （スキーマ・対照テーブルは本スクリプトが作成する）。
 #
-# バージョンを変えて確かめるときは、このスクリプトではなく docker-compose.yml 側を
-# 差し替える: TRINO_TAG=<タグ> [CATALOG_DIR=./catalog-legacy] docker compose up -d
+# バージョンを変えて確かめるときは、このスクリプトではなく compose の trino を
+# 差し替える: TRINO_TAG=<タグ> [CATALOG_DIR=$PWD/tools/e2e/trino-probe/catalog-legacy] docker compose -f compose.yml up -d trino
 # （古いバージョンは fs.local.enabled が無く fs.native-local.enabled が要るため
 # catalog-legacy/ を用意してある。要るかはバージョンごとに起動ログで確認する）。
 #
 # 出力: $OUT_DIR 以下に <ラベル>.<ページ番号>.json で生の応答を保存する。
 # バージョンごとに OUT_DIR を分けて実行すること。
 #
-# 使い方: OUT_DIR=/path/to/out/482 BASE=http://127.0.0.1:8090 bash probe.sh
+# 使い方: tools/dev.sh OUT_DIR=/path/to/out/482 BASE=http://trino:8080 bash tools/e2e/trino-probe/probe.sh
 
 set -euo pipefail
 
-BASE="${BASE:-http://127.0.0.1:8090}"
+BASE="${BASE:-http://trino:8080}"
 OUT_DIR="${OUT_DIR:?OUT_DIR を指定してください}"
 mkdir -p "$OUT_DIR"
 

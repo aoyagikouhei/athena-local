@@ -18,25 +18,28 @@
 # docker compose で立てる）。課金は発生しない。DDL はローカルの Trino に対してのみ。
 #
 # 使い方:
-#   bash tools/measure/jdbc-show-metadata.sh
+#   tools/dev.sh bash tools/measure/jdbc-show-metadata.sh
 #
 # 環境変数:
-#   KEEP_UP=1     終了後に docker compose down -v をせず環境を残す（デバッグ用）
+#   KEEP_UP=1     終了後に docker compose down -v <サービス...> をせず環境を残す（デバッグ用）
 #   SKIP_BUILD=1  cargo build を省略し、既存の $CARGO_TARGET_DIR（tools/dev.sh では .toolbox/target）の release/athena-local を使う
 #
 # 足場は jdbc-metadata.sh と同じ（compose・証明書・ドライバの取得・起動の関数はそのまま複製した）。
-# 後始末は trap が行う（KEEP_UP=1 でなければ必ず docker compose down -v する）。
+# 環境はルートの compose.yml の trino / minio / minio-init / tls-proxy と jdbc-client。開始時に down -v → up -d で作り直す。
+# 後始末は trap が行う（KEEP_UP=1 でなければ必ず使ったサービスだけ docker compose down -v する。dev は残す）。
 
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-E2E_DIR="$SCRIPT_DIR/../e2e/minio"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # cargo の成果物の置き場。tools/dev.sh は CARGO_TARGET_DIR を .toolbox/target にする
 BINARY="${CARGO_TARGET_DIR:-$REPO_ROOT/target}/release/athena-local"
-COMPOSE_FILE="$E2E_DIR/docker-compose.yml"
+TLS_DIR="$REPO_ROOT/tools/compose/tls"
+COMPOSE=(docker compose -f "$REPO_ROOT/compose.yml")
+# 開始時に down -v → up -d で作り直し、後始末で落とすサービス（jdbc-client は run の使い捨てなので入れない）。
+SERVICES=(trino minio minio-init tls-proxy)
 
-TRINO_BASE="http://127.0.0.1:8092"
+TRINO_BASE="http://trino:8080"
 ATHENA_BASE="http://127.0.0.1:8087"
 BUCKET="athena-results"
 PREFIX="e2e-jdbc"
@@ -53,7 +56,8 @@ DRIVER_CACHE="$DRIVER_CACHE_DIR/athena-jdbc-${DRIVER_VERSION}-with-dependencies.
 DRIVER_MOUNT="/driver/athena-jdbc.jar"
 
 MC_IMAGE="quay.io/minio/mc:latest"
-MC_NETWORK="athena-local-issue39-e2e_default"
+# compose を上げた後、minio のコンテナが繋がっているネットワークを調べて入れる（プロジェクト名で変わるため）。
+MC_NETWORK=""
 MC_ALIAS_CMD='mc alias set local http://minio:9000 minioadmin minioadmin >/dev/null 2>&1'
 
 # 出力はリポジトリの外に置く（生ログを追跡しない）。
@@ -83,7 +87,7 @@ print_table() {
     echo "==================== issue #57 実測結果 ===================="
     echo "ドライバ: Athena JDBC $DRIVER_VERSION（$DRIVER_URL）"
     echo "本物の AWS への呼び出し: 0 回（ドライバ jar のダウンロードのみ）。課金なし。"
-    echo "DDL: ローカルの Trino に対してのみ（compose down -v で消える）"
+    echo "DDL: ローカルの Trino に対してのみ（compose の down -v <サービス...> で消える）"
     echo
     local i
     for i in "${!RESULT_NAMES[@]}"; do
@@ -102,14 +106,14 @@ cleanup() {
     wait "$ATHENA_PID" 2>/dev/null || true
   fi
   # nginx（tls-proxy）のアクセスログは down の前に回収する。
-  if docker compose -f "$COMPOSE_FILE" ps -q tls-proxy >/dev/null 2>&1; then
-    docker compose -f "$COMPOSE_FILE" logs --no-color tls-proxy >"$OUT_ROOT/tls-proxy.log" 2>&1 || true
+  if "${COMPOSE[@]}" ps -q tls-proxy >/dev/null 2>&1; then
+    "${COMPOSE[@]}" logs --no-color tls-proxy >"$OUT_ROOT/tls-proxy.log" 2>&1 || true
   fi
   if [ "${KEEP_UP:-0}" = "1" ]; then
-    log "KEEP_UP=1 のため docker compose はそのまま残す"
+    log "KEEP_UP=1 のため docker compose はそのまま残す（後で tools/dev.sh docker compose -f compose.yml down -v ${SERVICES[*]}）"
   else
-    log "docker compose down -v"
-    docker compose -f "$COMPOSE_FILE" down -v >/dev/null 2>&1
+    log "docker compose down -v ${SERVICES[*]}"
+    "${COMPOSE[@]}" down -v "${SERVICES[@]}" >/dev/null 2>&1
   fi
   print_table
   exit "$status"
@@ -193,12 +197,12 @@ preflight() {
 }
 
 prepare_cert() {
-  if [ ! -f "$E2E_DIR/tls/server.key" ] || [ ! -f "$E2E_DIR/tls/server.crt" ]; then
+  if [ ! -f "$TLS_DIR/server.key" ] || [ ! -f "$TLS_DIR/server.crt" ]; then
     log "自己署名証明書を作る"
-    bash "$E2E_DIR/tls/make-cert.sh" >>"$OUT_ROOT/make-cert.log" 2>&1 || return 1
+    bash "$TLS_DIR/make-cert.sh" >>"$OUT_ROOT/make-cert.log" 2>&1 || return 1
   fi
   # nginx がコンテナ内の非 root ユーザで読むため、鍵は 600 のままだと読めないことがある。
-  chmod 644 "$E2E_DIR/tls/server.crt" 2>/dev/null || true
+  chmod 644 "$TLS_DIR/server.crt" 2>/dev/null || true
   record "TLS 証明書" PASS "server.crt / server.key を用意した（git は追跡しない）"
   return 0
 }
@@ -257,7 +261,7 @@ start_athena_local() {
   log "athena-local を起動する（ログ: $ATHENA_LOG）"
   (
     cd "$REPO_ROOT"
-    # 0.0.0.0 で待つ。tls-proxy コンテナが host-gateway 経由で届く必要があるため
+    # 0.0.0.0 で待つ。tls-proxy コンテナが dev:8087 で届く必要があるため
     # （127.0.0.1 バインドだとコンテナから繋がらない）。
     exec env \
       ATHENA_LOCAL_BIND="0.0.0.0:8087" \
@@ -266,7 +270,7 @@ start_athena_local() {
       TRINO_CATALOG="iceberg" \
       TRINO_SCHEMA="default" \
       ATHENA_LOCAL_RESULTS="s3" \
-      AWS_ENDPOINT_URL_S3="http://127.0.0.1:9002" \
+      AWS_ENDPOINT_URL_S3="http://minio:9000" \
       AWS_ACCESS_KEY_ID="minioadmin" \
       AWS_SECRET_ACCESS_KEY="minioadmin" \
       ATHENA_LOCAL_OUTPUT_LOCATION="$OUTPUT_LOCATION" \
@@ -297,7 +301,7 @@ build_jdbc_client() {
   log "JDBC クライアントをビルドする（maven コンテナ）"
   # 以前 pom.xml が誤って引いていた Federated Query コネクタ（com.amazonaws:athena-jdbc）が
   # target/dependency に残っていると classpath に混ざるので、コンテナ内（root）で消す。
-  if docker compose -f "$COMPOSE_FILE" run --rm --entrypoint sh jdbc-client \
+  if "${COMPOSE[@]}" run --rm --entrypoint sh jdbc-client \
       -c "rm -f target/dependency/athena-jdbc-20*.jar && mvn -q -B package" >"$MVN_LOG" 2>&1; then
     record "JDBC クライアント build" PASS "target/classes と target/dependency を用意した"
     return 0
@@ -318,14 +322,14 @@ run_jdbc_case() {
   # getent と java.net.InetAddress はどちらも解決できるので、名前ではなく /etc/hosts に
   # 固定して渡す（2026-09-21 実測）。
   local proxy_ip
-  proxy_ip=$(docker inspect athena-local-issue39-e2e-tls-proxy \
+  proxy_ip=$(docker inspect "$("${COMPOSE[@]}" ps -q tls-proxy)" \
     --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null)
   if [ -z "$proxy_ip" ]; then
     record "JDBC $label" FAIL "tls-proxy の IP を取得できなかった"
     return 0
   fi
 
-  docker compose -f "$COMPOSE_FILE" run --rm \
+  "${COMPOSE[@]}" run --rm \
     -v "$DRIVER_CACHE:$DRIVER_MOUNT:ro" --entrypoint sh jdbc-client -c "
     echo '$proxy_ip tls-proxy athena-results.tls-proxy' >> /etc/hosts
     keytool -importcert -noprompt -alias athena-local -file /tls/server.crt -cacerts -storepass changeit >/dev/null 2>&1
@@ -392,7 +396,7 @@ collect_metadata() {
 # （auto が GetQueryResults を選んでいたら、焦点の経路を通っていないことになる）
 check_s3_access() {
   local nlog="$OUT_ROOT/tls-proxy-live.log"
-  docker compose -f "$COMPOSE_FILE" logs --no-color tls-proxy >"$nlog" 2>&1
+  "${COMPOSE[@]}" logs --no-color tls-proxy >"$nlog" 2>&1
   local meta_gets
   meta_gets=$(grep -c 'GET [^"]*\.metadata' "$nlog" 2>/dev/null)
   meta_gets=${meta_gets:-0}
@@ -474,15 +478,23 @@ prepare_cert || exit 1
 prepare_driver || exit 1
 build_athena_local || exit 1
 
-log "docker compose up -d"
-if ! docker compose -f "$COMPOSE_FILE" up -d trino minio minio-init tls-proxy >"$OUT_ROOT/compose-up.log" 2>&1; then
+# 前の走行の残骸（テーブル、結果ファイル、nginx のログ）を持ち越さないよう、使うサービスを作り直す。
+# tls-proxy は起動時に dev を名前解決するので、今の dev がいる状態で毎回作り直す。
+log "docker compose down -v / up -d ${SERVICES[*]}"
+if ! "${COMPOSE[@]}" down -v "${SERVICES[@]}" >"$OUT_ROOT/compose-down.log" 2>&1; then
+  record "compose 起動" FAIL "docker compose down -v が失敗した（ログ: $OUT_ROOT/compose-down.log）"
+  exit 1
+fi
+if ! "${COMPOSE[@]}" up -d "${SERVICES[@]}" >"$OUT_ROOT/compose-up.log" 2>&1; then
   record "compose 起動" FAIL "docker compose up -d が失敗した（ログ: $OUT_ROOT/compose-up.log）"
   exit 1
 fi
-# 実際のネットワーク名を確かめる（compose の name: から決まる想定値を上書きする）。
-actual_net=$(docker inspect athena-local-issue39-e2e-minio \
-  --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}' 2>/dev/null)
-[ -n "$actual_net" ] && MC_NETWORK="$actual_net"
+MC_NETWORK=$(docker inspect "$("${COMPOSE[@]}" ps -q minio)" \
+  --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}' 2>/dev/null)
+if [ -z "$MC_NETWORK" ]; then
+  record "compose 起動" FAIL "minio のコンテナのネットワークを取れなかった（mc を繋ぐ先が無い）"
+  exit 1
+fi
 record "compose 起動" PASS "trino・minio・tls-proxy（ネットワーク: $MC_NETWORK）"
 
 wait_for_trino || { record "Trino 起動" FAIL "起動しなかった"; exit 1; }

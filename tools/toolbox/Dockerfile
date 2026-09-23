@@ -8,7 +8,7 @@ FROM rust:1.98-bookworm
 # 公式イメージは --profile minimal で clippy と rustfmt を持たない（CI も ci.yml で足している）。
 RUN rustup component add clippy rustfmt
 
-# 足場が呼ぶコマンド: jq、python3 -m venv と pip、boto3（sdk-retry）、uuidgen、ss、openssl（minio/tls/make-cert.sh）、curl。
+# 足場が呼ぶコマンド: jq、python3 -m venv と pip、boto3（sdk-retry）、uuidgen、ss、openssl（tools/compose/tls/make-cert.sh）、curl。
 # gnupg は下の Docker 公式 apt の鍵を入れるため。
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \

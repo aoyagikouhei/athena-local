@@ -1,6 +1,10 @@
-# 開発環境の定義（#126）。段階 1（#127）は検証の足場を動かす dev サービスだけ。段階 2 で trino などをここに足す。
+# 開発環境の定義（#126）。dev（検証の足場を動かす toolbox）と、足場が相手にする trino / minio / tls-proxy / jdbc-client。
 # 直接は呼ばず tools/dev.sh から使う（下の ${DEV_*} などは tools/dev.sh が export する）。
+# 足場は dev の中から `docker compose -f <このファイル> down -v <サービス...>` → `up -d <サービス...>` で環境を作り直す。
+# サービス名を省いた up（dev まで作ろうとする）と --remove-orphans（dev 自身が消える）は使わない。
 # ${VAR:?} は使わない。使わないサービスの補間エラーでも compose 全体が止まり、足場が compose の中から up / down を呼べなくなる。
+# ホストへの ports: は置かない（人間は `docker compose exec trino trino` か `tools/dev.sh curl http://trino:8080/...`）。
+# 同時に 2 つの足場を流すときは COMPOSE_PROJECT_NAME をホストの環境変数で分ける（docs/dev/development.md）。
 name: athena-local
 
 services:
@@ -11,8 +15,8 @@ services:
       context: tools/toolbox
     # 手元に無いタグを docker.io に取りに行かず、そのまま build する。
     pull_policy: never
-    # 足場は 127.0.0.1:<port> で Trino・MinIO・athena-local に届く前提なので、ホストのネットワークをそのまま使う。
-    network_mode: host
+    # ネットワークは compose の既定。足場は trino:8080 などサービス名で相手に届き、
+    # tools/dev.sh が run に --use-aliases を付けるので tls-proxy からは dev:8087 で athena-local に届く。
     # bash が PID 1 だと SIGINT を無視して足場の trap（compose down や kill）が走らないので、init を PID 1 に置く。
     init: true
     # 作ったファイル（target、証跡）をホストのユーザーの持ち物にする。
@@ -30,9 +34,94 @@ services:
       # passwd に uid の行が無く getpass.getuser() などが落ちるので、名前を環境変数で渡す。
       USER: ${DEV_USER}
       LOGNAME: ${DEV_USER}
+      # 足場が中から compose を呼ぶとき、このファイルの補間が外と同じ値になるよう引き継ぐ（無いと警告が並び dev の定義が空になる）。
+      DEV_REPO: ${DEV_REPO}
+      DEV_CWD: ${DEV_CWD}
+      DEV_UID: ${DEV_UID}
+      DEV_GID: ${DEV_GID}
+      DEV_USER: ${DEV_USER}
+      DOCKER_GID: ${DOCKER_GID}
+      TOOLBOX_TAG: ${TOOLBOX_TAG}
+      # 足場が中から呼ぶ compose を、dev 自身と同じプロジェクトにする（ホストで別名を付ければ別の環境で同時に流せる）。
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-athena-local}
     volumes:
       # compose の相対 bind がホストのパスで解決されるよう、リポジトリはホストと同じ絶対パスに置く。
       - ${DEV_REPO}:${DEV_REPO}
       # 足場は証跡を /tmp/athena-local-issueNN-* に置いてパスを表示するので、ホストから開けるよう共有する。
       - /tmp:/tmp
       - /var/run/docker.sock:/var/run/docker.sock
+
+  trino:
+    # trino-probe/versions.sh が TRINO_TAG と CATALOG_DIR で版とカタログを差し替える（古い版は fs の設定が違う）。
+    image: trinodb/trino:${TRINO_TAG:-482}
+    volumes:
+      # hive / iceberg（データはコンテナ内の /data。MinIO は指さない）と memory（sdk-retry・retention）。相対パスはこのファイルの場所が基準。
+      - ${CATALOG_DIR:-./tools/compose/catalog}:/etc/trino/catalog:ro
+      - trino-hive-data:/data/hive
+      - trino-iceberg-data:/data/iceberg
+
+  minio:
+    image: quay.io/minio/minio:latest
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+      # #46: Athena JDBC の S3 クライアントは virtual-hosted style（athena-results.tls-proxy）で来る。
+      # これが無いと MinIO がホスト名からバケットを切り出せず NoSuchBucket（2026-09-21 実測）。path style はそのまま通る。
+      MINIO_DOMAIN: tls-proxy
+    command: server /data
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  # 使い捨て。起動のたびに athena-results バケットを（無ければ）作って終了する。
+  minio-init:
+    image: quay.io/minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        mc alias set local http://minio:9000 minioadmin minioadmin
+        mc mb --ignore-existing local/athena-results
+        echo "bucket ready: athena-results"
+
+  # Athena JDBC 3.x は平文 HTTP のエンドポイントを拒否するので、athena-local（dev の中）と MinIO の手前で TLS を終端する。
+  # nginx は起動時に upstream を名前解決する。dev は run のたびに作り直されるので、足場は tls-proxy を毎回 down -v → up -d で作り直す。
+  tls-proxy:
+    image: nginx:1.27.0
+    depends_on:
+      minio:
+        condition: service_healthy
+    volumes:
+      - ./tools/compose/tls/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./tools/compose/tls/server.crt:/etc/nginx/tls/server.crt:ro
+      - ./tools/compose/tls/server.key:/etc/nginx/tls/server.key:ro
+    networks:
+      default:
+        # ドライバの S3 クライアントが virtual-hosted style（<bucket>.<endpoint host>）で来るときの名前。
+        aliases:
+          - athena-results.tls-proxy
+
+  # 公式 Athena JDBC ドライバを動かすビルド環境。常駐させず `docker compose run --rm jdbc-client ...` で使う。
+  # jdbc-client は down しないので jdbc-client-m2（maven のキャッシュ）は実行をまたいで残る。
+  jdbc-client:
+    image: maven:3.9-eclipse-temurin-21
+    working_dir: /work
+    volumes:
+      - ./tools/compose/jdbc-client:/work
+      - jdbc-client-m2:/root/.m2
+      - ./tools/compose/tls:/tls:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["sleep infinity"]
+
+volumes:
+  trino-hive-data:
+  trino-iceberg-data:
+  minio-data:
+  jdbc-client-m2:

@@ -1,12 +1,12 @@
 /target
 /athena-txt-measurements
 
-# ネストしたビルド成果物（例: tools/e2e/*/jdbc-client/target）
+# ネストしたビルド成果物（例: tools/compose/jdbc-client/target）
 target/
 
 # 検証用の自己署名証明書と秘密鍵（make-cert.sh で作る。リポジトリには入れない）
-tools/e2e/minio/tls/server.key
-tools/e2e/minio/tls/server.crt
+tools/compose/tls/server.key
+tools/compose/tls/server.crt
 __pycache__/
 
 # tools/dev.sh が作る toolbox の HOME と cargo の成果物

@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# issue #111: Athena JDBC 3.x の版ごとの実機検証（本物の AWS は使わない。足場は tools/e2e/minio/）。
+# issue #111: Athena JDBC 3.x の版ごとの実機検証（本物の AWS は使わない。環境はルートの compose.yml）。
 #   (3) 失敗した DDL の <id>.txt（athena-local が `FAILED: ` + 理由を置く）をドライバが読みに行かないか
 #       （Main のシナリオ 111。nginx のログで .txt* への GET を数える）
 #   (6) 旧版（3.0.0〜3.5.0）が athena-local の素の protobuf の .txt.metadata（SHOW 系）を読めるか
 #       （シナリオ 57。合否は RESULT SHOW_* 行だけ）
 # 3.8.1 は対照として fetcher 未指定・S3・GetQueryResults × 46/57/111 の 9 回。旧版は
-# {auto（3.4.0 以上のみ）, S3} × {57, 111}。compose は 1 回だけ立て、ループの中では down しない。
+# {auto（3.4.0 以上のみ）, S3} × {57, 111}。compose は開始時に 1 回だけ作り直し、ループの中では down しない。
 #
 # 使い方:
 #   tools/dev.sh SKIP_BUILD=1 tools/e2e/jdbc-drivers/verify.sh
 # 環境変数:
 #   DRIVER_VERSIONS  版の一覧（既定 "3.8.1 3.5.0 3.4.0 3.3.0 3.2.2 3.1.0 3.0.0"）。取れない版は SKIP
 #   SKIP_BUILD=1     cargo build を省き、既存の $CARGO_TARGET_DIR（tools/dev.sh では .toolbox/target）の release/athena-local を使う
-#   KEEP_UP=1        終了後に docker compose down -v をしない
+#   KEEP_UP=1        終了後に docker compose down -v <サービス...> をしない
 #   JVM_TIMEOUT      JVM 1 回の上限秒（既定 300。超えたらその回は SKIP「ハング」）
 # 終了コードは FAIL の件数（INFO と SKIP は数えない）。証跡は /tmp/athena-local-issue111-jdbc.* に残る。
 
@@ -30,8 +30,8 @@ DRIVER_VERSIONS="${DRIVER_VERSIONS:-3.8.1 3.5.0 3.4.0 3.3.0 3.2.2 3.1.0 3.0.0}"
 JDBC_URL="jdbc:athena://"
 OUT_ROOT="$(mktemp -d /tmp/athena-local-issue111-jdbc.XXXXXX)"
 SUMMARY_FAILS=0
-# 自分で up したときだけ down する（ポートが使用中で止まったとき、同じプロジェクト名で動いている
-# 別の検証（minio/verify.sh など）を落とさないため）。
+# 自分で up したときだけ down する（同じプロジェクトで別の足場が動いていて止まったとき、
+# 相手の環境を落とさないため）。
 COMPOSE_STARTED=0
 
 cleanup() {
@@ -42,9 +42,9 @@ cleanup() {
   if [ "$COMPOSE_STARTED" = "1" ]; then
     dc logs --no-color tls-proxy >"$OUT_ROOT/tls-proxy.log" 2>&1 || true
     if [ "${KEEP_UP:-0}" = "1" ]; then
-      log "KEEP_UP=1 のため docker compose はそのまま残す"
+      log "KEEP_UP=1 のため docker compose はそのまま残す（後で tools/dev.sh docker compose -f compose.yml down -v ${SERVICES[*]}）"
     else
-      dc down -v >/dev/null 2>&1
+      dc down -v "${SERVICES[@]}" >/dev/null 2>&1
     fi
   fi
   # パイプに流すとサブシェルで SUMMARY_FAILS が失われるので、ファイルに書いてから表示する。
