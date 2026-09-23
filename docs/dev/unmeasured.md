@@ -65,6 +65,10 @@
 - [ ] `UPDATE` / `DELETE` の athena-local での実機確認（#5。Trino の `memory` コネクタが持たないため結合テストに委ねた。`MERGE` は #56 で Trino 482 + MinIO で確認）
 - [ ] awswrangler が `GetQueryResults` を読む経路で先頭行をどう扱うか（#60。PyAthena はソースで確認済み）
 
+## `ExecutionParameters`（本物で測った記録はまだ無い）
+
+- [ ] 括弧で始まるクエリ（`( SELECT 1 )`）を本物がどう分類するか。athena-local は式として通す（CHANGELOG の Unreleased / Fixed の項目。レビューで見つけた）
+
 ## Trino（[measurements/trino.md](measurements/trino.md)）
 
 - [ ] Trino 482 より古いバージョンの `system.metadata.catalogs` の `connector_name` などの値（#39。483 は 482 と同じと確認）

@@ -43,6 +43,7 @@
 - `<id>.txt` と `.metadata` の書き込みに失敗しても FAILED にせず `SUCCEEDED` のままにし、標準エラーに 1 行出す。`.csv` の書き込み失敗は FAILED。理由: 本物は補助ファイルの書き込みで失敗にしない。Trino で実行済みの DDL は取り消せないので失敗と報告すると実害がある。`SHOW` の結果は `GetQueryResults` からも取れる。（#1、2026-09-16、ユーザーの判断 4、#5、2026-09-17）
 - `to_csv` と `to_text` は、NULL の扱いしか重ならず引用符と列名行の有無が違うので、無理にまとめない。（#1、2026-09-16）
 - S3 への PUT には `reqwest` のタイムアウトを固定値で入れる（環境変数は足さない）。タイムアウトは新しい分岐を作らず、既存の PUT 失敗の経路に合流させる。（#16、2026-09-18）
+- その上限 30 秒は、本物に対応する挙動が無い athena-local 独自の値。（#16、2026-09-18）
 - 本体の PUT 中の取り消しに備えて `.metadata` の前に取り消しを確かめ直す分岐は入れない（既に起きている競合で、新しい壊れ方は生まれない）。（#5、2026-09-17）
 - INSERT の結果ファイルは、テーブルの形式・更新件数によらず `<id>`（`ResultFile::Manifest`）。更新件数 0 の INSERT も `.metadata` だけを置き、field 3 に 0 を書く。（#35、2026-09-20、#91、2026-09-23）
 - 失敗ファイル（`FAILED: ` + `StateChangeReason`）の中身は本物の `StateChangeReason` と一致しない（本物は Hive の文言そのものが `FAILED: ` で始まり、athena-local は Trino の `ERROR_NAME: message`）。それを承知で、ファイルを読んだクライアントが失敗と分かる印を優先し、差を利用者向けの文書に書く。（#6、2026-09-17、ユーザーの判断 2）
@@ -56,6 +57,7 @@
 - リテラルだけの `SELECT` は実測した形だけを受け、ほかは application に落とす（本物が binary にする形を取りこぼす方向にだけ外れる）。（#70、2026-09-23、ユーザーの選択。#76 で実測した形を足した）
 - `SELECT 1;` は本物では binary だが、Trino が弾くので判定を変えない。（#76、2026-09-23）
 - `.txt` の判定は先頭の語で、`DESCRIBE`／`DESC`、`EXPLAIN`、`SHOW CREATE` が application、それ以外の `.txt`（`SHOW` 系・DDL）が binary。この組は `.metadata` の先頭のクエリ ID を選ぶ組（`metadata_query_id`）と同じで、片方を変えたら両方を直す。INSERT・CTAS（`Manifest`／`Table`）は application。（#70、2026-09-23）
+- `.csv` の `text/csv` は 0.3.0 からの未実測の推測値で、2026-09-17 の実測（6 件中 5 件が application、残る 1 件は `SELECT 1`）を根拠に `application/octet-stream` へ置き換えた。多数決で丸めていたことは #70 の規則で解消した。（#5、2026-09-17）
 
 ## `.metadata`
 
