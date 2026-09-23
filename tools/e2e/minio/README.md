@@ -11,6 +11,7 @@ DROP TABLE の結果ファイルがテーブルの形式（Hive / Iceberg）で�
   バケットを作る使い捨てコンテナ `minio-init`
 - `verify.sh` — 起動からケースの判定、後始末までを 1 本でやるスクリプト
 - `cases-dml-retention.sh` — ケース 10〜12・14（issue #111）の関数。`verify.sh` が `source` する（単独では実行しない）
+- `lib.sh` — ケースが共有するヘルパ（結果表、Trino への直接アクセス、athena-local の起動と API 呼び出し、MinIO 側の検証。issue #116）。`verify.sh` が `source` する（単独では実行しない）
 
 ## 使っているサービス・イメージ
 
