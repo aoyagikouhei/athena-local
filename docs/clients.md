@@ -131,7 +131,8 @@ name that Docker's embedded resolver serves (`search .`, `ndots:0`) even though
 
 PyAthena's pandas and arrow cursors read the result file rather than
 `GetQueryResults`, so DDL, `SHOW` and `DESCRIBE` need `ATHENA_LOCAL_RESULTS=s3`,
-which writes their `<id>.txt` (see [Result files](result-files.md#result-files)).
+which writes their `<id>.txt` (`<id>.csv` for `SHOW FUNCTIONS`; see
+[Result files](result-files.md#result-files)).
 
 ## awswrangler and Grafana
 

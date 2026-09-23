@@ -57,7 +57,8 @@ DDL, the other `SHOW` statements, `DESCRIBE` and `EXPLAIN` write `<id>.txt` the 
 - On an Iceberg table, `DROP TABLE` writes a single newline on Athena, which
   returns two empty rows for zero columns; athena-local matches it there
   (measured 2026-09-20 and 2026-09-21, reproduced across three rounds). On a
-  Hive table, or when the target does not exist, both write an empty file. See
+  Hive table, or with `IF EXISTS` on a missing target, both write an empty file.
+See
   [DDL that depends on the target table's format](ddl.md#ddl-that-depends-on-the-target-tables-format).
 
 The object is uploaded with a presigned `PUT` (path-style), so any
@@ -145,8 +146,8 @@ message (`INVALID_INPUT`).
 
 With `ATHENA_LOCAL_RESULTS=s3`, a companion file named after the result file
 plus `.metadata` is written next to it, as Athena does (measured 2026-09-17):
-`<id>.csv.metadata`, `<id>.txt.metadata`, `<id>.metadata` for `INSERT` and an
-Iceberg CTAS, and `tables/<id>.metadata` for a Hive CTAS. It is uploaded with
+`<id>.csv.metadata`, `<id>.txt.metadata`, `<id>.metadata` for `INSERT`, and
+`tables/<id>.metadata` for a CTAS whatever the table format (measured 2026-09-19). It is uploaded with
 the same `Content-Type` as its result file (see
 [Result files](#result-files)). Athena JDBC 3.x is
 the client that needs it: its default `ResultFetcher=auto` reads the result and

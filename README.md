@@ -29,11 +29,15 @@ services:
       # AWS_ENDPOINT_URL_S3: http://minio:9000
       # AWS_ACCESS_KEY_ID: minioadmin
       # AWS_SECRET_ACCESS_KEY: minioadmin
+      # ATHENA_LOCAL_OUTPUT_LOCATION: s3://my-bucket/athena/
     ports:
       - "8084:8080"
     depends_on:
       - trino
 ```
+
+The docs describe the current source; features listed under `[Unreleased]` in
+[CHANGELOGS.md](CHANGELOGS.md) are not in the image tag the example pins.
 
 Then tell your client to use it:
 

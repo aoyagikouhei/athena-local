@@ -8,7 +8,7 @@ The Athena operations athena-local answers, and the Athena behaviour it reproduc
 | `GetQueryExecution` | `QUEUED` → `RUNNING` → `SUCCEEDED` / `FAILED` / `CANCELLED`. Trino errors land in `Status.StateChangeReason`. `WorkGroup` is the name `StartQueryExecution` was given, or `primary` when it was omitted |
 | `GetQueryResults` | Paginated with `MaxResults` / `NextToken` (1..1000, default 1000 rows including the header row). Out-of-range `MaxResults` and malformed `NextToken` fail the way Athena does (see [Caveats](caveats.md#paging)) |
 | `StopQueryExecution` | Marks a queued or running query `CANCELLED` immediately and sends `DELETE` to Trino's `nextUri`. Stopping a finished query succeeds and changes nothing |
-| `GetWorkGroup` | Accepts any workgroup name and returns the same configuration for all of them. `Configuration.ResultConfiguration.OutputLocation` reflects `ATHENA_LOCAL_OUTPUT_LOCATION` when it is set. `Configuration.ResultConfiguration` is always present, and is `{}` when `ATHENA_LOCAL_OUTPUT_LOCATION` is not set |
+| `GetWorkGroup` | Accepts any workgroup name and returns the same configuration for all of them. `Configuration.ResultConfiguration.OutputLocation` reflects `ATHENA_LOCAL_OUTPUT_LOCATION` when it is set with `ATHENA_LOCAL_RESULTS=s3`. `Configuration.ResultConfiguration` is always present, and is `{}` otherwise (with `ATHENA_LOCAL_RESULTS=none` the variable is ignored) |
 | `ListWorkGroups` | Lists the names from `ATHENA_LOCAL_WORK_GROUPS` (just `primary` when unset) in name order, with the same `State` and `EngineVersion` as `GetWorkGroup`. Paginated with `MaxResults` / `NextToken`; out-of-range `MaxResults` and malformed `NextToken` fail the way Athena does |
 
 Behaviour that matches real Athena:
@@ -30,8 +30,8 @@ Behaviour that matches real Athena:
 - `ColumnInfo` looks like Athena's: `Type` is the base name (`varchar`, `decimal`,
   `array`, `timestamp`, and `float` for `real`); `Precision` / `Scale` carry the
   `decimal` digits and the `varchar` / `char` length, and Athena's fixed values for
-  other types (`integer` 10, `bigint` 19, `double` and `float` 17, `timestamp` 3,
-  `varbinary` 1073741824, 0 otherwise); `CaseSensitive` is true for `varchar` and
+  other types (`tinyint` 3, `smallint` 5, `integer` 10, `bigint` 19, `double` and
+  `float` 17, `timestamp` and `time` 3, `varbinary` 1073741824, 0 otherwise); `CaseSensitive` is true for `varchar` and
   `char`; `CatalogName` is `hive` with empty `SchemaName` / `TableName`.
 - The `Query Plan` column of `EXPLAIN` is typed `varchar(<length of the plan
   text>)` by the engine: 371 for `EXPLAIN SELECT 1` on Athena engine version 3
@@ -72,7 +72,7 @@ Behaviour that matches real Athena:
 
   | State | Message | `AthenaErrorCode` |
   | --- | --- | --- |
-  | `QUEUED` / `RUNNING` | `Query has not yet finished. Current state: RUNNING` | `INVALID_QUERY_EXECUTION_STATE` |
+  | `QUEUED` / `RUNNING` | `Query has not yet finished. Current state: <state>` (`RUNNING` measured; `QUEUED` while still queued) | `INVALID_QUERY_EXECUTION_STATE` |
   | `FAILED` | `Query did not finish successfully. Final query state: FAILED` | `INVALID_QUERY_EXECUTION_STATE` (see [Caveats](caveats.md#failed-queries)) |
   | `CANCELLED` | `Could not find results` | `RESULT_NOT_FOUND` |
 
