@@ -200,7 +200,7 @@ build_jdbc_client() {
 }
 
 # $1 = 版, $2 = ResultFetcher（空なら未指定）, $3 = シナリオ, $4 = OutputLocation, $5 = URL, $6 = 出力ファイル
-# JDBC の実行は jdbc-show-metadata.sh と同じ形（/etc/hosts に tls-proxy を固定、keytool で証明書を取り込む）。
+# JDBC の実行は jdbc 系 3 本共通の形（/etc/hosts に tls-proxy を固定、keytool で証明書を取り込む）。
 # 値は位置引数で渡す（-e は使わない）。1 回を timeout で包み、終了コードを返す（124 はハング、97 は tls-proxy の
 # IP が取れず JVM を起動しなかった。どちらも record は呼ばない＝判定は呼び出し元に任せる）。
 run_jvm() {
