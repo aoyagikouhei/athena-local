@@ -68,6 +68,7 @@ import re
 import string
 import sys
 import time
+import uuid
 import urllib.error
 import urllib.request
 
@@ -173,7 +174,13 @@ def start_query(region, credentials, run_dir, output):
         region,
         credentials,
         "AmazonAthena.StartQueryExecution",
-        {"QueryString": QUERY, "ResultConfiguration": {"OutputLocation": output}},
+        {
+            "QueryString": QUERY,
+            "ResultConfiguration": {"OutputLocation": output},
+            # 生 HTTP では CLI が自動で入れる ClientRequestToken が付かず、無いと
+            # `clientRequestToken is null or empty` で弾かれる（#3 と 1 ラウンド目で実測）。
+            "ClientRequestToken": str(uuid.uuid4()),
+        },
     )
     save(run_dir, "start.json", result)
     parsed = parsed_body(result)
