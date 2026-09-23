@@ -1039,13 +1039,14 @@ passed; see Caveats.
   `null` is treated as absent, unknown members are ignored, and a
   `MaxResults` beyond the 32-bit range falls through to the usual
   upper-bound validation. Combinations Athena was not measured for (`false`,
-  a decimal, an object where a list or string is expected, a number or
-  boolean where a list or structure is expected) are a `SerializationException`
-  with no `Message`. Two known differences: Athena truncates a decimal
-  `MaxResults` such as `1.5` to `1`, and athena-local rejects it; and an
-  empty JSON array for a nested structure (`"QueryExecutionContext": []`) is
-  accepted as an empty structure, where Athena answers `Start of list found
-  where not expected`. A request whose `X-Amz-Target` is missing, lacks the
+  a decimal, an object where a list is expected, a number or boolean where a
+  list or structure is expected) are a `SerializationException` with no
+  `Message`. Two known differences: Athena truncates a decimal `MaxResults`
+  such as `1.5` to `1`, and athena-local rejects it; and a JSON array for a
+  nested structure (`"QueryExecutionContext": []`, or `["s3://b/"]` for
+  `ResultConfiguration`) is read positionally as that structure, where
+  Athena answers `Start of list found where not expected`. A request whose
+  `X-Amz-Target` is missing, lacks the
   `AmazonAthena.` prefix, or names an unsupported or differently cased
   operation is `{"__type":"UnknownOperationException"}` with no `Message`,
   as on Athena. The `Content-Type` header is not checked (Athena answers a
