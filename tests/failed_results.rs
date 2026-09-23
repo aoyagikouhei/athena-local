@@ -85,7 +85,7 @@ async fn 失敗の理由のファイルを書き終わるまで_failed_にしな
 }
 
 #[tokio::test]
-async fn 失敗した_select_と_insert_は何も置かない() {
+async fn 失敗した_select_と_insert_と_explain_は何も置かない() {
     let harness = Harness::builder(json!({ "columns": [{ "name": "n", "type": "bigint" }] }))
         .route(
             "SELECT * FROM no_such",
@@ -98,11 +98,22 @@ async fn 失敗した_select_と_insert_は何も置かない() {
             "INSERT INTO t VALUES (1)",
             trino_error("TABLE_NOT_FOUND", "line 1:13: Table 't' does not exist"),
         )
+        .route(
+            "EXPLAIN SELECT * FROM no_such",
+            trino_error(
+                "TABLE_NOT_FOUND",
+                "line 1:23: Table 'no_such' does not exist",
+            ),
+        )
         .results_s3()
         .start()
         .await;
 
-    for sql in ["SELECT * FROM no_such", "INSERT INTO t VALUES (1)"] {
+    for sql in [
+        "SELECT * FROM no_such",
+        "INSERT INTO t VALUES (1)",
+        "EXPLAIN SELECT * FROM no_such",
+    ] {
         let execution = harness.run_query(with_output(sql)).await;
         assert_eq!(
             execution["QueryExecution"]["Status"]["State"], "FAILED",
@@ -111,6 +122,7 @@ async fn 失敗した_select_と_insert_は何も置かない() {
     }
 
     // `.csv`（SELECT）と `<id>`（INSERT）の文は、本物も失敗時に何も置かない（2026-09-17 実測）。
+    // EXPLAIN は `.txt` の文だが、本物は失敗時に本体も `.metadata` も置かない（2026-09-23 実測。#92）。
     assert!(harness.s3_puts().is_empty(), "{:?}", harness.s3_puts());
 }
 

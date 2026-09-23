@@ -275,6 +275,18 @@ later name the date they were measured on.
 
 ### Fixed
 
+- `EXPLAIN (TYPE VALIDATE)` now returns `Valid`, `true` and one empty row, and
+  writes `Valid\ntrue\n` to `<id>.txt`, as Athena does: the single `boolean`
+  value goes through the same split as a plan text (append one newline, split
+  on `\n`). It used to return the header and `true` only. The rule was measured
+  on 2026-09-23 for eight `EXPLAIN` forms in one round (`FORMAT JSON`,
+  `TYPE IO`, `FORMAT GRAPHVIZ`, `TYPE DISTRIBUTED`, `ANALYZE`,
+  `ANALYZE VERBOSE`, `TYPE VALIDATE` and the plain form); the text plans all
+  matched the existing behaviour, so the Caveat that the split had been
+  measured on one plan shape is gone.
+- A failed `EXPLAIN` no longer writes the `FAILED: ...` file to `<id>.txt`:
+  Athena writes neither the file nor the `.metadata` companion for a failed
+  `EXPLAIN` or `EXPLAIN ANALYZE` (measured 2026-09-23 on a missing table).
 - `SHOW FUNCTIONS` now writes its result as `<id>.csv`, a header-line CSV in
   the `SELECT` format sent as `application/octet-stream`, and `GetQueryResults`
   returns the column-name row first, as on Athena (measured 2026-09-23). Its

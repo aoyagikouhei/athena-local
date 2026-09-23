@@ -679,3 +679,46 @@ async fn explain_の結果には_select_と同じく列名行が入る() {
     assert_eq!(column["Precision"], 371);
     assert_eq!(column["CaseSensitive"], true);
 }
+
+#[tokio::test]
+async fn explain_type_validate_の真偽値の結果も文字列にして末尾に空行を足す() {
+    // `EXPLAIN (TYPE VALIDATE)` は boolean 列 `Valid` に `true` を 1 行返す。本物はその値も
+    // プランの本文と同じく「文字列 + `\n` を `\n` で分ける」規則で分けるので、Rows は列名行・`true`・
+    // 空行の 3 行、`.txt` は `Valid\ntrue\n` の 11 バイトになる（2026-09-23 実測。#92）。
+    let harness = Harness::builder(json!({
+        "columns": [{ "name": "Valid", "type": "boolean", "typeSignature": { "rawType": "boolean", "arguments": [] } }],
+        "data": [[true]]
+    }))
+    .results_s3()
+    .default_output_location("s3://results-bucket/athena/")
+    .start()
+    .await;
+    let execution = harness
+        .run_query(json!({ "QueryString": "EXPLAIN (TYPE VALIDATE) SELECT 1" }))
+        .await;
+    let (_, results) = harness
+        .call(
+            "GetQueryResults",
+            json!({ "QueryExecutionId": execution_id(&execution) }),
+        )
+        .await;
+
+    let rows = results["ResultSet"]["Rows"].as_array().unwrap();
+    let values: Vec<_> = rows
+        .iter()
+        .map(|row| row["Data"][0]["VarCharValue"].as_str().unwrap())
+        .collect();
+    assert_eq!(values, ["Valid", "true", ""]);
+    let column = &results["ResultSet"]["ResultSetMetadata"]["ColumnInfo"][0];
+    assert_eq!(column["Type"], "boolean");
+
+    let puts = harness.s3_puts();
+    assert_eq!(
+        puts[0].key,
+        format!("athena/{}.txt", execution_id(&execution))
+    );
+    assert_eq!(
+        String::from_utf8(puts[0].body.clone()).unwrap(),
+        "Valid\ntrue\n"
+    );
+}

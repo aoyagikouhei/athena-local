@@ -308,7 +308,9 @@ async fn run(
 /// 行を返す（`EXPLAIN SELECT 1` の Rows は列名行 + 非空 11 行 + 空行 3 行の 15 行、`.txt` は
 /// 列名行 + 全文 + `\n` の 393 バイト。2026-09-15／16 の 4 ラウンドで実測。#73）。
 /// 分けた行を実行結果として持ち回るので、GetQueryResults と `.txt` の行数が揃う。
-/// 末尾が改行で終わらないプラン（`EXPLAIN (FORMAT JSON)` など）は未実測で、同じ規則で末尾に空行が 1 つ付く。
+/// 同じ規則が、改行で終わらないプラン（`FORMAT JSON`／`TYPE IO`。末尾に空行 1 つ）、`\n` 1 つで
+/// 終わる `FORMAT GRAPHVIZ`（空行 2 つ）、`ANALYZE`／`TYPE DISTRIBUTED`（空行 3 つ）と、boolean の
+/// `true` を返す `TYPE VALIDATE`（`true` + 空行）にも当たる（2026-09-23 に 8 形を同じラウンドで実測。#92）。
 fn split_explain_rows(query: &str, mut outcome: Outcome) -> Outcome {
     if super::classification::substatement_type(query) != Some("EXPLAIN") {
         return outcome;
@@ -316,16 +318,17 @@ fn split_explain_rows(query: &str, mut outcome: Outcome) -> Outcome {
     let rows = std::mem::take(&mut outcome.rows);
     outcome.rows = rows
         .into_iter()
-        .flat_map(
-            |row| match row.first().and_then(serde_json::Value::as_str) {
-                Some(text) => text
-                    .split('\n')
-                    .chain(std::iter::once(""))
-                    .map(|line| vec![serde_json::Value::from(line)])
-                    .collect(),
-                None => vec![row],
-            },
-        )
+        .flat_map(|row| {
+            let text = match row.first() {
+                Some(serde_json::Value::String(text)) => text.clone(),
+                Some(serde_json::Value::Bool(flag)) => flag.to_string(),
+                _ => return vec![row],
+            };
+            text.split('\n')
+                .chain(std::iter::once(""))
+                .map(|line| vec![serde_json::Value::from(line)])
+                .collect()
+        })
         .collect();
     outcome
 }
@@ -369,5 +372,19 @@ mod tests {
             plan(vec![vec![serde_json::Value::Null]]),
         );
         assert_eq!(null.rows, [[serde_json::Value::Null]]);
+    }
+
+    #[test]
+    fn explain_の真偽値の結果は文字列にしてから同じ規則で分ける() {
+        // `EXPLAIN (TYPE VALIDATE)` の boolean の `true` も、本物は `true` + `\n` を分けた
+        // `true`・空行の 2 行にする（2026-09-23 実測。#92）。
+        let outcome = split_explain_rows(
+            "EXPLAIN (TYPE VALIDATE) SELECT 1",
+            plan(vec![vec![serde_json::Value::Bool(true)]]),
+        );
+        assert_eq!(
+            outcome.rows,
+            [["true"], [""]].map(|row| row.map(serde_json::Value::from))
+        );
     }
 }
