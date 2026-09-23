@@ -1,6 +1,6 @@
 # 未実測の一覧
 
-各 issue の実装で「本物の Athena で測っていない」まま残した挙動。次に本物の Athena を叩ける機会に、まとめて測る。測ったら [measurements/](measurements/README.md) に書いてここから消す（「済み」の節へ移す）。[docs/caveats.md](../caveats.md) の「not measured」も直す。出典は issue #<番号> のノート（git の履歴に残る）。
+各 issue の実装で「本物の Athena で測っていない」まま残した挙動。次に本物の Athena を叩ける機会に、まとめて測る。測ったら [measurements/](measurements/README.md) に書いてここから消す（「済み」の節へ移す）。[docs/caveats.md](../caveats.md) の「not measured」も直す。本物の Athena でも観測できない・誘発できないと分かったものは、測る対象から外して末尾の「測れないもの」へ理由つきで移す（[docs/caveats.md](../caveats.md) は「cannot be measured」の趣旨に直す）。出典は issue #<番号> のノート（git の履歴に残る）。
 
 話題の分け方は [measurements/](measurements/README.md) のファイルと揃えてある。
 
@@ -9,7 +9,6 @@
 - [ ] `CREATE TABLE` の重複の結果ファイル（Hive テーブルへの `ALTER TABLE` 失敗は #43 で実測済み: `RENAME TO` が理由を `<id>.txt` に書いた。失敗した `EXPLAIN` は #92 で実測済み: 何も置かない）
 - [ ] 失敗時の `GetQueryResults` が本物は文ごとに割れる（空の ResultSet／`INVALID_QUERY_EXECUTION_STATE`／`RESULT_NOT_FOUND`）。athena-local は常に `INVALID_QUERY_EXECUTION_STATE`
 - [ ] `.txt` の値に区切り文字（タブ）や改行が入るときのエスケープと、NULL の書き方（#1。1 回目で「まだ測れていない」とし、4 回目の記述では触れていない）
-- [ ] カタログの既定など、`WITH` 句以外からテーブルの形式が決まる場合の CTAS・INSERT の結果ファイル（#26・#35。Athena では作れなかったので項目にしていない）
 - [ ] 失敗した `SHOW FUNCTIONS` が結果ファイルを置くか（#80）
 - [ ] `SHOW CREATE VIEW` の Content-Type（#76 のラウンドでは DB にビューが無く SKIPPED）
 
@@ -21,7 +20,6 @@
 - [ ] 0 行の CTAS（更新件数 0）で本物が field 3 を出すか（#5）
 - [ ] 列の field 2 / 3 が本当に SchemaName / TableName か（#5。公開情報でも推測で未観測）
 - [ ] 列の Nullable（field 9）の 1（NOT_NULL）と 2（NULLABLE）（#5。観測したのは 3 = UNKNOWN だけ）
-- [ ] 空の列名の扱い（#5。本物では観測できない。athena-local はフィールドを出す）
 
 ## 文の種類（[measurements/statements.md](measurements/statements.md)）
 
@@ -43,7 +41,6 @@
 
 - [ ] `Configuration.EnableMinimumEncryptionConfiguration` の値（キーの存在だけ確認）
 - [ ] 出力先が設定されたワークグループの `GetWorkGroup` の `ResultConfiguration` の形
-- [ ] `GetWorkGroup` の実測値（`EnforceWorkGroupConfiguration=false` 等）が工場出荷時の既定か、コンソールで変えた後の値か
 - [ ] `ListWorkGroups` の `MaxResults` 未指定時の既定ページサイズ（athena-local は 50）
 - [ ] `ListWorkGroups` の順序が名前順であること（3 件だけの根拠）
 
@@ -51,7 +48,6 @@
 
 - [ ] `QUEUED` のクエリへの `GetQueryResults` の文言（`RUNNING` のときの `Query has not yet finished. Current state: RUNNING` だけ実測。athena-local は `Current state: QUEUED` を返す。#102）
 - [ ] `x-amzn-errortype` ヘッダ。#2、#3、#9 の実測で本物の応答に見つからなかったが、athena-local は送り続けている
-- [ ] `AthenaErrorCode` の無い経路のうち `InternalServerException` の本文の形（パース失敗と未対応オペレーションは #84 で実測: `SerializationException`・`UnknownOperationException` はどちらも `AthenaErrorCode` 無し）
 - [ ] 構文エラー（`MALFORMED_QUERY`）など、冪等性の衝突とトークンの検証以外の `AthenaErrorCode` 付きエラーの本文に `ErrorCode` キーが付くか（#3。`ErrorCode` 付きの形を確かめたのはこの 2 つと、#83 の `GetQueryResults` の検証エラー）
 
 ## 実クライアントでの疎通（[measurements/clients.md](measurements/clients.md)）
@@ -102,3 +98,12 @@
 - 失敗した DDL の `<id>.txt` を結果ファイルを読むクライアント（PyAthena、JDBC 3.x）が読んでも壊れないこと（#6）→ #111（2026-09-23。JDBC 3.0.0〜3.8.1 も PyAthena 3.36.0 の PandasCursor・Cursor も FAILED を見て例外を投げ、`<id>.txt` も `.txt.metadata` も取りに行かなかった。[measurements/clients.md](measurements/clients.md)。足場は `tools/e2e/jdbc-drivers/` と `tools/e2e/python-clients/`）
 - 暗号化系の `SHOW` に素の protobuf の `.txt.metadata` を返して Athena JDBC 3.5.1 未満が壊れないか（#5）→ #111（`.txt.metadata` を読み込む auto のある 3.4.0・3.5.0 は例外なく読んだ。3.4.0・3.5.0 の auto で準備の `CREATE TABLE` が既知の NoSuchKey。3.0.0〜3.3.0 は下の「実クライアントでの疎通」に残す。[measurements/clients.md](measurements/clients.md)）
 - 長時間運用でメモリが頭打ちになるか（保持期限による破棄の実効性）→ #111（2026-09-23。同じ負荷を 240 秒ずつ流し、保持 1 秒の VmRSS の暖機後の伸びは 17.9MiB（後半 3.1MiB）、保持 3600 秒は 3267.9MiB。最初の ID は 1 秒側で 400。足場は `tools/e2e/retention/verify.sh`。docs/caveats.md の Query lifecycle に書いた。数時間の推移は #121）
+
+## 測れないもの
+
+本物の Athena でも観測できない・誘発できないと分かった項目。測る対象から外す（#112）。理由が崩れたら（新しいアカウントを用意した、Athena が空の列名を通すようになった、など）上の一覧に戻す。
+
+- カタログの既定など、`WITH` 句以外からテーブルの形式が決まる場合の CTAS・INSERT の結果ファイル（#26・#35）。Athena のテーブルの形式は文の `WITH` 句（`table_type` など）で決まり、カタログの既定で形式が決まるテーブルを Athena では作れない。athena-local は Trino のカタログの connector から形式を決めるので、[docs/caveats.md](../caveats.md) の「Table format is detected per Trino catalog」にある差分はこの理由で埋まらない
+- `.metadata` の空の列名の扱い（#5）。本物では空の列名の列を作れないので観測できない。athena-local は空の列名でも列の field を出す
+- `AthenaErrorCode` の無い経路のうち `InternalServerException` の本文の形。本物ではサーバ側の障害でしか出ず、クライアントから誘発できない（パース失敗と未対応オペレーションは #84 で実測: `SerializationException`・`UnknownOperationException` はどちらも `AthenaErrorCode` 無し）。athena-local は `AthenaErrorCode` も `ErrorCode` も付けずに返す（[docs/caveats.md](../caveats.md) の「Error body key casing」）
+- `GetWorkGroup` の実測値（`EnforceWorkGroupConfiguration=false` 等）が工場出荷時の既定か、コンソールで変えた後の値か。測ったアカウントの `primary` は過去に設定を変えた可能性があり、新しいアカウントを作らないと区別できない（[measurements/work-groups.md](measurements/work-groups.md) の備考）

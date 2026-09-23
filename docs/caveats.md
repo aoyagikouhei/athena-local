@@ -424,7 +424,8 @@ Known differences between athena-local and real Athena, grouped by topic.
   and `WorkGroup is not found.`). Errors without an `AthenaErrorCode`
   (`SerializationException`, `InternalServerException`) carry neither
   `AthenaErrorCode` nor `ErrorCode`, as measured for `SerializationException`
-  on 2026-09-23; `InternalServerException` has not been measured. The AWS SDKs
+  on 2026-09-23; `InternalServerException` cannot be measured, because only a
+  failure inside Athena produces it and no request provokes one. The AWS SDKs
   read both `message` and `Message` (botocore and smithy-rs each check the two
   spellings explicitly), so the casing does not affect ordinary clients.
 - **Request bodies fail the way Athena's do.** Measured 2026-09-23 with 46
