@@ -126,7 +126,7 @@ pub struct Statistics {
 pub struct GetQueryResultsRequest {
     pub query_execution_id: String,
     #[serde(default)]
-    pub max_results: Option<i32>,
+    pub max_results: Option<i64>,
     #[serde(default)]
     pub next_token: Option<String>,
 }
@@ -231,7 +231,7 @@ pub struct EngineVersion {
 #[serde(rename_all = "PascalCase")]
 pub struct ListWorkGroupsRequest {
     #[serde(default)]
-    pub max_results: Option<i32>,
+    pub max_results: Option<i64>,
     #[serde(default)]
     pub next_token: Option<String>,
 }

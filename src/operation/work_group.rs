@@ -10,14 +10,15 @@ use crate::athena::{
 };
 use crate::config::ResultsMode;
 use crate::handler::App;
-use crate::response::{invalid_request_with_code, ok, parse};
+use crate::request::parse;
+use crate::response::{invalid_request_with_code, ok};
 
 use super::validation::paging_violation;
 
 /// ListWorkGroups で MaxResults が無いときのページの大きさ。
 /// 本物の既定ページサイズは未実測（測れるだけのワークグループが無い）。
 /// botocore の MaxWorkGroupsCount の上限（50）に合わせた。
-const LIST_WORK_GROUPS_MAX_RESULTS: i32 = 50;
+const LIST_WORK_GROUPS_MAX_RESULTS: i64 = 50;
 
 /// ワークグループの State（2026-09-17 実測。GetWorkGroup と ListWorkGroups で同じ値）。
 const WORK_GROUP_STATE: &str = "ENABLED";
@@ -74,7 +75,7 @@ pub fn list_work_groups(app: &App, body: &Bytes) -> Response {
         Err(response) => return *response,
     };
 
-    // usize にする前に i32 のまま範囲を見る（-1 のキャストは巨大な値になり、
+    // usize にする前に i64 のまま範囲を見る（-1 のキャストは巨大な値になり、
     // 0 は end == offset で同じ NextToken を返し続けることになる）。
     let limit = request.max_results.unwrap_or(LIST_WORK_GROUPS_MAX_RESULTS);
     if let Some(response) = paging_violation(
