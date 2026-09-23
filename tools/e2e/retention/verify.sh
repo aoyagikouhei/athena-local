@@ -6,14 +6,14 @@
 #
 # compose は新設せず tools/e2e/sdk-retry/docker-compose.yml（Trino 482 + memory カタログ、8095、
 # プロジェクト athena-local-issue94-e2e）を流用する。sdk-retry の verify.sh とは同時に流せない。
-# athena-local はホスト上の release バイナリを 127.0.0.1:8101 で起動する（結果ファイルは書かない）。
+# athena-local は $CARGO_TARGET_DIR（tools/dev.sh では .toolbox/target）の release バイナリを 127.0.0.1:8101 で起動する（結果ファイルは書かない）。
 #
 # 使い方:
-#   tools/e2e/retention/verify.sh
+#   tools/dev.sh tools/e2e/retention/verify.sh
 #
 # 環境変数:
 #   KEEP_UP=1           終了後に docker compose down -v をしない（デバッグ用）
-#   SKIP_BUILD=1        cargo build を省略し、ビルド済みの target/release/athena-local を使う
+#   SKIP_BUILD=1        cargo build を省略し、ビルド済みの $CARGO_TARGET_DIR（tools/dev.sh では .toolbox/target）の release/athena-local を使う
 #   DURATION=240        1 回の負荷の秒数。数時間の推移を見るなら 3600 などにするが、対照側は約 15MiB/秒で伸びて
 #                       メモリを使い切るので、ROWS=100 のように 1 件を小さくすること（README の注意）
 #   WARMUP=20           判定から外す最初の秒数
@@ -30,7 +30,8 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 COMPOSE_FILE="$SCRIPT_DIR/../sdk-retry/docker-compose.yml"
-BINARY="$REPO_ROOT/target/release/athena-local"
+# cargo の成果物の置き場。tools/dev.sh は CARGO_TARGET_DIR を .toolbox/target にする
+BINARY="${CARGO_TARGET_DIR:-$REPO_ROOT/target}/release/athena-local"
 
 TRINO_BASE="http://127.0.0.1:8095"
 ATHENA_BIND="127.0.0.1:8101"

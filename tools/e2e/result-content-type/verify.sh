@@ -15,17 +15,15 @@
 # 変更前の予測: 1 FAIL / 2 PASS / 3 FAIL / 4 FAIL(.metadata だけ不一致) / 5 FAIL / 6 FAIL /
 #               7a PASS / 7b PASS
 #
-# 前提コマンド: docker, docker compose, curl, jq, uuidgen, cargo
-# S3（MinIO）側の確認は aws cli を使わず、compose と同じネットワークに繋いだ
-# quay.io/minio/mc の使い捨てコンテナで行う（このマシンの aws コマンドは docker ラッパーで、
-# ホストにマップしたポートに届かない。2026-09-21 実測）。
+# 前提コマンド: tools/dev.sh 経由で動かす（toolbox に全部入っている）
+# S3（MinIO）側の確認は、compose と同じネットワークに繋いだ quay.io/minio/mc の使い捨てコンテナで行う。
 #
 # 使い方:
-#   tools/e2e/result-content-type/verify.sh
+#   tools/dev.sh tools/e2e/result-content-type/verify.sh
 #
 # 環境変数:
 #   KEEP_UP=1        テスト後に docker compose down -v をせず環境を残す（デバッグ用）
-#   SKIP_BUILD=1     cargo build を省略し、既存の target/release/athena-local をそのまま使う
+#   SKIP_BUILD=1     cargo build を省略し、既存の $CARGO_TARGET_DIR（tools/dev.sh では .toolbox/target）の release/athena-local をそのまま使う
 #
 # 後始末は本スクリプトの trap が行う（KEEP_UP=1 でなければ必ず docker compose down -v する）。
 # 落とすのはこの compose プロジェクト（athena-local-issue70-e2e）だけで、他のプロジェクトには触らない。
@@ -34,6 +32,8 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# cargo の成果物の置き場。tools/dev.sh は CARGO_TARGET_DIR を .toolbox/target にする
+BINARY="${CARGO_TARGET_DIR:-$REPO_ROOT/target}/release/athena-local"
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
 COMPOSE_PROJECT="athena-local-issue70-e2e"
 
@@ -45,7 +45,7 @@ PREFIX="e2e"
 OUTPUT_LOCATION="s3://${BUCKET}/${PREFIX}/"
 RUN_ID="$(date +%s)"
 
-BINARY="binary/octet-stream"
+OCTET_STREAM="binary/octet-stream"
 APPLICATION="application/octet-stream"
 
 MC_IMAGE="quay.io/minio/mc:latest"
@@ -169,8 +169,8 @@ wait_for_bucket() {
 build_athena_local() {
   if [ "${SKIP_BUILD:-0}" = "1" ]; then
     log "SKIP_BUILD=1 のため cargo build を省略する"
-    [ -x "$REPO_ROOT/target/release/athena-local" ] && return 0
-    log "target/release/athena-local が無い"
+    [ -x "$BINARY" ] && return 0
+    log "$BINARY が無い"
     return 1
   fi
 
@@ -200,7 +200,7 @@ start_athena_local() {
       AWS_ACCESS_KEY_ID="minioadmin" \
       AWS_SECRET_ACCESS_KEY="minioadmin" \
       ATHENA_LOCAL_OUTPUT_LOCATION="$OUTPUT_LOCATION" \
-      "$REPO_ROOT/target/release/athena-local"
+      "$BINARY"
   ) >"$ATHENA_LOG" 2>&1 &
   ATHENA_PID=$!
 
@@ -436,7 +436,7 @@ main() {
     record "ケース1〜7" SKIP "athena-local が起動できないため実行しなかった（ビルド失敗）"
     return 1
   fi
-  record "cargo build" PASS "target/release/athena-local を用意した"
+  record "cargo build" PASS "$BINARY を用意した"
 
   if ! start_athena_local; then
     record "ケース1〜7" SKIP "athena-local が起動しなかったため実行しなかった"
@@ -446,7 +446,7 @@ main() {
 
   # ケース 1: リテラルだけの SELECT -> .csv も .metadata も binary
   run_case 1 "SELECT_1" \
-    "SELECT 1" hive default csv "$BINARY" "$BINARY"
+    "SELECT 1" hive default csv "$OCTET_STREAM" "$OCTET_STREAM"
 
   # ケース 2: 式を含む SELECT -> .csv も .metadata も application
   run_case 2 "SELECT_1_plus_1" \
@@ -454,11 +454,11 @@ main() {
 
   # ケース 3: リテラルだけの SELECT（別名つき・複数列） -> binary
   run_case 3 "SELECT_1_AS_i_comma_a" \
-    "SELECT 1 AS i, 'a'" hive default csv "$BINARY" "$BINARY"
+    "SELECT 1 AS i, 'a'" hive default csv "$OCTET_STREAM" "$OCTET_STREAM"
 
   # ケース 4: SHOW 系 -> .txt も .metadata も binary
   run_case 4 "SHOW_TABLES" \
-    "SHOW TABLES" hive default txt "$BINARY" "$BINARY"
+    "SHOW TABLES" hive default txt "$OCTET_STREAM" "$OCTET_STREAM"
 
   # ケース 5: DESCRIBE -> .txt も .metadata も application
   run_case 5 "DESCRIBE_table" \
@@ -472,9 +472,9 @@ main() {
   # 作った schema は同じケースの DROP で必ず片づける（compose ごと消すので残っても害は無い）。
   local s_ddl="e2e_ct_${RUN_ID}"
   run_case 7a "CREATE_SCHEMA_hive_0バイト" \
-    "CREATE SCHEMA ${s_ddl}" hive default txt "$BINARY" absent 0
+    "CREATE SCHEMA ${s_ddl}" hive default txt "$OCTET_STREAM" absent 0
   run_case 7b "DROP_SCHEMA_hive_0バイト" \
-    "DROP SCHEMA ${s_ddl}" hive default txt "$BINARY" absent 0
+    "DROP SCHEMA ${s_ddl}" hive default txt "$OCTET_STREAM" absent 0
 
   log "セットアップで作ったテーブルを片づける"
   trino_exec "DROP TABLE IF EXISTS hive.default.${t_desc}" hive default || true

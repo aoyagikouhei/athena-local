@@ -5,17 +5,14 @@
 # INSERT を 2 回実行しないこと、(2) 同じトークンの 50 並列の同時送信で QueryExecutionId が
 # 1 つになり詰まらないこと、を確かめる。本物の AWS は一切使わない。結果ファイルは書かない。
 #
-# 前提コマンド: docker, docker compose, curl, cargo, boto3 入りの python3（システムの python3 に
-# 無ければ venv を作って PYTHON に指定する:
-#   python3 -m venv /tmp/boto3-venv && /tmp/boto3-venv/bin/pip install boto3
-#   PYTHON=/tmp/boto3-venv/bin/python3 tools/e2e/sdk-retry/verify.sh）
+# 前提コマンド: tools/dev.sh 経由で動かす（toolbox に全部入っている。boto3 は toolbox の python3 に入っている）
 #
 # 使い方:
-#   tools/e2e/sdk-retry/verify.sh
+#   tools/dev.sh tools/e2e/sdk-retry/verify.sh
 #
 # 環境変数:
 #   KEEP_UP=1        テスト後に docker compose down -v をせず環境を残す（デバッグ用）
-#   SKIP_BUILD=1     cargo build を省略し、既存の target/release/athena-local をそのまま使う
+#   SKIP_BUILD=1     cargo build を省略し、既存の $CARGO_TARGET_DIR（tools/dev.sh では .toolbox/target）の release/athena-local をそのまま使う
 #   PYTHON=...       boto3 入りの python3（既定は python3）
 #   DROP_COUNT=2     代理が落とす応答の回数
 #
@@ -27,6 +24,8 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# cargo の成果物の置き場。tools/dev.sh は CARGO_TARGET_DIR を .toolbox/target にする
+BINARY="${CARGO_TARGET_DIR:-$REPO_ROOT/target}/release/athena-local"
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
 
 TRINO_BASE="http://127.0.0.1:8095"
@@ -35,7 +34,7 @@ PROXY_BIND="127.0.0.1:8096"
 DROP_COUNT="${DROP_COUNT:-2}"
 PYTHON="${PYTHON:-python3}"
 $PYTHON -c "import boto3" 2>/dev/null || {
-  echo "boto3 が要る。python3 -m venv /tmp/boto3-venv && /tmp/boto3-venv/bin/pip install boto3 のあと PYTHON=/tmp/boto3-venv/bin/python3 で呼ぶ"; exit 1; }
+  echo "boto3 が要る（$PYTHON で import できない）。tools/dev.sh 経由で動かすか、boto3 入りの python3 を PYTHON に指定する"; exit 1; }
 
 EVIDENCE_DIR="$(mktemp -d /tmp/athena-local-issue94-e2e.XXXXXX)"
 ATHENA_LOG="$EVIDENCE_DIR/athena-local.log"
@@ -60,6 +59,7 @@ if [ "${SKIP_BUILD:-0}" != "1" ]; then
   (cd "$REPO_ROOT" && cargo build --release --locked >"$EVIDENCE_DIR/cargo-build.log" 2>&1) || {
     echo "cargo build failed: $EVIDENCE_DIR/cargo-build.log"; exit 1; }
 fi
+[ -x "$BINARY" ] || { echo "$BINARY が無い（SKIP_BUILD=1 ならビルド済みのものが要る）"; exit 1; }
 
 echo "== trino"
 docker compose -f "$COMPOSE_FILE" up -d >/dev/null 2>&1 || { echo "docker compose up failed"; exit 1; }
@@ -71,7 +71,7 @@ curl -fsS "$TRINO_BASE/v1/info" | grep -q '"starting":false' || { echo "trino di
 
 echo "== athena-local"
 ATHENA_LOCAL_BIND="$ATHENA_BIND" TRINO_URL="$TRINO_BASE" TRINO_CATALOG=memory TRINO_SCHEMA=default \
-  ATHENA_LOCAL_RESULTS=none "$REPO_ROOT/target/release/athena-local" >"$ATHENA_LOG" 2>&1 &
+  ATHENA_LOCAL_RESULTS=none "$BINARY" >"$ATHENA_LOG" 2>&1 &
 ATHENA_PID=$!
 for _ in $(seq 1 30); do
   if curl -s -o /dev/null "http://$ATHENA_BIND/" 2>/dev/null; then break; fi

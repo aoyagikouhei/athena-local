@@ -20,7 +20,7 @@ DROP TABLE の結果ファイルがテーブルの形式（Hive / Iceberg）で�
 | Trino | `trinodb/trino:482` | `8092`（`/v1/statement` 用。`trino-probe` は `8090`） |
 | MinIO | `quay.io/minio/minio:latest` | `9002`（S3 API）／`9003`（コンソール） |
 | MinIO 初期化 | `quay.io/minio/mc:latest` | 無し（使い捨て） |
-| athena-local | （docker イメージは使わず `cargo build --release` の実行バイナリ） | `8087` |
+| athena-local | （docker イメージは使わず `cargo build --release` の実行バイナリ。`$CARGO_TARGET_DIR`（`tools/dev.sh` では `.toolbox/target`）の release/athena-local） | `8087` |
 
 MinIO のイメージは 2024 年以降 `minio/minio` / `minio/mc`（Docker Hub）が
 `pull access denied` になり、`quay.io/minio/minio` / `quay.io/minio/mc` に移っている
@@ -30,20 +30,15 @@ MinIO のイメージは 2024 年以降 `minio/minio` / `minio/mc`（Docker Hub�
 
 ## 前提コマンド
 
-`docker` / `docker compose` / `curl` / `jq` / `uuidgen` / `od` / `cargo`。
+`tools/dev.sh` 経由で動かす（toolbox に全部入っている。`docs/dev/development.md` の「検証の足場（toolbox）」）。
 
-S3 側の確認（`.txt` や `.metadata` のバイト数・Content-Type・中身）は **aws cli を使わず**、
-compose と同じ Docker ネットワークに繋いだ `minio/mc` の使い捨てコンテナで行う。
-このマシンの `aws` コマンドは `docker run amazon/aws-cli` を呼ぶラッパーで、
-`--network` を指定しないためホストにマップしたポート（`127.0.0.1:9002` など）に届かず
-`Connection refused` になることを確認した（2026-09-21 実測）。同じ理由で他の環境でも
-host 経由の aws cli は当てにしないほうがよい。
+S3 側の確認（`.txt` や `.metadata` のバイト数・Content-Type・中身）は、compose と同じ Docker ネットワークに繋いだ
+`minio/mc` の使い捨てコンテナで行う（ホストの aws は使わない）。
 
 ## 実行方法
 
 ```bash
-cd tools/e2e/minio
-./verify.sh
+tools/dev.sh tools/e2e/minio/verify.sh
 ```
 
 **JDBC ドライバからの検証（issue #46）は `../../measure/jdbc-metadata.sh` が一本でやる**
@@ -62,8 +57,8 @@ tls-proxy コンテナから届かず、JDBC の検証には使えない（46 �
 1. `docker compose up -d` で Trino・MinIO を起動し、バケット `athena-results` を用意する
 2. Trino に直接（athena-local を経由せず）`iceberg.default` / `hive.default` スキーマと、
    DROP TABLE 対象の 2 テーブル（Iceberg 側・Hive 側それぞれ 1 つ、`CREATE TABLE ... AS SELECT`）を作る
-3. `cargo build --release --locked` を実行し、`target/release/athena-local` をホスト上で起動する
-   （Trino・MinIO ともホストにマップしたポート `127.0.0.1:8092` / `127.0.0.1:9002` に繋ぐ）
+3. `cargo build --release --locked` を実行し、`$CARGO_TARGET_DIR`（`tools/dev.sh` では `.toolbox/target`）の release/athena-local を起動する
+   （toolbox はホストのネットワークを使うので、Trino・MinIO ともホストにマップしたポート `127.0.0.1:8092` / `127.0.0.1:9002` に繋ぐ）
 4. Athena API（`POST /` に `X-Amz-Target: AmazonAthena.StartQueryExecution` など）を叩いてケース 1〜5 を実行し、
    結果ファイルを `minio/mc` 経由で取得してバイト数・Content-Type・中身を確かめる
 5. ケース 14 の前に athena-local を `ATHENA_LOCAL_RETENTION_SECONDS=1` で再起動する（ログは `athena-local-retention.log`）
@@ -74,10 +69,12 @@ tls-proxy コンテナから届かず、JDBC の検証には使えない（46 �
 
 ## 環境変数
 
+`tools/dev.sh KEEP_UP=1 tools/e2e/minio/verify.sh` のように、`tools/dev.sh` とコマンドの間に並べる。
+
 - `KEEP_UP=1` — テスト後に `docker compose down -v` をせず環境を残す（デバッグ用）。
   手動で後始末するときは `docker compose -f tools/e2e/minio/docker-compose.yml down -v`
-- `SKIP_BUILD=1` — `cargo build` を省略し、既存の `target/release/athena-local` をそのまま使う
-  （他エージェントが `target/` を使っていて自分ではビルドしたくないときなど）
+- `SKIP_BUILD=1` — `cargo build` を省略し、既存の `$CARGO_TARGET_DIR`（`tools/dev.sh` では `.toolbox/target`）の release/athena-local をそのまま使う
+  （他エージェントが同じ置き場を使っていて自分ではビルドしたくないときなど）
 
 証跡（athena-local のログ、取得した結果ファイルの実体と `od -An -tx1c` の出力）は
 `mktemp -d` で作った一時ディレクトリに残る。パスは実行時のログと結果表の後に出力される。

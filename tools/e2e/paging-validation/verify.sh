@@ -15,16 +15,15 @@
 #         検証エラーが 1 件分の文言にしかならない）、14（存在確認が先に走って NOT_FOUND になる）、
 #         18（状態エラーが先に走る）、19（ListWorkGroups が 200 で通る）
 #
-# 前提コマンド: docker, docker compose, curl, jq, uuidgen, cargo
-# jq にはファイルを引数でなく標準入力（<）で渡す。このマシンの jq は snap 版で、/tmp の private
-# 名前空間のせいで mktemp -d /tmp/... のファイルを引数で開けない（2026-09-23 に踏んだ）。
+# 前提コマンド: tools/dev.sh 経由で動かす（toolbox に全部入っている）
+# jq にはファイルを引数でなく標準入力（<）で渡す。
 #
 # 使い方:
-#   tools/e2e/paging-validation/verify.sh
+#   tools/dev.sh tools/e2e/paging-validation/verify.sh
 #
 # 環境変数:
 #   KEEP_UP=1        テスト後に docker compose down -v をせず環境を残す（デバッグ用）
-#   SKIP_BUILD=1     cargo build を省略し、既存の target/release/athena-local をそのまま使う
+#   SKIP_BUILD=1     cargo build を省略し、既存の $CARGO_TARGET_DIR（tools/dev.sh では .toolbox/target）の release/athena-local をそのまま使う
 #
 # 後始末は本スクリプトの trap が行う（KEEP_UP=1 でなければ必ず docker compose down -v する）。
 # 落とすのはこの compose プロジェクト（athena-local-issue83-e2e）だけで、他のプロジェクトには触らない。
@@ -33,6 +32,8 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# cargo の成果物の置き場。tools/dev.sh は CARGO_TARGET_DIR を .toolbox/target にする
+BINARY="${CARGO_TARGET_DIR:-$REPO_ROOT/target}/release/athena-local"
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
 COMPOSE_PROJECT="athena-local-issue83-e2e"
 
@@ -148,8 +149,8 @@ wait_for_trino() {
 build_athena_local() {
   if [ "${SKIP_BUILD:-0}" = "1" ]; then
     log "SKIP_BUILD=1 のため cargo build を省略する"
-    [ -x "$REPO_ROOT/target/release/athena-local" ] && return 0
-    log "target/release/athena-local が無い"
+    [ -x "$BINARY" ] && return 0
+    log "$BINARY が無い"
     return 1
   fi
 
@@ -176,7 +177,7 @@ start_athena_local() {
       TRINO_CATALOG="system" \
       TRINO_SCHEMA="runtime" \
       ATHENA_LOCAL_RESULTS="none" \
-      "$REPO_ROOT/target/release/athena-local"
+      "$BINARY"
   ) >"$ATHENA_LOG" 2>&1 &
   ATHENA_PID=$!
 
@@ -337,7 +338,7 @@ main() {
     record "cargo build" FAIL "ビルドが失敗した"
     return 1
   fi
-  record "cargo build" PASS "target/release/athena-local を用意した"
+  record "cargo build" PASS "$BINARY を用意した"
 
   if ! start_athena_local; then
     record "athena-local起動" FAIL "athena-local が起動しなかった"

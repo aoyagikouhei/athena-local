@@ -5,16 +5,19 @@ athena-local の VmRSS が頭打ちになるかを確かめる。同じ負荷を
 `DURATION` 秒ずつ流して比べる。本物の AWS は使わない。
 
 ```bash
-SKIP_BUILD=1 tools/e2e/retention/verify.sh                   # 既定（240 秒 × 2、約 10 分）
-SKIP_BUILD=1 DURATION=3600 ROWS=100 tools/e2e/retention/verify.sh  # 数時間の推移を見るとき。ROWS を下げる（下の注意）
+tools/dev.sh SKIP_BUILD=1 tools/e2e/retention/verify.sh                   # 既定（240 秒 × 2、約 10 分）
+tools/dev.sh SKIP_BUILD=1 DURATION=3600 ROWS=100 tools/e2e/retention/verify.sh  # 数時間の推移を見るとき。ROWS を下げる（下の注意）
 ```
 
+- 前提コマンドは `tools/dev.sh` 経由で動かす（toolbox に全部入っている。`docs/dev/development.md` の「検証の足場（toolbox）」）。
+  環境変数は上のように `tools/dev.sh` とコマンドの間に並べる。
+
 - compose は `../sdk-retry/docker-compose.yml`（Trino 482 + memory、8095、`athena-local-issue94-e2e`）を流用する。
-  sdk-retry の `verify.sh` とは同時に流せない。athena-local はホストの release バイナリを 127.0.0.1:8101 で起動する。
+  sdk-retry の `verify.sh` とは同時に流せない。athena-local は `$CARGO_TARGET_DIR`（`tools/dev.sh` では `.toolbox/target`）の release/athena-local を 127.0.0.1:8101 で起動する。
 - 負荷（`load.py`）: 逐次 1 本で Start → GetQueryExecution を 0.1 秒ごと → GetQueryResults 1 ページ。
   SQL は `SELECT x, lpad(cast(x AS varchar), 1000, 'x') AS pad FROM UNNEST(sequence(1, 2000)) AS t(x)`（約 2.2MiB/件）。
   5 秒ごとに `/proc/<pid>/status` の VmRSS/VmHWM と完了数を CSV に書く。最初の `WARMUP` 秒は判定から外す。
-- 証跡: `/tmp/athena-local-issue111-retention.*`（`load-{high,low}.csv`、`.csv.json`、ログ、`summary.txt`）。
+- 証跡: `/tmp/athena-local-issue111-retention.*`（toolbox の中でもホストと同じパス。`load-{high,low}.csv`、`.csv.json`、ログ、`summary.txt`）。
 
 ## 判定（`load.py --judge`。「伸び」は暖機後から最終までの VmRSS、前半・後半は暖機後の時間を 2 等分）
 

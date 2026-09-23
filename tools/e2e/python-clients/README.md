@@ -7,7 +7,8 @@ awswrangler 3.17.1・PyAthena 3.36.0・dbt-athena 1.11.1 を、athena-local の 
 
 - `docker-compose.yml` — Trino（カタログは `../minio/catalog` を読み取り専用でマウント）、MinIO、
   バケット `athena-results` を作る使い捨てコンテナ（`minio-init`）。プロジェクト名 `athena-local-issue111-py`
-- `setup-venvs.sh` — venv を 2 つ作る（`$HOME/.cache/athena-local-111/venv-wr` と `venv-dbt`。
+- `setup-venvs.sh` — venv を 2 つ作る（`$HOME/.cache/athena-local-111/venv-wr` と `venv-dbt`。toolbox の HOME は `.toolbox/home` なので
+  `.toolbox/home/.cache/athena-local-111` の下。
   dbt-athena 1.11.1 は `pyathena<3.35` を要求するので分ける）。`requirements-wr.txt`／`requirements-dbt.txt`
 - `verify.sh` — 起動から判定、後始末までを 1 本でやる。終了コードは FAIL の件数
 - `env.sh` — クライアントに渡す AWS 系の環境変数（`endpoint_url` は渡さず `AWS_ENDPOINT_URL*` で向ける）
@@ -21,18 +22,20 @@ awswrangler 3.17.1・PyAthena 3.36.0・dbt-athena 1.11.1 を、athena-local の 
 | Trino | `trinodb/trino:482` | `8097` |
 | MinIO | `quay.io/minio/minio:latest` | `9006`（S3 API） |
 | MinIO 初期化・trace | `quay.io/minio/mc:latest` | 無し（使い捨て） |
-| athena-local（s3 モード） | `target/release/athena-local` | `8098` |
+| athena-local（s3 モード） | `$CARGO_TARGET_DIR`（`tools/dev.sh` では `.toolbox/target`）の release/athena-local | `8098` |
 | athena-local（none モード） | 同上 | `8099` |
-| 中継（`../sdk-retry/drop_proxy.py`、`DROP_COUNT=0`） | システムの `python3` | `8102` → `8098` |
+| 中継（`../sdk-retry/drop_proxy.py`、`DROP_COUNT=0`） | toolbox の `python3` | `8102` → `8098` |
 
 認証情報はローカル専用のダミー（`minioadmin` / `minioadmin`）。
 
 ## 実行方法
 
 ```bash
-tools/e2e/python-clients/setup-venvs.sh          # 初回だけ（数分）
-SKIP_BUILD=1 tools/e2e/python-clients/verify.sh  # release バイナリがあれば SKIP_BUILD=1
+tools/dev.sh tools/e2e/python-clients/setup-venvs.sh          # 初回だけ（数分）
+tools/dev.sh SKIP_BUILD=1 tools/e2e/python-clients/verify.sh  # release バイナリがあれば SKIP_BUILD=1
 ```
+
+前提コマンドは `tools/dev.sh` 経由で動かす（toolbox に全部入っている。`docs/dev/development.md` の「検証の足場（toolbox）」）。
 
 内部でやっていること:
 
@@ -49,9 +52,11 @@ SKIP_BUILD=1 tools/e2e/python-clients/verify.sh  # release バイナリがあれ
 
 ## 環境変数
 
+`tools/dev.sh KEEP_UP=1 tools/e2e/python-clients/verify.sh` のように、`tools/dev.sh` とコマンドの間に並べる。
+
 - `KEEP_UP=1` — `docker compose down -v` をしない（手動なら `docker compose -f tools/e2e/python-clients/docker-compose.yml down -v`）
 - `SKIP_BUILD=1` — `cargo build` をしない
-- `VENV_ROOT` — venv の置き場（既定 `$HOME/.cache/athena-local-111`）
+- `VENV_ROOT` — venv の置き場（既定 `$HOME/.cache/athena-local-111`。toolbox では `.toolbox/home/.cache/athena-local-111`）
 
 証跡（athena-local・中継のログ、check ごとの出力、dbt の JSON ログと生成した `profiles.yml`、`pip freeze`）は
-`/tmp/athena-local-issue111-py.*` に残る。
+`/tmp/athena-local-issue111-py.*`（toolbox の中でもホストと同じパス）に残る。

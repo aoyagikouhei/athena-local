@@ -8,3 +8,6 @@ target/
 tools/e2e/minio/tls/server.key
 tools/e2e/minio/tls/server.crt
 __pycache__/
+
+# tools/dev.sh が作る toolbox の HOME と cargo の成果物
+/.toolbox/

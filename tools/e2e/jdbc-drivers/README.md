@@ -25,10 +25,13 @@ compose・TLS 終端・JDBC クライアントは `tools/e2e/minio/` のもの�
 ## 使い方
 
 ```bash
-bash tools/e2e/minio/tls/make-cert.sh   # 新しい clone では最初に 1 回（無ければ verify.sh も作る）
-SKIP_BUILD=1 bash tools/e2e/jdbc-drivers/verify.sh
-DRIVER_VERSIONS="3.8.1 0.0.0" SKIP_BUILD=1 bash tools/e2e/jdbc-drivers/verify.sh   # 対照と「取れない版」だけ
+tools/dev.sh bash tools/e2e/minio/tls/make-cert.sh   # 新しい clone では最初に 1 回（無ければ verify.sh も作る）
+tools/dev.sh SKIP_BUILD=1 tools/e2e/jdbc-drivers/verify.sh
+tools/dev.sh DRIVER_VERSIONS="3.8.1 0.0.0" SKIP_BUILD=1 tools/e2e/jdbc-drivers/verify.sh   # 対照と「取れない版」だけ
 ```
+
+前提コマンドは `tools/dev.sh` 経由で動かす（toolbox に全部入っている。`docs/dev/development.md` の「検証の足場（toolbox）」）。
+環境変数は上のように `tools/dev.sh` とコマンドの間に並べる。
 
 | 環境変数 | 既定 | 意味 |
 |---|---|---|
@@ -37,7 +40,8 @@ DRIVER_VERSIONS="3.8.1 0.0.0" SKIP_BUILD=1 bash tools/e2e/jdbc-drivers/verify.sh
 | `KEEP_UP` | `0` | `1` で終了後に `docker compose down -v` をしない |
 | `JVM_TIMEOUT` | `300` | JVM 1 回の上限秒。超えたらその回は SKIP（ハング） |
 
-ドライバは `$HOME/.cache/athena-local-jdbc/athena-jdbc-<版>-with-dependencies.jar` に置く。無ければ
+ドライバは `$HOME/.cache/athena-local-jdbc/athena-jdbc-<版>-with-dependencies.jar` に置く（toolbox の HOME は `.toolbox/home` なので
+`.toolbox/home/.cache/athena-local-jdbc`）。無ければ
 `https://downloads.athena.us-east-1.amazonaws.com/drivers/JDBC/<版>/...` から取り、jar の中に
 `META-INF/services/java.sql.Driver` があるかで本物かを確かめる。
 
@@ -68,5 +72,5 @@ URL は全版 `jdbc:athena://`（3.1.0 で `awsathena` は非推奨）。出力�
   `.txt*`（`.txt.metadata` を含む）への GET が 0 件なら PASS。`GetQueryResults` は S3 を読まないので INFO
 - シナリオ 46: `failures=0` かつ終了コード 0 で PASS
 
-証跡は `/tmp/athena-local-issue111-jdbc.XXXXXX/` に残る（`<版>/<fetcher>-<シナリオ>.log` が JVM の出力、
+証跡は `/tmp/athena-local-issue111-jdbc.XXXXXX/`（toolbox の中でもホストと同じパス）に残る（`<版>/<fetcher>-<シナリオ>.log` が JVM の出力、
 `.nginx.log` がその時点の tls-proxy のログ、`summary.txt` が表）。

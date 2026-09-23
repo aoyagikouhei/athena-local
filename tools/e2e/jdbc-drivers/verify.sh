@@ -8,10 +8,10 @@
 # {auto（3.4.0 以上のみ）, S3} × {57, 111}。compose は 1 回だけ立て、ループの中では down しない。
 #
 # 使い方:
-#   SKIP_BUILD=1 bash tools/e2e/jdbc-drivers/verify.sh
+#   tools/dev.sh SKIP_BUILD=1 tools/e2e/jdbc-drivers/verify.sh
 # 環境変数:
 #   DRIVER_VERSIONS  版の一覧（既定 "3.8.1 3.5.0 3.4.0 3.3.0 3.2.2 3.1.0 3.0.0"）。取れない版は SKIP
-#   SKIP_BUILD=1     cargo build を省き、既存の target/release/athena-local を使う
+#   SKIP_BUILD=1     cargo build を省き、既存の $CARGO_TARGET_DIR（tools/dev.sh では .toolbox/target）の release/athena-local を使う
 #   KEEP_UP=1        終了後に docker compose down -v をしない
 #   JVM_TIMEOUT      JVM 1 回の上限秒（既定 300。超えたらその回は SKIP「ハング」）
 # 終了コードは FAIL の件数（INFO と SKIP は数えない）。証跡は /tmp/athena-local-issue111-jdbc.* に残る。
