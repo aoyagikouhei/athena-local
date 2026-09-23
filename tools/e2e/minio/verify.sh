@@ -17,6 +17,7 @@
 #   SKIP_BUILD=1     cargo build を省略し、既存の target/release/athena-local をそのまま使う
 #
 # 後始末は本スクリプトの trap が行う（KEEP_UP=1 でなければ必ず docker compose down -v する）。
+# 終了コードは結果表の FAIL の件数（issue #111。SKIP と INFO は数えない。起動の失敗などで途中で止まったときは 1）。
 
 set -uo pipefail
 
@@ -43,6 +44,10 @@ ATHENA_LOG="$EVIDENCE_DIR/athena-local.log"
 BUILD_LOG="$EVIDENCE_DIR/cargo-build.log"
 
 ATHENA_PID=""
+
+# issue #111: ケース 10〜12（UPDATE / DELETE）と 14（s3 × 保持期限）
+# shellcheck source=tools/e2e/minio/cases-dml-retention.sh
+source "$SCRIPT_DIR/cases-dml-retention.sh"
 
 declare -a RESULT_NAMES=()
 declare -a RESULT_STATUS=()
@@ -159,8 +164,10 @@ build_athena_local() {
   return 1
 }
 
+# 引数 1: ATHENA_LOCAL_RETENTION_SECONDS（省略時は既定と同じ 3600）。引数 2: ログの置き場所（省略時は $ATHENA_LOG）。
 start_athena_local() {
-  log "athena-local を起動する（ログ: $ATHENA_LOG）"
+  local retention="${1:-3600}" athena_log="${2:-$ATHENA_LOG}"
+  log "athena-local を起動する（保持期限 ${retention} 秒、ログ: $athena_log）"
   (
     cd "$REPO_ROOT"
     exec env \
@@ -174,15 +181,16 @@ start_athena_local() {
       AWS_ACCESS_KEY_ID="minioadmin" \
       AWS_SECRET_ACCESS_KEY="minioadmin" \
       ATHENA_LOCAL_OUTPUT_LOCATION="$OUTPUT_LOCATION" \
+      ATHENA_LOCAL_RETENTION_SECONDS="$retention" \
       "$REPO_ROOT/target/release/athena-local"
-  ) >"$ATHENA_LOG" 2>&1 &
+  ) >"$athena_log" 2>&1 &
   ATHENA_PID=$!
 
   log "athena-local ($ATHENA_BASE) の起動待ち"
   for _ in $(seq 1 30); do
     if ! kill -0 "$ATHENA_PID" 2>/dev/null; then
       log "athena-local が異常終了した。ログ:"
-      cat "$ATHENA_LOG" >&2
+      cat "$athena_log" >&2
       return 1
     fi
     local status
@@ -654,7 +662,22 @@ main() {
     "MERGE INTO ${t_merge_iceberg} AS t USING (VALUES (1, 'b'), (2, 'c')) AS u(n, s) ON t.n = u.n WHEN MATCHED THEN UPDATE SET s = u.s WHEN NOT MATCHED THEN INSERT (n, s) VALUES (u.n, u.s)" \
     iceberg default MERGE 2
 
-  return 0
+  # ケース 10〜12（issue #111）: UPDATE / DELETE（Iceberg）と、Hive への UPDATE の失敗。
+  run_update_delete_cases
+  run_failed_update_case
+
+  # ケース 14（issue #111）: 保持期限 1 秒で再起動し、捨てられた実行の S3 の結果が残ることを見る。
+  if restart_athena_local_with_retention 1; then
+    run_retention_s3_case
+  else
+    record "14 保持期限後もS3の結果は残る" SKIP "未測定: athena-local が保持期限 1 秒で再起動しなかった"
+  fi
+
+  local status fails=0
+  for status in "${RESULT_STATUS[@]}"; do
+    [ "$status" = "FAIL" ] && fails=$((fails + 1))
+  done
+  return "$fails"
 }
 
 main

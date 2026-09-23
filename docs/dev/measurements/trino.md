@@ -58,6 +58,13 @@
 - 返ったもの: `updateType=MERGE`、count=2、field 3 より後ろが本物の Athena の `rows bigint` 列と同じバイト列。`.metadata` は 74 バイト。verify.sh 全 19 項目 PASS
 - 備考: 本物の Athena ではなく Trino 相手。#41 が未検証として残した「Trino が MERGE に `updateType: "MERGE"` を返すか」を解消
 
+### UPDATE / DELETE の updateType と `.metadata`
+- 日付: 2026-09-23 ／ issue: #111 ／ スクリプト: `tools/e2e/minio/verify.sh`（ケース 10〜12。関数は `tools/e2e/minio/cases-dml-retention.sh`）
+- 相手: 手元の Trino 482 + MinIO（`tools/e2e/minio/` の足場、athena-local 経由）
+- 投げたもの: Iceberg のテーブル（`(1,'a'),(2,'b')` を CTAS）への `UPDATE ... SET s = 'z' WHERE n = 1` と `DELETE FROM ... WHERE n = 2`。Hive（非 ACID）のテーブルへの `UPDATE ... SET n = 2 WHERE n = 1`
+- 返ったもの: `UPDATE` は `updateType=UPDATE`、count=1、`DELETE` は `updateType=DELETE`、count=1。どちらも本体（`<id>.csv`）は置かれず `.metadata` だけで 75 バイト、field 3 より後ろは MERGE と同じ `rows bigint` の列（本物の Athena の実測と同じバイト列）。UPDATE の hex は `0a1b<Trino のクエリ ID 27 バイト>1206555044415445180122220a04686976652204726f77732a04726f77733206626967696e743813400048035000`（DELETE は field 2 が `44454c455445`）。Hive への `UPDATE` は Trino が `NOT_SUPPORTED: Modifying Hive table rows is only supported for transactional tables` で拒否し、FAILED で `<id>.csv` も `<id>.csv.metadata` も置かれない。verify.sh 全 24 項目 PASS（証跡は verify.sh が `/tmp/athena-local-issue39-e2e.*` に残す）
+- 備考: 本物の Athena ではなく Trino 相手。74 バイトの MERGE との差は updateType の長さ（5→6 バイト）だけ。#5 が結合テストに委ねた「UPDATE / DELETE の実機確認」を解消（Trino の `memory` コネクタは UPDATE / DELETE を持たない）
+
 ### 同じ INSERT の Trino の応答
 - 日付: 2026-09-23（待ち時間） ／ issue: #91 ／ スクリプト: 無し
 - 相手: 手元の Trino 482

@@ -59,11 +59,9 @@
 - [ ] dbt-athena で `work_group` を設定して 1 回通す（#2 の人間検証リスト。Grafana は #9 で実施済み）
 - [ ] awswrangler の `read_sql_query(ctas_approach=False)` を athena-local + Trino + MinIO で流し、`GetWorkGroup` の応答で例外にならないこと（#2 の人間検証リスト）
 - [ ] 失敗した DDL の `<id>.txt`（`FAILED: ` + 理由）を結果ファイルを読むクライアント（PyAthena、JDBC 3.x）が読んでも壊れないこと（#6 の人間検証リスト。どれも FAILED を先に見る想定）
-- [ ] `ATHENA_LOCAL_RESULTS=s3` と保持期限の組み合わせ（捨てた後も結果 CSV は残る想定だが未確認）
 - [ ] 長時間運用でメモリが実際に頭打ちになるか（保持期限による破棄の実効性）
 - [ ] 暗号化系の `SHOW` に素の protobuf の `.txt.metadata` を返して、Athena JDBC 3.5.1 未満などが壊れないか（#5）
 - [ ] PyAthena・awswrangler で退行が無いこと（#5 の人間検証リスト）
-- [ ] `UPDATE` / `DELETE` の athena-local での実機確認（#5。Trino の `memory` コネクタが持たないため結合テストに委ねた。`MERGE` は #56 で Trino 482 + MinIO で確認）
 - [ ] awswrangler が `GetQueryResults` を読む経路で先頭行をどう扱うか（#60。PyAthena はソースで確認済み）
 
 ## `ExecutionParameters`（本物で測った記録はまだ無い）
@@ -101,3 +99,5 @@
 - `GetQueryResults` のページング検証の 3 点（`ListWorkGroups` の上限と空文字の同時、RUNNING／CANCELLED のクエリへの不正な `NextToken`、0 行の結果への `NextToken`。#83）→ #85
 - リクエスト本文の型違いなどの未実測の組み合わせ（#84）→ #87
 - Trino 482 より古いバージョンの `system.metadata.catalogs` の `connector_name` などの値（#39）→ #111（2026-09-23。480・475 は 482 と同じ。440 は `connector_name` が同じで、`updateType` は書き込みができず未測定。470・400 は手元で起動できず未測定。足場は `tools/e2e/trino-probe/versions.sh`。[measurements/trino.md](measurements/trino.md)）
+- `ATHENA_LOCAL_RESULTS=s3` と保持期限の組み合わせ → #111（保持期限 1 秒で捨てた後、`GetQueryExecution` は 400 `QUERY_EXECUTION_NOT_FOUND` で、`<id>.csv` と `<id>.csv.metadata` は MinIO に残る。足場は `tools/e2e/minio/verify.sh` のケース 14。docs/caveats.md の Query lifecycle に書いた）
+- `UPDATE` / `DELETE` の athena-local での実機確認（#5）→ #111（Trino 482 + MinIO。updateType と件数がそのまま `.metadata` に入り 75 バイト、Hive への `UPDATE` は FAILED で何も置かない。[measurements/trino.md](measurements/trino.md)）

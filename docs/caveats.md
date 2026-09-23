@@ -318,7 +318,11 @@ Known differences between athena-local and real Athena, grouped by topic.
   after the period runs again; how real Athena treats an expired token has not
   been measured. Dropping happens whenever an API call touches the store, not
   on a timer, so nothing is swept while the server is idle; memory is still
-  bounded by the queries that finished within the period.
+  bounded by the queries that finished within the period. Dropping a query
+  does not touch its result files: with `ATHENA_LOCAL_RESULTS=s3`, the
+  `<id>.csv` and `<id>.csv.metadata` stay in the output location after
+  `GetQueryExecution` has started failing with `QUERY_EXECUTION_NOT_FOUND`
+  (checked against MinIO, 2026-09-23).
 
 ## Paging
 
