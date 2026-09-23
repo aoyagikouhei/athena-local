@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # issue #111 フェーズ 1: verify.sh に足すケース 10〜12（UPDATE / DELETE）と 14（s3 × 保持期限）。
-# 単独では実行しない。verify.sh が `source` し、その変数とヘルパ（trino_exec、athena_start_query、
+# 単独では実行しない。verify.sh が `source` し、その変数と、verify.sh・lib.sh のヘルパ（trino_exec、athena_start_query、
 # athena_wait、athena_call、mc_stat、mc_exists、run_merge_case、record、start_athena_local）を使う。
 #
 # - ケース 10・11: Iceberg への UPDATE / DELETE が本体（<id>.csv）を置かず <id>.csv.metadata だけを置き、
