@@ -5,6 +5,8 @@
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$LIB_DIR/../../.." && pwd)"
+# cargo の成果物の置き場。tools/dev.sh は CARGO_TARGET_DIR を .toolbox/target にする
+BINARY="${CARGO_TARGET_DIR:-$REPO_ROOT/target}/release/athena-local"
 E2E_DIR="$REPO_ROOT/tools/e2e/minio"
 COMPOSE_FILE="$E2E_DIR/docker-compose.yml"
 COMPOSE_PROJECT="athena-local-issue39-e2e"
@@ -106,7 +108,7 @@ PY
 
 build_athena_local() {
   if [ "${SKIP_BUILD:-0}" = "1" ]; then
-    [ -x "$REPO_ROOT/target/release/athena-local" ] || { record "cargo build" FAIL "SKIP_BUILD=1 だがバイナリが無い"; return 1; }
+    [ -x "$BINARY" ] || { record "cargo build" FAIL "SKIP_BUILD=1 だが $BINARY が無い"; return 1; }
     return 0
   fi
   log "cargo build --release --locked"
@@ -160,7 +162,7 @@ start_athena_local() {
       ATHENA_LOCAL_RESULTS="s3" AWS_ENDPOINT_URL_S3="http://127.0.0.1:9002" \
       AWS_ACCESS_KEY_ID="minioadmin" AWS_SECRET_ACCESS_KEY="minioadmin" \
       ATHENA_LOCAL_OUTPUT_LOCATION="s3://$BUCKET/$PREFIX_ROOT/default/" \
-      "$REPO_ROOT/target/release/athena-local"
+      "$BINARY"
   ) >"$OUT_ROOT/athena-local.log" 2>&1 &
   ATHENA_PID=$!
   for i in $(seq 1 30); do

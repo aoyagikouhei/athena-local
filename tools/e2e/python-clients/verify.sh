@@ -12,7 +12,7 @@
 # クライアントの向け先は env.sh（AWS_ENDPOINT_URL と _ATHENA → 中継、_S3 → MinIO 9006）。
 # MinIO へのアクセスは `mc admin trace --json` を流す使い捨てコンテナで記録し、check ごとの区間だけを数える（common.py）。
 #
-# 前提: docker / docker compose / curl / jq、venv（先に ./setup-venvs.sh）、target/release/athena-local。
+# 前提: docker / docker compose / curl / jq、venv（先に ./setup-venvs.sh）、$CARGO_TARGET_DIR（tools/dev.sh では .toolbox/target）の release/athena-local。
 # 環境変数: KEEP_UP=1（compose を残す）、SKIP_BUILD=1（cargo build をしない）、VENV_ROOT（既定 $HOME/.cache/athena-local-111）
 # 終了コードは FAIL の件数。証跡は /tmp/athena-local-issue111-py.* に残す。
 # 落とすのはこの compose プロジェクト（athena-local-issue111-py）と、このスクリプトが起動したプロセス・trace コンテナだけ。
@@ -21,6 +21,8 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# cargo の成果物の置き場。tools/dev.sh は CARGO_TARGET_DIR を .toolbox/target にする
+BINARY="${CARGO_TARGET_DIR:-$REPO_ROOT/target}/release/athena-local"
 COMPOSE=(docker compose -f "$SCRIPT_DIR/docker-compose.yml")
 VENV_ROOT="${VENV_ROOT:-$HOME/.cache/athena-local-111}"
 PY_WR="$VENV_ROOT/venv-wr/bin/python"
@@ -61,7 +63,7 @@ preflight() {
   if [ "${SKIP_BUILD:-0}" != "1" ]; then
     (cd "$REPO_ROOT" && cargo build --release --locked >"$EVIDENCE_DIR/cargo-build.log" 2>&1) || { log "cargo build 失敗"; return 1; }
   fi
-  [ -x "$REPO_ROOT/target/release/athena-local" ] || { log "target/release/athena-local が無い"; return 1; }
+  [ -x "$BINARY" ] || { log "$BINARY が無い"; return 1; }
   for port in 8097 8098 8099 8102 9006; do
     if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then log "ポート $port が使用中。止まる"; return 1; fi
   done
@@ -97,7 +99,7 @@ start_athena_local() {
     TRINO_CATALOG=iceberg TRINO_SCHEMA=default TRINO_CATALOG_MAP="awsdatacatalog=iceberg,AwsDataCatalog=iceberg" \
     ATHENA_LOCAL_RESULTS="$mode" AWS_ENDPOINT_URL_S3="$MINIO_ENDPOINT" AWS_ACCESS_KEY_ID=minioadmin \
     AWS_SECRET_ACCESS_KEY=minioadmin ATHENA_LOCAL_OUTPUT_LOCATION="s3://athena-results/py/" \
-    "$REPO_ROOT/target/release/athena-local") >"$EVIDENCE_DIR/athena-local-$name.log" 2>&1 &
+    "$BINARY") >"$EVIDENCE_DIR/athena-local-$name.log" 2>&1 &
   PIDS+=($!)
   for _ in $(seq 1 30); do
     [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://$bind/" -H 'X-Amz-Target: AmazonAthena.ListWorkGroups' \

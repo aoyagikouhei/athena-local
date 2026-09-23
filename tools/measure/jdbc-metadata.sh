@@ -18,7 +18,7 @@
 #
 # 環境変数:
 #   KEEP_UP=1     終了後に docker compose down -v をせず環境を残す（デバッグ用）
-#   SKIP_BUILD=1  cargo build を省略し、既存の target/release/athena-local を使う
+#   SKIP_BUILD=1  cargo build を省略し、既存の $CARGO_TARGET_DIR（tools/dev.sh では .toolbox/target）の release/athena-local を使う
 #
 # 後始末は trap が行う（KEEP_UP=1 でなければ必ず docker compose down -v する）。
 
@@ -27,6 +27,8 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 E2E_DIR="$SCRIPT_DIR/../e2e/minio"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# cargo の成果物の置き場。tools/dev.sh は CARGO_TARGET_DIR を .toolbox/target にする
+BINARY="${CARGO_TARGET_DIR:-$REPO_ROOT/target}/release/athena-local"
 COMPOSE_FILE="$E2E_DIR/docker-compose.yml"
 
 TRINO_BASE="http://127.0.0.1:8092"
@@ -232,13 +234,13 @@ PY
 
 build_athena_local() {
   if [ "${SKIP_BUILD:-0}" = "1" ]; then
-    [ -x "$REPO_ROOT/target/release/athena-local" ] || { record "cargo build" FAIL "SKIP_BUILD=1 だがバイナリが無い"; return 1; }
-    record "cargo build" SKIP "SKIP_BUILD=1。既存の target/release/athena-local を使う"
+    [ -x "$BINARY" ] || { record "cargo build" FAIL "SKIP_BUILD=1 だが $BINARY が無い"; return 1; }
+    record "cargo build" SKIP "SKIP_BUILD=1。既存の $BINARY を使う"
     return 0
   fi
   log "cargo build --release --locked"
   if (cd "$REPO_ROOT" && cargo build --release --locked) >"$BUILD_LOG" 2>&1; then
-    record "cargo build" PASS "target/release/athena-local を用意した"
+    record "cargo build" PASS "$BINARY を用意した"
     return 0
   fi
   record "cargo build" FAIL "ビルド失敗。ログ: $BUILD_LOG"
@@ -263,7 +265,7 @@ start_athena_local() {
       AWS_ACCESS_KEY_ID="minioadmin" \
       AWS_SECRET_ACCESS_KEY="minioadmin" \
       ATHENA_LOCAL_OUTPUT_LOCATION="$OUTPUT_LOCATION" \
-      "$REPO_ROOT/target/release/athena-local"
+      "$BINARY"
   ) >"$ATHENA_LOG" 2>&1 &
   ATHENA_PID=$!
 
