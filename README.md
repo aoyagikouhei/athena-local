@@ -1016,10 +1016,41 @@ passed; see Caveats.
 - **Error body key casing.** Error responses use `Message` (capital M), and an
   error that carries `AthenaErrorCode` also carries `ErrorCode` with the same
   value; both match real Athena (measured for `IDEMPOTENT_PARAMETER_MISMATCH`
-  and `WorkGroup is not found.`). Errors without an `AthenaErrorCode` (a
-  request that fails to parse, an unsupported operation,
-  `InternalServerException`) keep only `Message`; whether real Athena adds
-  `ErrorCode` there too has not been measured.
+  and `WorkGroup is not found.`). Errors without an `AthenaErrorCode`
+  (`SerializationException`, `InternalServerException`) carry neither
+  `AthenaErrorCode` nor `ErrorCode`, as measured for `SerializationException`
+  on 2026-09-23; `InternalServerException` has not been measured.
+- **Request bodies fail the way Athena's do.** Measured 2026-09-23 with 46
+  malformed requests. A value of the wrong JSON type fails with HTTP 400 and
+  `__type: SerializationException` (no `AthenaErrorCode`), and the `Message`
+  is the one Athena gives for that combination: `STRING_VALUE can not be
+  converted to an Integer`, `NUMBER_VALUE can not be converted to a String`,
+  `TRUE_VALUE can not be converted to an Integer` / `a String`, `Start of
+  list found where not expected`, `Start of structure or map found where
+  not expected.`, `Expected list or null` (a string for `ExecutionParameters`)
+  and `Expected null` (a string for `ResultConfiguration`). A body that is
+  not JSON at all (truncated, empty, `null`, a bare string, a trailing comma)
+  is a `SerializationException` with no `Message` key, and a body that is a
+  JSON array gets `Start of list found where not expected`. A required
+  member that is missing or `null` fails with `InvalidRequestException`,
+  `AthenaErrorCode: INVALID_INPUT` and `1 validation error detected: Value
+  null at 'queryExecutionId' failed to satisfy constraint: Member must not
+  be null` (the member name in lowerCamel), an optional member that is
+  `null` is treated as absent, unknown members are ignored, and a
+  `MaxResults` beyond the 32-bit range falls through to the usual
+  upper-bound validation. Combinations Athena was not measured for (`false`,
+  a decimal, an object where a list is expected, a number or boolean where a
+  list or structure is expected) are a `SerializationException` with no
+  `Message`. Two known differences: Athena truncates a decimal `MaxResults`
+  such as `1.5` to `1`, and athena-local rejects it; and a JSON array for a
+  nested structure (`"QueryExecutionContext": []`, or `["s3://b/"]` for
+  `ResultConfiguration`) is read positionally as that structure, where
+  Athena answers `Start of list found where not expected`. A request whose
+  `X-Amz-Target` is missing, lacks the
+  `AmazonAthena.` prefix, or names an unsupported or differently cased
+  operation is `{"__type":"UnknownOperationException"}` with no `Message`,
+  as on Athena. The `Content-Type` header is not checked (Athena answers a
+  wrong one with a different protocol's response).
 
 ## Development
 

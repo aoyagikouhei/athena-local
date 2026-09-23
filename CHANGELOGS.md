@@ -253,6 +253,25 @@ later name the date they were measured on.
   catalog for a given Athena table uses the matching connector; see the new
   Caveat. Measured against Athena on 2026-09-20 and 2026-09-21, reproduced
   across three rounds.
+- A request body that cannot be read now fails the way Athena's does
+  (measured 2026-09-23 with 46 malformed requests). A member of the wrong
+  JSON type is a `SerializationException` without `AthenaErrorCode`, with
+  Athena's message for that combination (`STRING_VALUE can not be converted
+  to an Integer` and the like); a body that is not JSON is a
+  `SerializationException` with no `Message`; a required member that is
+  missing or `null` is `InvalidRequestException` / `INVALID_INPUT` with
+  Athena's `Value null at 'queryExecutionId' ... Member must not be null`
+  message; an optional member set to `null` is treated as absent. All of
+  these used to be `InvalidRequestException` with a Japanese message and no
+  `AthenaErrorCode`. `MaxResults` is now read as a 64-bit integer so a value
+  beyond the 32-bit range reaches the upper-bound validation like on Athena.
+  See the new Caveat for the combinations that were not measured and the
+  two known differences.
+- An unsupported operation, a missing `X-Amz-Target` header, or a target
+  without the `AmazonAthena.` prefix now answers
+  `{"__type":"UnknownOperationException"}` with no `Message`, as Athena does
+  (measured 2026-09-23). It used to be `InvalidRequestException` with a
+  Japanese message, and a target without the prefix used to be accepted.
 
 ### Fixed
 

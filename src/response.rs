@@ -1,10 +1,8 @@
 //! awsJson1.1 のレスポンス組み立て。
 
-use axum::body::Bytes;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
-use serde::de::DeserializeOwned;
 use serde_json::json;
 
 const CONTENT_TYPE: &str = "application/x-amz-json-1.1";
@@ -23,11 +21,42 @@ pub fn ok<T: Serialize>(body: &T) -> Response {
 
 /// SDK は __type（または x-amzn-errortype）でエラーの種類を判別する。
 ///
-/// 本文のキーは `Message`（M が大文字。2026-09-17 実測）。この経路（パース失敗・
-/// 未対応オペレーション・InternalServerException など AthenaErrorCode が無いもの）の
-/// 本物の応答は未実測なので、`ErrorCode` は付けない（推測で埋めない）。
+/// 本文のキーは `Message`（M が大文字。2026-09-17 実測）。AthenaErrorCode の無い本物のエラー
+/// （`SerializationException`・`UnknownOperationException`。2026-09-23 実測）は `ErrorCode` も
+/// 持たないので付けない。`InternalServerException` の本物の形は未実測。
 pub fn error(code: &str, message: impl Into<String>) -> Response {
     error_body(code, json!({ "__type": code, "Message": message.into() }))
+}
+
+/// `__type` だけの本文（本物の `UnknownOperationException` と、本文が壊れているときの
+/// `SerializationException` はこの形。2026-09-23 実測）。
+pub fn bare_error(code: &str) -> Response {
+    error_body(code, json!({ "__type": code }))
+}
+
+/// 本文の解釈に失敗したときの本物の応答（2026-09-23 実測）。AthenaErrorCode は無く、
+/// `Message` は入力の形によって有無が分かれる（実測していない組み合わせは付けない）。
+pub fn serialization_error(message: Option<String>) -> Response {
+    let code = "SerializationException";
+    match message {
+        Some(message) => error(code, message),
+        None => bare_error(code),
+    }
+}
+
+/// 枠組みの検証（API 定義の制約違反）の文言。件数を先頭に置き、複数なら `; ` で並べる
+/// （1 件は 2026-09-18、2 件は 2026-09-23 実測。`errors` と複数形になる）。
+pub fn validation_errors(violations: &[String]) -> String {
+    let noun = if violations.len() == 1 {
+        "error"
+    } else {
+        "errors"
+    };
+    format!(
+        "{} validation {noun} detected: {}",
+        violations.len(),
+        violations.join("; ")
+    )
 }
 
 /// 本物の InvalidRequestException は、より細かい理由を AthenaErrorCode に載せる。
@@ -60,14 +89,4 @@ fn error_body(code: &str, body: serde_json::Value) -> Response {
     }
 
     response
-}
-
-pub fn invalid_request(message: impl Into<String>) -> Response {
-    error("InvalidRequestException", message)
-}
-
-/// Response は大きいので Box で返す（clippy::result_large_err）。
-pub fn parse<T: DeserializeOwned>(body: &Bytes) -> Result<T, Box<Response>> {
-    serde_json::from_slice(body)
-        .map_err(|e| Box::new(invalid_request(format!("リクエストを解釈できません: {e}"))))
 }

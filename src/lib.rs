@@ -10,6 +10,7 @@ mod failure;
 mod handler;
 mod metadata;
 mod operation;
+mod request;
 mod response;
 mod results;
 mod statement;

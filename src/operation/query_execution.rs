@@ -10,7 +10,8 @@ use crate::athena::{
 };
 use crate::convert;
 use crate::handler::App;
-use crate::response::{invalid_request_with_code, ok, parse};
+use crate::request::parse;
+use crate::response::{invalid_request_with_code, ok};
 use crate::store::{CancelOutcome, Execution, State};
 use crate::trino::Outcome;
 
@@ -18,7 +19,7 @@ use super::validation::paging_violation;
 
 /// GetQueryResults の MaxResults の上限（2026-09-23 実測。1000 は通り、1001 は弾かれる）。
 /// 未指定のときのページの大きさも同じ値（列名行込みで 1000 行。2026-09-23 に 1500 行のクエリで実測）。
-const MAX_RESULTS_LIMIT: i32 = 1000;
+const MAX_RESULTS_LIMIT: i64 = 1000;
 
 pub fn get_query_execution(app: &App, body: &Bytes) -> Response {
     let request: GetQueryExecutionRequest = match parse(body) {
@@ -44,7 +45,7 @@ pub fn get_query_results(app: &App, body: &Bytes) -> Response {
         Err(response) => return *response,
     };
 
-    // usize にする前に i32 のまま範囲を見る（ListWorkGroups と同じ理由）。
+    // usize にする前に i64 のまま範囲を見る（ListWorkGroups と同じ理由）。
     let limit = request.max_results.unwrap_or(MAX_RESULTS_LIMIT);
     if let Some(response) = paging_violation(request.next_token.as_deref(), limit, None) {
         return response;

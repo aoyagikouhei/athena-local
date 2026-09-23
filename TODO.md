@@ -70,7 +70,6 @@
 
 ### GetQueryResults
 
-- [ ] `MaxResults` に文字列など型の違う値を渡すと、本物は `SerializationException`（`AthenaErrorCode` 無し、`STRING_VALUE can not be converted to an Integer`。#9 で `ListWorkGroups` に対して実測）を返すが、athena-local は全オペレーション共通の `parse` が `InvalidRequestException` にする（#84）
 - [ ] `QueryResultType` の `DATA_MANIFEST` を無視している
 - [ ] `ColumnInfo.Nullable` が常に `UNKNOWN`。本物の値は未実測
 
@@ -78,7 +77,7 @@
 
 - [ ] `InternalServerException` も HTTP 400 で返す
 - [ ] `TooManyRequestsException` を返すことがない
-- [ ] リクエストを解釈できないときに `AthenaErrorCode` が無い。必須項目の欠落は実測済み（#83 で `GetQueryResults` の `QueryExecutionId` 無しを測った: `InvalidRequestException` / `INVALID_INPUT` / `1 validation error detected: Value null at 'queryExecutionId' failed to satisfy constraint: Member must not be null`）。型違いは #84
+- [ ] `InternalServerException` の本文の形（`AthenaErrorCode` の有無）。本物の応答は未実測（パース失敗と必須項目の欠落は #84 で実測して揃えた）
 
 ### ドキュメント
 
@@ -119,7 +118,7 @@
 ### エラー応答
 
 - [ ] `x-amzn-errortype` ヘッダ。#2、#3、#9 の実測で本物の応答に見つからなかったが、athena-local は送り続けている
-- [ ] `AthenaErrorCode` の無い経路（パース失敗・未対応オペレーション・`InternalServerException`）の本文の形（「2. 実装済みオペレーションの細かい差分」にも記載）
+- [ ] `AthenaErrorCode` の無い経路のうち `InternalServerException` の本文の形（パース失敗と未対応オペレーションは #84 で実測: `SerializationException`・`UnknownOperationException` はどちらも `AthenaErrorCode` 無し）
 
 ### 実クライアントでの疎通
 

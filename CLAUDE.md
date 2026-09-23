@@ -25,7 +25,7 @@ CI（`.github/workflows/ci.yml`）は `fmt --check`、`clippy -D warnings`、`te
 
 ### リクエストの流れ
 
-1. `handler::dispatch` — `POST /` の 1 本だけ。`X-Amz-Target: AmazonAthena.<Operation>` でオペレーションを振り分ける。SigV4 は検証しない。
+1. `handler::dispatch` — `POST /` の 1 本だけ。`X-Amz-Target: AmazonAthena.<Operation>` でオペレーションを振り分ける（前置き必須。ヘッダ無し・未対応名は本物と同じ `{"__type":"UnknownOperationException"}` だけの 400。2026-09-23 実測）。SigV4 は検証しない。
 2. `operation/` — 6 つのオペレーションの本体。`execution.rs`（`StartQueryExecution` の受付とバックグラウンド実行）、`result_output.rs`（結果ファイル本体と `.metadata` の書き込み）、`query_execution.rs`（`GetQueryExecution`／`GetQueryResults`／`StopQueryExecution`）、`work_group.rs`（`GetWorkGroup`／`ListWorkGroups`）に分かれ、文の種類の判定だけ `classification.rs` に置いて実行系と参照系の両方から呼ぶ。`MaxResults`／`NextToken` の枠組みの検証（API 定義の制約違反を `N validation error(s) detected: ...` の 1 文にまとめる。2026-09-23 実測）は `validation.rs` に置いて `GetQueryResults` と `ListWorkGroups` の両方から呼ぶ。DROP TABLE と ALTER TABLE ... ADD COLUMNS / REPLACE COLUMNS は、対象テーブルの形式によっては本物が列なしでも本体と `.metadata` を置くので、その判定を `table_format.rs`（Trino への形式の問い合わせと組み合わせの決定）と `target_table.rs`（対象の修飾名の解析）に置く。`mod.rs` は `mod` 宣言と 6 関数の再エクスポートだけで、`handler` からの見え方は分割前と変わらない。
    - `execution.rs` の `start_query_execution`: 文脈（カタログ／スキーマ）に既定値を当てる → `OutputLocation` を検証 → `Trino::syntax_error` で構文を確かめる（`PREPARE athena_local_syntax_check FROM\n<sql>` を送り、1 行ずれたエラー位置を元に戻す）→ `Store::submit` → `spawn_query` でバックグラウンド実行して、ID をすぐ返す。
    - `execution.rs` の `spawn_query` → `run`: `ExecutionParameters` の値ごとに `SELECT (<値>)` を Trino に投げて分類し（`statement::bind`）、`EXECUTE IMMEDIATE '<sql>' USING ...` で実行する。包む前に `catalog::alias_qualified_names` で修飾名のカタログに別名を当てる。パラメータが無く、別名に一致する修飾名も無ければ SQL は一切書き換えない（テストで保証している不変条件）。`?` の無い SQL に値が渡されたときのエラーでは、別名を当てただけの SQL で再実行する。
@@ -45,7 +45,8 @@ CI（`.github/workflows/ci.yml`）は `fmt --check`、`clippy -D warnings`、`te
 - `catalog.rs` — `TRINO_CATALOG_MAP` の別名を SQL の修飾名にも当てる。対象は、別名マップのキーと完全一致する二重引用符付き識別子で、空白やコメントを挟んで `.` が続くものだけ。文字列リテラルとコメントは読み飛ばす。置き換えた名前が短ければ空白で埋めて、Trino のエラーの桁位置を受け取った SQL に揃える。構文チェックと `GetQueryExecution` の `Query` は受け取った SQL のまま。
 - `metadata.rs` — 結果ファイルの隣に置く `.metadata` の protobuf を組み立てる（公式のスキーマは無く、burtcorp/athena-jdbc の `AthenaMetaDataParser` と同じフィールド番号）。先頭にクエリ ID、DML と CTAS は `updateType` と更新件数、続けて列ごとに `ColumnInfo` と同じ値。列の Precision／Scale／CaseSensitive を出すかどうかは値ではなく型ごとの表で決める（2026-09-17 実測）。S3 も文の分類も知らない。クエリ ID の出どころ（Trino の ID か `QueryExecutionId` か）は `operation/result_output.rs` 側で決める。
 - `failure.rs` — Trino のエラー名を `AthenaError` の `ErrorCategory`／`ErrorType` に写す。
-- `response.rs` — awsJson1.1 のエラー形（`__type` と `x-amzn-errortype` ヘッダ、必要なら `AthenaErrorCode`）。
+- `request.rs` — awsJson1.1 のリクエスト本文の解釈。JSON として読めない・トップレベルが object でない・型違い・必須の欠落を、本物と同じ `SerializationException`（文言は実測した型の組み合わせだけ。未実測は `Message` 無し）と枠組みの検証（`Value null at '<lowerCamel>' ... Member must not be null`）に写す（2026-09-23 実測）。`null` の項目は読む前に消す（本物は無いのと同じに扱う）。
+- `response.rs` — awsJson1.1 のエラー形（`__type` と `x-amzn-errortype` ヘッダ、必要なら `AthenaErrorCode`。`__type` だけの `bare_error`、`SerializationException` の `serialization_error`、枠組みの検証の文言 `validation_errors`）。
 - `athena.rs` — リクエスト／レスポンスの型（PascalCase で SDK の JSON と一対一に対応する）。
 
 ### テストの足場（`tests/common/mod.rs`）

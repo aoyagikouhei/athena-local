@@ -344,11 +344,24 @@ impl Harness {
 
     /// call からトークンの自動挿入を除いたもの。トークン無しの挙動を確かめるテスト用。
     pub async fn call_raw(&self, operation: &str, body: Value) -> (u16, Value) {
-        let response = reqwest::Client::new()
-            .post(&self.athena_url)
-            .header("X-Amz-Target", format!("AmazonAthena.{operation}"))
-            .header("Content-Type", "application/x-amz-json-1.1")
-            .body(body.to_string())
+        self.post(
+            &[
+                ("X-Amz-Target", &format!("AmazonAthena.{operation}")),
+                ("Content-Type", "application/x-amz-json-1.1"),
+            ],
+            body.to_string().as_bytes(),
+        )
+        .await
+    }
+
+    /// ヘッダと本文をそのまま送る。壊れた JSON や X-Amz-Target 無しの挙動を確かめるテスト用。
+    pub async fn post(&self, headers: &[(&str, &str)], body: &[u8]) -> (u16, Value) {
+        let mut request = reqwest::Client::new().post(&self.athena_url);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        let response = request
+            .body(body.to_vec())
             .send()
             .await
             .expect("athena-local に繋がらない");

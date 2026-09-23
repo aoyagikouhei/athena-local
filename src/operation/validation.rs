@@ -8,7 +8,7 @@
 
 use axum::response::Response;
 
-use crate::response::invalid_request_with_code;
+use crate::response::{invalid_request_with_code, validation_errors};
 
 /// MaxResults が 1 未満のときの制約の文言（2026-09-18・09-23 実測）。
 const MAX_RESULTS_TOO_SMALL: &str = "Value at 'maxResults' failed to satisfy constraint: Member must have value greater than or equal to 1";
@@ -17,7 +17,7 @@ const MAX_RESULTS_TOO_SMALL: &str = "Value at 'maxResults' failed to satisfy con
 const NEXT_TOKEN_EMPTY: &str = "Value at 'nextToken' failed to satisfy constraint: Member must have length greater than or equal to 1";
 
 /// MaxResults が API 定義の上限を超えたときの制約の文言（ListWorkGroups の 50 で 2026-09-18 実測）。
-fn max_results_too_large(upper: i32) -> String {
+fn max_results_too_large(upper: i64) -> String {
     format!(
         "Value at 'maxResults' failed to satisfy constraint: Member must have value less than or equal to {upper}"
     )
@@ -31,8 +31,8 @@ fn max_results_too_large(upper: i32) -> String {
 /// 上限超過と空文字の同時は未実測で、上限の文言が枠組みの形なので同じ 1 文にまとめている。
 pub(super) fn paging_violation(
     next_token: Option<&str>,
-    max_results: i32,
-    upper: Option<i32>,
+    max_results: i64,
+    upper: Option<i64>,
 ) -> Option<Response> {
     let mut violations = Vec::new();
     if next_token == Some("") {
@@ -48,17 +48,8 @@ pub(super) fn paging_violation(
     if violations.is_empty() {
         return None;
     }
-    let noun = if violations.len() == 1 {
-        "error"
-    } else {
-        "errors"
-    };
     Some(invalid_request_with_code(
-        format!(
-            "{} validation {noun} detected: {}",
-            violations.len(),
-            violations.join("; ")
-        ),
+        validation_errors(&violations),
         "INVALID_INPUT",
     ))
 }

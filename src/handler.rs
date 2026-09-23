@@ -10,7 +10,7 @@ use axum::response::Response;
 
 use crate::config::Config;
 use crate::operation;
-use crate::response::invalid_request;
+use crate::response::bare_error;
 use crate::results::ResultWriter;
 use crate::store::Store;
 use crate::trino::Trino;
@@ -26,9 +26,11 @@ pub struct App {
     pub results: Option<Arc<ResultWriter>>,
 }
 
+/// ヘッダが無い・前置き `AmazonAthena.` が無い・名前が違う（大文字小文字を含む）は、本物と同じく
+/// すべて `{"__type":"UnknownOperationException"}` だけの 400（2026-09-23 実測。Message 無し）。
 pub(crate) async fn dispatch(State(app): State<App>, headers: HeaderMap, body: Bytes) -> Response {
     let Some(operation) = operation_name(&headers) else {
-        return invalid_request("X-Amz-Target がありません");
+        return unknown_operation();
     };
 
     match operation.as_str() {
@@ -38,11 +40,16 @@ pub(crate) async fn dispatch(State(app): State<App>, headers: HeaderMap, body: B
         "StopQueryExecution" => operation::stop_query_execution(&app, &body),
         "GetWorkGroup" => operation::get_work_group(&app, &body),
         "ListWorkGroups" => operation::list_work_groups(&app, &body),
-        other => invalid_request(format!("未対応のオペレーションです: {other}")),
+        _ => unknown_operation(),
     }
 }
 
+fn unknown_operation() -> Response {
+    bare_error("UnknownOperationException")
+}
+
+/// 前置きは必須（本物は `ListWorkGroups` だけの値も弾く。2026-09-23 実測）。
 fn operation_name(headers: &HeaderMap) -> Option<String> {
     let target = headers.get("x-amz-target")?.to_str().ok()?;
-    Some(target.trim_start_matches(TARGET_PREFIX).to_string())
+    Some(target.strip_prefix(TARGET_PREFIX)?.to_string())
 }
