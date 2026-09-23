@@ -70,9 +70,9 @@
 
 ### GetQueryResults
 
-- [ ] `MaxResults` に上限の 1000 が無い
-- [ ] 形の崩れた `NextToken` を渡すと、エラーにならずに先頭の行から読み直す。`ListWorkGroups`（#9）は実測どおり `MaxResults` の範囲外と不正な `NextToken` を `InvalidRequestException` / `INVALID_INPUT` で弾くので、2 つのオペレーションで検証が揃っていない
-- [ ] `MaxResults` に文字列など型の違う値を渡すと、本物は `SerializationException`（`AthenaErrorCode` 無し、`STRING_VALUE can not be converted to an Integer`。#9 で `ListWorkGroups` に対して実測）を返すが、athena-local は全オペレーション共通の `parse` が `InvalidRequestException` にする
+- [ ] `MaxResults` に上限の 1000 が無い（#83）
+- [ ] 形の崩れた `NextToken` を渡すと、エラーにならずに先頭の行から読み直す。`ListWorkGroups`（#9）は実測どおり `MaxResults` の範囲外と不正な `NextToken` を `InvalidRequestException` / `INVALID_INPUT` で弾くので、2 つのオペレーションで検証が揃っていない（#83）
+- [ ] `MaxResults` に文字列など型の違う値を渡すと、本物は `SerializationException`（`AthenaErrorCode` 無し、`STRING_VALUE can not be converted to an Integer`。#9 で `ListWorkGroups` に対して実測）を返すが、athena-local は全オペレーション共通の `parse` が `InvalidRequestException` にする（#84）
 - [ ] `QueryResultType` の `DATA_MANIFEST` を無視している
 - [ ] `ColumnInfo.Nullable` が常に `UNKNOWN`。本物の値は未実測
 
