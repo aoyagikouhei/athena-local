@@ -1,0 +1,64 @@
+# issue #70 Step 9（実機検証）の足場。
+# tools/e2e/minio/docker-compose.yml から、Content-Type の確認に要らないもの
+# （TLS 終端の nginx と JDBC クライアント）を落とし、プロジェクト名とポートを 39 と衝突しない
+# ものに変えたコピー。Trino のカタログ定義は minio のものをそのまま参照する。
+# 本物の AWS は一切使わない。
+#
+# ポート（ホスト側）:
+#   Trino         8093（minio は 8092、trino-probe は 8090）
+#   MinIO S3 API  9004（minio は 9002）
+#   MinIO コンソール 9005（minio は 9003。minio と同時に動かしても衝突しないようにずらした）
+#   athena-local  8088（minio は 8087。compose ではなくホスト上のプロセス）
+name: athena-local-issue70-e2e
+
+services:
+  trino:
+    image: trinodb/trino:482
+    container_name: athena-local-issue70-e2e-trino
+    ports:
+      - "8093:8080"
+    volumes:
+      # カタログ定義は minio のものを共有する（読み取り専用。hive / iceberg の 2 つ）。
+      # Content-Type のケースで使うのは hive だけだが、ファイルを増やさないためにディレクトリごと渡す。
+      - ../minio/catalog:/etc/trino/catalog:ro
+      - trino-hive-data:/data/hive
+      - trino-iceberg-data:/data/iceberg
+
+  minio:
+    image: quay.io/minio/minio:latest
+    container_name: athena-local-issue70-e2e-minio
+    ports:
+      - "9004:9000" # S3 互換 API
+      - "9005:9001" # 管理コンソール（無くても検証は進む）
+    environment:
+      # ローカル専用のダミー認証情報。本物の AWS の認証情報ではない。
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  # 使い捨てコンテナ。起動のたびに athena-results バケットを（無ければ）作って終了する。
+  minio-init:
+    image: quay.io/minio/mc:latest
+    container_name: athena-local-issue70-e2e-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        mc alias set local http://minio:9000 minioadmin minioadmin
+        mc mb --ignore-existing local/athena-results
+        echo "bucket ready: athena-results"
+
+volumes:
+  trino-hive-data:
+  trino-iceberg-data:
+  minio-data:

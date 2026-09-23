@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 概要
 
-AWS Athena API（`awsJson1.1`）のローカル代役。受け取った SQL を Trino の REST API（`/v1/statement`）で実行し、結果を Athena と同じ形で返す。オプションで結果 CSV を S3 互換ストレージ（MinIO など）に書く。利用者向けの仕様（環境変数、対応オペレーション、Athena との差分）は README.md にまとまっている。
+AWS Athena API（`awsJson1.1`）のローカル代役。受け取った SQL を Trino の REST API（`/v1/statement`）で実行し、結果を Athena と同じ形で返す。オプションで結果 CSV を S3 互換ストレージ（MinIO など）に書く。利用者向けの仕様（環境変数、対応オペレーション、Athena との差分）は `docs/` にまとまっていて、README.md は概要とクイックスタートだけ。開発者向けの記録（実測の結果、未実測の一覧、ロードマップ、設計判断）は `docs/dev/` にある（下の「ドキュメントの置き場」）。
 
 ## コマンド
 
@@ -58,13 +58,30 @@ CI（`.github/workflows/ci.yml`）は `fmt --check`、`clippy -D warnings`、`te
 - `config.rs` のテストは本物の環境変数を触らない（テストが並列に走るため）。`parse_results` に環境変数を読むクロージャを渡して差し替える。
 - ユニットテストはインラインの `#[cfg(test)] mod tests` に置く。例外は `src/results.rs` だけで、本体が 400 行を超えないようにテストを子モジュール `src/results/tests.rs`（`mod.rs` 無し）に出している（#75）。
 
+## ドキュメントの置き場
+
+| 置き場 | 書くこと | 言語 |
+|---|---|---|
+| `README.md` | 概要、クイックスタート、docs へのリンク | 英語 |
+| `docs/*.md` | athena-local の現在の挙動（利用者向け） | 英語 |
+| `docs/dev/measurements/` | 本物の Athena などで測った事実。日付・issue・スクリプトのパス・投げたもの・返ったもの。上書きせず、食い違いは両方を残して採用した判断を書く | 日本語 |
+| `docs/dev/unmeasured.md` | 未実測の一覧。測ったら measurements に書いてここから消す | 日本語 |
+| `docs/dev/roadmap.md` | 未実装機能と優先度、クライアント調査 | 日本語 |
+| `docs/dev/decisions.md` | 決着済みの設計判断（この CLAUDE.md にある約束は重ねない） | 日本語 |
+| `docs/dev/development.md` | ビルド・テスト・リリース | 日本語 |
+| `CHANGELOGS.md` | 版の間で何が変わったか。1 項目 1〜2 行 | 英語 |
+| `tools/measure/`、`tools/e2e/` | 本物の Athena に投げる実測スクリプトと、compose の実機検証の足場 | — |
+
+- 作業中のノート（`.claude/issue-notes/<番号>.md`）は PR の中だけの一時物。マージ前に、実測の結果表を `docs/dev/measurements/` へ、後の開発でも効く設計判断を `docs/dev/decisions.md` へ、残った未実測を `docs/dev/unmeasured.md` へ写し、ノート自体は消す（古いノートに後で覆った事実が残り、正のドキュメントより先に読まれるのを防ぐ。#98）。過去のノートは git の履歴にある。
+- 実測スクリプトは issue 番号の接頭辞を付けず、内容で名前を付けて `tools/measure/` に置き、先頭のコメントに issue 番号を書く。
+
 ## 開発上の約束
 
-- **本物の Athena に合わせることが目的**。文言、エラーコード、型の見え方、ファイル名などは本番 Athena で実測した値に合わせ、コメントに「2026-09-14 実測」のように書いてある。実測していない振る舞いは推測で埋めない。項目を省く（例: `substatement_type` が `None`）か、README の Caveats に「未実測」と書く。
-- **SQL の本文は書き換えない。** 必要なら全体を包む（`EXECUTE IMMEDIATE`）か、別のクエリを投げる（構文チェックの `PREPARE`、パラメータ分類の `SELECT (<値>)`）。Athena と Trino の書き方の違い（小数リテラルの型、DDL、`OPTIMIZE` / `VACUUM`）は変換せず、README の Caveats に回避策を書く。例外は `TRINO_CATALOG_MAP` の別名を引用符付きの修飾名に当てる置換（`catalog.rs`）だけ。Trino には `/` を含むカタログ名を作れず、S3 Tables の修飾名はほかに通す方法が無いので、汎用ツールとして入れた（2026-09-15）。この置換の条件は広げない。引用符の無い名前や大文字小文字の違う名前は、Trino 側のカタログ名を合わせる回避策を README に書いてある。
-- 挙動を変えたら README.md（Supported API／Caveats）と CHANGELOGS.md の `[Unreleased]` も更新する。CHANGELOG のバージョンは Docker Hub のイメージタグと一致させ、README の compose 例のタグも合わせる。
-- コメント、テスト名（日本語の文）、エラーメッセージ、コミットメッセージ（「〜する」で終わる一行）、PR の本文は日本語。README と CHANGELOG は英語。
-- **ユーザーへの返答は常に日本語で書く。** 途中の状況報告、質問、最終報告、コマンドの説明もすべて日本語。英語は README・CHANGELOG の本文とコード中の識別子だけ。
+- **本物の Athena に合わせることが目的**。文言、エラーコード、型の見え方、ファイル名などは本番 Athena で実測した値に合わせ、コメントに「2026-09-14 実測」のように書いてある。実測していない振る舞いは推測で埋めない。項目を省く（例: `substatement_type` が `None`）か、`docs/caveats.md` に「not measured」と書いて `docs/dev/unmeasured.md` に載せる。測ったら `docs/dev/measurements/` に記録し、unmeasured から消す。
+- **SQL の本文は書き換えない。** 必要なら全体を包む（`EXECUTE IMMEDIATE`）か、別のクエリを投げる（構文チェックの `PREPARE`、パラメータ分類の `SELECT (<値>)`）。Athena と Trino の書き方の違い（小数リテラルの型、DDL、`OPTIMIZE` / `VACUUM`）は変換せず、`docs/caveats.md` に回避策を書く。例外は `TRINO_CATALOG_MAP` の別名を引用符付きの修飾名に当てる置換（`catalog.rs`）だけ。Trino には `/` を含むカタログ名を作れず、S3 Tables の修飾名はほかに通す方法が無いので、汎用ツールとして入れた（2026-09-15）。この置換の条件は広げない。引用符の無い名前や大文字小文字の違う名前は、Trino 側のカタログ名を合わせる回避策を `docs/configuration.md` と `docs/caveats.md` に書いてある。
+- 挙動を変えたら `docs/`（対応オペレーションは `api.md`、Athena との差分は `caveats.md`、結果ファイルは `result-files.md` など）と CHANGELOGS.md の `[Unreleased]` も更新する。CHANGELOG は 1 項目 1〜2 行の箇条書きで、挙動の説明は書かずに docs の節へリンクする。CHANGELOG のバージョンは Docker Hub のイメージタグと一致させ、README の compose 例のタグも合わせる。
+- コメント、テスト名（日本語の文）、エラーメッセージ、コミットメッセージ（「〜する」で終わる一行）、PR の本文は日本語。README・`docs/*.md`・CHANGELOG は英語、`docs/dev/` は日本語。
+- **ユーザーへの返答は常に日本語で書く。** 途中の状況報告、質問、最終報告、コマンドの説明もすべて日本語。英語は README・`docs/*.md`・CHANGELOG の本文とコード中の識別子だけ。
 - 大きな `Response` を `Result` で返すときは `Box<Response>` にする（`clippy::result_large_err` 対策）。
 - HTTP クライアントは TLS 無しでビルドしている（`reqwest` は `default-features = false`）。Trino にも S3 にも `http://` だけでつなぐ。
 - Rust edition 2024（let chains を使っている）。Docker のビルドイメージは `rust:1.98`。
@@ -72,4 +89,4 @@ CI（`.github/workflows/ci.yml`）は `fmt --check`、`clippy -D warnings`、`te
   絶対パスへの書き出しはコンテナの中に消えるうえ終了コードは 0 になる。取得は `aws s3 cp <src> -` で標準出力に流し、
   リダイレクトはシェルが行う（2026-09-16 に実測スクリプトで、2026-09-21 に実機検証で踏んだ）。
   同じ理由で compose のネットワークにも入れないので、compose 内のサービス（MinIO など）を触るときは
-  `--network` を付けた使い捨てコンテナから叩く（`.claude/issue-notes/39-e2e/verify.sh`）。
+  `--network` を付けた使い捨てコンテナから叩く（`tools/e2e/minio/verify.sh`）。

@@ -266,7 +266,7 @@ mod tests {
 
     #[test]
     fn 未実測の型は同じ系統の型と同じフィールドを出す() {
-        // 本物では未実測の 2 つの型（README の Caveats に「同じ系統の型と同じに書く」と書いてある）。
+        // 本物では未実測の 2 つの型（docs/caveats.md の Result files and `.metadata` に「同じ系統の型と同じに書く」と書いてある）。
         // 期待値は手計算。timestamp with time zone は timestamp と同じく 7 / 8 / 10 を出し、
         // interval year to month は interval day to second と同じく 10 だけを出す。
         let columns = vec![
@@ -298,7 +298,7 @@ mod tests {
 
     #[test]
     fn 更新件数が_0_でも_field_3_を書く() {
-        // 0 件の更新（`DELETE ... WHERE false`）は本物で未実測。README の Caveats に書いた
+        // 0 件の更新（`DELETE ... WHERE false`）は本物で未実測。docs/caveats.md の Result files and `.metadata` に書いた
         // 「athena-local は 0 を書く」という契約を固定する（proto3 の既定値の省略はしない）。
         let columns = vec![column("rows", "bigint", 19, 0, false)];
 

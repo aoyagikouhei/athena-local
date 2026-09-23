@@ -126,7 +126,7 @@ async fn 構文エラー以外の失敗は開始時には返さず実行に任�
 async fn ブロックコメント付きの_show_create_table_も本物と違いそのまま通る() {
     // 本物は分類だけ正しく返し、実行時に ParseException で弾く（2026-09-18 実測）。
     // athena-local は受け取った SQL をそのまま Trino に投げるので成功する。
-    // README の Caveats に書いてある差を、SQL を書き換えないことで固定する。
+    // docs/caveats.md の SQL dialect に書いてある差を、SQL を書き換えないことで固定する。
     let sql = "/* c */ SHOW CREATE TABLE t";
     let harness = Harness::builder(select_response())
         .route(

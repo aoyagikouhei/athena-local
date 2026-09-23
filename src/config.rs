@@ -172,7 +172,7 @@ fn parse_results(env: impl Fn(&str) -> Option<String>) -> Result<ResultsMode, St
 
 /// 既定の出力先が無いときに起動時に出す警告。起動は止めない。
 /// 出力は main.rs の起動ログに並ぶので、そちらと同じ英語にする。
-pub const OUTPUT_LOCATION_WARNING: &str = "warning: no default output location; awswrangler may create a bucket on real AWS. Set ATHENA_LOCAL_RESULTS=s3 with ATHENA_LOCAL_OUTPUT_LOCATION, or pass s3_output from the client (see README Caveats).";
+pub const OUTPUT_LOCATION_WARNING: &str = "warning: no default output location; awswrangler may create a bucket on real AWS. Set ATHENA_LOCAL_RESULTS=s3 with ATHENA_LOCAL_OUTPUT_LOCATION, or pass s3_output from the client (see docs/caveats.md).";
 
 /// 既定の出力先が無ければ OUTPUT_LOCATION_WARNING を返す。
 /// 既定の出力先が無いと GetWorkGroup は OutputLocation を返さず、awswrangler は

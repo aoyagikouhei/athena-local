@@ -1,0 +1,162 @@
+# クライアント
+
+本物の Athena ではなく、クライアント（AWS CLI、Athena JDBC 3.8.1、Grafana athena-datasource、awswrangler、PyAthena など）の挙動とソース読み。実機で測ったものの多くは athena-local を相手にしているが、記録するのは athena-local の挙動ではなくクライアント側の振る舞い（何を送るか、何を読むか、何で壊れるか）。書き方は [README.md](README.md)。
+
+対応する利用者向けの章: [docs/clients.md](../../clients.md)、[docs/caveats.md](../../caveats.md) の「Clients and transport」。
+
+## AWS CLI（botocore）
+
+### AWS CLI（botocore）が送る ClientRequestToken
+- 日付: 2026-09-17 ／ issue: #3 ／ スクリプト: 無し（統括役が Bash で直接）
+- 相手: AWS CLI（botocore）。偽の HTTP エンドポイントに CLI を向け、実際に送られたボディを読んだ（本物の Athena ではない）
+- 投げたもの: `aws athena start-query-execution` をトークンの有無・長さ・文字種を変えて
+- 返ったもの:
+
+  | 送ったもの | 結果 |
+  | --- | --- |
+  | トークン未指定 | CLI が **UUID v4（36 文字）**を自動で入れる。実ボディ: `{"QueryString": "SELECT 1", "ClientRequestToken": "a3865fbd-8580-4ffb-82a4-4618067fdf10"}` |
+  | 空文字・31 文字 | botocore が**クライアント側で拒否**（`ParamValidation ... valid min length: 32`）。ワイヤに乗らない |
+  | 32・128・129 文字 | ワイヤに到達。**botocore は上限 128 を検証しない** |
+  | 空白・`"`・`\` を含む（32 文字以上） | そのまま到達。正規化されない |
+  | 大文字 | そのまま到達。大小の正規化は無い |
+  | 非 ASCII（日本語 32 字） | CLI が拒否（`ParamValidation`） |
+
+  含意: SDK / CLI 経由では **32 文字未満は絶対に届かない**。athena-local 側の長さ検証が効くのは **128 超と生 HTTP クライアントだけ**。
+- 備考: `aws` は Docker ラッパ（`~/.local/bin/aws` が `docker run ... amazon/aws-cli:latest`）で、`127.0.0.1` も `host.docker.internal` も届かず、ホストの LAN IP が要った。
+
+## クライアントのソース読み
+
+### クライアントが GetWorkGroup の応答から読む項目（ソースの読み取り）
+- 日付: 2026-09-16 ／ issue: #2 ／ スクリプト: 無し
+- 相手: クライアントのソース（awswrangler 3.17.1、Grafana athena-datasource、dbt-athena、botocore の API 定義）。実測ではない
+- 投げたもの: ソースの grep と通読
+- 返ったもの: 無いと**壊れる**もの:
+
+  | 項目 | 壊れ方 |
+  | --- | --- |
+  | `WorkGroup`（トップレベル） | awswrangler が直接添字で `KeyError`（`_utils.py:168`）。Grafana が nil 参照で panic（`api.go:314`） |
+  | `WorkGroup.Configuration` | 同上。どちらも直接添字・直接参照 |
+  | `Configuration.EnforceWorkGroupConfiguration` | awswrangler が直接添字で `KeyError` |
+  | `Configuration.EngineVersion.EffectiveEngineVersion` | Grafana が nil 参照で panic |
+
+  壊れないが挙動が変わるもの: `ResultConfiguration.OutputLocation`（無いと awswrangler が実 AWS にバケットを作りに行く）。`EffectiveEngineVersion` の文字列は Grafana の `ResultReuseConfiguration` 付与の判定に使われる（`api.go:363-365`）。Grafana は `/workgroupEngineVersion` リソースエンドポイントからも呼ぶ（クエリ 0 件でも呼ばれる）。dbt-athena は `.get()` 連鎖なので何が欠けても落ちず、読むのは `ResultConfiguration.OutputLocation` と `EnforceWorkGroupConfiguration` だけ。botocore の API 定義では `WorkGroup` の必須は `Name` だけ、エラーは `InternalServerException` と `InvalidRequestException` の 2 つだけ。botocore の `WorkGroupName` は `[a-zA-Z0-9._-]{1,128}`。
+  - awswrangler 3.17.1 の実 AWS 発信の経路: `read_sql_query` は既定が `s3_output=None`・`workgroup="primary"` なので必ず `GetWorkGroup` を呼ぶ。`_get_s3_output` は呼び出し側の `s3_output` もワークグループの `OutputLocation` も無いとき `create_athena_bucket()`（`sts.get_account_id()` と S3）を呼ぶ。呼び出し元は `_read.py:602`（`ctas_approach=False`、`if not wg_config.managed_results:` で守られている）と `_read.py:775`（`_unload`、`unload_approach=True`、**守られていない**）の 2 つ。既定の `ctas_approach=True` はこの経路に入らない。`EnforceWorkGroupConfiguration` の真偽は影響しない。
+- 備考: 実測ではなくソース読みの事実として残す。
+
+### クライアント側の見出し行の扱い
+- 日付: 不明（抽出では直前の #60 の項目と「同上」。そちらは 2026-09-22 と推定） ／ issue: #60 ／ スクリプト: 無し
+- 相手: PyAthena / awswrangler のソース（本物の Athena ではない）
+- 返ったもの: PyAthena は先頭行の値が列名と一致したときだけ読み飛ばす値ベースの判定で、文の種類は見ない（`result_set.py` の `_is_first_row_column_labels`）。awswrangler は S3 の結果ファイルを読む経路が主で、GetQueryResults の経路は未確認
+- 備考: ソースを読んだ観察
+
+## Grafana athena-datasource
+
+### Grafana athena-datasource と athena-local の実機検証
+- 日付: 2026-09-18 ／ issue: #9 ／ スクリプト: 無し（scratchpad の `verify9/`。リポジトリには入れていない）
+- 相手: athena-local 自身の観測（本物ではない）。Trino 482（`tpch` カタログ）、Grafana 12.3.0 + grafana-athena-datasource 3.3.4。`AWS_` 環境変数 0 個で実 AWS には出ていない
+- 投げたもの／返ったもの（Grafana のクライアント挙動として後にも効く観測）:
+  - Grafana の `jsonData.endpoint` が Athena のエンドポイント上書きになり、`ListWorkGroups` がこの `endpoint` 宛てに飛ぶ（athena-local を落とした状態で `operation error Athena: ListWorkGroups … Post "http://host.docker.internal:8081/": dial tcp 172.17.0.1:8081: connect: connection refused`）。
+  - リソース API は `POST .../resources/workgroups`、本文 `{"region": …}`。設定画面が実際に送る `region` は `"__default"`、`"default"` でも `defaultRegion` に落ちる。
+  - 51 件の構成で Grafana のリソース API は 51 件すべてを返し、無限ループしない。届いた `ListWorkGroups` はちょうど 2 回で、本文は 1 回目 `{}`、2 回目 `{"NextToken":"50"}`。**Grafana は `MaxResults` を送らない**（実機で確認）。
+  - `jsonData.workgroup` を一覧に無い `nope` にしてもクエリは動く（`GetWorkGroup {"WorkGroup":"nope"}` → `StartQueryExecution`（`ClientRequestToken` は UUID）→ `GetQueryExecution` ×2 → `GetQueryResults`）。
+  - Grafana のソース（v3.3.4 `pkg/athena/api/api.go:285-305`）: `ListWorkGroupsInput{NextToken: nextToken}` だけを送り、`if nextToken == nil` でループを抜ける（空文字チェック無し）。**`NextToken` を空文字で返すと無限ループ**、省略か `null` なら 1 回で終わる。`Name` が無いと `*cat.Name` で panic。
+  - 一覧は設定画面でだけ呼ばれる（クエリ実行時は `GetWorkGroup`）。保存済みの名前が一覧に無いと候補から消えて入力欄が空表示になるが、クエリは動く。
+- 備考: 検証 10 件すべて PASS。本物の実測ではない。awswrangler／dbt-athena／PyAthena は `ListWorkGroups` を呼ばない（ソースで裏取り。awswrangler はテストで `WorkGroups[].Name` を読むだけ）。botocore の `service-2.json`: `MaxWorkGroupsCount` は min 1／max 50、`Token` は min 1／max 1024 で pattern 無し、`paginators-1.json` に `ListWorkGroups` は無い。
+
+## Athena JDBC 3.8.1
+
+### Athena JDBC 3.8.1 の読み方
+- 日付: 2026-09-17 ／ issue: #5 ／ スクリプト: 無し（scratchpad の `e2e/Jdbc.java` / `jdbc.sh`）
+- 相手: Athena JDBC 3.8.1（`eclipse-temurin:21-jdk`、TLS 経由で athena-local と MinIO へ）。本物の Athena ではない
+- 投げたもの: `Jdbc.java` の 10 文 + 接続テスト。`ResultFetcher` を `auto`（既定）/ `S3` / `GetQueryResults` の 3 モードで
+- 返ったもの: 3 モードとも例外は 1 件も出なかった（`NoSuchKey`、`Range Not Satisfiable` を含めてドライバの例外は 0）。
+
+  | モード | 接続テスト | 10 文の結果 | `.metadata` の GET（nginx のアクセスログ） |
+  | --- | --- | --- | --- |
+  | `auto`（既定、`ResultFetcher` 未指定） | 通った | 例外 0。SELECT 2 列 1 行 / 0 行 SELECT 0 行 / SHOW TABLES 1 列 0 行 / DESCRIBE 1 列 1 行 / INSERT・CTAS updateCount=1 / CREATE・DROP updateCount=0 | **11 件**（200 が 8 件、404 が 3 件） |
+  | `S3` | 通った | `auto` と同じ | **5 件**（すべて 200。`.txt.metadata` は 1 件も引かなかった） |
+  | `GetQueryResults` | 通った | 例外 0。SHOW TABLES が 1 列 1 行で先頭行が `Table`、DESCRIBE が 1 列 2 行で先頭行が `Column` | **0 件**（S3 を一切読まない） |
+
+  - `auto` では `<id>.csv.metadata`、`<id>.txt.metadata`、`<id>.metadata`（INSERT）、`tables/<id>.metadata`（CTAS）の 4 形すべてに GET が来た。ドライバのログに `S3MetadataFetcher … loaded query result metadata from "s3://results/athena/<id>.csv.metadata"`。
+  - `auto` の 404 3 件は `.metadata` を置かない文（`CREATE TABLE t5`、`DROP TABLE t5c`、`DROP TABLE t5`）への `.txt.metadata` の GET。ドライバは `does not have query result metadata` と INFO で書いて既定のプレーンテキスト metadata で続行し、例外にしなかった。3.8.1 では `.metadata` の欠落は致命ではない。
+  - 416（Range Not Satisfiable）が `auto` と `S3` で 1 件ずつ。いずれも 0 バイトの `SHOW TABLES` の `.txt` 本体への Range GET。ドライバは `output location … was empty` と書いて 0 行として扱った。
+  - ドライバのログの grep: `metadata` 43 行、`Range` 9 行、`NoSuchKey` 0 行、`416` 0 行。
+  - **JDBC 3.8.1 は `http://` の endpoint を受け付けない。** `com.amazon.athena.jdbc.support.EndpointHelper.constructEndpointUri` がスキーマ無しなら `https://` を足し、`https` 以外なら `The Athena endpoint "http://localhost:8084" is not an HTTPS endpoint` で `IllegalArgumentException`（3.8.1 の逆アセンブルで確認。無効化するプロパティは見つからなかった）。nginx で TLS を終端した。
+  - JDBC 3.8.1 の `ConnectionTest` は `-- Athena JDBC driver connection test\nSELECT 1` を投げる。
+- 備考: 「GetQueryResults モードだけ UTILITY の見出し行がデータ行に見える」（SHOW TABLES の先頭行が `Table`、DESCRIBE の先頭行が `Column`）は athena-local の `convert.rs` の作りによる当時の観測。公開情報として JDBC 3.x のリリースノート: 3.5.1 で「DDL query metadata の NoSuchKeyFound を修正」、3.3.0 で「0 バイトオブジェクトの Range Not Satisfiable を修正」、3.1.0 で「precision / scale が無ければ 0 にする」。
+
+### Athena JDBC 3.x を athena-local につなぐための TLS 終端
+- 日付: 2026-09-17（#5 の実機検証。#18 はその足場から引いた） ／ issue: #18 ／ スクリプト: 無し（#5 の実機検証の足場が scratchpad に残っており、`nginx.conf`／keytool／JDBC プロパティを逐語で引いた。JDBC プロパティは #5 の `Jdbc.java` から）
+- 相手: Athena JDBC 3.x（#5 の実機検証では 3.8.1）＋ athena-local（本物ではない）。README の nginx 設定の検証は `nginx:1.27.0` の `nginx -t`
+- 投げたもの: README に載せた nginx 設定を `nginx -t` に通し、openssl で生成した証明書と鍵で起動
+- 返ったもの: `nginx -t` ok、生成した証明書と鍵でそのまま起動できた。openssl の生成コマンドは #5 の記録に無く、自分で走らせて SAN を確認した。nginx.conf から `ssl_certificate_key` の行を消すと `nginx -t` が `[emerg] no "ssl_certificate_key" is defined` で落ちる
+- 備考: JDBC 3.x をつなぐには TLS 終端が要る（タイトルの主張。根拠は #5 の実機検証で、このノートには詳細なし）。nginx では `proxy_set_header Host $http_host`（SigV4 が Host を署名する）と `client_max_body_size 0` が要る（同じ足場から）。
+
+### 列 0 個の `.metadata` を Athena JDBC が読めるか
+- 日付: 2026-09-21 ／ issue: #39（実測は #46） ／ スクリプト: 無し
+- 相手: Athena JDBC 3.8.1（#46 で実施）
+- 備考: 当時は「ドライバが手に入らない」で未確認（Maven Central の `com.amazonaws:athena-jdbc` は Athena Federated Query の JDBC コネクタで `java.sql.Driver` が無く `No suitable driver found for jdbc:awsathena://`、Maven Central に「3.x」表記のバージョンは無い（calver の `2024.8.1`〜`2026.33.1` のみ）、委譲先が試した AWS の S3 直配布 URL 2 パターンは 404）。#46 で入手経路（`https://downloads.athena.us-east-1.amazonaws.com/drivers/JDBC/3.8.1/athena-jdbc-3.8.1-with-dependencies.jar`）が解け、41B・38B とも例外なく読むと確認。詳細は #46
+
+### 列 0 個の `.metadata` を Athena JDBC 3.8.1 が読むか
+- 日付: 2026-09-21（4 ラウンド、21:31-21:52） ／ issue: #46 ／ スクリプト: `tools/measure/jdbc-metadata.sh`（旧 `46-verify-jdbc-metadata.sh`）（#39 のノートが参照する名前）。足場は `tools/e2e/minio/`（旧 `39-e2e/`）（`docker-compose.yml`・`pom.xml`・`Main.java`）
+- 相手: Athena JDBC 3.8.1（athena-local + nginx の TLS 終端 + MinIO 相手）
+- 投げたもの: 下表の 4 ケースを `ResultFetcher` の既定（auto）と `S3` 明示の両方で
+- 返ったもの:
+
+| # | 文 | `.metadata` | ドライバのログ | 結果 |
+|---|---|---|---|---|
+| 1 | `DROP TABLE`（Iceberg） | 41 バイト（列 0 個） | `loaded query result metadata from "...txt.metadata"` | 例外なし。`hasResultSet=false updateCount=0` |
+| 2 | `ALTER TABLE ... ADD COLUMN`（Hive） | 38 バイト（列 0 個） | `loaded query result metadata from "...txt.metadata"` | 例外なし。`hasResultSet=false updateCount=0` |
+| 3 | `DROP TABLE`（Hive。対照） | 無し | `does not have query result metadata` | 例外なし（`5.md` の先行知見と一致） |
+| 4 | `SELECT 1 AS n`（回帰） | 81 バイト | `loaded ...csv.metadata` | `columnCount=1`、`rows=1` |
+
+  - auto と S3 明示のどちらも `failures=0`。nginx のアクセスログで `.metadata` への GET が 13 件（ドライバが S3 を直接読んだ）
+  - 41 バイト: `0a 1b` + Trino のクエリ ID 27 バイト、`12 0a` + `DROP TABLE`。`ColumnInfo` は 0 個
+  - 38 バイト: `0a 24` + `QueryExecutionId` の UUID 36 バイト。それだけ。`ColumnInfo` は 0 個
+  - 結論: 列 0 個の `.metadata` を Athena JDBC 3.8.1 は例外なく読む。#39 の実装を見直す必要は無い
+- 備考: `.metadata` を置かないとき（404 を INFO で流して続行）は `5.md` の先行知見
+
+### Athena JDBC ドライバの入手と、コンテナ相手に必要な条件
+- 日付: 2026-09-21 ／ issue: #46 ／ スクリプト: 無し
+- 相手: Athena JDBC 3.8.1（配布元の確認と実行環境）
+- 返ったもの:
+  - `https://downloads.athena.us-east-1.amazonaws.com/drivers/JDBC/3.8.1/athena-jdbc-3.8.1-with-dependencies.jar` が HTTP 200、43,763,083 バイト。`META-INF/services/java.sql.Driver` = `com.amazon.athena.jdbc.AthenaDriver`、`com/amazon/athena/jdbc/support/EndpointHelper.class` あり
+  - Maven Central の `com.amazonaws:athena-jdbc`（calver）は Athena Federated Query の JDBC コネクタで `java.sql.Driver` を持たず `No suitable driver found`
+  - ラウンドの経緯（条件を 1 つずつ変えた対照）:
+
+| ラウンド | 変えた条件 | 結果 |
+|---|---|---|
+| 1 | 初回 | `No suitable driver found`。ドライバ jar を `target/dependency/` に置けなかった（maven コンテナが root で作るのでホストから書けない） |
+| 2 | jar をコンテナに直接マウント | 接続まで進み `UnknownHostException: tls-proxy`。`getent hosts` も `java.net.InetAddress` も解決できるのに、ドライバが内包する AWS SDK だけが失敗 |
+| 3 | `/etc/hosts` に IP を固定 | `NoSuchBucketException`。ドライバの S3 クライアントが virtual-hosted style（`athena-results.tls-proxy`）でアクセス |
+| 4 | MinIO に `MINIO_DOMAIN: tls-proxy` | 全ケース PASS |
+
+  - `MINIO_DOMAIN` が要る（ドライバの S3 クライアントは virtual-hosted style でバケットを指す）
+  - コンテナ内では `/etc/hosts` に固定が要る（ドライバが内包する AWS SDK は、Docker の埋め込みリゾルバ（`/etc/resolv.conf` の `search .`、`ndots:0`）が返す名前を `UnknownHostException` にする）
+  - ドライバは `jdbc:awsathena://` を deprecated と警告する（`jdbc:athena://` を推奨）
+  - 非標準ポート（8443）の `AthenaEndpoint` では streaming endpoint を自動構築しない（警告 1 行。動作に支障なし）
+- 備考: 必須 2 条件は、1 条件だけ外したラウンドで落ちることを確かめてある（`MINIO_DOMAIN` 無し → `NoSuchBucketException`、`/etc/hosts` 固定無し → `UnknownHostException`）
+
+### SHOW 系の `.txt.metadata` を Athena JDBC 3.8.1 が読むか
+- 日付: 2026-09-22（2 ラウンド） ／ issue: #57 ／ スクリプト: `tools/measure/jdbc-show-metadata.sh`（旧 `57-verify-jdbc-show-metadata.sh`。抽出には名前が無い。git の履歴（1707a5c、2026-09-22）から特定）。足場は `tools/e2e/minio/`（旧 `39-e2e/`）
+- 相手: Athena JDBC 3.8.1（athena-local 相手。足場は `tools/e2e/minio/jdbc-client/src/main/java/local/athenajdbccheck/Main.java`（旧 `39-e2e/jdbc-client/Main.java`））
+- 投げたもの: 下表の文を `ResultFetcher` の auto・S3 明示・GetQueryResults の 3 モードで
+- 返ったもの:
+
+| 文 | `.txt.metadata` | auto | S3 明示 | GetQueryResults |
+|---|---|---|---|---|
+| `SHOW TABLES ... LIKE`（対照） | 72 バイト（`Table` 1 列） | `loaded query result metadata`、1 行 | 取りに行かない、1 行 | S3 を読まない、2 行（先頭が `Table`） |
+| `SHOW SCHEMAS` | 74 バイト（`Schema` 1 列） | 同上、2 行 | 同上、2 行 | 3 行（先頭が `Schema`） |
+| `SHOW COLUMNS FROM t` | 205 バイト（Trino の 4 列） | 同上、2 行 | 同上、2 行 | 3 行（先頭が `Column`） |
+| `SHOW DATABASES`（原文） | 無し | `mismatched input 'DATABASES'`（400。`QueryExecutionId` なし） | 同左 | 同左 |
+| `SHOW PARTITIONS t`（原文） | 無し | `mismatched input 'PARTITIONS'` | 同左 | 同左 |
+| `SHOW TBLPROPERTIES t`（原文） | 無し | `mismatched input 'TBLPROPERTIES'` | 同左 | 同左 |
+| `SELECT * FROM "t$partitions"`（対照） | `.csv.metadata` 64 バイト | 2 行 | 2 行 | 2 行 |
+
+  - 3 モードとも `failures=0`。nginx のアクセスログで `.metadata` への GET は 10 件（auto 7 件、S3 明示 3 件、GetQueryResults 0 件）
+  - 結論: JDBC 経由で athena-local に届く SHOW は 3 文（`SHOW TABLES` / `SHOW SCHEMAS` / `SHOW COLUMNS`）で、その `.txt.metadata`（素の protobuf）を既定の auto で読み込み例外を出さない。残る `SHOW DATABASES` / `SHOW PARTITIONS` / `SHOW TBLPROPERTIES` は Trino の文法に無く構文チェックで弾かれる
+  - auto はログに `loaded query result metadata from ".../<id>.txt.metadata"` を残すが、`ResultSetMetaData` は `_col0:varchar` の 1 列で、`.txt` の 1 行を 1 値として返す（`SHOW COLUMNS` の 4 列はタブ区切りの 1 文字列になる）。metadata の列情報は列の見え方に使っていない
+  - S3 を明示すると `.txt.metadata` を取りに行かない（`.csv.metadata` と INSERT の `.metadata` は取る）。理由はドライバのソースが非公開なので分からない
+  - GetQueryResults は SHOW（UTILITY）で見出し行をデータとして返す（`SELECT` では読み飛ばす）
+  - 余分な `.csv.metadata` 3 個は、ドライバが接続時に流す接続テストの `SELECT`
+- 備考: GetQueryResults 列の「SHOW で +1 行」は当時の athena-local が UTILITY にも列名行を返していたため（#5 の「気づいたこと」4 と同じ観察）。#60 で本物（UTILITY は先頭行＝データ）に合わせて直したので、この +1 行は覆った（athena-local 側の当時の挙動）
