@@ -46,7 +46,8 @@
 - compose の付属物（カタログ、tls、jdbc-client）は `tools/compose/` に置き、trino-probe の `catalog/` は trino-probe に残す。理由: probe は版ごとのカタログの差を測る道具で、`catalog`・`catalog-legacy`・`catalog-nofsflag` を並べておく方が対称。（#128、2026-09-23）
 - 足場の共通の lib は作らない（Trino を待つ関数などは足場ごとに複製する）。理由: 足場ごとの複製が慣習で、共通化は足場の移行とは別の変更になる（`tools/e2e/jdbc-drivers/lib.sh` の冒頭）。（#128、2026-09-23）
 - #127 は足場の規則そのものを変えたので、CLAUDE.md の注意書き（ホストの `aws`・`jq` の回避策）を toolbox の 1 項目に書き換えた。「実測の進め方」の「CLAUDE.md は記述が事実として誤りになるときだけ追随させる」は挙動を変えない変更の規則で、規則を変える変更はこれに当たらない。（#127、2026-09-23）
-- cargo と docker build の既定のコマンドも toolbox（`tools/dev.sh`）に寄せる。ホストに rust があればホスト直でも動く。理由: 新しい開発者は Docker だけで開発できる。CI はホストランナーで直に cargo（#130）。（#129、2026-09-23）
+- cargo と docker build の既定のコマンドも toolbox（`tools/dev.sh`）に寄せる。ホストに rust があればホスト直でも動く。理由: 新しい開発者は Docker だけで開発できる。CI の `check` はホストランナーで直に cargo。（#129、2026-09-23）
+- CI の `e2e` ジョブは toolbox の中で Trino と MinIO の要らない・Trino だけ要る足場（request-errors、paging-validation）を流す。retention（約 10 分）と jdbc-drivers（ドライバの取得）は載せない。toolbox のイメージは docker.yml と同じ GHA キャッシュ（`mode` は既定）で、Docker Hub には docker.yml と同じ secrets でログインする（ランナーは IP を共有し、匿名 pull の制限に当たる。secrets の無いフォークの PR では省く）。cargo は `.toolbox/target/release` だけキャッシュする。理由: GHA キャッシュの上限を docker.yml のリリース用のキャッシュと取り合わない（`.toolbox/target` 全体は数 GB）。（#130、2026-09-24）
 - 実測（tools/measure）の生データはホストの `~/athena-*-measurements` に書く（dev にホストのホームを同じパスでマウントし、`DEV_HOST_HOME` を既定の出力先にする）。理由: 過去の記録と同じ場所で、`rm -rf .toolbox` で消えない。（#129、2026-09-23）
 - tools/measure も toolbox で動かす。awscli v2 は版付きの zip（2.37.0）で固定する。理由: toolbox のタグは Dockerfile の sha256 だけなので、版を固定しないと再ビルドで中身が変わる。（#129、2026-09-23）
 - AWS の資格情報は設定されているときだけ dev に渡す（compose の値無しキー）。理由: `${VAR:-}` だと空文字が渡る。（#129、2026-09-23）
