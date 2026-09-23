@@ -105,6 +105,32 @@ async fn 型違いは_serialization_exception_になり文言は型の組み合�
             json!({ "QueryString": "SELECT", "ResultConfiguration": "x" }),
             "Expected null",
         ),
+        // 2026-09-23 の 2 ラウンド目（#87）で測った組み合わせ。
+        (
+            "ListWorkGroups",
+            json!({ "MaxResults": false }),
+            "FALSE_VALUE can not be converted to an Integer",
+        ),
+        (
+            "ListWorkGroups",
+            json!({ "NextToken": 1.5 }),
+            "NUMBER_VALUE can not be converted to a String",
+        ),
+        (
+            "StartQueryExecution",
+            json!({ "QueryString": "SELECT", "ExecutionParameters": true }),
+            "Expected list or null",
+        ),
+        (
+            "StartQueryExecution",
+            json!({ "QueryString": "SELECT", "ExecutionParameters": {} }),
+            "Start of structure or map found where not expected.",
+        ),
+        (
+            "StartQueryExecution",
+            json!({ "QueryString": "SELECT", "ResultConfiguration": 1 }),
+            "Expected null",
+        ),
     ] {
         let label = format!("{operation} {body}");
         let (status, error) = harness.call(operation, body).await;
@@ -113,22 +139,29 @@ async fn 型違いは_serialization_exception_になり文言は型の組み合�
 }
 
 #[tokio::test]
-async fn 未実測の組み合わせは_message_を付けない() {
-    // false・小数・オブジェクト → 配列は本物で測っていないので、文言を推測せず __type だけ返す。
+async fn 小数の_max_results_は_message_を付けずに弾く() {
+    // 本物は 1.5 を 1 に切り捨てて通す（2026-09-23 実測）。athena-local は揃えず、文言を推測しない。
     let harness = Harness::start(json!({ "columns": [], "data": [] })).await;
 
-    for (operation, body) in [
-        ("ListWorkGroups", json!({ "MaxResults": false })),
-        ("ListWorkGroups", json!({ "MaxResults": 1.5 })),
-        (
+    let (status, error) = harness
+        .call("ListWorkGroups", json!({ "MaxResults": 1.5 }))
+        .await;
+    assert_serialization(status, &error, None, "MaxResults 1.5");
+}
+
+#[tokio::test]
+async fn 配列の要素の_null_は無いのと同じ() {
+    // 2026-09-23 実測（#87）: ExecutionParameters が [null] でも本物は本文を受け付けて先へ進む。
+    let harness = Harness::start(json!({ "columns": [], "data": [] })).await;
+
+    let (status, body) = harness
+        .call(
             "StartQueryExecution",
-            json!({ "QueryString": "SELECT", "ExecutionParameters": {} }),
-        ),
-    ] {
-        let label = format!("{operation} {body}");
-        let (status, error) = harness.call(operation, body).await;
-        assert_serialization(status, &error, None, &label);
-    }
+            json!({ "QueryString": "SELECT 1", "ExecutionParameters": [null] }),
+        )
+        .await;
+    assert_eq!(status, 200, "{body}");
+    assert!(body.get("QueryExecutionId").is_some());
 }
 
 #[tokio::test]

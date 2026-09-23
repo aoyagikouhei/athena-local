@@ -1035,7 +1035,11 @@ passed; see Caveats.
   `TRUE_VALUE can not be converted to an Integer` / `a String`, `Start of
   list found where not expected`, `Start of structure or map found where
   not expected.`, `Expected list or null` (a string for `ExecutionParameters`)
-  and `Expected null` (a string for `ResultConfiguration`). A body that is
+  and `Expected null` (a string for `ResultConfiguration`); `FALSE_VALUE`,
+  a decimal as `NUMBER_VALUE`, and an integer or `true` where a list
+  (`Expected list or null`) or a structure (`Expected null`) is expected
+  were measured in a second round (2026-09-23); `false` or a decimal in
+  those two positions was not, and gets no `Message`. A body that is
   not JSON at all (truncated, empty, `null`, a bare string, a trailing comma)
   is a `SerializationException` with no `Message` key, and a body that is a
   JSON array gets `Start of list found where not expected`. A required
@@ -1045,14 +1049,14 @@ passed; see Caveats.
   be null` (the member name in lowerCamel), an optional member that is
   `null` is treated as absent, unknown members are ignored, and a
   `MaxResults` beyond the 32-bit range falls through to the usual
-  upper-bound validation. Combinations Athena was not measured for (`false`,
-  a decimal, an object where a list is expected, a number or boolean where a
-  list or structure is expected) are a `SerializationException` with no
-  `Message`. Two known differences: Athena truncates a decimal `MaxResults`
-  such as `1.5` to `1`, and athena-local rejects it; and a JSON array for a
-  nested structure (`"QueryExecutionContext": []`, or `["s3://b/"]` for
-  `ResultConfiguration`) is read positionally as that structure, where
-  Athena answers `Start of list found where not expected`. A request whose
+  upper-bound validation. A `null` inside a list (`"ExecutionParameters":
+  [null]`) is dropped, as Athena accepts it. Two known differences: Athena
+  truncates a decimal `MaxResults` such as `1.5` to `1`, and athena-local
+  rejects it with a `SerializationException` that has no `Message` (the only
+  type mismatch left without one); and a JSON array for a nested structure
+  (`"QueryExecutionContext": []`, or `["s3://b/"]` for `ResultConfiguration`)
+  is read positionally as that structure, where Athena answers `Start of
+  list found where not expected`. A request whose
   `X-Amz-Target` is missing, lacks the
   `AmazonAthena.` prefix, or names an unsupported or differently cased
   operation is `{"__type":"UnknownOperationException"}` with no `Message`,
