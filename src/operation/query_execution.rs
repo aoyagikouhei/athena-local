@@ -14,7 +14,11 @@ use crate::response::{invalid_request_with_code, ok, parse};
 use crate::store::{CancelOutcome, Execution, State};
 use crate::trino::Outcome;
 
-const DEFAULT_MAX_RESULTS: usize = 1000;
+use super::validation::paging_violation;
+
+/// GetQueryResults の MaxResults の上限（2026-09-23 実測。1000 は通り、1001 は弾かれる）。
+/// 未指定のときのページの大きさも同じ値（列名行込みで 1000 行。2026-09-23 に 1500 行のクエリで実測）。
+const MAX_RESULTS_LIMIT: i32 = 1000;
 
 pub fn get_query_execution(app: &App, body: &Bytes) -> Response {
     let request: GetQueryExecutionRequest = match parse(body) {
@@ -31,15 +35,33 @@ pub fn get_query_execution(app: &App, body: &Bytes) -> Response {
     })
 }
 
+/// 検証の順序は 2026-09-23 に本番 Athena で実測した形に合わせる:
+/// 枠組みの検証（NextToken の空文字・MaxResults の下限）→ ID の存在 → MaxResults の上限 →
+/// クエリの状態 → NextToken の形。
 pub fn get_query_results(app: &App, body: &Bytes) -> Response {
     let request: GetQueryResultsRequest = match parse(body) {
         Ok(request) => request,
         Err(response) => return *response,
     };
 
+    // usize にする前に i32 のまま範囲を見る（ListWorkGroups と同じ理由）。
+    let limit = request.max_results.unwrap_or(MAX_RESULTS_LIMIT);
+    if let Some(response) = paging_violation(request.next_token.as_deref(), limit, None) {
+        return response;
+    }
+
     let Some(execution) = app.store.get(&request.query_execution_id) else {
         return unknown_execution(&request.query_execution_id);
     };
+    // 上限は枠組みの検証ではなく別の文言で、存在確認の後・状態の前に見る（実在しない ID と 1001 なら
+    // NOT_FOUND、FAILED のクエリと 1001 ならこのエラー。2026-09-23 実測）。
+    if limit > MAX_RESULTS_LIMIT {
+        return invalid_request_with_code(
+            format!("MaxResults is more than maximum allowed length {MAX_RESULTS_LIMIT}"),
+            "INVALID_INPUT",
+        );
+    }
+    let limit = limit as usize;
     let Some(outcome) = execution.result else {
         return not_succeeded(execution.state);
     };
@@ -56,15 +78,21 @@ pub fn get_query_results(app: &App, body: &Bytes) -> Response {
     {
         rows.remove(0);
     }
-    let offset = request
-        .next_token
-        .and_then(|token| token.parse::<usize>().ok())
-        .unwrap_or(0)
-        .min(rows.len());
-    let limit = request
-        .max_results
-        .map(|max| max.max(1) as usize)
-        .unwrap_or(DEFAULT_MAX_RESULTS);
+    // 発行するのは 1 <= end < len の 10 進（列名行を外した後の rows が基準）なので、それ以外は
+    // 本物と同じく弾く（"0"、先頭ゼロ、"+2" も通るが、返すページは正当なので厳密化しない。
+    // ListWorkGroups と同じ式で、文言だけ違う。2026-09-23 実測）。
+    let offset = match &request.next_token {
+        None => 0,
+        Some(token) => match token.parse::<usize>().ok().filter(|o| *o < rows.len()) {
+            Some(offset) => offset,
+            None => {
+                return invalid_request_with_code(
+                    format!("Malformed nextPageToken {token}"),
+                    "INVALID_INPUT",
+                );
+            }
+        },
+    };
     let end = (offset + limit).min(rows.len());
 
     ok(&GetQueryResultsResponse {

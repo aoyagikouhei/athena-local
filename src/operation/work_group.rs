@@ -12,6 +12,8 @@ use crate::config::ResultsMode;
 use crate::handler::App;
 use crate::response::{invalid_request_with_code, ok, parse};
 
+use super::validation::paging_violation;
+
 /// ListWorkGroups で MaxResults が無いときのページの大きさ。
 /// 本物の既定ページサイズは未実測（測れるだけのワークグループが無い）。
 /// botocore の MaxWorkGroupsCount の上限（50）に合わせた。
@@ -19,15 +21,6 @@ const LIST_WORK_GROUPS_MAX_RESULTS: i32 = 50;
 
 /// ワークグループの State（2026-09-17 実測。GetWorkGroup と ListWorkGroups で同じ値）。
 const WORK_GROUP_STATE: &str = "ENABLED";
-
-/// MaxResults が 1 未満のときの本物の文言（2026-09-18 実測）。
-const MAX_RESULTS_TOO_SMALL: &str = "1 validation error detected: Value at 'maxResults' failed to satisfy constraint: Member must have value greater than or equal to 1";
-
-/// MaxResults が上限を超えたときの本物の文言（2026-09-18 実測）。
-const MAX_RESULTS_TOO_LARGE: &str = "1 validation error detected: Value at 'maxResults' failed to satisfy constraint: Member must have value less than or equal to 50";
-
-/// NextToken が空文字のときの本物の文言（2026-09-18 実測。不正な文字列とは違うエラーになる）。
-const NEXT_TOKEN_EMPTY: &str = "1 validation error detected: Value at 'nextToken' failed to satisfy constraint: Member must have length greater than or equal to 1";
 
 /// ワークグループのエンジン（2026-09-17 実測。GetWorkGroup と ListWorkGroups で同じ値）。
 fn engine_version() -> EngineVersion {
@@ -73,7 +66,8 @@ pub fn get_work_group(app: &App, body: &Bytes) -> Response {
 /// Trino にも Store にも問い合わせない。一覧は Config.work_groups（ATHENA_LOCAL_WORK_GROUPS）
 /// をそのまま返す（名前の辞書順に整列済みなのは config.rs の不変条件）。本物と違い、
 /// ここに無い名前でも GetWorkGroup は成功する。
-/// MaxResults と NextToken の検証は 2026-09-18 に本番 Athena で実測した形に合わせる。
+/// MaxResults と NextToken の検証は 2026-09-18 に本番 Athena で実測した形に合わせる
+/// （枠組みの検証は `validation::paging_violation`。2 件同時の形は #83 で 2026-09-23 に実測）。
 pub fn list_work_groups(app: &App, body: &Bytes) -> Response {
     let request: ListWorkGroupsRequest = match parse(body) {
         Ok(request) => request,
@@ -83,20 +77,18 @@ pub fn list_work_groups(app: &App, body: &Bytes) -> Response {
     // usize にする前に i32 のまま範囲を見る（-1 のキャストは巨大な値になり、
     // 0 は end == offset で同じ NextToken を返し続けることになる）。
     let limit = request.max_results.unwrap_or(LIST_WORK_GROUPS_MAX_RESULTS);
-    if limit < 1 {
-        return invalid_request_with_code(MAX_RESULTS_TOO_SMALL, "INVALID_INPUT");
-    }
-    if limit > LIST_WORK_GROUPS_MAX_RESULTS {
-        return invalid_request_with_code(MAX_RESULTS_TOO_LARGE, "INVALID_INPUT");
+    if let Some(response) = paging_violation(
+        request.next_token.as_deref(),
+        limit,
+        Some(LIST_WORK_GROUPS_MAX_RESULTS),
+    ) {
+        return response;
     }
     let limit = limit as usize;
 
     let names = &app.config.work_groups;
     let offset = match &request.next_token {
         None => 0,
-        Some(token) if token.is_empty() => {
-            return invalid_request_with_code(NEXT_TOKEN_EMPTY, "INVALID_INPUT");
-        }
         // 発行するのは 1 <= end < len の 10 進なので、それ以外は本物と同じく弾く
         // （"0"、先頭ゼロ、"+2" も通るが、返すページは正当なので厳密化しない）。
         Some(token) => match token.parse::<usize>().ok().filter(|o| *o < names.len()) {
