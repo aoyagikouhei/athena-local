@@ -9,6 +9,11 @@ later name the date they were measured on.
 
 ## [Unreleased]
 
+### Changed
+
+- `GetWorkGroup` returns `Configuration.EnableMinimumEncryptionConfiguration`
+  as `false` (measured 2026-09-23) ([docs](docs/caveats.md#workgroups)).
+
 ## [0.5.0] - 2026-09-23
 
 ### Added

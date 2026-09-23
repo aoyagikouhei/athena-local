@@ -1,5 +1,5 @@
 //! GetWorkGroup と、StartQueryExecution/GetQueryExecution への WorkGroup の受け渡し。
-//! Configuration の値は 2026-09-17 に本番 Athena で実測したもの。
+//! Configuration の値は 2026-09-17 に本番 Athena で実測したもの（EnableMinimumEncryptionConfiguration は 2026-09-23 実測）。
 
 mod common;
 
@@ -20,6 +20,7 @@ fn select_response() -> Value {
 /// 名前によらず共通の Configuration（実測値）。
 fn configuration() -> Value {
     json!({
+        "EnableMinimumEncryptionConfiguration": false,
         "EnforceWorkGroupConfiguration": false,
         "PublishCloudWatchMetricsEnabled": false,
         "RequesterPaysEnabled": false,

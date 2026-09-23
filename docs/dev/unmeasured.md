@@ -39,7 +39,6 @@
 
 ## ワークグループ（[measurements/work-groups.md](measurements/work-groups.md)）
 
-- [ ] `Configuration.EnableMinimumEncryptionConfiguration` の値（キーの存在だけ確認）
 - [ ] 出力先が設定されたワークグループの `GetWorkGroup` の `ResultConfiguration` の形
 - [ ] `ListWorkGroups` の `MaxResults` 未指定時の既定ページサイズ（athena-local は 50）
 - [ ] `ListWorkGroups` の順序が名前順であること（3 件だけの根拠）

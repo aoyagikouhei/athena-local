@@ -214,6 +214,8 @@ pub struct WorkGroup {
 pub struct WorkGroupConfiguration {
     /// 出力先が無くても本物はキーごと省かず空のオブジェクトを返す。そのため Option にしない。
     pub result_configuration: ResultConfiguration,
+    /// 本物のワイヤ上の値は false（2026-09-23 実測）。SDK のモデルにもある。
+    pub enable_minimum_encryption_configuration: bool,
     pub enforce_work_group_configuration: bool,
     pub publish_cloud_watch_metrics_enabled: bool,
     pub requester_pays_enabled: bool,

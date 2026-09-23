@@ -128,7 +128,7 @@
 - `ResultConfiguration` は本物に合わせて常に返す（出力先があれば `{"OutputLocation": ...}`、無ければ `{}`）。（#2、2026-09-16）
 - awswrangler が出力先の無いときに実 AWS へ出る件は利用者向けの文書に書くだけで、コードでは防がない（`ManagedQueryResultsConfiguration` は定義しない）。理由: 本物に合わせる目的から外れる、守れるのは一部の経路だけ、`AWS_ENDPOINT_URL` を設定していれば実 AWS には出ない、awswrangler 自身も警告を出す。（#2、2026-09-16）
 - `ATHENA_LOCAL_OUTPUT_LOCATION` が無いときは、`ATHENA_LOCAL_RESULTS` によらず起動時に同じ文言の警告を標準エラーに 1 行出す。起動は止めず、API の形も変えない。（#20、2026-09-19、ユーザーの選択）
-- `CreationTime` は返さない。理由: 作成時刻の実体が無く、どんな値も偽になる。`Description` は `GetWorkGroup` では省き、`ListWorkGroups` では常に空文字（本物の「説明の無いワークグループ」と同じ）。`EnableMinimumEncryptionConfiguration`（値が採れていない）、`IdentityCenterApplicationArn`（本物に無かった）、ワイヤ上の `EngineVersion.Category`（SDK のモデルに無い）は返さない。（#2、2026-09-16、#9、2026-09-18）
+- `CreationTime` は返さない。理由: 作成時刻の実体が無く、どんな値も偽になる。`Description` は `GetWorkGroup` では省き、`ListWorkGroups` では常に空文字（本物の「説明の無いワークグループ」と同じ）。`IdentityCenterApplicationArn`（本物に無かった）、ワイヤ上の `EngineVersion.Category` と `Configuration.QuerySchedulingType`（SDK のモデルに無い）は返さない。`EnableMinimumEncryptionConfiguration` は 2026-09-23 に値（false）が採れたので返す。（#2、2026-09-16、#9、2026-09-18、#137、2026-09-23）
 - `ListWorkGroups` の一覧は環境変数 `ATHENA_LOCAL_WORK_GROUPS` で列挙し、未設定なら `primary` の 1 件。一覧は `GetWorkGroup` の入力を制限せず、`primary` を自動で足さない。名前の辞書順で返す（整列済みを `Config` の不変条件にする）。カンマ区切り・要素ごとに trim・空要素は起動時エラー・重複と名前の形式は検査しない。（#9、2026-09-18、ユーザーの判断）
 - 一覧が 1 ページに収まるときは `NextToken` をキーごと省く（空文字にしない）。理由: Grafana は `nextToken == nil` しか見ないので、空文字だと無限ループする。`NextToken` の中身はオフセットの 10 進文字列。既定のページサイズは 50。（#9、2026-09-18）
 - `State` と `EngineVersion` は `GetWorkGroup` と `ListWorkGroups` で定数と関数を共有し、食い違わないことをコンパイラで保証する。（#9、2026-09-18）

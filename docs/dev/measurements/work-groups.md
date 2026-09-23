@@ -45,6 +45,7 @@
 
   ワイヤ上の本文: `{"WorkGroup":{"Configuration":{"EnableMinimumEncryptionConfiguration":false,"EnforceWorkGroupConfiguration":false,"EngineVersion":{"Category":"Presto","EffectiveEngineVersion":"Athena engine version 3","SelectedEngineVersion":"AUTO"},"PublishCloudWatchMetricsEnabled":false,"QuerySchedulingType":"DEFAULT","RequesterPaysEnabled":false,"ResultConfiguration":{}},"CreationTime":1.<12 桁>E9,"Name":"primary","State":"ENABLED"}}`
 - 備考: toolbox（`tools/dev.sh`、資格情報はホストのシェルの環境変数）から本物の Athena に届き、出力がホストの `~` に出ることの確認を兼ねた（#129 の受け入れ条件）。athena-local の `GetWorkGroup` は `EnableMinimumEncryptionConfiguration` を「値が採れていない」として省いている（`src/operation/work_group.rs:37`）。`QuerySchedulingType` と合わせて返すかは #137 で扱う。
+- 採用した判断（#137、2026-09-24）: `EnableMinimumEncryptionConfiguration` は false で返す（SDK のモデルにあり、awscli 2.37.0 の出力にも出る）。`QuerySchedulingType` は SDK のモデルに無い（awscli 2.37.0 の出力に出ない）ので、`EngineVersion.Category` と同じく返さない。
 
 ### 存在しないワークグループのエラー
 - 日付: 2026-09-17 ／ issue: #2 ／ スクリプト: `tools/measure/get-work-group.sh`（旧 `2-measure-workgroup.sh`） ／ 生データ: `$HOME/athena-workgroup-measurements/run-20260917-064427`
