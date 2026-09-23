@@ -66,4 +66,4 @@ Any credentials work; requests are not verified.
 - [docs/parameters.md](docs/parameters.md) — how `ExecutionParameters` values are classified and bound
 - [docs/caveats.md](docs/caveats.md) — known differences from real Athena
 - [docs/clients.md](docs/clients.md) — notes for specific clients (Athena JDBC 3.x behind a TLS terminator)
-- [docs/dev/development.md](docs/dev/development.md) — building, testing and releasing (for contributors, in Japanese)
+- [docs/dev/](docs/dev/development.md) — for contributors, in Japanese: development, measurements against real Athena, unmeasured behaviour, roadmap, design decisions

@@ -14,7 +14,7 @@
 #   e6  EXPLAIN (TYPE VALIDATE) SELECT 1          1 行の true が返るはず
 #   e7  EXPLAIN (FORMAT GRAPHVIZ) SELECT 1
 #   e8  EXPLAIN ANALYZE VERBOSE SELECT 1
-#   f1  EXPLAIN SELECT * FROM <無いテーブル>        失敗した EXPLAIN の結果ファイル（TODO.md の項目）
+#   f1  EXPLAIN SELECT * FROM <無いテーブル>        失敗した EXPLAIN の結果ファイル（docs/dev/unmeasured.md の項目）
 #   f2  EXPLAIN ANALYZE SELECT * FROM <無いテーブル>
 # 各文で GetQueryResults の Rows（末尾の空行の数）と .txt（末尾の改行の数）を採り、
 # 「.txt == 列名行 + Rows を `\n` で連結 + `\n`」が成り立つかを summary に出す。
