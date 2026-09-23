@@ -121,8 +121,11 @@ Known differences between athena-local and real Athena, grouped by topic.
   behind a given Athena table uses the connector Athena would expect. A Trino
   deployment that mixes both formats behind a single catalog, or a
   `TRINO_CATALOG_MAP` alias that points an Athena catalog at the wrong
-  connector, falls back to ordinary column-less DDL (empty file, no
-  `.metadata`) instead of matching Athena. See
+  connector, gets the files of the catalog's connector instead (an Iceberg
+  table in a `hive` catalog is treated as Hive, and the other way round).
+  A connector that is neither `hive` nor `iceberg`, a `DROP TABLE IF EXISTS`
+  on a missing target, and the other fallback cases listed on the DDL page get
+  ordinary column-less DDL (empty file, no `.metadata`). See
   [DDL that depends on the target table's format](ddl.md#ddl-that-depends-on-the-target-tables-format)
   for what this changes.
 
@@ -209,9 +212,12 @@ Known differences between athena-local and real Athena, grouped by topic.
   those too. Columns of type `timestamp with time zone`, `time with time zone`
   and `interval year to month` were not measured and are written like
   `timestamp` / `time` and `interval day to second`.
-- **A missing bucket fails the query.** Athena reported `SUCCEEDED` for a
-  `SELECT` whose output bucket did not exist (measured). athena-local makes it
-  `FAILED` so the mistake shows up locally.
+- **A missing bucket fails a query whose result is a CSV.** Athena reported
+  `SUCCEEDED` for a `SELECT` whose output bucket did not exist (measured).
+  athena-local makes a `SELECT` (or `SHOW FUNCTIONS`) `FAILED` so the mistake
+  shows up locally. A statement that writes only a `<id>.txt` or only a
+  `.metadata` companion (DDL, other `SHOW`, DML, CTAS) stays `SUCCEEDED` and
+  logs one line (see [Result files](result-files.md#result-files)).
 - **`CREATE OR REPLACE TABLE ... AS` has no Athena file name.** Athena rejects
   the statement as a syntax error before it starts (see "Syntax differs"), so
   there is nothing to match; athena-local, which lets Trino run it, names its
@@ -436,11 +442,11 @@ Known differences between athena-local and real Athena, grouped by topic.
   be null` (the member name in lowerCamel), an optional member that is
   `null` is treated as absent, unknown members are ignored, and a
   `MaxResults` beyond the 32-bit range falls through to the usual
-  upper-bound validation. A `null` inside a list (`"ExecutionParameters":
+  upper-bound validation (one beyond the 64-bit signed range was not
+  measured, and gets a `SerializationException` with no `Message`). A `null` inside a list (`"ExecutionParameters":
   [null]`) is dropped, as Athena accepts it. Two known differences: Athena
   truncates a decimal `MaxResults` such as `1.5` to `1`, and athena-local
-  rejects it with a `SerializationException` that has no `Message` (the only
-  type mismatch left without one); and a JSON array for a nested structure
+  rejects it with a `SerializationException` that has no `Message`; and a JSON array for a nested structure
   (`"QueryExecutionContext": []`, or `["s3://b/"]` for `ResultConfiguration`)
   is read positionally as that structure, where Athena answers `Start of
   list found where not expected`. A request whose

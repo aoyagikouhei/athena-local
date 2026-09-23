@@ -34,6 +34,7 @@
 - [ ] 本物がトークンを正規化するか（前後の空白、`"`、`\`、大文字小文字）
 - [ ] トークン長の制約（32〜128）がバイト数か文字数か（ASCII でしか測っていない）
 - [ ] トークンの検証と他の検証エラー（`OutputLocation` 無し等）の優先順位
+- [ ] 同じトークンの再送で `OutputLocation` が不正な値、または `QueryString` が構文エラーのとき、トークンの照合（`IDEMPOTENT_PARAMETER_MISMATCH`）と検証のどちらが先か（athena-local は `OutputLocation` の検証と構文チェックの後、`Store::submit` で照合する。#102）
 - [ ] トークン対応表と実行情報の本物の保持期間（60 秒を超えることまでは実測。既定の 1 時間は athena-local 独自の値）
 - [ ] 期限切れのトークンを再送すると本物で新しい ID になるか、期限切れの ID の `GetQueryExecution` が `QUERY_EXECUTION_NOT_FOUND` か、`StopQueryExecution` が 400 か
 - [ ] `Database`／`OutputLocation` の「省略」と「既定と同じ値の明示」を本物が別物として扱うか
@@ -48,6 +49,7 @@
 
 ## エラー応答（[measurements/errors.md](measurements/errors.md)）
 
+- [ ] `QUEUED` のクエリへの `GetQueryResults` の文言（`RUNNING` のときの `Query has not yet finished. Current state: RUNNING` だけ実測。athena-local は `Current state: QUEUED` を返す。#102）
 - [ ] `x-amzn-errortype` ヘッダ。#2、#3、#9 の実測で本物の応答に見つからなかったが、athena-local は送り続けている
 - [ ] `AthenaErrorCode` の無い経路のうち `InternalServerException` の本文の形（パース失敗と未対応オペレーションは #84 で実測: `SerializationException`・`UnknownOperationException` はどちらも `AthenaErrorCode` 無し）
 - [ ] 構文エラー（`MALFORMED_QUERY`）など、冪等性の衝突とトークンの検証以外の `AthenaErrorCode` 付きエラーの本文に `ErrorCode` キーが付くか（#3。`ErrorCode` 付きの形を確かめたのはこの 2 つと、#83 の `GetQueryResults` の検証エラー）

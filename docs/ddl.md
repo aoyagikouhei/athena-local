@@ -10,7 +10,7 @@ Athena on 2026-09-20 and 2026-09-21, reproduced across three rounds):
 | Statement | Target format | `<id>.txt` | Content-Type | `.metadata` |
 | --- | --- | --- | --- | --- |
 | `DROP TABLE` | Iceberg | a single newline (1 byte) | `application/octet-stream` | 41 bytes: the engine's query id (field 1), then `DROP TABLE` (field 2) |
-| `DROP TABLE` | Hive, or the target does not exist | empty | `binary/octet-stream` | none |
+| `DROP TABLE` | Hive, or `IF EXISTS` on a missing target | empty | `binary/octet-stream` | none |
 | `ALTER TABLE ... ADD COLUMNS` | Hive | empty | `application/octet-stream` | 38 bytes: `QueryExecutionId` only (field 1); no `updateType`, count or columns |
 | `ALTER TABLE ... ADD COLUMNS` | Iceberg | empty | `binary/octet-stream` | none |
 | `ALTER TABLE ... REPLACE COLUMNS` | Hive | empty | `application/octet-stream` | 38 bytes, byte for byte the same as the `ADD COLUMNS` row (measured 2026-09-21) |
@@ -42,8 +42,9 @@ were measured on 2026-09-21 on whichever table format Athena accepts them on
 six, only `DROP COLUMN` and `RENAME TO` can be run through athena-local; the
 rest are rejected at the syntax check, so their rows describe Athena alone.
 
-Only these three statements trigger the format probe below; no other statement
-pays an extra round trip to Trino. For a matching statement, athena-local
+Only these three statements trigger the format probe below, and only with
+`ATHENA_LOCAL_RESULTS=s3` (with `none` there is no result file for it to
+change); no other statement sends it. For a matching statement, athena-local
 sends the format probe as a single query, asking which connector backs the
 target's catalog and whether the target exists:
 
@@ -56,7 +57,9 @@ SELECT
 
 The catalog, schema and table name come from a qualified name in the SQL when
 `DROP TABLE` or `ALTER TABLE ... ADD COLUMNS` gives one (`t`, `ns.t` or
-`cat.ns.t`, quoted or not, with a leading `IF EXISTS` skipped). Whichever part
+`cat.ns.t`, quoted or not, with a leading `IF EXISTS` skipped for `DROP TABLE`;
+`ALTER TABLE IF EXISTS ...` gets no `SubstatementType` and runs as ordinary
+column-less DDL without the probe). Whichever part
 a qualified name does not give falls back to `QueryExecutionContext` /
 `TRINO_CATALOG` / `TRINO_SCHEMA`. A catalog taken from the SQL is translated
 through `TRINO_CATALOG_MAP` before the format probe is sent, the same as the
@@ -65,6 +68,7 @@ catalog used to run the statement itself.
 athena-local falls back to ordinary column-less DDL (empty file, no
 `.metadata`) when any of these hold:
 
+- the qualified name has more than three parts;
 - the catalog or schema still cannot be resolved;
 - the format probe fails;
 - the connector is neither `hive` nor `iceberg`;
