@@ -25,7 +25,7 @@ CI（`.github/workflows/ci.yml`）は `fmt --check`、`clippy -D warnings`、`te
 
 ### リクエストの流れ
 
-1. `handler::dispatch` — `POST /` の 1 本だけ。`X-Amz-Target: AmazonAthena.<Operation>` でオペレーションを振り分ける。SigV4 は検証しない。
+1. `handler::dispatch` — `POST /` の 1 本だけ。`X-Amz-Target: AmazonAthena.<Operation>` でオペレーションを振り分ける（前置き必須。ヘッダ無し・未対応名は本物と同じ `{"__type":"UnknownOperationException"}` だけの 400。2026-09-23 実測）。SigV4 は検証しない。
 2. `operation/` — 6 つのオペレーションの本体。`execution.rs`（`StartQueryExecution` の受付とバックグラウンド実行）、`result_output.rs`（結果ファイル本体と `.metadata` の書き込み）、`query_execution.rs`（`GetQueryExecution`／`GetQueryResults`／`StopQueryExecution`）、`work_group.rs`（`GetWorkGroup`／`ListWorkGroups`）に分かれ、文の種類の判定だけ `classification.rs` に置いて実行系と参照系の両方から呼ぶ。`MaxResults`／`NextToken` の枠組みの検証（API 定義の制約違反を `N validation error(s) detected: ...` の 1 文にまとめる。2026-09-23 実測）は `validation.rs` に置いて `GetQueryResults` と `ListWorkGroups` の両方から呼ぶ。DROP TABLE と ALTER TABLE ... ADD COLUMNS / REPLACE COLUMNS は、対象テーブルの形式によっては本物が列なしでも本体と `.metadata` を置くので、その判定を `table_format.rs`（Trino への形式の問い合わせと組み合わせの決定）と `target_table.rs`（対象の修飾名の解析）に置く。`mod.rs` は `mod` 宣言と 6 関数の再エクスポートだけで、`handler` からの見え方は分割前と変わらない。
    - `execution.rs` の `start_query_execution`: 文脈（カタログ／スキーマ）に既定値を当てる → `OutputLocation` を検証 → `Trino::syntax_error` で構文を確かめる（`PREPARE athena_local_syntax_check FROM\n<sql>` を送り、1 行ずれたエラー位置を元に戻す）→ `Store::submit` → `spawn_query` でバックグラウンド実行して、ID をすぐ返す。
    - `execution.rs` の `spawn_query` → `run`: `ExecutionParameters` の値ごとに `SELECT (<値>)` を Trino に投げて分類し（`statement::bind`）、`EXECUTE IMMEDIATE '<sql>' USING ...` で実行する。包む前に `catalog::alias_qualified_names` で修飾名のカタログに別名を当てる。パラメータが無く、別名に一致する修飾名も無ければ SQL は一切書き換えない（テストで保証している不変条件）。`?` の無い SQL に値が渡されたときのエラーでは、別名を当てただけの SQL で再実行する。

@@ -167,24 +167,9 @@ async fn 未対応のオペレーションはエラーになる() {
 
     let (code, error) = harness.call("CreateWorkGroup", json!({})).await;
 
+    // 本物は __type だけを返す（Message も AthenaErrorCode も無い。2026-09-23 実測。#84）。
     assert_eq!(code, 400);
-    assert_eq!(error["__type"], "InvalidRequestException");
-    assert!(
-        error["Message"]
-            .as_str()
-            .unwrap()
-            .contains("CreateWorkGroup")
-    );
-    // AthenaErrorCode の無い経路（未対応オペレーション）は ErrorCode を持たない。
-    // 本物の形は未実測なので、実測済みの Message にだけ揃える。
-    let mut keys: Vec<&str> = error
-        .as_object()
-        .unwrap()
-        .keys()
-        .map(String::as_str)
-        .collect();
-    keys.sort();
-    assert_eq!(keys, ["Message", "__type"]);
+    assert_eq!(error, json!({ "__type": "UnknownOperationException" }));
 }
 
 #[tokio::test]

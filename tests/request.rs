@@ -222,3 +222,32 @@ async fn 型違いは枠組みの検証より先() {
         "型違いと必須の欠落",
     );
 }
+
+#[tokio::test]
+async fn 未対応のオペレーションと_x_amz_target_の異常は_unknown_operation_exception() {
+    // 2026-09-23 実測: 未対応名・前置き無し（実在する名前でも）・小文字・ヘッダ無しはすべて
+    // `{"__type":"UnknownOperationException"}` だけ（Message 無し）。
+    let harness = Harness::start(json!({ "columns": [], "data": [] })).await;
+    let content_type = ("Content-Type", "application/x-amz-json-1.1");
+
+    for target in [
+        Some("AmazonAthena.Nope"),
+        Some("Nope"),
+        Some("ListWorkGroups"),
+        Some("amazonathena.listworkgroups"),
+        Some(""),
+        None,
+    ] {
+        let headers: Vec<(&str, &str)> = match target {
+            Some(target) => vec![("X-Amz-Target", target), content_type],
+            None => vec![content_type],
+        };
+        let (status, error) = harness.post(&headers, b"{}").await;
+        assert_eq!(status, 400, "X-Amz-Target={target:?}");
+        assert_eq!(
+            error,
+            json!({ "__type": "UnknownOperationException" }),
+            "X-Amz-Target={target:?}"
+        );
+    }
+}

@@ -17,10 +17,10 @@
 #
 # 期待値は本物の実測値ひとつだけをハードコードしている。したがって **#84 の変更が入る前のビルドで
 # 流すと、対照と一部を除いて FAIL になるのが正しい**。
-# 変更前の予測:
+# 変更前の予測（ケース 4 の小数の切り捨てと 37 の配列 → 入れ子の構造体は揃えないので、足場から外してある）:
 #   PASS: 対照 A（ListWorkGroups {} が 200）、対照 B（存在しない ID で QUERY_EXECUTION_NOT_FOUND）、
 #         5（MaxResults が null で 200）、14（未知のキー Foo で 200）
-#   FAIL: 4（serde が小数を i32 として弾く）、8（i32 の範囲外で serde が弾く）、
+#   FAIL: 8（i32 の範囲外で serde が弾く）、
 #         それ以外の全部（SerializationException の文言・キー、必須欠落の検証文言、
 #         UnknownOperationException が本物と違う）
 #
@@ -304,7 +304,6 @@ main() {
   # ListWorkGroups の型違い
   check_case 1 "$LWG" '{"MaxResults": "1"}' 400 "$SE" - "$MSG_STRING_TO_INT"
   check_case 3 "$LWG" '{"MaxResults": true}' 400 "$SE" - "$MSG_TRUE_TO_INT"
-  check_case 4 "$LWG" '{"MaxResults": 1.5}' 200 - - -
   check_case 5 "$LWG" '{"MaxResults": null}' 200 - - -
   check_case 6 "$LWG" '{"MaxResults": [1]}' 400 "$SE" - "$MSG_LIST"
   check_case 7 "$LWG" '{"MaxResults": {"a": 1}}' 400 "$SE" - "$MSG_STRUCT"
@@ -335,7 +334,6 @@ main() {
   check_case 34 "$SQE" "$(start_body '{"QueryString": "SELECT", "ExecutionParameters": "x"}')" 400 "$SE" - "Expected list or null"
   check_case 35 "$SQE" "$(start_body '{"QueryString": "SELECT", "ExecutionParameters": [1]}')" 400 "$SE" - "$MSG_NUMBER_TO_STRING"
   check_case 36 "$SQE" "$(jq -cn --arg t "$(uuidgen)" '{QueryString: "SELECT", ResultConfiguration: "x", ClientRequestToken: $t}')" 400 "$SE" - "Expected null"
-  check_case 37 "$SQE" "$(start_body '{"QueryString": "SELECT", "QueryExecutionContext": []}')" 400 "$SE" - "$MSG_LIST"
   check_case 38 "$SQE" "$(start_body '{}')" 400 "$IR" INVALID_INPUT "$MSG_NULL_QUERY_STRING"
 
   # ディスパッチの失敗

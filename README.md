@@ -1045,7 +1045,11 @@ passed; see Caveats.
   `MaxResults` such as `1.5` to `1`, and athena-local rejects it; and an
   empty JSON array for a nested structure (`"QueryExecutionContext": []`) is
   accepted as an empty structure, where Athena answers `Start of list found
-  where not expected`.
+  where not expected`. A request whose `X-Amz-Target` is missing, lacks the
+  `AmazonAthena.` prefix, or names an unsupported or differently cased
+  operation is `{"__type":"UnknownOperationException"}` with no `Message`,
+  as on Athena. The `Content-Type` header is not checked (Athena answers a
+  wrong one with a different protocol's response).
 
 ## Development
 

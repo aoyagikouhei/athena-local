@@ -90,7 +90,3 @@ fn error_body(code: &str, body: serde_json::Value) -> Response {
 
     response
 }
-
-pub fn invalid_request(message: impl Into<String>) -> Response {
-    error("InvalidRequestException", message)
-}

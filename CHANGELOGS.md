@@ -267,6 +267,11 @@ later name the date they were measured on.
   beyond the 32-bit range reaches the upper-bound validation like on Athena.
   See the new Caveat for the combinations that were not measured and the
   two known differences.
+- An unsupported operation, a missing `X-Amz-Target` header, or a target
+  without the `AmazonAthena.` prefix now answers
+  `{"__type":"UnknownOperationException"}` with no `Message`, as Athena does
+  (measured 2026-09-23). It used to be `InvalidRequestException` with a
+  Japanese message, and a target without the prefix used to be accepted.
 
 ### Fixed
 
