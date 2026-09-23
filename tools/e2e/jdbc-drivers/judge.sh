@@ -158,6 +158,8 @@ judge_run() {
   [ "$flabel" = "auto" ] && flabel="-"
   JUDGE_STATUS=FAIL
   if [ "$5" = "124" ]; then JUDGE_STATUS=SKIP; JUDGE_DETAIL="未測定: ハング（timeout ${JVM_TIMEOUT:-300} 秒）"; return; fi
+  # 97 は lib.sh の run_jvm が tls-proxy の IP を取れず JVM を起動しなかった印（出力ファイルが無い）
+  if [ "$5" = "97" ]; then JUDGE_DETAIL="tls-proxy の IP を取得できなかった（JVM を起動していない）"; return; fi
   check_config "$4" "$flabel" "$3" "$8" "$9" || return
   if grep -q '^PREFLIGHT failed: ' "$4"; then judge_preflight_failed "$4" "$7" "$6" "$1" "$2"; return; fi
   if ! grep -q '^PREFLIGHT ok$' "$4"; then JUDGE_DETAIL="PREFLIGHT 行が無い（rc=$5）"; return; fi

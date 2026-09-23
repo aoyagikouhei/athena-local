@@ -1,7 +1,8 @@
 # shellcheck shell=bash
-# issue #111: jdbc-drivers/verify.sh の環境まわりの関数（compose・証明書・ドライバ・athena-local・JVM の実行）。
-# 環境はルートの compose.yml の trino / minio / minio-init / tls-proxy と jdbc-client。関数の多くは tools/measure/jdbc-show-metadata.sh の複製
-# （共通化は #111 の範囲外）。違いは版を引数に取ることと、JVM を timeout で包むこと。verify.sh から source する。
+# jdbc 系 3 本（tools/e2e/jdbc-drivers/verify.sh、tools/measure/jdbc-metadata.sh、tools/measure/jdbc-show-metadata.sh）
+# が共有する環境関数（compose・証明書・ドライバ・athena-local・JVM の実行）。環境はルートの compose.yml の
+# trino / minio / minio-init / tls-proxy と jdbc-client。呼び出し元は record と OUT_ROOT を用意し、source の前に
+# PREFIX_ROOT・TRINO_SETUP_USER・ATHENA_TRINO_USER を代入すれば変えられる（既定はそれぞれ e2e-jdbc111・issue111-setup・athena-local-issue111）。
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$LIB_DIR/../../.." && pwd)"
@@ -15,7 +16,9 @@ SERVICES=(trino minio minio-init tls-proxy)
 TRINO_BASE="http://trino:8080"
 ATHENA_BASE="http://127.0.0.1:8087"
 BUCKET="athena-results"
-PREFIX_ROOT="e2e-jdbc111"
+PREFIX_ROOT="${PREFIX_ROOT:-e2e-jdbc111}"
+TRINO_SETUP_USER="${TRINO_SETUP_USER:-issue111-setup}"
+ATHENA_TRINO_USER="${ATHENA_TRINO_USER:-athena-local-issue111}"
 
 DRIVER_CACHE_DIR="$HOME/.cache/athena-local-jdbc"
 DRIVER_MOUNT="/driver/athena-jdbc.jar"
@@ -117,15 +120,21 @@ build_athena_local() {
   log "cargo build --release --locked"
   (cd "$REPO_ROOT" && cargo build --release --locked) >"$OUT_ROOT/cargo-build.log" 2>&1 && return 0
   record "cargo build" FAIL "ビルド失敗。ログ: $OUT_ROOT/cargo-build.log"
+  tail -n 30 "$OUT_ROOT/cargo-build.log" >&2
   return 1
 }
 
 trino_exec() {
   local resp next
-  resp=$(curl -sf -X POST "$TRINO_BASE/v1/statement" -H "X-Trino-User: issue111-setup" \
-    -H "X-Trino-Catalog: $2" -H "X-Trino-Schema: $3" --data-binary "$1") || return 1
+  resp=$(curl -sf -X POST "$TRINO_BASE/v1/statement" -H "X-Trino-User: $TRINO_SETUP_USER" \
+    -H "X-Trino-Catalog: $2" -H "X-Trino-Schema: $3" \
+    -H "X-Trino-Client-Capabilities: PARAMETRIC_DATETIME" --data-binary "$1") || return 1
   while true; do
-    echo "$resp" | jq -e '.error' >/dev/null 2>&1 && return 1
+    if echo "$resp" | jq -e '.error' >/dev/null 2>&1; then
+      log "trino_exec 失敗: $1"
+      echo "$resp" | jq '.error' >&2
+      return 1
+    fi
     next=$(echo "$resp" | jq -r '.nextUri // empty')
     [ -z "$next" ] && return 0
     resp=$(curl -sf "$next") || return 1
@@ -165,7 +174,7 @@ start_athena_local() {
   local i
   (
     cd "$REPO_ROOT" && exec env ATHENA_LOCAL_BIND="0.0.0.0:8087" TRINO_URL="$TRINO_BASE" \
-      TRINO_USER="athena-local-issue111" TRINO_CATALOG="iceberg" TRINO_SCHEMA="default" \
+      TRINO_USER="$ATHENA_TRINO_USER" TRINO_CATALOG="iceberg" TRINO_SCHEMA="default" \
       ATHENA_LOCAL_RESULTS="s3" AWS_ENDPOINT_URL_S3="http://minio:9000" \
       AWS_ACCESS_KEY_ID="minioadmin" AWS_SECRET_ACCESS_KEY="minioadmin" \
       ATHENA_LOCAL_OUTPUT_LOCATION="s3://$BUCKET/$PREFIX_ROOT/default/" \
@@ -186,15 +195,21 @@ build_jdbc_client() {
   dc run --rm -T --entrypoint sh jdbc-client \
     -c "rm -f target/dependency/athena-jdbc-20*.jar && mvn -q -B package" </dev/null >"$OUT_ROOT/mvn.log" 2>&1 && return 0
   record "JDBC クライアント build" FAIL "mvn package が失敗。ログ: $OUT_ROOT/mvn.log"
+  tail -n 30 "$OUT_ROOT/mvn.log" >&2
   return 1
 }
 
 # $1 = 版, $2 = ResultFetcher（空なら未指定）, $3 = シナリオ, $4 = OutputLocation, $5 = URL, $6 = 出力ファイル
-# JDBC の実行は jdbc-show-metadata.sh と同じ形（/etc/hosts に tls-proxy を固定、keytool で証明書を取り込む）。
-# 値は位置引数で渡す（-e は使わない）。1 回を timeout で包み、終了コードを返す（124 はハング）。
+# JDBC の実行は jdbc 系 3 本共通の形（/etc/hosts に tls-proxy を固定、keytool で証明書を取り込む）。
+# 値は位置引数で渡す（-e は使わない）。1 回を timeout で包み、終了コードを返す（124 はハング、97 は tls-proxy の
+# IP が取れず JVM を起動しなかった。どちらも record は呼ばない＝判定は呼び出し元に任せる）。
 run_jvm() {
   local proxy_ip rc project
   proxy_ip=$(docker inspect "$(dc ps -q tls-proxy)" --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null)
+  if [ -z "$proxy_ip" ]; then
+    log "tls-proxy の IP を取得できない。JVM を起動しない"
+    return 97
+  fi
   timeout "${JVM_TIMEOUT:-300}" docker compose -f "$COMPOSE_FILE" run --rm -T \
     -v "$(driver_path "$1"):$DRIVER_MOUNT:ro" --entrypoint sh jdbc-client -c "
     echo '$proxy_ip tls-proxy athena-results.tls-proxy' >> /etc/hosts

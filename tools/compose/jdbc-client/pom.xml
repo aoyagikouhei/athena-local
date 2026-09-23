@@ -15,8 +15,8 @@
     <!-- 公式 Athena JDBC ドライバ 3.x は Maven Central に無く、AWS の配布 URL から
          直接取る（issue #46 で入手経路を特定した。2026-09-21 実測）:
            https://downloads.athena.us-east-1.amazonaws.com/drivers/JDBC/3.8.1/athena-jdbc-3.8.1-with-dependencies.jar
-         `tools/measure/jdbc-metadata.sh` がこれを target/dependency/ に置くので、
-         Maven の依存としては宣言しない（Main.java は java.sql しか使わず、
+         jdbc 系の足場（`tools/e2e/jdbc-drivers/lib.sh` の prepare_driver と run_jvm）がこれを取得して
+         実行時のコンテナに bind するので、Maven の依存としては宣言しない（Main.java は java.sql しか使わず、
          ドライバは実行時に ServiceLoader が拾う）。
          Maven Central の `com.amazonaws:athena-jdbc`（calver）は名前が似ているが
          Athena Federated Query の JDBC コネクタで、java.sql.Driver を持たない別物。 -->

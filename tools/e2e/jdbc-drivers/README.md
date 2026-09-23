@@ -16,7 +16,7 @@ athena-local は dev 内の `0.0.0.0:8087` で待ち、tls-proxy が `dev:8087` 
 - `verify.sh` — 版 × ResultFetcher × シナリオのループと後始末、表の出力
 - `lib.sh` — compose（`down -v trino minio minio-init tls-proxy` → 同じサービスの `up -d`）、証明書、ドライバの取得、
   athena-local の起動（`0.0.0.0:8087`）、mvn のビルド、JVM 1 回の実行（`timeout` で包む）。
-  関数の多くは `tools/measure/jdbc-show-metadata.sh` の複製
+  `tools/measure/jdbc-metadata.sh`・`tools/measure/jdbc-show-metadata.sh` も同じ lib.sh を source する（#115）
 - `judge.sh` — JVM 1 回分の判定と、版 × (fetcher, シナリオ) の表
 - JVM 側は `tools/compose/jdbc-client/` の `Main.java`（位置引数: fetcher、シナリオ、`OutputLocation`、URL）と
   `FailedDdlScenario.java`（シナリオ `111`）
