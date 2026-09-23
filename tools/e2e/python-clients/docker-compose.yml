@@ -1,0 +1,55 @@
+# issue #111 フェーズ 3: Python クライアント（awswrangler・PyAthena・dbt-athena）の実機検証の足場。
+# Trino 482（Hive・Iceberg。カタログは ../minio/catalog を複製せずに読み取り専用でマウント）と
+# MinIO、バケットを作る使い捨てコンテナ。本物の AWS は一切使わない。
+# ポートは他の e2e（8087〜8096、9002/9003、8443/9443）と重ならないもの。
+# クライアントは path-style（AWS_CONFIG_FILE の addressing_style = path）で MinIO を読むので MINIO_DOMAIN は要らない。
+name: athena-local-issue111-py
+
+services:
+  trino:
+    image: trinodb/trino:482
+    container_name: athena-local-issue111-py-trino
+    ports:
+      - "8097:8080"
+    volumes:
+      - ../minio/catalog:/etc/trino/catalog:ro
+      - trino-hive-data:/data/hive
+      - trino-iceberg-data:/data/iceberg
+
+  minio:
+    image: quay.io/minio/minio:latest
+    container_name: athena-local-issue111-py-minio
+    ports:
+      - "9006:9000" # S3 互換 API
+    environment:
+      # ローカル専用のダミー認証情報。本物の AWS の認証情報ではない。
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  # 使い捨てコンテナ。起動のたびに athena-results バケットを（無ければ）作って終了する。
+  minio-init:
+    image: quay.io/minio/mc:latest
+    container_name: athena-local-issue111-py-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        mc alias set local http://minio:9000 minioadmin minioadmin
+        mc mb --ignore-existing local/athena-results
+        echo "bucket ready: athena-results"
+
+volumes:
+  trino-hive-data:
+  trino-iceberg-data:
+  minio-data:

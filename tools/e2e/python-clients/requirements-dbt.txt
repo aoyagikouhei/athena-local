@@ -1,0 +1,3 @@
+# issue #111: dbt-athena の検証用（venv-dbt）。dbt-athena 1.11.1 は pyathena<3.35 を要求する
+dbt-core==1.12.5
+dbt-athena==1.11.1

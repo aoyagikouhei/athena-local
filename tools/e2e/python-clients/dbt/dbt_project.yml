@@ -1,0 +1,8 @@
+# issue #111: dbt-athena 1.11.1 を work_group 付きで athena-local につなぐ最小のプロジェクト。
+# profiles.yml は check_dbt.sh が実行時に証跡ディレクトリへ生成する（コミットしない）。
+name: athena_local_111
+version: "1.0"
+config-version: 2
+profile: athena_local_111
+model-paths: ["models"]
+macro-paths: ["macros"]

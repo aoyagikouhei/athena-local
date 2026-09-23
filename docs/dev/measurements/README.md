@@ -15,7 +15,7 @@
 | [errors.md](errors.md) | リクエスト本文の解釈の失敗（`SerializationException`）、必須項目の欠落、`UnknownOperationException` | [caveats.md](../../caveats.md) |
 | [work-groups.md](work-groups.md) | `GetWorkGroup`、`ListWorkGroups` | [api.md](../../api.md)、[caveats.md](../../caveats.md) |
 | [client-request-token.md](client-request-token.md) | `ClientRequestToken` による冪等性とトークンの検証 | [api.md](../../api.md)、[caveats.md](../../caveats.md) |
-| [clients.md](clients.md) | クライアント（AWS CLI、Athena JDBC 3.8.1、Grafana、awswrangler、PyAthena）の挙動とソース読み。本物の Athena ではない | [clients.md](../../clients.md)、[caveats.md](../../caveats.md) |
+| [clients.md](clients.md) | クライアント（AWS CLI、Athena JDBC 3.x、Grafana、awswrangler、PyAthena、dbt-athena）の挙動とソース読み。本物の Athena ではない | [clients.md](../../clients.md)、[caveats.md](../../caveats.md) |
 | [trino.md](trino.md) | 手元の Trino 482／483 での実測。本物の Athena ではない | — |
 
 `ExecutionParameters` を本物で測った記録はまだ無いので、`parameters.md` は置いていない。

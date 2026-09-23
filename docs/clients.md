@@ -133,6 +133,29 @@ PyAthena's pandas and arrow cursors read the result file rather than
 `GetQueryResults`, so DDL, `SHOW` and `DESCRIBE` need `ATHENA_LOCAL_RESULTS=s3`,
 which writes their `<id>.txt` (`<id>.csv` for `SHOW FUNCTIONS`; see
 [Result files](result-files.md#result-files)).
+The pandas and arrow cursors read that file even for DDL. For `DROP TABLE` on
+an Iceberg table the file is a single newline, the same as Athena writes, and
+pandas raises `EmptyDataError` on it, which PyAthena 3.36.0 reports as
+`OperationalError` (seen against athena-local; not tried against Athena
+itself). Run DDL with the default cursor.
+
+## dbt-athena
+
+dbt-athena 1.11.1 runs `dbt debug` and `dbt run-operation` against
+athena-local, including `work_group` in the profile: the adapter's
+`is_work_group_output_location_enforced()` calls `GetWorkGroup` and reads
+`EnforceWorkGroupConfiguration=false`. `dbt run` does not get that far on
+athena-local alone: before running any SQL it lists schemas through AWS Glue
+(`GetDatabases`), and it also needs STS, neither of which athena-local
+provides, so it stops with `UnknownOperationException`.
+
+Point it at athena-local with environment variables rather than
+`endpoint_url` in the profile. The profile's `endpoint_url` only reaches the
+client that runs queries; the adapter's other clients (`GetWorkGroup`, Glue,
+STS, S3) ignore it. Set `AWS_ENDPOINT_URL_ATHENA` to athena-local,
+`AWS_ENDPOINT_URL_S3` to your S3-compatible storage, and `AWS_ENDPOINT_URL`
+to a local address as well, so that Glue and STS calls fail locally instead
+of reaching AWS.
 
 ## awswrangler and Grafana
 
