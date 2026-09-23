@@ -362,6 +362,22 @@ later name the date they were measured on.
   `GetQueryResults` would have dropped its first data row instead of the
   header. Found in review of the fix above; Athena's own classification of
   a parenthesised query has not been measured separately.
+- `GetQueryResults` now validates `MaxResults` and `NextToken` the way Athena
+  does, in Athena's order (measured 2026-09-23). A `MaxResults` below 1, an
+  empty `NextToken` and a malformed `NextToken` fail with HTTP 400,
+  `InvalidRequestException` and `AthenaErrorCode: INVALID_INPUT` instead of
+  being silently clamped to 1 or to the first row, and `MaxResults` above
+  1000 fails with `MaxResults is more than maximum allowed length 1000`
+  instead of being accepted. Two framework violations at once are reported
+  in one `2 validation errors detected: ...` message, `nextToken` first. The
+  checks run in Athena's order: framework validation, then the query id,
+  then the upper bound, then the query state, then the token. The default
+  page size (1000 rows including the header row) is unchanged and matches
+  Athena.
+- `ListWorkGroups` reports an empty `NextToken` and a `MaxResults` below 1
+  sent together as one `2 validation errors detected: ...` message like
+  Athena (measured 2026-09-23); it used to report only the `MaxResults`
+  violation.
 
 ## [0.4.0] - 2026-09-15
 

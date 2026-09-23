@@ -70,8 +70,6 @@
 
 ### GetQueryResults
 
-- [ ] `MaxResults` に上限の 1000 が無い（#83）
-- [ ] 形の崩れた `NextToken` を渡すと、エラーにならずに先頭の行から読み直す。`ListWorkGroups`（#9）は実測どおり `MaxResults` の範囲外と不正な `NextToken` を `InvalidRequestException` / `INVALID_INPUT` で弾くので、2 つのオペレーションで検証が揃っていない（#83）
 - [ ] `MaxResults` に文字列など型の違う値を渡すと、本物は `SerializationException`（`AthenaErrorCode` 無し、`STRING_VALUE can not be converted to an Integer`。#9 で `ListWorkGroups` に対して実測）を返すが、athena-local は全オペレーション共通の `parse` が `InvalidRequestException` にする（#84）
 - [ ] `QueryResultType` の `DATA_MANIFEST` を無視している
 - [ ] `ColumnInfo.Nullable` が常に `UNKNOWN`。本物の値は未実測
@@ -80,7 +78,7 @@
 
 - [ ] `InternalServerException` も HTTP 400 で返す
 - [ ] `TooManyRequestsException` を返すことがない
-- [ ] リクエストを解釈できないときに `AthenaErrorCode` が無い。本物の応答は未実測
+- [ ] リクエストを解釈できないときに `AthenaErrorCode` が無い。必須項目の欠落は実測済み（#83 で `GetQueryResults` の `QueryExecutionId` 無しを測った: `InvalidRequestException` / `INVALID_INPUT` / `1 validation error detected: Value null at 'queryExecutionId' failed to satisfy constraint: Member must not be null`）。型違いは #84
 
 ### ドキュメント
 
@@ -116,7 +114,7 @@
 - [ ] `GetWorkGroup` の実測値（`EnforceWorkGroupConfiguration=false` 等）が工場出荷時の既定か、コンソールで変えた後の値か
 - [ ] `ListWorkGroups` の `MaxResults` 未指定時の既定ページサイズ（athena-local は 50）
 - [ ] `ListWorkGroups` の順序が名前順であること（3 件だけの根拠）
-- [ ] `MaxResults` と `NextToken` が同時に不正なときの検証の順序と文言（`2 validation errors detected` になるか）
+- [ ] `ListWorkGroups` で `MaxResults` の上限超過（51）と `NextToken` の空文字が同時のときの文言（下限未満と空文字の同時は #83 で実測: `2 validation errors detected: ...` に nextToken → maxResults の順でまとまる。athena-local は上限超過も同じ形にまとめている）
 
 ### エラー応答
 

@@ -214,6 +214,21 @@ async fn 不正な_next_token_はエラーにする() {
     assert_eq!(error["__type"], "InvalidRequestException");
     assert_eq!(error["AthenaErrorCode"], "INVALID_INPUT");
     assert_eq!(error["Message"], EMPTY);
+
+    // 空文字と MaxResults の下限未満が同時なら、nextToken → maxResults の順で 1 文にまとまる
+    // （2026-09-23 実測。#83）。
+    let (status, error) = harness
+        .call(
+            "ListWorkGroups",
+            json!({ "MaxResults": 0, "NextToken": "" }),
+        )
+        .await;
+    assert_eq!(status, 400);
+    assert_eq!(error["AthenaErrorCode"], "INVALID_INPUT");
+    assert_eq!(
+        error["Message"],
+        "2 validation errors detected: Value at 'nextToken' failed to satisfy constraint: Member must have length greater than or equal to 1; Value at 'maxResults' failed to satisfy constraint: Member must have value greater than or equal to 1"
+    );
 }
 
 #[tokio::test]

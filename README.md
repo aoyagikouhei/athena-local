@@ -238,7 +238,7 @@ query and the catalog name the request used.
 | --- | --- |
 | `StartQueryExecution` | Returns an id immediately; the query runs in the background. `ExecutionParameters` are supported (see below). `ClientRequestToken` is required and makes retries idempotent (see below) |
 | `GetQueryExecution` | `QUEUED` → `RUNNING` → `SUCCEEDED` / `FAILED` / `CANCELLED`. Trino errors land in `Status.StateChangeReason` |
-| `GetQueryResults` | Paginated with `MaxResults` / `NextToken` |
+| `GetQueryResults` | Paginated with `MaxResults` / `NextToken` (1..1000, default 1000 rows including the header row). Out-of-range `MaxResults` and malformed `NextToken` fail the way Athena does (see Caveats) |
 | `StopQueryExecution` | Marks a queued or running query `CANCELLED` immediately and sends `DELETE` to Trino's `nextUri`. Stopping a finished query succeeds and changes nothing |
 | `GetWorkGroup` | Accepts any workgroup name and returns the same configuration for all of them. `Configuration.ResultConfiguration.OutputLocation` reflects `ATHENA_LOCAL_OUTPUT_LOCATION` when it is set |
 | `ListWorkGroups` | Lists the names from `ATHENA_LOCAL_WORK_GROUPS` (just `primary` when unset) in name order, with the same `State` and `EngineVersion` as `GetWorkGroup`. Paginated with `MaxResults` / `NextToken`; out-of-range `MaxResults` and malformed `NextToken` fail the way Athena does |
@@ -941,14 +941,35 @@ passed; see Caveats.
   `IdentityCenterApplicationArn` was absent from the measured response, and
   `EngineVersion.Category` (`Presto` on the wire) is not in the SDK model, so
   no client can read it; neither is returned.
+- **`GetQueryResults` paging validates its arguments the way Athena does,
+  in Athena's order.** Measured 2026-09-23: the framework checks come first
+  (an empty `NextToken` and a `MaxResults` below 1 fail with
+  `INVALID_INPUT` and `1 validation error detected: ...`; both at once give
+  `2 validation errors detected: ...` listing `nextToken` before
+  `maxResults`), then the query id must exist
+  (`QUERY_EXECUTION_NOT_FOUND`), then `MaxResults` above 1000 fails with
+  `MaxResults is more than maximum allowed length 1000`, then the query must
+  have finished successfully, and only then is a malformed `NextToken`
+  rejected with `Malformed nextPageToken <token>`. The page size defaults to
+  1000 rows counting the header row, as on Athena. `NextToken` is the offset
+  of the next page as a decimal string rather than Athena's opaque token, so
+  the malformed-token check accepts any decimal offset inside the result and
+  rejects everything else. Not measured: a malformed token on a `RUNNING` or
+  `CANCELLED` query (handled like `FAILED`, the state wins) and any token on
+  a result with no rows (no token is ever issued; it is treated as
+  malformed).
 - **`ListWorkGroups` paging differs from Athena in two ways.** The default page
   size is 50, the largest `MaxResults` Athena accepts; Athena's own default was
   not measured. `NextToken` is the offset of the next page as a decimal string
   rather than an opaque token. Errors match: `MaxResults` outside 1..50 and a
   malformed or empty `NextToken` fail with HTTP 400, `InvalidRequestException`,
-  `AthenaErrorCode: INVALID_INPUT` and Athena's messages (measured 2026-09-18).
-  When the list fits in one page the `NextToken` key is omitted, never `""`:
-  Grafana loops until the token is absent.
+  `AthenaErrorCode: INVALID_INPUT` and Athena's messages (measured 2026-09-18);
+  an empty `NextToken` together with a `MaxResults` below 1 gives the same
+  combined `2 validation errors detected: ...` message as `GetQueryResults`
+  (measured 2026-09-23). An empty `NextToken` together with a `MaxResults`
+  above 50 was not measured and is combined the same way. When the list fits
+  in one page the `NextToken` key is omitted, never `""`: Grafana loops until
+  the token is absent.
 - **Plain HTTP only.** The clients are built without TLS, for both Trino and
   the S3-compatible store, and the server itself speaks plain HTTP. To reach an
   HTTPS endpoint, add the `rustls` feature to `reqwest` in `Cargo.toml` (and CA

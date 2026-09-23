@@ -1,0 +1,28 @@
+# issue #83 Step 9（実機検証）の足場。
+# .claude/issue-notes/70-e2e/docker-compose.yml から MinIO と minio-init を落とし、プロジェクト名と
+# ポートを他の足場と衝突しないものに変えたもの。GetQueryResults / ListWorkGroups の MaxResults と
+# NextToken の検証だけを見るので、結果ファイルは書かない（S3 は使わない）。
+# 本物の AWS は一切使わない。
+#
+# ポート（ホスト側）:
+#   Trino         8094（39-e2e は 8092、70-e2e は 8093、39-trino-probe は 8090）
+#   athena-local  8089（compose ではなくホスト上のプロセス。39-e2e は 8087、70-e2e は 8088）
+name: athena-local-issue83-e2e
+
+services:
+  trino:
+    image: trinodb/trino:482
+    container_name: athena-local-issue83-e2e-trino
+    ports:
+      - "8094:8080"
+    volumes:
+      # カタログ定義は 39-e2e のものを共有する（読み取り専用）。
+      # 検証で流すクエリは UNNEST(sequence(...)) と存在しないテーブルの SELECT だけで、
+      # カタログには依存しない（athena-local の既定の文脈は system.runtime にする）。
+      - ../39-e2e/catalog:/etc/trino/catalog:ro
+      - trino-hive-data:/data/hive
+      - trino-iceberg-data:/data/iceberg
+
+volumes:
+  trino-hive-data:
+  trino-iceberg-data:

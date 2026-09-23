@@ -116,6 +116,205 @@ async fn max_results_でページングされ_next_token_で続きが取れる()
     assert!(second.get("NextToken").is_none(), "最終ページには付かない");
 }
 
+/// MaxResults が 1 未満のときの本物の文言（2026-09-23 実測。ListWorkGroups と同文）。
+const MAX_RESULTS_TOO_SMALL: &str = "1 validation error detected: Value at 'maxResults' failed to satisfy constraint: Member must have value greater than or equal to 1";
+/// MaxResults が 1000 を超えたときの本物の文言（2026-09-23 実測。ListWorkGroups の上限超過とは形が違う）。
+const MAX_RESULTS_TOO_LARGE: &str = "MaxResults is more than maximum allowed length 1000";
+/// NextToken が空文字のときの本物の文言（2026-09-23 実測。ListWorkGroups と同文）。
+const NEXT_TOKEN_EMPTY: &str = "1 validation error detected: Value at 'nextToken' failed to satisfy constraint: Member must have length greater than or equal to 1";
+/// 実在しない QueryExecutionId（形は正しい UUID）。
+const MISSING_ID: &str = "00000000-0000-4000-8000-000000000083";
+
+fn assert_invalid_input(status: u16, error: &serde_json::Value, message: &str, label: &str) {
+    assert_eq!(status, 400, "{label}");
+    assert_eq!(error["__type"], "InvalidRequestException", "{label}");
+    assert_eq!(error["AthenaErrorCode"], "INVALID_INPUT", "{label}");
+    assert_eq!(error["ErrorCode"], "INVALID_INPUT", "{label}");
+    assert_eq!(error["Message"], message, "{label}");
+}
+
+#[tokio::test]
+async fn max_results_が範囲外ならエラーにする() {
+    let harness = Harness::start(select_response()).await;
+    let execution = harness
+        .run_query(json!({ "QueryString": "SELECT id, name FROM users" }))
+        .await;
+    let id = execution_id(&execution);
+
+    for (max_results, message) in [
+        (0, MAX_RESULTS_TOO_SMALL),
+        (-1, MAX_RESULTS_TOO_SMALL),
+        (1001, MAX_RESULTS_TOO_LARGE),
+    ] {
+        let (status, error) = harness
+            .call(
+                "GetQueryResults",
+                json!({ "QueryExecutionId": id, "MaxResults": max_results }),
+            )
+            .await;
+        assert_invalid_input(
+            status,
+            &error,
+            message,
+            &format!("MaxResults={max_results}"),
+        );
+    }
+
+    // 上限ちょうどは通る。
+    let (status, results) = harness
+        .call(
+            "GetQueryResults",
+            json!({ "QueryExecutionId": id, "MaxResults": 1000 }),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(results["ResultSet"]["Rows"].as_array().unwrap().len(), 3);
+
+    // 下限の検証は ID の存在確認より先、上限は存在確認より後（2026-09-23 実測）。
+    let (status, error) = harness
+        .call(
+            "GetQueryResults",
+            json!({ "QueryExecutionId": MISSING_ID, "MaxResults": 0 }),
+        )
+        .await;
+    assert_invalid_input(status, &error, MAX_RESULTS_TOO_SMALL, "実在しない ID と 0");
+    let (status, error) = harness
+        .call(
+            "GetQueryResults",
+            json!({ "QueryExecutionId": MISSING_ID, "MaxResults": 1001 }),
+        )
+        .await;
+    assert_eq!(status, 400, "実在しない ID と 1001");
+    assert_eq!(error["AthenaErrorCode"], "QUERY_EXECUTION_NOT_FOUND");
+}
+
+#[tokio::test]
+async fn 不正な_next_token_はエラーにする() {
+    let harness = Harness::start(select_response()).await;
+    let execution = harness
+        .run_query(json!({ "QueryString": "SELECT id, name FROM users" }))
+        .await;
+    let id = execution_id(&execution);
+
+    // 発行するのは 1 <= end < 3 の 10 進なので、それ以外は弾く（文言は 2026-09-23 実測。
+    // ListWorkGroups の `The nextPageToken is malformed: ...` とは違う）。
+    for token in ["abc", "999", "3"] {
+        let (status, error) = harness
+            .call(
+                "GetQueryResults",
+                json!({ "QueryExecutionId": id, "NextToken": token }),
+            )
+            .await;
+        assert_invalid_input(
+            status,
+            &error,
+            &format!("Malformed nextPageToken {token}"),
+            &format!("NextToken={token:?}"),
+        );
+    }
+
+    // 空文字だけは枠組みの長さの制約のエラーになる。
+    let (status, error) = harness
+        .call(
+            "GetQueryResults",
+            json!({ "QueryExecutionId": id, "NextToken": "" }),
+        )
+        .await;
+    assert_invalid_input(status, &error, NEXT_TOKEN_EMPTY, "空文字");
+
+    // 空文字と下限未満が同時なら nextToken → maxResults の順で 1 文にまとまる。
+    // 上限超過は枠組みの検証ではないので、空文字と同時なら空文字だけが出る。
+    let (status, error) = harness
+        .call(
+            "GetQueryResults",
+            json!({ "QueryExecutionId": id, "MaxResults": 0, "NextToken": "" }),
+        )
+        .await;
+    assert_invalid_input(
+        status,
+        &error,
+        "2 validation errors detected: Value at 'nextToken' failed to satisfy constraint: Member must have length greater than or equal to 1; Value at 'maxResults' failed to satisfy constraint: Member must have value greater than or equal to 1",
+        "0 と空文字",
+    );
+    let (status, error) = harness
+        .call(
+            "GetQueryResults",
+            json!({ "QueryExecutionId": id, "MaxResults": 1001, "NextToken": "" }),
+        )
+        .await;
+    assert_invalid_input(status, &error, NEXT_TOKEN_EMPTY, "1001 と空文字");
+
+    // 上限はトークンの形より先に見る。
+    let (status, error) = harness
+        .call(
+            "GetQueryResults",
+            json!({ "QueryExecutionId": id, "MaxResults": 1001, "NextToken": "abc" }),
+        )
+        .await;
+    assert_invalid_input(status, &error, MAX_RESULTS_TOO_LARGE, "1001 と abc");
+
+    // 空文字は ID の存在確認より先、不正な形は存在確認より後。
+    let (status, error) = harness
+        .call(
+            "GetQueryResults",
+            json!({ "QueryExecutionId": MISSING_ID, "NextToken": "" }),
+        )
+        .await;
+    assert_invalid_input(status, &error, NEXT_TOKEN_EMPTY, "実在しない ID と空文字");
+    let (status, error) = harness
+        .call(
+            "GetQueryResults",
+            json!({ "QueryExecutionId": MISSING_ID, "NextToken": "abc" }),
+        )
+        .await;
+    assert_eq!(status, 400, "実在しない ID と abc");
+    assert_eq!(error["AthenaErrorCode"], "QUERY_EXECUTION_NOT_FOUND");
+}
+
+#[tokio::test]
+async fn 結果の無いクエリでも_max_results_の上限は先に見る() {
+    // 2026-09-23 実測: 上限超過はクエリの状態より先、トークンの形は状態より後。
+    let harness = Harness::start(common::trino_error(
+        "TABLE_NOT_FOUND",
+        "line 1:15: Table 'no_such' does not exist",
+    ))
+    .await;
+    let execution = harness
+        .run_query(json!({ "QueryString": "SELECT * FROM no_such" }))
+        .await;
+    let id = execution_id(&execution);
+    assert_eq!(execution["QueryExecution"]["Status"]["State"], "FAILED");
+
+    let (status, error) = harness
+        .call(
+            "GetQueryResults",
+            json!({ "QueryExecutionId": id, "MaxResults": 1001 }),
+        )
+        .await;
+    assert_invalid_input(status, &error, MAX_RESULTS_TOO_LARGE, "FAILED と 1001");
+
+    let (status, error) = harness
+        .call(
+            "GetQueryResults",
+            json!({ "QueryExecutionId": id, "NextToken": "" }),
+        )
+        .await;
+    assert_invalid_input(status, &error, NEXT_TOKEN_EMPTY, "FAILED と空文字");
+
+    let (status, error) = harness
+        .call(
+            "GetQueryResults",
+            json!({ "QueryExecutionId": id, "NextToken": "abc" }),
+        )
+        .await;
+    assert_eq!(status, 400, "FAILED と abc");
+    assert_eq!(error["AthenaErrorCode"], "INVALID_QUERY_EXECUTION_STATE");
+    assert_eq!(
+        error["Message"],
+        "Query did not finish successfully. Final query state: FAILED"
+    );
+}
+
 #[tokio::test]
 async fn 配列の列は_athena_の表記で返る() {
     // 利用側が "[1, 2, 3]" を ", " で分割して読んでも値が化けないこと。
