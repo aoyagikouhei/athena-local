@@ -113,7 +113,6 @@
 - [ ] `GetWorkGroup` の実測値（`EnforceWorkGroupConfiguration=false` 等）が工場出荷時の既定か、コンソールで変えた後の値か
 - [ ] `ListWorkGroups` の `MaxResults` 未指定時の既定ページサイズ（athena-local は 50）
 - [ ] `ListWorkGroups` の順序が名前順であること（3 件だけの根拠）
-- [ ] `ListWorkGroups` で `MaxResults` の上限超過（51）と `NextToken` の空文字が同時のときの文言（下限未満と空文字の同時は #83 で実測: `2 validation errors detected: ...` に nextToken → maxResults の順でまとまる。athena-local は上限超過も同じ形にまとめている）
 
 ### エラー応答
 

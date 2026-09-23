@@ -25,10 +25,10 @@ fn max_results_too_large(upper: i64) -> String {
 
 /// 枠組みの検証。違反があれば INVALID_INPUT の応答を返す。
 ///
-/// `upper` は API 定義に MaxResults の上限があるオペレーション（ListWorkGroups の 50）だけ渡す。
-/// GetQueryResults の上限 1000 は枠組みの検証ではなく本体が別の文言で弾くので、渡さない
-/// （2026-09-23 実測: 1001 と空文字の同時は空文字のエラーだけになる）。
-/// 上限超過と空文字の同時は未実測で、上限の文言が枠組みの形なので同じ 1 文にまとめている。
+/// `upper` は API 定義（枠組み）の MaxResults の上限（ListWorkGroups は 50、GetQueryResults は 100000）。
+/// GetQueryResults の 1000 は枠組みの検証ではなく本体が別の文言で弾く
+/// （2026-09-23 実測: 1001 と空文字の同時は空文字のエラーだけ、100001 は枠組みの文言になる）。
+/// 上限超過と空文字の同時は nextToken → maxResults の順で 1 文にまとまる（ListWorkGroups の 51 で 2026-09-23 実測。#85）。
 pub(super) fn paging_violation(
     next_token: Option<&str>,
     max_results: i64,

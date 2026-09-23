@@ -196,9 +196,9 @@ async fn 不正な_next_token_はエラーにする() {
         .await;
     let id = execution_id(&execution);
 
-    // 発行するのは 1 <= end < 3 の 10 進なので、それ以外は弾く（文言は 2026-09-23 実測。
+    // 発行するのは 1 <= end <= 3 の 10 進（3 は満杯の次の空のページ）なので、それ以外は弾く（文言は 2026-09-23 実測。
     // ListWorkGroups の `The nextPageToken is malformed: ...` とは違う）。
-    for token in ["abc", "999", "3"] {
+    for token in ["abc", "999", "4"] {
         let (status, error) = harness
             .call(
                 "GetQueryResults",
@@ -269,6 +269,147 @@ async fn 不正な_next_token_はエラーにする() {
         .await;
     assert_eq!(status, 400, "実在しない ID と abc");
     assert_eq!(error["AthenaErrorCode"], "QUERY_EXECUTION_NOT_FOUND");
+}
+
+#[tokio::test]
+async fn max_results_が枠組みの上限を超えると_1000_の文言より先に枠組みの検証になる() {
+    // 2026-09-23 実測（#85）: 本物の枠組みの上限は 100000 で、それを超えると 1000 の本体の文言ではなく
+    // `Member must have value less than or equal to 100000` になる。
+    let harness = Harness::start(select_response()).await;
+    let execution = harness
+        .run_query(json!({ "QueryString": "SELECT id, name FROM users" }))
+        .await;
+
+    let (status, error) = harness
+        .call(
+            "GetQueryResults",
+            json!({ "QueryExecutionId": execution_id(&execution), "MaxResults": 100_001 }),
+        )
+        .await;
+    assert_invalid_input(
+        status,
+        &error,
+        "1 validation error detected: Value at 'maxResults' failed to satisfy constraint: Member must have value less than or equal to 100000",
+        "100001",
+    );
+}
+
+#[tokio::test]
+async fn 行の無い_utility_の結果は_next_token_を無視する() {
+    // 2026-09-23 実測（#85）: 0 行の SHOW に不正なトークンを渡しても 200 で 0 行（トークンは見ない）。
+    // 列名行だけの DML は行が 1 つあるので、不正なトークンは Malformed になる（同じ実測）。
+    let harness = Harness::builder(select_response())
+        .route(
+            "SHOW DATABASES LIKE 'no_such'",
+            json!({ "columns": [{ "name": "Database", "type": "varchar" }], "data": [] }),
+        )
+        .route(
+            "SELECT 1 AS n WHERE false",
+            json!({ "columns": [{ "name": "n", "type": "integer" }], "data": [] }),
+        )
+        .start()
+        .await;
+
+    let execution = harness
+        .run_query(json!({ "QueryString": "SHOW DATABASES LIKE 'no_such'" }))
+        .await;
+    for token in ["not-a-token", "1"] {
+        let (status, body) = harness
+            .call(
+                "GetQueryResults",
+                json!({ "QueryExecutionId": execution_id(&execution), "NextToken": token }),
+            )
+            .await;
+        assert_eq!(status, 200, "SHOW NextToken={token:?}");
+        assert_eq!(body["ResultSet"]["Rows"].as_array().unwrap().len(), 0);
+        assert!(body.get("NextToken").is_none());
+    }
+
+    let execution = harness
+        .run_query(json!({ "QueryString": "SELECT 1 AS n WHERE false" }))
+        .await;
+    let (status, error) = harness
+        .call(
+            "GetQueryResults",
+            json!({ "QueryExecutionId": execution_id(&execution), "NextToken": "abc" }),
+        )
+        .await;
+    assert_invalid_input(
+        status,
+        &error,
+        "Malformed nextPageToken abc",
+        "列名行だけの DML",
+    );
+}
+
+#[tokio::test]
+async fn next_token_はページが満杯なら残りが無くても付き_次のページは空になる() {
+    // 2026-09-23 実測（#85）: 6 行を MaxResults=6 で取ると 6 行 + NextToken、次は 0 行でトークン無し。
+    // 3 ずつでも 2 ページ目（3 行）にトークンが付き 3 ページ目が空。4 ずつなら 2 ページ目（2 行）で終わる。
+    // 列名行だけの結果も MaxResults=1 で 1 行 + トークン、次は 0 行。
+    let harness = Harness::builder(select_response())
+        .route(
+            "SELECT 1 AS n WHERE false",
+            json!({ "columns": [{ "name": "n", "type": "integer" }], "data": [] }),
+        )
+        .start()
+        .await;
+    let execution = harness
+        .run_query(json!({ "QueryString": "SELECT id, name FROM users" }))
+        .await;
+    let id = execution_id(&execution);
+
+    // 3 行（列名行 + 2）を 3 で: 満杯なのでトークンが付き、次は空。
+    let (_, first) = harness
+        .call(
+            "GetQueryResults",
+            json!({ "QueryExecutionId": id, "MaxResults": 3 }),
+        )
+        .await;
+    assert_eq!(first["ResultSet"]["Rows"].as_array().unwrap().len(), 3);
+    let token = first["NextToken"]
+        .as_str()
+        .expect("満杯なら NextToken が付く");
+    let (status, second) = harness
+        .call(
+            "GetQueryResults",
+            json!({ "QueryExecutionId": id, "MaxResults": 3, "NextToken": token }),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(second["ResultSet"]["Rows"].as_array().unwrap().len(), 0);
+    assert!(second.get("NextToken").is_none(), "空のページには付かない");
+
+    // 3 行を 1000（既定）で: 満杯ではないので付かない。
+    let (_, all) = harness
+        .call("GetQueryResults", json!({ "QueryExecutionId": id }))
+        .await;
+    assert_eq!(all["ResultSet"]["Rows"].as_array().unwrap().len(), 3);
+    assert!(all.get("NextToken").is_none());
+
+    // 列名行だけの DML を 1 で: 1 行 + トークン、次は空。
+    let execution = harness
+        .run_query(json!({ "QueryString": "SELECT 1 AS n WHERE false" }))
+        .await;
+    let id = execution_id(&execution);
+    let (_, first) = harness
+        .call(
+            "GetQueryResults",
+            json!({ "QueryExecutionId": id, "MaxResults": 1 }),
+        )
+        .await;
+    assert_eq!(first["ResultSet"]["Rows"].as_array().unwrap().len(), 1);
+    let token = first["NextToken"]
+        .as_str()
+        .expect("列名行だけでも満杯なら付く");
+    let (_, second) = harness
+        .call(
+            "GetQueryResults",
+            json!({ "QueryExecutionId": id, "MaxResults": 1, "NextToken": token }),
+        )
+        .await;
+    assert_eq!(second["ResultSet"]["Rows"].as_array().unwrap().len(), 0);
+    assert!(second.get("NextToken").is_none());
 }
 
 #[tokio::test]
