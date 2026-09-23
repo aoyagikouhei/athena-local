@@ -1036,9 +1036,10 @@ passed; see Caveats.
   list found where not expected`, `Start of structure or map found where
   not expected.`, `Expected list or null` (a string for `ExecutionParameters`)
   and `Expected null` (a string for `ResultConfiguration`); `FALSE_VALUE`,
-  a decimal as `NUMBER_VALUE`, and a number or boolean where a list
+  a decimal as `NUMBER_VALUE`, and an integer or `true` where a list
   (`Expected list or null`) or a structure (`Expected null`) is expected
-  were measured in a second round (2026-09-23). A body that is
+  were measured in a second round (2026-09-23); `false` or a decimal in
+  those two positions was not, and gets no `Message`. A body that is
   not JSON at all (truncated, empty, `null`, a bare string, a trailing comma)
   is a `SerializationException` with no `Message` key, and a body that is a
   JSON array gets `Start of list found where not expected`. A required

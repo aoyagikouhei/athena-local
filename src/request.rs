@@ -77,15 +77,18 @@ fn type_mismatch(found: &str, expected: &str) -> Option<String> {
             _ => scalar.map(|value| format!("{value} can not be converted to {target}")),
         };
     }
+    // 配列・構造体に対して測ったのは文字列・整数・true だけ（false・小数は未実測なので出さない）。
+    let measured =
+        matches!(scalar, Some("STRING_VALUE" | "TRUE_VALUE")) || found.starts_with("integer ");
     if expected == "a sequence" {
         return match found {
             "map" => Some(MAP.to_string()),
-            _ => scalar.map(|_| "Expected list or null".to_string()),
+            _ => measured.then(|| "Expected list or null".to_string()),
         };
     }
     if expected.starts_with("struct ") {
         // 配列 → 構造体は serde の derive が位置順に読んで通すので、ここには来ない。
-        return scalar.map(|_| "Expected null".to_string());
+        return measured.then(|| "Expected null".to_string());
     }
     None
 }
@@ -287,6 +290,9 @@ mod tests {
             "true",
             r#"{"QueryExecutionId":"x",}"#,
             r#"{"QueryExecutionId":"x"} {}"#, // 末尾にゴミ
+            // false・小数 → 配列／構造体は未実測。
+            r#"{"QueryExecutionId":"x","Parameters":false}"#,
+            r#"{"QueryExecutionId":"x","ResultConfiguration":1.5}"#,
         ] {
             assert_eq!(failure(body).await, serialization(None), "{body}");
         }
