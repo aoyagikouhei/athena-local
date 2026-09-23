@@ -45,6 +45,7 @@ item_m2() {
     skip_item "$id" statements "フィクスチャの Iceberg テーブルを作れなかった"
     return 0
   fi
+  record_created TABLE "$t" "$TCAT_ICEBERG" "$TDB"
 
   run_stmt "$dir" m2-update-zero "UPDATE $t SET n = 2 WHERE false" "$TCAT_ICEBERG" "$TDB"
   run_stmt "$dir" m2-update-one "UPDATE $t SET n = 2 WHERE n = 1" "$TCAT_ICEBERG" "$TDB"
@@ -82,8 +83,10 @@ item_m3() {
     sql1="CREATE TABLE $t1 WITH (table_type = 'ICEBERG', location = '${OUTPUT}tables-probe-113-m3-one/', is_external = false) AS SELECT 1 AS n"
   fi
   run_stmt "$dir" m3-zero "$sql0" "$TCAT_ICEBERG" "$TDB"
+  record_created TABLE "$t0" "$TCAT_ICEBERG" "$TDB"
   best_effort_drop TABLE "$t0" "$TCAT_ICEBERG" "$TDB"
   run_stmt "$dir" m3-one "$sql1" "$TCAT_ICEBERG" "$TDB"
+  record_created TABLE "$t1" "$TCAT_ICEBERG" "$TDB"
   best_effort_drop TABLE "$t1" "$TCAT_ICEBERG" "$TDB"
 }
 
@@ -104,6 +107,7 @@ item_m5() {
     "$TCAT_ICEBERG" "$TDB"
   local nn_rc=$?
   if [ "$nn_rc" -eq 0 ]; then
+    record_created TABLE "$t_nn" "$TCAT_ICEBERG" "$TDB"
     run_stmt "$dir" m5-select-notnull "SELECT * FROM $t_nn" "$TCAT_ICEBERG" "$TDB"
   else
     skip_item "$id" m5-select-notnull "NOT NULL 列のテーブルを作れなかった（測れない）"
@@ -113,7 +117,10 @@ item_m5() {
   run_stmt "$dir" m5-create-null \
     "CREATE TABLE $t_n (n int, s string) LOCATION '${OUTPUT}tables-probe-113-m5-null/' TBLPROPERTIES ('table_type'='ICEBERG')" \
     "$TCAT_ICEBERG" "$TDB"
-  [ $? -eq 0 ] && run_stmt "$dir" m5-select-null "SELECT * FROM $t_n" "$TCAT_ICEBERG" "$TDB"
+  if [ $? -eq 0 ]; then
+    record_created TABLE "$t_n" "$TCAT_ICEBERG" "$TDB"
+    run_stmt "$dir" m5-select-null "SELECT * FROM $t_n" "$TCAT_ICEBERG" "$TDB"
+  fi
   best_effort_drop TABLE "$t_n" "$TCAT_ICEBERG" "$TDB"
 
   if [ "$TARGET" = local ]; then

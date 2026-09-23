@@ -20,6 +20,7 @@ item_r1() {
   local hive_loc="${OUTPUT}tables-probe-113-r1-hive/"
   run_stmt "$dir" r1-hive-create1 "CREATE EXTERNAL TABLE $hive_t (n int) LOCATION '$hive_loc'" "$TCAT_HIVE" "$TDB"
   local hive_rc=$?
+  record_created TABLE "$hive_t" "$TCAT_HIVE" "$TDB"
   run_stmt "$dir" r1-hive-create2 "CREATE EXTERNAL TABLE $hive_t (n int) LOCATION '$hive_loc'" "$TCAT_HIVE" "$TDB"
   best_effort_drop TABLE "$hive_t" "$TCAT_HIVE" "$TDB"
   record_cleanup_hint "r1 hive: $hive_loc"
@@ -28,6 +29,7 @@ item_r1() {
   run_stmt "$dir" r1-ice-create1 \
     "CREATE TABLE $ice_t WITH (table_type = 'ICEBERG', location = '$ice_loc', is_external = false) AS SELECT 1 AS n" \
     "$TCAT_ICEBERG" "$TDB"
+  record_created TABLE "$ice_t" "$TCAT_ICEBERG" "$TDB"
   run_stmt "$dir" r1-ice-create2 \
     "CREATE TABLE $ice_t WITH (table_type = 'ICEBERG', location = '$ice_loc', is_external = false) AS SELECT 1 AS n" \
     "$TCAT_ICEBERG" "$TDB"
@@ -55,6 +57,7 @@ item_r2() {
     "CREATE EXTERNAL TABLE $t (n int COMMENT '${weird}', m int) LOCATION '$loc' TBLPROPERTIES ('note'='x${weird}y')" \
     "$TCAT_HIVE" "$TDB"
   local create_rc=$?
+  record_created TABLE "$t" "$TCAT_HIVE" "$TDB"
   run_stmt "$dir" r2-describe "DESCRIBE $t" "$TCAT_HIVE" "$TDB"
   run_stmt "$dir" r2-show-tblproperties "SHOW TBLPROPERTIES $t" "$TCAT_HIVE" "$TDB"
   best_effort_drop TABLE "$t" "$TCAT_HIVE" "$TDB"
@@ -76,7 +79,9 @@ item_r3() {
 }
 
 # r4: SHOW CREATE VIEW の Content-Type。対照は SHOW CREATE TABLE（既知）。
-# Iceberg カタログを使う（memory 連携はビューを持てないことがあるため）。
+# Iceberg カタログを使う（memory 連携はビューを持てないことがあるため）。対照のテーブルは、
+# real では他の項目と同じく Iceberg の CTAS で作る（table_type を付けないと Hive の CTAS に
+# なり、DROP で S3 にデータが残るため。r1・m2・m3 と同じ理由）。local はこれまでどおり。
 item_r4() {
   local id=$1 dir="$RUN_DIR/$id"
   mkdir -p "$dir"
@@ -87,10 +92,18 @@ item_r4() {
   fi
 
   run_stmt "$dir" r4-create-view "CREATE VIEW $v AS SELECT 1 AS n" "$TCAT_ICEBERG" "$TDB"
+  record_created VIEW "$v" "$TCAT_ICEBERG" "$TDB"
   run_stmt "$dir" r4-show-create-view "SHOW CREATE VIEW $v" "$TCAT_ICEBERG" "$TDB"
   best_effort_drop VIEW "$v" "$TCAT_ICEBERG" "$TDB"
 
-  run_stmt "$dir" r4-create-table "CREATE TABLE $t AS SELECT 1 AS n" "$TCAT_ICEBERG" "$TDB"
+  local table_sql
+  if [ "$TARGET" = local ]; then
+    table_sql="CREATE TABLE $t AS SELECT 1 AS n"
+  else
+    table_sql="CREATE TABLE $t WITH (table_type = 'ICEBERG', location = '${OUTPUT}tables-probe-113-r4/', is_external = false) AS SELECT 1 AS n"
+  fi
+  run_stmt "$dir" r4-create-table "$table_sql" "$TCAT_ICEBERG" "$TDB"
+  record_created TABLE "$t" "$TCAT_ICEBERG" "$TDB"
   run_stmt "$dir" r4-show-create-table "SHOW CREATE TABLE $t" "$TCAT_ICEBERG" "$TDB"
   best_effort_drop TABLE "$t" "$TCAT_ICEBERG" "$TDB"
 }
@@ -113,8 +126,10 @@ item_x1() {
   run_stmt "$dir" x1-fixture-table \
     "CREATE EXTERNAL TABLE $t (n int) PARTITIONED BY (p string) LOCATION '$loc'" "$TCAT_HIVE" "$TDB"
   local table_ok=$?
+  record_created TABLE "$t" "$TCAT_HIVE" "$TDB"
   run_stmt "$dir" x1-fixture-view "CREATE VIEW $v AS SELECT 1 AS n" "$TCAT_ICEBERG" "$TDB"
   local view_ok=$?
+  record_created VIEW "$v" "$TCAT_ICEBERG" "$TDB"
 
   if [ "$table_ok" -eq 0 ]; then
     run_stmt "$dir" x1-describe-plain "DESCRIBE $t" "$TCAT_HIVE" "$TDB"
@@ -141,9 +156,11 @@ item_x1() {
   local t2="${TDB}.${PROBE_PREFIX}_x1_ext" t3="${TDB}.${PROBE_PREFIX}_x1_ext_c"
   run_stmt "$dir" x1-create-external-plain \
     "CREATE EXTERNAL TABLE $t2 (n int) LOCATION '${OUTPUT}tables-probe-113-x1-ext-plain/'" "$TCAT_HIVE" "$TDB"
+  record_created TABLE "$t2" "$TCAT_HIVE" "$TDB"
   best_effort_drop TABLE "$t2" "$TCAT_HIVE" "$TDB"
   run_stmt "$dir" x1-create-external-comment \
     "CREATE EXTERNAL /* c */ TABLE $t3 (n int) LOCATION '${OUTPUT}tables-probe-113-x1-ext-comment/'" "$TCAT_HIVE" "$TDB"
+  record_created TABLE "$t3" "$TCAT_HIVE" "$TDB"
   best_effort_drop TABLE "$t3" "$TCAT_HIVE" "$TDB"
 
   best_effort_drop TABLE "$t" "$TCAT_HIVE" "$TDB"

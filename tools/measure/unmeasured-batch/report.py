@@ -45,6 +45,15 @@ def count_ddl(run_dir):
     return creates, drops
 
 
+def cleanup_report(run_dir):
+    """finish_cleanup（lib-aws.sh、TARGET=real のみ）が書く後始末の 1 行。無ければ空。"""
+    path = os.path.join(run_dir, "cleanup-report.txt")
+    if not os.path.exists(path):
+        return []
+    with open(path, encoding="utf-8") as f:
+        return [mask(line.rstrip("\n")) for line in f if line.strip()]
+
+
 def cleanup_locations(run_dir):
     path = os.path.join(run_dir, "cleanup-hints.txt")
     if not os.path.exists(path):
@@ -80,7 +89,7 @@ def main():
     deadline = now + datetime.timedelta(minutes=90)
 
     lines = [
-        "# issue #113 未実測バッチ フェーズ1: 実測結果の要約（実名はマスク済み）",
+        "# issue #113 未実測バッチ: 実測結果の要約（実名はマスク済み）",
         "# TARGET: %s" % target,
         "# 開始時刻: %s" % now.isoformat(timespec="seconds"),
         "# 開始+90分（資格情報はこれより長く有効なものを使うこと）: %s" % deadline.isoformat(timespec="seconds"),
@@ -90,6 +99,8 @@ def main():
         "# DDL の内訳（各 .sql の先頭語から集計。目安）: CREATE=%d DROP=%d" % (creates, drops),
         "# skip した項目/文の数: %d" % len(skip_rows),
     ]
+    for line in cleanup_report(run_dir):
+        lines.append("# %s" % line)
     locs = cleanup_locations(run_dir)
     if locs:
         lines.append("# 作った S3 の LOCATION（Hive 外部テーブル。DROP では消えない。cleanup-hints.txt も見る）:")
@@ -125,7 +136,9 @@ def main():
         lines.extend(body if body else ["- (行なし)"])
     lines.append("")
 
-    mismatches = [r for r in expect_rows if r["match"] != "yes"]
+    # raw.py の項目は照合の結果を note に「期待どおり / 期待と違う」で書くので、それも拾う。
+    mismatches = [r for r in expect_rows if r["match"] != "yes"] + [
+        r for r in rows if r["kind"] != "expect" and "期待と違う" in r["note"]]
     lines.append("## 宣言した期待との食い違い")
     if mismatches:
         for r in mismatches:

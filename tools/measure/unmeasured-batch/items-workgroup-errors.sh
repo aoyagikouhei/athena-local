@@ -1,6 +1,7 @@
 # shellcheck shell=bash
-# issue #113: w1（GetWorkGroup(WORKGROUP2) の見え方）、e1（QUEUED への GetQueryResults）。
-# 単独では実行しない。run.sh が source して item_w1 / item_e1 を呼ぶ。
+# issue #113: w1（GetWorkGroup(WORKGROUP2) の見え方）、e1（QUEUED への GetQueryResults）、
+# e2（構文エラーの ErrorCode キー、生 HTTP）。単独では実行しない。run.sh が source して
+# item_w1 / item_e1 / item_e2 を呼ぶ。
 # 手本: tools/measure/get-work-group.sh（GetWorkGroup の主要フィールドの畳み方）。
 
 # w1: primary と WORKGROUP2 の GetWorkGroup を比べる。athena-local は名前を見ないので、
@@ -105,3 +106,6 @@ except Exception: print("?")' "$dir/$label.execution-immediate.json")
   write_summary_row "$id" observed stmt - - - - - - - - - - - "5本中QUEUEDを直後に観測できたか=$caught_queued"
   echo "== e1: QUEUED を直後に観測できたか=$caught_queued"
 }
+
+# e2（生 HTTP。raw.py）。lib-aws.sh の run_raw_item が summary.tsv への変換を担う。
+item_e2() { run_raw_item "$1"; }

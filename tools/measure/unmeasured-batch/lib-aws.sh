@@ -28,8 +28,12 @@ declare -a S3_EXTRA_ARGS=()
 CURRENT_ITEM=${CURRENT_ITEM:-}
 
 athena_cli() { aws athena --region "$REGION" "${ATHENA_EXTRA_ARGS[@]}" "$@"; }
-s3_cli() { aws s3 "${S3_EXTRA_ARGS[@]}" "$@"; }
-s3api_cli() { aws s3api "${S3_EXTRA_ARGS[@]}" "$@"; }
+# --region が無いと aws CLI がリージョンの決定に IMDS へ問い合わせて 1 回 2 秒以上待つ
+# (2026-09-24 実測。統括役: リージョン無し 2,656ms、AWS_EC2_METADATA_DISABLED=true 582ms、
+# --region 550ms。toolbox に IMDS は無い)。run.sh 側で AWS_EC2_METADATA_DISABLED=true も
+# 立てるので、S3 呼び出しはどちらの対策も二重に効く。
+s3_cli() { aws s3 --region "$REGION" "${S3_EXTRA_ARGS[@]}" "$@"; }
+s3api_cli() { aws s3api --region "$REGION" "${S3_EXTRA_ARGS[@]}" "$@"; }
 
 new_token() { uuidgen | tr -d '\n'; }
 
@@ -361,18 +365,3 @@ get_work_group() {
     >"$item_dir/$label.json" 2>"$item_dir/$label.err"
 }
 
-# Hive の外部テーブルは DROP TABLE では LOCATION 配下のデータが消えない
-# （tools/measure/drop-table-format.sh の cleanup-hints.txt と同じ扱い）。
-record_cleanup_hint() {
-  echo "$1" >>"$RUN_DIR/cleanup-hints.txt"
-}
-
-# 後始末の DROP TABLE/VIEW IF EXISTS を投げるだけ（結果は見ない。ベストエフォート）。
-best_effort_drop() {
-  local kind=$1 name=$2 catalog=$3 database=$4
-  athena_cli start-query-execution \
-    --query-string "DROP $kind IF EXISTS $name" \
-    --query-execution-context "Catalog=$catalog,Database=$database" \
-    --client-request-token "$(new_token)" \
-    >/dev/null 2>&1 || true
-}

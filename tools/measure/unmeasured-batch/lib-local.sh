@@ -137,7 +137,9 @@ local_stop_athena() {
 }
 
 # trino/minio/minio-init を作り直し、athena-local を起動するところまで。
+# 引数 1: athena-local に渡す保持期限（秒。省略時 3600。フェーズ 2 の t6/t7 が短い値で使う）。
 local_up() {
+  local retention=${1:-3600}
   echo "== docker compose down -v / up -d ${LOCAL_SERVICES[*]}"
   "${LOCAL_COMPOSE[@]}" down -v "${LOCAL_SERVICES[@]}" >/dev/null 2>&1
   "${LOCAL_COMPOSE[@]}" up -d "${LOCAL_SERVICES[@]}" || return 1
@@ -151,7 +153,7 @@ local_up() {
   local_trino_exec "CREATE SCHEMA IF NOT EXISTS iceberg.default" iceberg default || true
 
   local_build_athena || return 1
-  local_start_athena 3600 || return 1
+  local_start_athena "$retention" || return 1
 }
 
 local_down() {

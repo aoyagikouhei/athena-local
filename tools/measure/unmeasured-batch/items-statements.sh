@@ -16,6 +16,7 @@ item_s1() {
   local loc="${OUTPUT}tables-probe-113-s1/"
   run_stmt "$dir" s1-fixture "CREATE EXTERNAL TABLE $t (n int, s string) LOCATION '$loc'" "$TCAT_HIVE" "$TDB"
   local fixture_rc=$?
+  record_created TABLE "$t" "$TCAT_HIVE" "$TDB"
 
   run_stmt "$dir" s1-replace-column-singular "ALTER TABLE $t REPLACE COLUMN (n int, s string)" "$TCAT_HIVE" "$TDB"
   run_stmt "$dir" s1-replace-columns-plural "ALTER TABLE $t REPLACE COLUMNS (n int, s varchar)" "$TCAT_HIVE" "$TDB"
@@ -48,6 +49,7 @@ item_s2() {
     ice_sql="CREATE TABLE $ice_t WITH (table_type = 'ICEBERG', partitioning = ARRAY['p'], location = '${OUTPUT}tables-probe-113-s2-ice/', is_external = false) AS SELECT 1 AS n, 'a' AS p"
   fi
   run_stmt "$dir" s2-ice-fixture "$ice_sql" "$TCAT_ICEBERG" "$TDB"
+  record_created TABLE "$ice_t" "$TCAT_ICEBERG" "$TDB"
   run_stmt "$dir" s2-ice-drop-partition "ALTER TABLE $ice_t DROP PARTITION (p = 'a')" "$TCAT_ICEBERG" "$TDB"
   local ice_drop_rc=$?
   best_effort_drop TABLE "$ice_t" "$TCAT_ICEBERG" "$TDB"
@@ -55,6 +57,7 @@ item_s2() {
   local hive_loc="${OUTPUT}tables-probe-113-s2-hive/"
   run_stmt "$dir" s2-hive-fixture \
     "CREATE EXTERNAL TABLE $hive_t (n int) PARTITIONED BY (p string) LOCATION '$hive_loc'" "$TCAT_HIVE" "$TDB"
+  record_created TABLE "$hive_t" "$TCAT_HIVE" "$TDB"
   run_stmt "$dir" s2-hive-drop-partition "ALTER TABLE $hive_t DROP PARTITION (p = 'a')" "$TCAT_HIVE" "$TDB"
   best_effort_drop TABLE "$hive_t" "$TCAT_HIVE" "$TDB"
   record_cleanup_hint "s2 hive: $hive_loc"
