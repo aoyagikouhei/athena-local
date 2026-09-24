@@ -39,7 +39,7 @@
 #
 # items-result-files.sh（r1-r5, x1, x2）、items-metadata.sh（m1-m3, m5）、
 # items-statements.sh（s1, s2, p1）、items-token.sh（t1, t2, t3, t4, t5, t8, t4c）、
-# items-workgroup-errors.sh（w1, e1, e2）、items-retention.sh（t6, t7）、items-context-echo.sh（c1）、items-update-count.sh（u1）に全 28 項目（既に
+# items-workgroup-errors.sh（w1, e1, e2）、items-retention.sh（t6, t7）、items-context-echo.sh（c1）、items-update-count.sh（u1）に全 30 項目（#113 の 28 件に #157 の c1 と #160 の u1 を足した。既に
 # 答えのある 5 件を除く）を分けてある。t2・t3・t4・e2 は raw.py（生 HTTP。aws CLI では送れない
 # 短いトークンなどを扱う）を通す。t6・t7（保持期限）は「フェーズ 2 の差し込み口」参照。
 
