@@ -200,7 +200,10 @@ reads:
   after the query id matched Athena's own file);
 - then one message per column carrying the same values as the `ColumnInfo` of
   `GetQueryResults`: `CatalogName`, `Name`, `Label`, `Type`, `Precision`,
-  `Scale`, `Nullable`, `CaseSensitive`.
+  `Scale`, `Nullable`, `CaseSensitive`. For `SHOW CREATE TABLE` that is
+  Athena's own column `createtab_stmt` / `string` rather than Trino's, so on a
+  Hive table the file is Athena's 88 bytes apart from the query id (measured
+  2026-09-23; see [Supported API](api.md#supported-api)).
 
 The query id follows Athena's own split: `SELECT`, DML, CTAS, `EXPLAIN` and the
 `SHOW` statements (including `SHOW CREATE VIEW`) carry the engine's query id

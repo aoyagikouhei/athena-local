@@ -111,7 +111,10 @@ pub(super) async fn write_result(
             query_id,
             update_type,
             update_count,
-            &outcome,
+            &convert::column_infos(
+                &outcome,
+                super::classification::fixed_column(&execution.query),
+            ),
             content_type,
         )
         .await;
@@ -153,7 +156,8 @@ pub(super) async fn write_failure(app: &App, execution: &Execution, failure: &Fa
 /// `query_id` / `update_type` / `update_count` は呼び出し元（`write_result`）が文の種類に応じて
 /// 決めた値（ALTER TABLE ADD COLUMNS × Hive は実行 ID・None・None に、SHOW CREATE TABLE × Iceberg は
 /// エンジン ID に上書きされている）。
-/// `content_type` は本体と同じ上書き（形式の問い合わせで `EngineDdl` が決まった文だけ `Some`）。
+/// `columns` は GetQueryResults と同じ `convert::column_infos`（SHOW CREATE TABLE / VIEW の固定の列名も
+/// 当てたもの）。`content_type` は本体と同じ上書き（形式の問い合わせで `EngineDdl` が決まった文だけ `Some`）。
 /// 上書きが無ければ本体と同じ既定の値になる（`ResultLocation::metadata`）。
 async fn write_metadata(
     writer: &results::ResultWriter,
@@ -161,15 +165,10 @@ async fn write_metadata(
     query_id: &str,
     update_type: Option<&str>,
     update_count: Option<i64>,
-    outcome: &Outcome,
+    columns: &[crate::athena::ColumnInfo],
     content_type: Option<&str>,
 ) {
-    let body = metadata::to_metadata(
-        query_id,
-        update_type,
-        update_count,
-        &convert::column_infos(outcome),
-    );
+    let body = metadata::to_metadata(query_id, update_type, update_count, columns);
     if let Err(reason) = writer.put(&location.metadata(), body, content_type).await {
         eprintln!("付随ファイル（.metadata）の書き込みに失敗しました。無視します: {reason}");
     }

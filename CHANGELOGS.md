@@ -11,6 +11,11 @@ later name the date they were measured on.
 
 ### Changed
 
+- `GetQueryResults` and the `.metadata` companion name the column of
+  `SHOW CREATE TABLE` `createtab_stmt` / `string` and of `SHOW CREATE VIEW`
+  `create view` / `varchar`, as real Athena does (measured 2026-09-23 and
+  2026-09-24), instead of Trino's `Create Table` / `Create View`
+  ([docs](docs/api.md#supported-api)).
 - `GetQueryResults` leaves `UpdateCount` out for `EXPLAIN` (every variant), as
   real Athena does (measured 2026-09-16 to 2026-09-23), instead of returning
   `0` ([docs](docs/api.md#supported-api)).

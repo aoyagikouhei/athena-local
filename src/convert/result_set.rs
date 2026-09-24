@@ -34,24 +34,42 @@ pub fn all_rows(outcome: &Outcome) -> Vec<Vec<Option<String>>> {
     rows
 }
 
-pub fn result_set(outcome: &Outcome, rows: &[Vec<Option<String>>]) -> ResultSet {
+pub fn result_set(
+    outcome: &Outcome,
+    rows: &[Vec<Option<String>>],
+    fixed_column: Option<(&str, &str)>,
+) -> ResultSet {
     // DML と CTAS でも Trino の列（rows bigint）をそのまま載せる。本物の Athena も同じ列を返す
     // （Hive 形式と Iceberg の INSERT / UPDATE / MERGE / DELETE / CTAS で 2026-09-14 に実測）。
     ResultSet {
         rows: rows.iter().map(|row| to_row(row)).collect(),
         result_set_metadata: ResultSetMetadata {
-            column_info: column_infos(outcome),
+            column_info: column_infos(outcome, fixed_column),
         },
     }
 }
 
 /// Trino の列から Athena の ColumnInfo を作る唯一の入口。
 /// GetQueryResults の ResultSetMetadata も結果の `.metadata` もここを通す。
-pub fn column_infos(outcome: &Outcome) -> Vec<ColumnInfo> {
+/// `fixed_column` は本物が Trino の列によらず固定の列名・型で返す文（SHOW CREATE TABLE / VIEW）の
+/// 列名と型名で、あれば全列をその名前・型に置き換え、Precision・Scale は 0、CaseSensitive は false にする
+/// （`operation::classification::fixed_column`。2026-09-23／24 実測。#161）。
+pub fn column_infos(outcome: &Outcome, fixed_column: Option<(&str, &str)>) -> Vec<ColumnInfo> {
     outcome
         .columns
         .iter()
-        .map(super::athena_type::to_column_info)
+        .map(|column| {
+            let mut info = super::athena_type::to_column_info(column);
+            if let Some((name, type_name)) = fixed_column {
+                info.name = name.to_string();
+                info.label = name.to_string();
+                info.type_name = type_name.to_string();
+                info.precision = 0;
+                info.scale = 0;
+                info.case_sensitive = false;
+            }
+            info
+        })
         .collect()
 }
 
@@ -112,6 +130,35 @@ mod tests {
                 [Some("x".to_string()), Some("[1, 2]".to_string())],
             ]
         );
+    }
+
+    #[test]
+    fn 固定の列名と型があれば_trino_の列をその名前と型に置き換える() {
+        use crate::trino::Column;
+
+        // SHOW CREATE TABLE の Trino の列（`Create Table` varchar）は本物では `createtab_stmt` string、
+        // Precision 0、CaseSensitive false（2026-09-23 実測。#161）。
+        let outcome = Outcome {
+            columns: vec![Column {
+                name: "Create Table".to_string(),
+                type_name: "varchar".to_string(),
+                type_signature: None,
+            }],
+            ..Outcome::default()
+        };
+
+        let fixed = column_infos(&outcome, Some(("createtab_stmt", "string")));
+        assert_eq!(fixed.len(), 1);
+        assert_eq!(fixed[0].name, "createtab_stmt");
+        assert_eq!(fixed[0].label, "createtab_stmt");
+        assert_eq!(fixed[0].type_name, "string");
+        assert_eq!(fixed[0].precision, 0);
+        assert!(!fixed[0].case_sensitive);
+
+        let plain = column_infos(&outcome, None);
+        assert_eq!(plain[0].name, "Create Table");
+        assert_eq!(plain[0].type_name, "varchar");
+        assert!(plain[0].case_sensitive);
     }
 
     #[test]

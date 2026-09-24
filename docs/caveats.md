@@ -193,6 +193,19 @@ Known differences between athena-local and real Athena, grouped by topic.
   athena-local writes no manifest at all; `OutputLocation` still names the
   result file Athena would use. The `.metadata` companion is written (see
   [Result files](result-files.md)).
+- **Column names of `SHOW` and `DESCRIBE` are Trino's, except for
+  `SHOW CREATE TABLE` / `SHOW CREATE VIEW`.** Real Athena names the column of
+  `SHOW TABLES` `tab_name`, of `SHOW DATABASES` `database_name`, of
+  `SHOW VIEWS` `views`, of `SHOW PARTITIONS` `partition`, of
+  `SHOW TBLPROPERTIES` `prpt_name` / `prpt_value`, of `SHOW COLUMNS` `field`
+  (one column) and of `DESCRIBE` `col_name` / `data_type` / `comment` (three
+  columns), typed `string` (`varchar` for `SHOW VIEWS`), measured 2026-09-23.
+  athena-local passes Trino's names and columns through for the statements
+  Trino runs (`Table`, `Schema`, and the four columns `Column` / `Type` /
+  `Extra` / `Comment` of `SHOW COLUMNS` and `DESCRIBE`) in `GetQueryResults`
+  and in the `.metadata` companion; only `SHOW CREATE TABLE` and
+  `SHOW CREATE VIEW` are aligned (see [Supported API](api.md#supported-api)).
+  The `.txt` body is the same either way, since it carries no header row.
 - **`SHOW` metadata is not the opaque form Athena writes.** For `SHOW TABLES`,
   `SHOW DATABASES`, `SHOW COLUMNS`, `SHOW PARTITIONS`, `SHOW TBLPROPERTIES`,
   `SHOW CREATE VIEW`, and `SHOW CREATE TABLE` and `DESCRIBE` on an Iceberg

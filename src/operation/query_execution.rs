@@ -107,7 +107,11 @@ pub fn get_query_results(app: &App, body: &Bytes) -> Response {
     let end = (offset + limit).min(rows.len());
 
     ok(&GetQueryResultsResponse {
-        result_set: convert::result_set(&outcome, &rows[offset..end]),
+        result_set: convert::result_set(
+            &outcome,
+            &rows[offset..end],
+            super::classification::fixed_column(&execution.query),
+        ),
         update_count: execution.update_count,
         // 本物はページが満杯（返した行数 = MaxResults）なら残りが無くてもトークンを付け、次の呼び出しに
         // 0 行・トークン無しを返す（2026-09-23 実測。#85。6 行を 6／3／1 で辿って確認）。
