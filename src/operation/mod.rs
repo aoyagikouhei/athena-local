@@ -1,6 +1,7 @@
 //! Athena のオペレーション。実行は Trino に委ね、状態は Store に持つ。
 
 mod classification;
+mod completion;
 mod execution;
 mod iceberg_partitions;
 mod query_execution;
