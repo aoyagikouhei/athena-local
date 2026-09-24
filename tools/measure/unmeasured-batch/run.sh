@@ -9,6 +9,7 @@
 #   #151: ONLY=r4,r5（SHOW CREATE TABLE の Content-Type がテーブルの形式で割れるかの対照。約 4 分）
 #   #157: ONLY=c1（GetQueryExecution の Catalog / Database の返り方。約 3 分。AwsDataCatalog 以外の
 #         カタログを持っていれば EXTRA_CATALOGS=名前,名前 で足せる。ListDataCatalogs の分は自動）
+#   #160: ONLY=u1（UTILITY 文の UpdateCount が Hive／Iceberg で割れるか。約 4 分。CREATE 2 本・DROP 2 本）
 #
 # 使い方（tools/dev.sh 経由。ホストで直接叩かない）:
 #   tools/dev.sh env TARGET=local WAIT_RETENTION=0 bash tools/measure/unmeasured-batch/run.sh
@@ -38,7 +39,7 @@
 #
 # items-result-files.sh（r1-r5, x1, x2）、items-metadata.sh（m1-m3, m5）、
 # items-statements.sh（s1, s2, p1）、items-token.sh（t1, t2, t3, t4, t5, t8, t4c）、
-# items-workgroup-errors.sh（w1, e1, e2）、items-retention.sh（t6, t7）、items-context-echo.sh（c1）に全 28 項目（既に
+# items-workgroup-errors.sh（w1, e1, e2）、items-retention.sh（t6, t7）、items-context-echo.sh（c1）、items-update-count.sh（u1）に全 28 項目（既に
 # 答えのある 5 件を除く）を分けてある。t2・t3・t4・e2 は raw.py（生 HTTP。aws CLI では送れない
 # 短いトークンなどを扱う）を通す。t6・t7（保持期限）は「フェーズ 2 の差し込み口」参照。
 
@@ -224,8 +225,10 @@ source "$SCRIPT_DIR/items-workgroup-errors.sh"
 source "$SCRIPT_DIR/items-retention.sh"
 # shellcheck source=tools/measure/unmeasured-batch/items-context-echo.sh
 source "$SCRIPT_DIR/items-context-echo.sh"
+# shellcheck source=tools/measure/unmeasured-batch/items-update-count.sh
+source "$SCRIPT_DIR/items-update-count.sh"
 
-ALL_ITEMS="r1 r2 r3 r4 r5 x1 x2 m1 m2 m3 m5 s1 s2 p1 t4c t1 t2 t3 t4 t5 t8 w1 e1 e2 c1"
+ALL_ITEMS="r1 r2 r3 r4 r5 x1 x2 m1 m2 m3 m5 s1 s2 p1 t4c t1 t2 t3 t4 t5 t8 w1 e1 e2 c1 u1"
 
 # --- フェーズ 2 の差し込み口: 保持期限の段階 A（ここ。本編より前）。段階 A は ONLY に t6 が
 # あるときだけ、段階 B（下）は t7 があるときだけ動かす。`ONLY=t6` で段階 A だけ流して終了し、
