@@ -95,6 +95,26 @@ async fn 実行情報の_catalog_は小文字で返し_database_は受け取っ�
     }
 }
 
+/// 本物は省略した Catalog／Database を GetQueryExecution に返さない（キー無し。2026-09-24 実測、#167）。
+/// 既定（TRINO_CATALOG／TRINO_SCHEMA）は Trino に送るときだけ当てる。
+#[tokio::test]
+async fn 省略した_catalog_と_database_は既定を_trino_に送るだけで実行情報には返さない() {
+    let harness = Harness::start(select_response()).await;
+
+    let execution = harness
+        .run_query(json!({ "QueryString": "SELECT 1 AS v" }))
+        .await;
+
+    assert_eq!(execution["QueryExecution"]["Status"]["State"], "SUCCEEDED");
+    let context = &execution["QueryExecution"]["QueryExecutionContext"];
+    assert!(context.get("Catalog").is_none(), "{context}");
+    assert!(context.get("Database").is_none(), "{context}");
+    for request in harness.trino_requests() {
+        assert_eq!(request.catalog.as_deref(), Some("default_catalog"));
+        assert_eq!(request.schema.as_deref(), Some("default_schema"));
+    }
+}
+
 #[tokio::test]
 async fn 別名に無いカタログと既定のカタログはそのまま送る() {
     let harness = Harness::builder(select_response())

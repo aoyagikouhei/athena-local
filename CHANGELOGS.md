@@ -11,6 +11,11 @@ later name the date they were measured on.
 
 ### Changed
 
+- `GetQueryExecution` no longer fills `QueryExecutionContext.Catalog` /
+  `Database` from `TRINO_CATALOG` / `TRINO_SCHEMA` when the request left them
+  out; the defaults are still applied when the query is sent to Trino, and the
+  response leaves the keys out as real Athena does (measured 2026-09-24)
+  ([docs](docs/api.md#supported-api)).
 - `GetQueryResults` leaves `UpdateCount` out for `DESCRIBE` and
   `SHOW CREATE TABLE` on a Hive table and returns `0` on an Iceberg table, as
   real Athena does (measured 2026-09-24); the format probe for these two
