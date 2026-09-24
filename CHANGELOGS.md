@@ -25,6 +25,9 @@ later name the date they were measured on.
 - A `StartQueryExecution` retry with the same `ClientRequestToken` now also
   compares `QueryExecutionContext.Catalog`, as real Athena does (measured
   2026-09-24) ([docs](docs/api.md#supported-api)).
+- `GetQueryExecution` returns `QueryExecutionContext.Catalog` lower-cased, as
+  real Athena does (measured 2026-09-24); `Database` stays as sent
+  ([docs](docs/api.md#supported-api)).
 - `StartQueryExecution` rejects a `ClientRequestToken` longer than 128 UTF-8
   bytes even when it is at most 128 characters, with the message real Athena
   returns (measured 2026-09-24) ([docs](docs/api.md#supported-api)).

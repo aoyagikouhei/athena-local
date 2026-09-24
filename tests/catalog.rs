@@ -1,5 +1,5 @@
 //! TRINO_CATALOG_MAP: Trino では付けられないカタログ名（S3 Tables の `s3tablescatalog/<bucket>`）を
-//! 別名に差し替えて送る。GetQueryExecution には受け取った名前をそのまま返す。
+//! 別名に差し替えて送る。GetQueryExecution には受け取った名前を小文字にして返す（本物と同じ）。
 
 mod common;
 
@@ -54,6 +54,45 @@ async fn 別名のカタログは差し替えて送り_実行情報には受け�
         execution["QueryExecution"]["QueryExecutionContext"]["Catalog"],
         S3_TABLES_CATALOG
     );
+}
+
+/// 本物は GetQueryExecution の Catalog を小文字にして返す（`AWSDATACATALOG`・`aWSdATAcATALOG`・
+/// 実在しない混在ケースの名前まで。2026-09-24 実測、#157）。Database は送ったまま（大文字の DB 名は
+/// 大文字のまま返った）。小文字化は表示だけで、Trino には受け取った名前のまま送る。
+#[tokio::test]
+async fn 実行情報の_catalog_は小文字で返し_database_は受け取ったまま返す() {
+    let harness = Harness::start(select_response()).await;
+
+    let execution = harness
+        .run_query(json!({
+            "QueryString": "SELECT 1 AS v",
+            "QueryExecutionContext": { "Catalog": "AwsDataCatalog", "Database": "MY_Schema" }
+        }))
+        .await;
+
+    assert_eq!(execution["QueryExecution"]["Status"]["State"], "SUCCEEDED");
+    assert_eq!(
+        execution["QueryExecution"]["QueryExecutionContext"]["Catalog"],
+        "awsdatacatalog"
+    );
+    assert_eq!(
+        execution["QueryExecution"]["QueryExecutionContext"]["Database"],
+        "MY_Schema"
+    );
+    for request in harness.trino_requests() {
+        assert_eq!(
+            request.catalog.as_deref(),
+            Some("AwsDataCatalog"),
+            "{}",
+            request.sql
+        );
+        assert_eq!(
+            request.schema.as_deref(),
+            Some("MY_Schema"),
+            "{}",
+            request.sql
+        );
+    }
 }
 
 #[tokio::test]

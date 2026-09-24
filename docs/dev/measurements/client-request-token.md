@@ -129,6 +129,32 @@
   - 3 本目（実在しない Catalog）: 2 本目と同じ
 - 備考: `Catalog` も冪等性の照合に入る。大文字小文字だけの違いも衝突になる（1 本目の Catalog は小文字にして返されるが、照合はそれとは別）
 
+### GetQueryExecution の QueryExecutionContext の返り方（大文字小文字・省略・実在しない名前）
+- 日付: 2026-09-24 ／ issue: #157（バッチは #113） ／ スクリプト: `tools/measure/unmeasured-batch/run.sh`（項目 `c1`。本体は `tools/measure/unmeasured-batch/items-context-echo.sh`） ／ 生データ: `$HOME/athena-unmeasured-batch-measurements/run-20260924-074911/c1/`
+- 相手: 本物の Athena（AWS CLI。engine version 3、workgroup `primary`、OutputLocation `<OUTPUT>`。DB 名は元から小文字）
+- 投げたもの: 新しいトークンで `SELECT 1 AS c1_probe`（名前の解決を見る 2 本だけ `SHOW TABLES`）。Catalog / Database だけ変える
+- 返ったもの（`GetQueryExecution` の `QueryExecutionContext`）:
+
+  | ケース | 送った Catalog | 送った Database | State | 返った Catalog | 返った Database |
+  | --- | --- | --- | --- | --- | --- |
+  | `c1-control` | `AwsDataCatalog` | `<DB>` | SUCCEEDED | `awsdatacatalog` | `<DB>` |
+  | `c1-cat-upper` | `AWSDATACATALOG` | `<DB>` | SUCCEEDED | `awsdatacatalog` | `<DB>` |
+  | `c1-cat-mixed` | `aWSdATAcATALOG` | `<DB>` | SUCCEEDED | `awsdatacatalog` | `<DB>` |
+  | `c1-cat-omit` | （省略） | `<DB>` | SUCCEEDED | （キー無し） | `<DB>` |
+  | `c1-db-upper` | `AwsDataCatalog` | `<DB>` の大文字 | SUCCEEDED | `awsdatacatalog` | `<DB>` の大文字のまま |
+  | `c1-db-mixed` | `AwsDataCatalog` | `<DB>` の大文字（swapcase。DB 名が小文字なので upper と同じ） | SUCCEEDED | `awsdatacatalog` | 大文字のまま |
+  | `c1-db-omit` | `AwsDataCatalog` | （省略） | SUCCEEDED | `awsdatacatalog` | （キー無し） |
+  | `c1-cat-nonexistent` | `Athena_Local_Probe_157_No_Such_Catalog` | `<DB>` | SUCCEEDED | `athena_local_probe_157_no_such_catalog` | `<DB>` |
+  | `c1-resolve-cat-upper`（`SHOW TABLES`） | `AWSDATACATALOG` | `<DB>` | SUCCEEDED（本体 228B、テーブル一覧あり） | `awsdatacatalog` | `<DB>` |
+  | `c1-resolve-db-upper`（`SHOW TABLES`） | `AwsDataCatalog` | `<DB>` の大文字 | SUCCEEDED（本体 228B、テーブル一覧あり） | `awsdatacatalog` | 大文字のまま |
+
+  - `ListDataCatalogs` は `AwsDataCatalog`（GLUE）の 1 件だけ。S3 Tables・連携カタログは無く測れていない
+- 備考:
+  - **Catalog は無条件に小文字で返る**（実在しない名前まで）。省略すればキー自体が無い。**Database は送ったまま**（大文字のまま返る）。省略すればキー無し
+  - 名前の解決は Catalog も Database も大文字小文字を区別しない（大文字でも `SHOW TABLES` がテーブルを返した）
+  - 実在しない Catalog でも `SELECT 1` は SUCCEEDED（`SELECT 1` はカタログを引かない）
+  - athena-local は省略した Catalog／Database に `TRINO_CATALOG`／`TRINO_SCHEMA` の既定を当ててから保存し、`GetQueryExecution` にはその既定を返す（本物はキー無し）。#157 では扱わず起票
+
 ### 同じトークンの再送で OutputLocation が不正・QueryString が構文エラーのとき
 - 日付: 2026-09-24 ／ issue: #146（バッチは #113。未実測にしたのは #102） ／ スクリプト: `tools/measure/unmeasured-batch/run.sh`（項目 `t5`） ／ 生データ: `$HOME/athena-unmeasured-batch-measurements/run-20260924-004554/t5/`
 - 相手: 本物の Athena（engine version 3、workgroup `primary`、Catalog `AwsDataCatalog`、Database `<DB>`）

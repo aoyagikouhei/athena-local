@@ -170,7 +170,12 @@ fn to_query_execution(id: &str, execution: &Execution) -> QueryExecution {
         }),
         query_execution_context: QueryExecutionContext {
             database: execution.database.clone(),
-            catalog: execution.catalog.clone(),
+            // 本物は Catalog を小文字にして返す（大文字・混在・実在しない名前まで。2026-09-24 実測、#157）。
+            // Database は送ったまま。冪等性の照合と Trino への送信は生の値のままで、ここは表示だけ。
+            catalog: execution
+                .catalog
+                .as_ref()
+                .map(|catalog| catalog.to_lowercase()),
         },
         status: Status {
             state: execution.state.as_str().to_string(),
