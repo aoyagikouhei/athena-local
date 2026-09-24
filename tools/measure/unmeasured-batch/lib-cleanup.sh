@@ -124,7 +124,7 @@ finish_cleanup() {
     )
     {
       echo "後始末: 残り ${leftover}本（${leftover_joined}）"
-      echo "後始末: 終了時にもう一度投げます。それでも消えなければ、${TDB} の ${PROBE_PREFIX}_* を手で消してください。"
+      echo "後始末: 終了時にもう一度投げます。それでも消えなければ、${TDB} の上の名前（athena_local_probe_*）を手で消してください。"
     } >>"$report"
   fi
   cat "$report"

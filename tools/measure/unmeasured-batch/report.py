@@ -146,14 +146,18 @@ def main():
     items = sorted(set(r["item_id"] for r in rows))
     for item in items:
         lines.append("### %s" % item)
-        stmt_lines = render_item_rows(
-            rows, item, "stmt",
-            lambda r: "- %s: state=%s %s/%s loc=%s body=%sB(%s) metadata=%sB(%s) note=%s" % (
+        # items-utility-rows.sh（#173）の行の形の要約（shape）と注記（info）は、その文の行の直後に
+        # 読めるよう stmt と同じ並びで出す。StartQueryExecution の回数には数えない（stmt 行だけを数える）。
+        def stmt_or_extra(r):
+            if r["kind"] in ("shape", "info"):
+                return "- [%s] %s: %s" % (r["kind"], r["label"], mask(r["note"]))
+            return "- %s: state=%s %s/%s loc=%s body=%sB(%s) metadata=%sB(%s) note=%s" % (
                 r["label"], r["state"], r["statement_type"], r["substatement_type"],
                 r["loc_shape"], r["body_bytes"], r["body_ct"], r["metadata_bytes"], r["metadata_ct"],
                 mask(r["note"]),
-            ),
-        )
+            )
+        stmt_lines = [stmt_or_extra(r) for r in rows
+                      if r["item_id"] == item and r["kind"] in ("stmt", "shape", "info")]
         expect_lines = render_item_rows(
             rows, item, "expect",
             lambda r: "- [expect] %s: expected=%s actual=%s -> %s (%s)" % (
