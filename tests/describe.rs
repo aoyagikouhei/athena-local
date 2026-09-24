@@ -50,19 +50,30 @@ fn engine_id_field() -> String {
 
 /// `DESCRIBE t` を、形式の問い合わせが `connector_name` を返す偽 Trino で実行する。
 async fn run_describe(connector_name: &str, s3: bool) -> (Harness, Value) {
-    let mut builder = Harness::builder(describe_response())
+    run_describe_query("DESCRIBE t", connector_name, s3, describe_response()).await
+}
+
+/// `query`（`DESCRIBE t` か `DESC t`）を、形式の問い合わせが `connector_name` を返し、本体が
+/// `response` を返す偽 Trino で実行する。
+async fn run_describe_query(
+    query: &str,
+    connector_name: &str,
+    s3: bool,
+    response: Value,
+) -> (Harness, Value) {
+    let mut builder = Harness::builder(response.clone())
         .route(
             &probe_sql("default_catalog", "default_schema", "t"),
             probe_response(connector_name),
         )
-        .route("DESCRIBE t", describe_response());
+        .route(query, response);
     if s3 {
         builder = builder.results_s3();
     }
     let harness = builder.start().await;
     let execution = harness
         .run_query(json!({
-            "QueryString": "DESCRIBE t",
+            "QueryString": query,
             "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
         }))
         .await;
@@ -71,7 +82,7 @@ async fn run_describe(connector_name: &str, s3: bool) -> (Harness, Value) {
         harness.trino_sqls(),
         [
             probe_sql("default_catalog", "default_schema", "t"),
-            "DESCRIBE t".to_string()
+            query.to_string()
         ]
     );
     (harness, execution)
@@ -93,6 +104,18 @@ async fn describe_は_iceberg_なら_update_count_0_で本体も_metadata_も_bi
     let (harness, execution) = run_describe("iceberg", true).await;
     let id = execution_id(&execution);
     assert_eq!(update_count_of(&harness, &execution).await, 0);
+    // Iceberg の DESCRIBE の行はまだ作り直さず、Trino の 4 列のまま（#173 フェーズ 3 で作り直す）。
+    let (status, results) = harness
+        .call("GetQueryResults", json!({ "QueryExecutionId": &id }))
+        .await;
+    assert_eq!(status, 200, "{results}");
+    let names: Vec<&str> = results["ResultSet"]["ResultSetMetadata"]["ColumnInfo"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|column| column["Name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["Column", "Type", "Extra", "Comment"]);
 
     let puts = harness.s3_puts();
     assert_eq!(puts.len(), 2, "{puts:?}");
@@ -274,4 +297,111 @@ async fn show_columns_は_20_文字以上の列名を詰めずに_txt_では行�
         String::from_utf8(puts[0].body.clone()).unwrap(),
         expected.join("\n")
     );
+}
+
+/// Trino の DESCRIBE の応答で、`n` にコメント `abc`、パーティション列 `p` を持つ Hive のテーブル。
+fn partitioned_describe_response() -> Value {
+    json!({
+        "columns": [
+            { "name": "Column", "type": "varchar" },
+            { "name": "Type", "type": "varchar" },
+            { "name": "Extra", "type": "varchar" },
+            { "name": "Comment", "type": "varchar" }
+        ],
+        "data": [
+            ["n", "integer", "", "abc"],
+            ["p", "varchar", "partition key", ""]
+        ]
+    })
+}
+
+/// `partitioned_describe_response` に対する本物の形の行（2026-09-24 実測 d1・d6。#173）。
+/// 列名・型・コメントを 20 桁に左詰めし、パーティション列は上半分と見出し行群の下の両方に出る。
+fn partitioned_describe_rows() -> Vec<String> {
+    let p = format!(
+        "p{}\tstring{}\t{}",
+        " ".repeat(19),
+        " ".repeat(14),
+        " ".repeat(20)
+    );
+    vec![
+        format!(
+            "n{}\tint{}\tabc{}",
+            " ".repeat(19),
+            " ".repeat(17),
+            " ".repeat(17)
+        ),
+        p.clone(),
+        "\t \t ".to_string(),
+        "# Partition Information\t \t ".to_string(),
+        format!(
+            "# col_name{}\tdata_type{}\tcomment{}",
+            " ".repeat(12),
+            " ".repeat(11),
+            " ".repeat(13)
+        ),
+        "\t \t ".to_string(),
+        p,
+    ]
+}
+
+/// 本物の Hive のテーブルの DESCRIBE の列は `col_name`／`data_type`／`comment` の 3 列で、どれも string
+/// （Precision・Scale 0、CaseSensitive false。2026-09-17／2026-09-24 実測。#173）。
+fn assert_describe_columns(results: &Value) {
+    let columns = results["ResultSet"]["ResultSetMetadata"]["ColumnInfo"]
+        .as_array()
+        .unwrap();
+    let names: Vec<&str> = columns
+        .iter()
+        .map(|column| column["Name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["col_name", "data_type", "comment"], "{results}");
+    for column in columns {
+        assert_eq!(column["Label"], column["Name"]);
+        assert_eq!(column["Type"], "string");
+        assert_eq!(column["Precision"], 0);
+        assert_eq!(column["Scale"], 0);
+        assert_eq!(column["CaseSensitive"], false);
+    }
+}
+
+#[tokio::test]
+async fn describe_は_hive_のパーティション付きのテーブルで本物の_3_列と見出し行群を返す() {
+    let (harness, execution) =
+        run_describe_query("DESCRIBE t", "hive", true, partitioned_describe_response()).await;
+    let id = execution_id(&execution);
+    let (values, results) = show_columns_results(&harness, &execution).await;
+
+    let expected = partitioned_describe_rows();
+    assert_eq!(values, expected);
+    assert_describe_columns(&results);
+    assert!(results.get("UpdateCount").is_none(), "{results}");
+
+    let puts = harness.s3_puts();
+    assert_eq!(puts.len(), 2, "{puts:?}");
+    assert_eq!(puts[0].key, format!("athena/{id}.txt"));
+    assert_eq!(
+        puts[0].content_type.as_deref(),
+        Some("application/octet-stream")
+    );
+    assert_eq!(
+        String::from_utf8(puts[0].body.clone()).unwrap(),
+        expected.join("\n")
+    );
+}
+
+/// 本物は `DESC t` を `DESCRIBE t` と同じ種類・列・行で返す（2026-09-23／24 実測。#70 f1-desc・#173 d6）。
+#[tokio::test]
+async fn desc_は_describe_と同じく形式を問い合わせて同じ行を返し_describe_table_になる() {
+    let (harness, execution) =
+        run_describe_query("DESC t", "hive", true, partitioned_describe_response()).await;
+    assert_eq!(execution["QueryExecution"]["StatementType"], "UTILITY");
+    assert_eq!(
+        execution["QueryExecution"]["SubstatementType"],
+        "DESCRIBE_TABLE"
+    );
+    let (values, results) = show_columns_results(&harness, &execution).await;
+    assert_eq!(values, partitioned_describe_rows());
+    assert_describe_columns(&results);
+    assert!(results.get("UpdateCount").is_none(), "{results}");
 }

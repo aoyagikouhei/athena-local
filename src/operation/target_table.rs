@@ -17,7 +17,7 @@ pub(super) struct TargetTable {
 
 /// `target_statement` の種類ごとに、名前の前に来るキーワードの並びの候補（`DROP TABLE` / `ALTER TABLE` /
 /// `SHOW CREATE TABLE` / `DESCRIBE` / `SHOW COLUMNS FROM`・`IN`）。DESCRIBE だけ `TABLE` を挟まない（#160）。
-/// 候補が複数あるのは SHOW COLUMNS だけで、`FROM` でも `IN` でも同じ結果になる（#173）。
+/// 候補が複数あるのは SHOW COLUMNS（`FROM` でも `IN` でも同じ結果）と DESCRIBE（`DESC` も同じ結果）（#173）。
 fn keywords(statement: TargetStatement) -> &'static [&'static [&'static str]] {
     match statement {
         TargetStatement::DropTable => &[&["DROP", "TABLE"]],
@@ -25,7 +25,7 @@ fn keywords(statement: TargetStatement) -> &'static [&'static [&'static str]] {
             &[&["ALTER", "TABLE"]]
         }
         TargetStatement::ShowCreateTable => &[&["SHOW", "CREATE", "TABLE"]],
-        TargetStatement::Describe => &[&["DESCRIBE"]],
+        TargetStatement::Describe => &[&["DESCRIBE"], &["DESC"]],
         TargetStatement::ShowColumns => &[&["SHOW", "COLUMNS", "FROM"], &["SHOW", "COLUMNS", "IN"]],
     }
 }
@@ -153,6 +153,23 @@ mod tests {
                 Some(TargetTable {
                     catalog: "cat".to_string(),
                     schema: "ns".to_string(),
+                    table: "t".to_string(),
+                }),
+                "{query}"
+            );
+        }
+    }
+
+    /// `DESC` も `DESCRIBE` と同じ対象を読む（2026-09-23／24 実測。#70 f1-desc・#173 d6）。
+    #[test]
+    fn parse_target_table_は_desc_の直後の名前を読む() {
+        for query in ["DESC t", "desc /* c */ t", "DESC ns2.t"] {
+            let schema = if query.contains("ns2") { "ns2" } else { "ns" };
+            assert_eq!(
+                parse_target_table(query, TargetStatement::Describe, Some("cat"), Some("ns")),
+                Some(TargetTable {
+                    catalog: "cat".to_string(),
+                    schema: schema.to_string(),
                     table: "t".to_string(),
                 }),
                 "{query}"

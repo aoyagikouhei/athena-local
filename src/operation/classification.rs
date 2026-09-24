@@ -41,7 +41,8 @@ pub(super) fn substatement_type(query: &str) -> Option<&'static str> {
         "DELETE" => "DELETE",
         "MERGE" => "MERGE",
         "EXPLAIN" => "EXPLAIN",
-        "DESCRIBE" => "DESCRIBE_TABLE",
+        // 本物は `DESC t` も `DESCRIBE t` と同じ種類・列・行で返す（2026-09-23／24 実測。#70 f1-desc・#173 d6）。
+        "DESCRIBE" | "DESC" => "DESCRIBE_TABLE",
         "VACUUM" => "VACUUM_TABLE",
         // Athena の OPTIMIZE は CTAS と同じ種類になる。
         "OPTIMIZE" => "CREATE_TABLE_AS_SELECT",
@@ -87,13 +88,16 @@ pub(super) fn substatement_type(query: &str) -> Option<&'static str> {
 /// `ColumnInfo` と `.metadata` の両方に使う。`SHOW CREATE TABLE` は Hive／Iceberg とも
 /// `createtab_stmt`／`string`（2026-09-23／24 実測。#161）、`SHOW CREATE VIEW` は `create view`／`varchar`
 /// （2026-09-24 実測）。どちらも Precision・Scale は 0、CaseSensitive は false で、Trino の varchar の
-/// 見え方とは違う。`SHOW TABLES` は `tab_name`／`string`（2026-09-23／24 実測。#173）。
+/// 見え方とは違う。`SHOW TABLES` は `tab_name`／`string`（2026-09-23／24 実測。#173）、`SHOW SCHEMAS`
+/// （`SHOW_DATABASES`）は `database_name`／`string`（2026-09-24 実測。#173）。
 /// 列数か行の形が違う文（SHOW COLUMNS、DESCRIBE）は `utility_rows::reshape` が完了時に作り直す（#173）。
 pub(super) fn fixed_column(query: &str) -> Option<(&'static str, &'static str)> {
     match substatement_type(query)? {
         "SHOW_CREATE_TABLE" => Some(("createtab_stmt", "string")),
         "SHOW_CREATE_VIEW" => Some(("create view", "varchar")),
         "SHOW_TABLES" => Some(("tab_name", "string")),
+        // `SHOW SCHEMAS` も本物は `SHOW DATABASES` と同じ列（2026-09-24 実測 d3。#173）。
+        "SHOW_DATABASES" => Some(("database_name", "string")),
         _ => None,
     }
 }
@@ -212,6 +216,9 @@ mod tests {
             ("MERGE INTO t USING s ON t.id = s.id", "MERGE"),
             ("EXPLAIN SELECT 1", "EXPLAIN"),
             ("DESCRIBE t", "DESCRIBE_TABLE"),
+            // 本物は `DESC t` を `DESCRIBE t` と同じ種類で返す（2026-09-23／24 実測。#70 f1-desc・#173 d6）。
+            ("DESC t", "DESCRIBE_TABLE"),
+            ("desc /* c */ t", "DESCRIBE_TABLE"),
             ("VACUUM t", "VACUUM_TABLE"),
             (
                 "OPTIMIZE t REWRITE DATA USING BIN_PACK",

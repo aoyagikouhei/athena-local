@@ -84,6 +84,43 @@ const COLUMN_ROWS_BIGINT: &str = "2222
      3206 626967696e74
      3813 4000 4803 5000";
 
+/// Trino の DESCRIBE の応答（`Column`／`Type`／`Extra`／`Comment` の 4 列）。
+fn describe_response() -> Value {
+    json!({
+        "columns": [
+            { "name": "Column", "type": "varchar" },
+            { "name": "Type", "type": "varchar" },
+            { "name": "Extra", "type": "varchar" },
+            { "name": "Comment", "type": "varchar" }
+        ],
+        "data": [["id", "integer", "", ""], ["name", "varchar", "", ""]]
+    })
+}
+
+/// Hive のテーブルの DESCRIBE の列部分（`col_name`／`data_type`／`comment` の 3 列、どれも string で
+/// Precision・Scale は省き CaseSensitive も省く）。出典: src/metadata.rs の
+/// `実測した_describe_の_metadata_と同じバイト列になる`（run-20260917-175312/describe.metadata.bytes、
+/// 2026-09-17 実測の 152 バイト）の先頭 ID より後ろと同じ 16 進。
+/// message = 6 + 10 + 10 + 8 + 2 = 36 = 0x24、6 + 11 + 11 + 8 + 2 = 38 = 0x26、6 + 9 + 9 + 8 + 2 = 34 = 0x22。
+const DESCRIBE_HIVE_COLUMNS: &str = "2224
+     0a04 68697665
+     2208 636f6c5f6e616d65
+     2a08 636f6c5f6e616d65
+     3206 737472696e67
+     4803
+   2226
+     0a04 68697665
+     2209 646174615f74797065
+     2a09 646174615f74797065
+     3206 737472696e67
+     4803
+   2222
+     0a04 68697665
+     2207 636f6d6d656e74
+     2a07 636f6d6d656e74
+     3206 737472696e67
+     4803";
+
 #[tokio::test]
 async fn select_は_csv_の隣に_csv_metadata_を置く() {
     let harness = Harness::builder(select_response())
@@ -172,16 +209,7 @@ async fn show_は_txt_の隣に_txt_metadata_を置く() {
 #[tokio::test]
 async fn describe_の_metadata_は先頭が実行_id_になる() {
     let harness = Harness::builder(select_response())
-        .route(
-            "DESCRIBE t",
-            json!({
-                "columns": [
-                    { "name": "col_name", "type": "varchar" },
-                    { "name": "data_type", "type": "varchar" }
-                ],
-                "data": [["id", "integer"], ["name", "varchar"]]
-            }),
-        )
+        .route("DESCRIBE t", describe_response())
         .results_s3()
         .start()
         .await;
@@ -199,24 +227,11 @@ async fn describe_の_metadata_は先頭が実行_id_になる() {
     assert_eq!(puts[1].key, format!("athena/{id}.txt.metadata"));
 
     // DESCRIBE と SHOW CREATE TABLE だけ field 1 が QueryExecutionId（2026-09-17 実測）。
-    // 列 `col_name varchar` は 6 + 10 + 10 + 9 + 6 + 2 + 2 + 2 = 47 = 0x2f、
-    // 列 `data_type varchar` は 6 + 11 + 11 + 9 + 6 + 2 + 2 + 2 = 49 = 0x31。
+    // 列は本物の 3 列 string（#173）。実測の 152 バイトと先頭 ID 以外で一致する。
     assert_eq!(
         hex_of(&puts[1].body),
         hex(&format!(
-            "{}
-             222f
-               0a04 68697665
-               2208 636f6c5f6e616d65
-               2a08 636f6c5f6e616d65
-               3207 76617263686172
-               38ffffffff07 4000 4803 5001
-             2231
-               0a04 68697665
-               2209 646174615f74797065
-               2a09 646174615f74797065
-               3207 76617263686172
-               38ffffffff07 4000 4803 5001",
+            "{}{DESCRIBE_HIVE_COLUMNS}",
             execution_id_field(&id)
         ))
     );
@@ -602,16 +617,7 @@ async fn _0_行の_select_でも_metadata_を置く() {
 async fn 先頭のコメントを読み飛ばして_metadata_のクエリ_id_の出どころを決める() {
     // 2026-09-18 実測。DESCRIBE は先頭コメントの有無によらず QueryExecutionId が先頭に来る。
     let harness = Harness::builder(select_response())
-        .route(
-            "-- c\nDESCRIBE t",
-            json!({
-                "columns": [
-                    { "name": "col_name", "type": "varchar" },
-                    { "name": "data_type", "type": "varchar" }
-                ],
-                "data": [["id", "integer"], ["name", "varchar"]]
-            }),
-        )
+        .route("-- c\nDESCRIBE t", describe_response())
         .results_s3()
         .start()
         .await;
@@ -628,24 +634,10 @@ async fn 先頭のコメントを読み飛ばして_metadata_のクエリ_id_の
     assert_eq!(puts.len(), 2, "{puts:?}");
     assert_eq!(puts[1].key, format!("athena/{id}.txt.metadata"));
 
-    // 列 `col_name varchar` は 6 + 10 + 10 + 9 + 6 + 2 + 2 + 2 = 47 = 0x2f、
-    // 列 `data_type varchar` は 6 + 11 + 11 + 9 + 6 + 2 + 2 + 2 = 49 = 0x31。
     assert_eq!(
         hex_of(&puts[1].body),
         hex(&format!(
-            "{}
-             222f
-               0a04 68697665
-               2208 636f6c5f6e616d65
-               2a08 636f6c5f6e616d65
-               3207 76617263686172
-               38ffffffff07 4000 4803 5001
-             2231
-               0a04 68697665
-               2209 646174615f74797065
-               2a09 646174615f74797065
-               3207 76617263686172
-               38ffffffff07 4000 4803 5001",
+            "{}{DESCRIBE_HIVE_COLUMNS}",
             execution_id_field(&id)
         ))
     );

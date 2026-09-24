@@ -19,7 +19,7 @@ pub(super) enum TargetStatement {
     /// （2026-09-24 実測。#151）。
     ShowCreateTable,
     /// `DESCRIBE`。Iceberg だけ本体・`.metadata` を binary/octet-stream で置き、UpdateCount を 0 にする
-    /// （2026-09-24 実測。#160）。`DESC` は `substatement_type` が None なので対象にならない（未実測）。
+    /// （2026-09-24 実測。#160）。`DESC` も同じ（2026-09-24 実測。#173 d6）。
     Describe,
     /// `SHOW COLUMNS FROM`／`IN`。形式は結果ファイルの書き方ではなく行の形（Hive は列名を 20 桁に左詰め、
     /// Iceberg は詰めない）に使う（2026-09-16／2026-09-24 実測。#173）。

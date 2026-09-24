@@ -2,6 +2,7 @@
 
 mod classification;
 mod execution;
+mod hive_type;
 mod query_execution;
 mod result_output;
 mod table_format;
