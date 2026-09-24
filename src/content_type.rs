@@ -53,7 +53,7 @@ fn text_content_type(query: &str) -> &'static str {
 
 /// `.txt` を application/octet-stream で置く文（DESCRIBE・DESC・SHOW CREATE TABLE・EXPLAIN）。本物ではこの群が
 /// そのまま「GetQueryResults の UpdateCount を返さない文」でもある（2026-09-16〜24 実測。SHOW 系と DDL は 0 か
-/// 無し、SELECT は 0。#160、#169）ので、`operation/execution.rs` の `update_count` も同じ述語で選ぶ。
+/// 無し、SELECT は 0。#160、#169）ので、`operation/completion.rs` の `update_count` も同じ述語で選ぶ。
 /// Iceberg のテーブルへの DESCRIBE / SHOW CREATE TABLE だけは本物が binary・0 で、形式の問い合わせの後に上書きする。
 pub(crate) fn plain_text_statement(query: &str) -> bool {
     carries_execution_id(query) || words(query).first().is_some_and(|word| word == "EXPLAIN")
