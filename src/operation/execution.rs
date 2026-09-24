@@ -37,6 +37,9 @@ const TOKEN_TOO_SHORT: &str = "1 validation error detected: Value at 'clientRequ
 
 /// ClientRequestToken が 128 文字を超えるときの文言（2026-09-17、3 回目の実測）。
 const TOKEN_TOO_LONG: &str = "1 validation error detected: Value at 'clientRequestToken' failed to satisfy constraint: Member must have length less than or equal to 128";
+/// ClientRequestToken が 128 文字以下なのに UTF-8 で 128 バイトを超えるときの文言（2026-09-24 実測、#153）。
+/// 枠組みの検証（文字数）を通った後の別の検査なので、前置きが無い。
+const TOKEN_TOO_MANY_BYTES: &str = "clientRequestToken exceeds maximum allowed length 128";
 
 pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
     let request: StartQueryExecutionRequest = match parse(body) {
@@ -115,8 +118,10 @@ fn submit_response(app: &App, id: String, outcome: SubmitOutcome) -> Response {
 }
 
 /// ClientRequestToken を検証する（2026-09-17 実測、判断 2・11）。本物と同じく必須で、
-/// 長さは 32 以上 128 以下。文字数は chars().count()（本物がバイトか文字かは ASCII でしか
-/// 測っていない。docs/caveats.md の Query lifecycle 参照）。
+/// 長さは 32 文字以上 128 文字以下（枠組みの検証。文字数は chars().count()）、さらに UTF-8 で
+/// 128 バイト以下（別の検査。2026-09-24 実測、#153。`あ`×50 は 50 文字なのに拒否された）。
+/// 文字数でもバイト数でも 128 を超えるときにどちらの文言が先かは測っていないので、
+/// 枠組みの検証を先に置く（docs/dev/unmeasured.md）。
 fn client_request_token(request: &StartQueryExecutionRequest) -> Result<String, Box<Response>> {
     let Some(token) = request.client_request_token.clone() else {
         return Err(Box::new(invalid_request_with_code(
@@ -135,6 +140,12 @@ fn client_request_token(request: &StartQueryExecutionRequest) -> Result<String, 
     if length > 128 {
         return Err(Box::new(invalid_request_with_code(
             TOKEN_TOO_LONG,
+            "INVALID_INPUT",
+        )));
+    }
+    if token.len() > 128 {
+        return Err(Box::new(invalid_request_with_code(
+            TOKEN_TOO_MANY_BYTES,
             "INVALID_INPUT",
         )));
     }

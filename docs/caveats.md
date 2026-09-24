@@ -306,11 +306,15 @@ Known differences between athena-local and real Athena, grouped by topic.
   at once, but the `DELETE` reaches Trino only when the current long poll to
   `nextUri` returns (about a second at most).
 - **`ClientRequestToken` is required and not normalized.** Omitting it, or
-  sending one shorter than 32 or longer than 128 characters, fails with
-  `INVALID_INPUT` (see [Supported API](api.md#supported-api)); the length is counted with
-  `chars().count()`, which was only measured with ASCII input, so whether real
-  Athena counts bytes or characters for non-ASCII tokens is unknown. A token
-  that passes validation is used verbatim as a map key: case, leading/trailing
+  sending one shorter than 32 characters, longer than 128 characters or longer
+  than 128 UTF-8 bytes, fails with `INVALID_INPUT` (see
+  [Supported API](api.md#supported-api)). The lower bound is counted in
+  characters and the upper bound in bytes, as real Athena does (measured
+  2026-09-24: 20 `あ` was "too short" although it is 60 bytes, and 50 `あ` was
+  rejected although it is 50 characters). Which of the two "too long" messages
+  real Athena picks for a token that exceeds 128 both in characters and in
+  bytes has not been measured; athena-local reports the character limit first.
+  A token that passes validation is used verbatim as a map key: case, leading/trailing
   whitespace and non-ASCII characters are all significant. Real Athena does
   not normalize it either: leading/trailing spaces, an upper-cased copy, and a
   `"` or `\` in place of one character each started a new query (measured

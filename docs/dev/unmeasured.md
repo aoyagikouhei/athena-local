@@ -21,6 +21,8 @@
 - [ ] 期限切れのトークンを再送すると本物で新しい ID になるか、期限切れの ID の `GetQueryExecution` が `QUERY_EXECUTION_NOT_FOUND` か、`StopQueryExecution` が 400 か（#147 は完了から約 67 分後に投げたが期限切れにならず、測れなかった）
 - [ ] `Catalog` の「省略」と「既定と同じ値（`AwsDataCatalog`）の明示」を本物が別物として扱うか。#146 は値の違い（大文字小文字・実在しない名前）だけを測った。athena-local は `Database` に倣って別物（衝突）にしている（#150、2026-09-24）
 - [ ] 出力先を強制しない（`EnforceWorkGroupConfiguration: false`）ワークグループで、`OutputLocation` の「省略」と「既定と同じ値の明示」を本物が別物として扱うか。#146（2026-09-24）は強制するワークグループでしか測れず、そこでは同じ `QueryExecutionId` が返った（`Database` の省略と `default` の明示は衝突）
+- [ ] トークンの長さが文字数でもバイト数でも 128 を超えるとき（非 ASCII で 129 文字以上）、本物の文言が枠組みの検証（`Member must have length less than or equal to 128`）と `clientRequestToken exceeds maximum allowed length 128` のどちらか。#147（2026-09-24）は `あ`×50（50 文字・150 バイト）と ASCII 129 文字しか測っていない。athena-local は枠組みの検証（文字数）を先に置く（#153）
+- 32 文字未満かつ 128 バイト超の組は測る対象から外す。UTF-8 は 1 文字が最大 4 バイトなので 31 文字は最大 124 バイトで、その組は作れない（#153、2026-09-24）
 
 ## ワークグループ（[measurements/work-groups.md](measurements/work-groups.md)）
 
@@ -91,7 +93,7 @@
 - 出力先が設定されたワークグループの `GetWorkGroup` の `ResultConfiguration` の形 → #146（2026-09-24。`{"OutputLocation": "s3://.../"}` だけ。[measurements/work-groups.md](measurements/work-groups.md)）
 - 空白入りの括弧で始まるクエリ（`( SELECT 1 )`）を本物がどう分類するか（#113）→ #146（2026-09-24。`( SELECT 1 )`・改行入りとも `DML`／`SELECT`。[measurements/statements.md](measurements/statements.md)）
 - 本物がトークンを正規化するか（前後の空白、`"`、`\`、大文字小文字） → #147（2026-09-24。正規化しない。4 変種とも別の新しい ID、そのままの再送だけ同じ ID。[measurements/client-request-token.md](measurements/client-request-token.md)）
-- トークン長の制約（32〜128）がバイト数か文字数か → #147（2026-09-24。`あ`×20（60B）は「greater than or equal to 32」で拒否、`あ`×50（150B）は別の文言 `clientRequestToken exceeds maximum allowed length 128` で拒否。下限は文字数、上限はバイト数と読める。athena-local は両方 `chars().count()` なので上限が本物と違う）
+- トークン長の制約（32〜128）がバイト数か文字数か → #147（2026-09-24。`あ`×20（60B）は「greater than or equal to 32」で拒否、`あ`×50（150B）は別の文言 `clientRequestToken exceeds maximum allowed length 128` で拒否。下限は文字数、上限はバイト数と読める。athena-local は #153 で上限にバイト数の検査を足した。両方で超える組は上の「ClientRequestToken と保持期限」に残した）
 - トークンの検証と他の検証エラー（`OutputLocation` の不正・構文エラー）の優先順位 → #147（2026-09-24。長さの足りないトークンはどちらよりも先。#146 の `OutputLocation` → 構文と合わせて、トークン → `OutputLocation` → 構文）
 - 構文エラー（`MALFORMED_QUERY`）の本文に `ErrorCode` キーが付くか（#3）→ #147（2026-09-24。`ErrorCode` `MALFORMED_QUERY` が付き、キーは `__type`・`AthenaErrorCode`・`ErrorCode`・`Message` の 4 つ。`x-amzn-errortype` ヘッダは無い。[measurements/errors.md](measurements/errors.md)）
 
