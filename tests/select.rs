@@ -542,12 +542,36 @@ async fn show_と_describe_の結果には列名行が入らない() {
     // 本物は UTILITY（SHOW TABLES / SHOW DATABASES / SHOW COLUMNS / SHOW CREATE TABLE /
     // SHOW PARTITIONS / SHOW TBLPROPERTIES / DESCRIBE）で先頭行に列名を入れない
     // （2026-09-15〜22 の実測 5 ラウンドの GetQueryResults 応答を読み直して確認。#60）。
+    // DESCRIBE は Trino の 4 列（`Column`／`Type`／`Extra`／`Comment`）を本物の 1 値の行に作り直す
+    // （2026-09-24 実測。#173）。
+    let describe_response = json!({
+        "columns": [
+            { "name": "Column", "type": "varchar" },
+            { "name": "Type", "type": "varchar" },
+            { "name": "Extra", "type": "varchar" },
+            { "name": "Comment", "type": "varchar" }
+        ],
+        "data": [["n", "integer", "", ""], ["m", "integer", "", ""]]
+    });
     let harness = Harness::builder(show_response())
-        .route("DESCRIBE t", show_response())
+        .route("DESCRIBE t", describe_response)
         .start()
         .await;
+    let describe_row = |name: &str| {
+        format!(
+            "{name}{}\tint{}\t{}",
+            " ".repeat(19),
+            " ".repeat(17),
+            " ".repeat(20)
+        )
+    };
 
     for query in ["SHOW TABLES IN db", "DESCRIBE t"] {
+        let expected = if query == "DESCRIBE t" {
+            [describe_row("n"), describe_row("m")]
+        } else {
+            ["orders".to_string(), "users".to_string()]
+        };
         let execution = harness.run_query(json!({ "QueryString": query })).await;
         let id = execution_id(&execution);
         let (status, results) = harness
@@ -567,13 +591,30 @@ async fn show_と_describe_の結果には列名行が入らない() {
 
         let rows = results["ResultSet"]["Rows"].as_array().unwrap();
         assert_eq!(rows.len(), 2, "{query}: データ 2 行だけ（列名行は無い）");
-        assert_eq!(rows[0]["Data"][0]["VarCharValue"], "orders", "{query}");
-        assert_eq!(rows[1]["Data"][0]["VarCharValue"], "users", "{query}");
-        // 列の情報は変わらず載る。
-        assert_eq!(
-            results["ResultSet"]["ResultSetMetadata"]["ColumnInfo"][0]["Name"], "table_name",
-            "{query}"
-        );
+        for (row, expected) in rows.iter().zip(&expected) {
+            assert_eq!(row["Data"].as_array().unwrap().len(), 1, "{query}");
+            assert_eq!(row["Data"][0]["VarCharValue"], *expected, "{query}");
+        }
+        // 列の情報も載る。SHOW TABLES の列は本物では Trino によらず `tab_name`／string（Precision 0、
+        // CaseSensitive false。2026-09-23／24 実測。#173）。DESCRIBE は `col_name`／`data_type`／`comment`
+        // の 3 列で、どれも string（2026-09-24 実測。#173）。
+        let columns = results["ResultSet"]["ResultSetMetadata"]["ColumnInfo"]
+            .as_array()
+            .unwrap();
+        let names: Vec<&str> = columns
+            .iter()
+            .map(|column| column["Name"].as_str().unwrap())
+            .collect();
+        if query == "DESCRIBE t" {
+            assert_eq!(names, ["col_name", "data_type", "comment"], "{query}");
+        } else {
+            assert_eq!(names, ["tab_name"], "{query}");
+        }
+        for column in columns {
+            assert_eq!(column["Type"], "string", "{query}");
+            assert_eq!(column["Precision"], 0, "{query}");
+            assert_eq!(column["CaseSensitive"], false, "{query}");
+        }
 
         // ページングも列名行を数えない。1 件目はデータの 1 行目。
         let (_, page) = harness
@@ -584,9 +625,49 @@ async fn show_と_describe_の結果には列名行が入らない() {
             .await;
         let rows = page["ResultSet"]["Rows"].as_array().unwrap();
         assert_eq!(rows.len(), 1, "{query}");
-        assert_eq!(rows[0]["Data"][0]["VarCharValue"], "orders", "{query}");
+        assert_eq!(rows[0]["Data"][0]["VarCharValue"], *expected[0], "{query}");
         assert_eq!(page["NextToken"], "1", "{query}");
     }
+}
+
+#[tokio::test]
+async fn show_schemas_の列は本物の_show_databases_と同じ_database_name_の_string() {
+    // 本物は `SHOW SCHEMAS` を受け、`SHOW DATABASES` と同じ `database_name`／string（Precision 0、
+    // CaseSensitive false）で返す（2026-09-24 実測 d3。#173）。Trino の列名は `Schema`。
+    let harness = Harness::builder(show_response())
+        .route(
+            "SHOW SCHEMAS",
+            json!({ "columns": [{ "name": "Schema", "type": "varchar" }], "data": [["db"]] }),
+        )
+        .start()
+        .await;
+    let execution = harness
+        .run_query(json!({ "QueryString": "SHOW SCHEMAS" }))
+        .await;
+    assert_eq!(
+        execution["QueryExecution"]["SubstatementType"],
+        "SHOW_DATABASES"
+    );
+    let (status, results) = harness
+        .call(
+            "GetQueryResults",
+            json!({ "QueryExecutionId": execution_id(&execution) }),
+        )
+        .await;
+    assert_eq!(status, 200, "{results}");
+    let columns = results["ResultSet"]["ResultSetMetadata"]["ColumnInfo"]
+        .as_array()
+        .unwrap();
+    assert_eq!(columns.len(), 1, "{results}");
+    assert_eq!(columns[0]["Name"], "database_name");
+    assert_eq!(columns[0]["Label"], "database_name");
+    assert_eq!(columns[0]["Type"], "string");
+    assert_eq!(columns[0]["Precision"], 0);
+    assert_eq!(columns[0]["Scale"], 0);
+    assert_eq!(columns[0]["CaseSensitive"], false);
+    let rows = results["ResultSet"]["Rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["Data"][0]["VarCharValue"], "db");
 }
 
 #[tokio::test]

@@ -17,7 +17,7 @@ use crate::response::{invalid_request_with_code, ok};
 use crate::results::ResultLocation;
 use crate::statement;
 use crate::store::{Execution, Fingerprint, Submission, SubmitOutcome};
-use crate::trino::{Outcome, QueryError, Trino};
+use crate::trino::{Cancel, Outcome, QueryError, Trino};
 
 use super::result_output;
 use super::table_format::{self, EngineDdl};
@@ -218,12 +218,13 @@ fn spawn_query(app: App, id: String) {
         }
 
         let outcome = match run(&app.trino, &app.config, &execution).await {
-            Ok((outcome, engine_ddl)) => {
+            Ok((outcome, engine_ddl, substatement_type)) => {
                 // UpdateCount は形式の判定を使うので、判定が手元にあるここで決めて Store に渡す（#160）。
+                // SubstatementType の上書き（ビューの `DESC_VIEW`）も同じく形式の判定から決まる（#173）。
                 let update_count = update_count(&execution.query, &outcome, engine_ddl);
                 result_output::write_result(&app, &execution, &id, outcome, engine_ddl)
                     .await
-                    .map(|outcome| (outcome, update_count))
+                    .map(|outcome| (outcome, update_count, substatement_type))
             }
             Err(error) => {
                 let failure = Failure::from_query_error(&error);
@@ -241,12 +242,13 @@ fn spawn_query(app: App, id: String) {
 /// パラメータが無ければ分類は走らず、SQL は修飾名に別名を当てただけで送られる（to_trino_sql が判断する）。
 /// 戻り値の `Option<EngineDdl>` は、実行前にテーブルの形式を問い合わせて分かった、本体・`.metadata` の
 /// 書き方を上書きする文（issue #39。DROP TABLE × Iceberg、ALTER TABLE ADD COLUMNS × Hive、
-/// SHOW CREATE TABLE × Iceberg（#151））。
+/// SHOW CREATE TABLE × Iceberg（#151））。戻り値の `Option<&'static str>` は、完了後の GetQueryExecution が
+/// SQL だけで決まる分類の代わりに返す SubstatementType（ビューへの DESCRIBE／SHOW COLUMNS の `DESC_VIEW`。#173）。
 async fn run(
     trino: &Trino,
     config: &Config,
     execution: &Execution,
-) -> Result<(Outcome, Option<EngineDdl>), QueryError> {
+) -> Result<(Outcome, Option<EngineDdl>, Option<&'static str>), QueryError> {
     // 省略した Catalog / Database にはここで既定を当てる（実行情報には残さない。#167）。
     // Trino に送るのは別名を当てた名前。実行情報には受け取った名前が残る。
     let raw_catalog = execution
@@ -269,9 +271,9 @@ async fn run(
     // 結果 CSV の S3 書き込みが無効（ResultsMode::None）なら、result_output::write_result が判定結果を
     // 丸ごと捨てるので問い合わせない（Trino へのフル往復が無駄になるだけのレビュー指摘）。
     // ただし判定を GetQueryResults の UpdateCount にも使う文（`table_format::needs_format_for_update_count`）
-    // は S3 が無効でも問い合わせる（#160）。
+    // は S3 が無効でも問い合わせる（#160）。形式は SHOW COLUMNS の行の形にも使う（`utility_rows::reshape`。#173）。
     let statement = table_format::target_statement(&execution.query);
-    let engine_ddl = if matches!(config.results, ResultsMode::None)
+    let format = if matches!(config.results, ResultsMode::None)
         && !statement.is_some_and(table_format::needs_format_for_update_count)
     {
         None
@@ -294,13 +296,25 @@ async fn run(
                         cancel,
                     )
                     .await
-                    .and_then(|format| table_format::engine_ddl(statement, format))
                 }
                 None => None,
             },
             None => None,
         }
     };
+    let engine_ddl = statement
+        .zip(format)
+        .and_then(|(statement, format)| table_format::engine_ddl(statement, format));
+    // 本物はビューへの DESCRIBE と SHOW COLUMNS を `DESC_VIEW` と分類する（2026-09-24 実測 d5。#173）。
+    let substatement_type = (format == Some(table_format::TableFormat::View)
+        && matches!(
+            statement,
+            Some(
+                table_format::TargetStatement::Describe
+                    | table_format::TargetStatement::ShowColumns
+            )
+        ))
+    .then_some("DESC_VIEW");
 
     // 分類も本体と同じカタログ・スキーマで問い合わせ、関数の解決先を揃える。
     let mut bound = Vec::with_capacity(execution.execution_parameters.len());
@@ -322,7 +336,46 @@ async fn run(
         result => result,
     }?;
     let outcome = split_explain_rows(&execution.query, outcome);
-    Ok((outcome, engine_ddl))
+    // Iceberg のテーブルの DESCRIBE だけ、パーティション行のために `SHOW CREATE TABLE` を別に投げる（#173）。
+    let partitions = if statement == Some(table_format::TargetStatement::Describe)
+        && format == Some(table_format::TableFormat::Iceberg)
+    {
+        iceberg_partition_specs(trino, config, &execution.query, catalog, database, cancel).await
+    } else {
+        Vec::new()
+    };
+    let outcome = super::utility_rows::reshape(&execution.query, outcome, format, &partitions);
+    Ok((outcome, engine_ddl, substatement_type))
+}
+
+/// Iceberg のテーブルの DESCRIBE の対象を Trino の `SHOW CREATE TABLE` で引き、`partitioning` の要素を返す
+/// （2026-09-24 実測 d2・d8。#173）。名前は元の SQL の範囲をそのまま使い、本体と同じく別名を当てて
+/// 同じカタログ・スキーマで投げる（引用符と別名の解決を本体と揃える）。失敗や値が取れないときは空
+/// （DESCRIBE 自体は成功のまま）。ビューは形式の問い合わせで `View` になるので、ここには来ない。
+async fn iceberg_partition_specs(
+    trino: &Trino,
+    config: &Config,
+    query: &str,
+    catalog: Option<&str>,
+    database: Option<&str>,
+    cancel: &Cancel,
+) -> Vec<String> {
+    let Some(after) = crate::catalog::skip_keyword(query, "DESCRIBE")
+        .or_else(|| crate::catalog::skip_keyword(query, "DESC"))
+    else {
+        return Vec::new();
+    };
+    let start = after.len() - crate::catalog::skip_leading_trivia(after).len();
+    let end = crate::catalog::skip_qualified_name(after, start);
+    let sql = format!("SHOW CREATE TABLE {}", &after[start..end]);
+    let sql = alias_qualified_names(&sql, &config.catalog_map);
+    let Ok(outcome) = trino.execute(&sql, catalog, database, cancel).await else {
+        return Vec::new();
+    };
+    match outcome.rows.first().and_then(|row| row.first()) {
+        Some(serde_json::Value::String(ddl)) => super::iceberg_partitions::parse_partitioning(ddl),
+        _ => Vec::new(),
+    }
 }
 
 /// EXPLAIN の結果を本物と同じくプランの行ごとに分ける。Trino は `Query Plan` 列の 1 行に改行入りの
@@ -370,7 +423,11 @@ fn update_count(query: &str, outcome: &Outcome, engine_ddl: Option<EngineDdl>) -
     }
     let iceberg = matches!(
         engine_ddl,
-        Some(EngineDdl::ShowCreateTableIceberg | EngineDdl::DescribeIceberg)
+        Some(
+            EngineDdl::ShowCreateTableIceberg
+                | EngineDdl::DescribeIceberg
+                | EngineDdl::DescribeView
+        )
     );
     if crate::content_type::plain_text_statement(query) && !iceberg {
         return None;
@@ -415,6 +472,11 @@ mod tests {
         assert_eq!(update_count("DESC t", &uncounted, None), None);
         assert_eq!(
             update_count("DESCRIBE t", &uncounted, Some(EngineDdl::DescribeIceberg)),
+            Some(0)
+        );
+        // ビューへの DESCRIBE も 0（2026-09-24 実測 d5。#173）。
+        assert_eq!(
+            update_count("DESCRIBE v", &uncounted, Some(EngineDdl::DescribeView)),
             Some(0)
         );
         assert_eq!(update_count("SHOW CREATE TABLE t", &uncounted, None), None);

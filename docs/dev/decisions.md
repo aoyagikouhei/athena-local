@@ -73,7 +73,8 @@
 
 ## 結果ファイル
 
-- `<id>.txt` の中身は `GetQueryResults` と同じ値を使い、行を `\n` で連結する。末尾に改行は足さない。複数列はタブで繋ぎ、NULL は空文字。Hive 由来の固定幅の空白詰めは真似しない。理由: 本物は Athena 側で結合済みの 1 列を返すが、Trino は列が分かれて返り、幅の決め方は推測になる。（#1、2026-09-16、ユーザーの判断 1）
+- `<id>.txt` の中身は `GetQueryResults` と同じ値を使い、行を `\n` で連結する。末尾に改行は足さない。複数列はタブで繋ぎ、NULL は空文字。（#1、2026-09-16、ユーザーの判断 1）
+  - #1 は「Hive 由来の固定幅の空白詰めは真似しない（幅の決め方は推測になる）」としていたが、#173 で覆した。`DESCRIBE`／`DESC` と `SHOW COLUMNS` は完了時に本物と同じ 1 値の行（Hive のテーブルは 20 文字の左詰め、見出し行群つき）に作り直し、`.txt` にも同じ空白詰めが入る。理由: 20 文字の左詰めの規則（20 文字以上は切らない、幅は文字数、コメントは詰めてから先頭のタブまで）と見出し行群を実測で確かめ、「推測になる」が当たらなくなった。（#173、2026-09-24、ユーザーの判断 D2）
   - 列名の見出し行は `GetQueryResults` と同じく `StatementType` が DML（`EXPLAIN`）のときだけ入れ、UTILITY／DDL では入れない。（#63、2026-09-22 で変更。#1 では全文で見出し無しだった）
 - `GetQueryResults` の列名の見出し行は `StatementType` が DML のときだけ残し、UTILITY では外す（`get_query_results` 側で外し、`all_rows` は変えない）。例外は `SHOW FUNCTIONS`。（#60、2026-09-22、#80、2026-09-23）
 - `<id>.txt` と `.metadata` の書き込みに失敗しても FAILED にせず `SUCCEEDED` のままにし、標準エラーに 1 行出す。`.csv` の書き込み失敗は FAILED。理由: 本物は補助ファイルの書き込みで失敗にしない。Trino で実行済みの DDL は取り消せないので失敗と報告すると実害がある。`SHOW` の結果は `GetQueryResults` からも取れる。（#1、2026-09-16、ユーザーの判断 4、#5、2026-09-17）
@@ -114,11 +115,22 @@
 - 形式と存在の確認は `system.jdbc.tables` の 1 クエリにまとめる（往復 1 回、カタログ名を識別子として SQL に埋めずに済む、対象が存在しない `DROP TABLE IF EXISTS` で本物と食い違わない）。（#39、2026-09-20、ユーザー確認済み）
 - 修飾名のカタログも見る（1/2/3 パート、引用符の有無、`IF EXISTS`、コメント。カタログかスキーマが決まらなければ判定しない）。修飾名から取ったカタログにも別名を当て、引用符の無い名前は Trino の規則どおり小文字にする。問い合わせの SQL のリテラルとヘッダは同じ別名解決後のカタログ名を使う。（#39、2026-09-20、ユーザーの判断）
 - カタログ未指定・問い合わせの失敗・未知の `connector_name` は、すべて今までどおりの扱いに倒す（判定しない）。（#39、2026-09-20）
-- S3 への書き込みが無効なら形式を問い合わせない。取り消し済みなら問い合わせない。対象の文のときだけ問い合わせる。（#39、2026-09-20）→ `SHOW CREATE TABLE` と `DESCRIBE` は判定を `GetQueryResults` の `UpdateCount` にも使うので、S3 が無効でも問い合わせる（`table_format::needs_format_for_update_count`）。`DROP TABLE`／`ALTER TABLE` は今までどおり。（#160、2026-09-24、ユーザー確認済み）
+- S3 への書き込みが無効なら形式を問い合わせない。取り消し済みなら問い合わせない。対象の文のときだけ問い合わせる。（#39、2026-09-20）→ `SHOW CREATE TABLE` と `DESCRIBE` は判定を `GetQueryResults` の `UpdateCount` にも使うので、S3 が無効でも問い合わせる（`table_format::needs_format_for_update_count`）。`DROP TABLE`／`ALTER TABLE` は今までどおり。（#160、2026-09-24、ユーザー確認済み）→ `SHOW COLUMNS` も行の形（Hive は詰める、Iceberg は詰めない）に使うので S3 が無効でも問い合わせる（関数名は改名しない）。（#173、2026-09-24）
 - `UpdateCount` は `GetQueryResults` で決め直さず、完了時に `operation::execution::update_count` が文の種類・Trino の件数・形式の判定から決めて `Store::finish` に渡し、`Execution.update_count` に持つ（形式の判定は実行時にしか取れない。EXPLAIN の行分けと同じ「完了時に決めて finish に渡す」形）。null にする文は `content_type::carries_execution_id`（`DESCRIBE`／`DESC`／`SHOW CREATE TABLE`）と同じ述語で選び、判定を増やさない（本物でも `UpdateCount` の有無と Content-Type は一致する）。`DESCRIBE` × Iceberg は `EngineDdl::DescribeIceberg` として `ShowCreateTableIceberg` と同じ腕に並べる。（#160、2026-09-24）
 - `DROP TABLE` × Iceberg の本体（改行 1 つ）と `ALTER` × Hive の本体（0 バイト）は条件をまとめずバリアントで分ける。`ADD COLUMNS` と `REPLACE COLUMNS` は Hive で同じ 38 バイトの `.metadata` を共有する（`(id, None, None)` で書く）。（#39、2026-09-20、#43、2026-09-21）
 - 形式の問い合わせを `SHOW CREATE TABLE` にも使い（Iceberg なら本体・`.metadata` とも binary、先頭はエンジン ID）、`EngineDdl` に上書きの向きが逆（application ではなく binary）の腕 `ShowCreateTableIceberg` を足した。`EngineDdl` の改名はしない（挙動を変えない大きな差分になるため。doc で「形式で書き方を上書きする文」と補う）。上書きの Content-Type・先頭 ID は `EngineDdl` のメソッドにせず `write_result` の `match` で腕ごとに分ける。（#151、2026-09-24）
 - 限界として、Athena は同じ `AwsDataCatalog` に両形式を混在させるが Trino は別カタログなので、本物と一致するのは利用者の Trino のカタログ構成と形式が揃っている場合だけ。これを利用者向けの文書に書く。（#39、2026-09-20）
+
+## SHOW／DESCRIBE の列と行
+
+- 列数と行が Trino と同じ文（`SHOW CREATE TABLE`／`SHOW CREATE VIEW`／`SHOW TABLES`／`SHOW SCHEMAS`）は `classification::fixed_column` で列名・型だけを置き換え、列数か行の形が違う文（`SHOW COLUMNS`／`DESCRIBE`／`DESC`）は `operation::utility_rows::reshape` で完了時に `Outcome` の列と行を作り直す。2 つは統合しない。理由: `fixed_column` は全列に同じ値を当てる作りで列数を変えられず、`SHOW CREATE VIEW` の varchar/0/false は SQL だけで決まる。（#173、2026-09-24）
+- 作り直す位置は `run` の `split_explain_rows` の直後。作り直した `Outcome` が `write_result`（`.txt`・`.metadata`）と `Store::finish`（GetQueryResults）の両方に渡る（EXPLAIN の行分けと同じ形）。`update_count`・`id`・`update_type` は触らない。`convert` は SQL を読まないので `operation` に置く。（#173、2026-09-24）
+- 作り直した文の ColumnInfo は `Outcome.athena_columns` に本物の値のまま持たせ、`convert::column_infos` はこれがあれば優先して `fixed_column` を当てない。`columns` は列名行と「列があるか」の判定用に名前だけ合わせて残す。理由: ビューの `column`／`type` は varchar で Precision 0・CaseSensitive false なので、`athena_type` の表（varchar は 2147483647／true）では作れない。`column_infos` が唯一の生成元という約束は、生成元の入口を 1 つに保つ形で守る。（#173、2026-09-24）
+- 型の綴り（Hive のテーブルは `int`／`map<string,int>`、Iceberg のテーブルは `decimal(10, 2)`／`map<string, int>`）は実測した綴りだけを `operation::type_spelling` で写し、測っていない型は Trino の綴りのまま返して caveat に書く。Iceberg の `struct` の複数フィールドの区切りは測っていないが、`map` に倣って `, ` にする。（#173、2026-09-24、ユーザーの判断 D1）
+- 形式が判定できないときは行も Hive の形に倒す（Content-Type・UpdateCount の既存の倒れ方と同じ）。（#173、2026-09-24）
+- Iceberg のテーブルの `DESCRIBE` の `# Partition spec:` の下の行は、Trino の `DESCRIBE` から取れないので、対象の Trino の `SHOW CREATE TABLE` の `partitioning = ARRAY[...]` から作る（`operation::iceberg_partitions`。問い合わせは Iceberg × DESCRIBE のときだけ 1 本増える）。名前は元の SQL の範囲を `catalog::skip_qualified_name` で切り出して `alias_qualified_names` を当て、手で修飾名を組まない。失敗は握ってパーティション行を出さない（本体は SUCCEEDED のまま）。測っていない変換は行を出さない。（#173、2026-09-24、ユーザーの判断 D3）
+- ビューへの `DESCRIBE`／`SHOW COLUMNS` の `SubstatementType`（`DESC_VIEW`）は形式の問い合わせ（`table_type`）の結果で完了時に決め、`Store::finish` に渡して `GetQueryExecution` が優先する。完了前は SQL から決まる値（`DESCRIBE_TABLE`／`SHOW_COLUMNS`）のまま。`UpdateCount` を完了時に決める #160 と同じ形。（#173、2026-09-24、ユーザーの判断 D11）
+- `DESC` は `DESCRIBE` と同じく `DESCRIBE_TABLE` に分類する（形式の問い合わせ・`.metadata` の先頭 ID・UpdateCount も同じ）。（#173、2026-09-24、ユーザーの判断 D10）
 
 ## EXPLAIN
 

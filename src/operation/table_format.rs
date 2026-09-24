@@ -3,6 +3,7 @@
 //! Phase 3b は ALTER TABLE ... ADD COLUMNS × Hive を対象に足す（2026-09-21 実測）。
 //! #151 は SHOW CREATE TABLE × Iceberg を対象に足す（2026-09-24 実測）。
 //! #160 は DESCRIBE × Iceberg を対象に足す（2026-09-24 実測。SHOW CREATE TABLE と同じ割れ方）。
+//! #173 は対象がビューかどうかも同じ問い合わせで確かめる（2026-09-24 実測 d5）。
 
 use crate::statement::quote_literal;
 use crate::trino::{Cancel, Outcome, Trino};
@@ -19,15 +20,24 @@ pub(super) enum TargetStatement {
     /// （2026-09-24 実測。#151）。
     ShowCreateTable,
     /// `DESCRIBE`。Iceberg だけ本体・`.metadata` を binary/octet-stream で置き、UpdateCount を 0 にする
-    /// （2026-09-24 実測。#160）。`DESC` は `substatement_type` が None なので対象にならない（未実測）。
+    /// （2026-09-24 実測。#160）。`DESC` も同じ（2026-09-24 実測。#173 d6）。
     Describe,
+    /// `SHOW COLUMNS FROM`／`IN`。形式は結果ファイルの書き方ではなく行の形（Hive は列名を 20 桁に左詰め、
+    /// Iceberg は詰めない）に使う（2026-09-16／2026-09-24 実測。#173）。
+    ShowColumns,
 }
 
-/// 問い合わせで分かる、対象テーブルの Trino コネクタ。
+/// 問い合わせで分かる、対象テーブルの Trino コネクタ。対象がビューなら、コネクタによらず `View`
+/// （本物は Hive のカタログのビューも Iceberg のカタログのビューも同じ形で返す。2026-09-24 実測 d5。#173）。
+/// ビューを別の戻り値（`(TableFormat, bool)` など）にせず形式の 1 つとして持つのは、呼び出し元
+/// （`run` の `iceberg_partition_specs` の条件、`utility_rows::reshape` の形式ごとの分岐）が
+/// `== Some(TableFormat::Iceberg)` で比べていて、ビューが自然に Iceberg の腕から外れるため。
+/// `engine_ddl` の網羅 match には腕が増えるが、ビューを足し忘れた組み合わせはコンパイラが検出する。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TableFormat {
     Hive,
     Iceberg,
+    View,
 }
 
 /// テーブルの形式で本体・`.metadata` の書き方を上書きする、文の種類とテーブルの形式の組み合わせ
@@ -51,9 +61,13 @@ pub(super) enum EngineDdl {
     /// DESCRIBE × Iceberg。SHOW CREATE TABLE × Iceberg と同じ扱い（本体・`.metadata` とも binary/octet-stream、
     /// 先頭はエンジン ID、UpdateCount は 0。2026-09-24 実測。#160）。
     DescribeIceberg,
+    /// DESCRIBE × ビュー。DESCRIBE × Iceberg と同じ扱い（本体・`.metadata` とも binary/octet-stream、
+    /// 先頭はエンジン ID、UpdateCount は 0。本物の `.metadata` は 440 バイトの不透明な形式。2026-09-24 実測 d5。#173）。
+    DescribeView,
 }
 
-/// この文が対象か。対象は DROP TABLE と、ALTER TABLE の ADD COLUMNS / REPLACE COLUMNS と、SHOW CREATE TABLE と DESCRIBE だけ
+/// この文が対象か。対象は DROP TABLE と、ALTER TABLE の ADD COLUMNS / REPLACE COLUMNS と、SHOW CREATE TABLE と DESCRIBE と
+/// SHOW COLUMNS だけ
 /// （`substatement_type` の判定をそのまま使い、判定を二重に持たない）。
 /// 修飾名でカタログを明示していても対象にする（Phase 2）。
 pub(super) fn target_statement(query: &str) -> Option<TargetStatement> {
@@ -63,16 +77,18 @@ pub(super) fn target_statement(query: &str) -> Option<TargetStatement> {
         Some("ALTER_TABLE_REPLACE_COLUMN") => Some(TargetStatement::AlterTableReplaceColumns),
         Some("SHOW_CREATE_TABLE") => Some(TargetStatement::ShowCreateTable),
         Some("DESCRIBE_TABLE") => Some(TargetStatement::Describe),
+        Some("SHOW_COLUMNS") => Some(TargetStatement::ShowColumns),
         _ => None,
     }
 }
 
 /// 形式の判定を GetQueryResults の UpdateCount にも使う文か。結果ファイルを書かない設定でも
 /// 問い合わせる根拠になる（#160）。DROP TABLE と ALTER TABLE は結果ファイルにしか効かない。
+/// SHOW COLUMNS は UpdateCount ではなく行の形（Hive は 20 桁詰め、Iceberg は詰めない）に使う（#173）。
 pub(super) fn needs_format_for_update_count(statement: TargetStatement) -> bool {
     matches!(
         statement,
-        TargetStatement::ShowCreateTable | TargetStatement::Describe
+        TargetStatement::ShowCreateTable | TargetStatement::Describe | TargetStatement::ShowColumns
     )
 }
 
@@ -96,53 +112,59 @@ pub(super) async fn probe_format(
     parse_probe_result(&outcome)
 }
 
-/// 形式（`system.metadata.catalogs.connector_name`）と存在（`system.jdbc.tables` の件数）を
-/// 1 つの SELECT にまとめる。`system.jdbc.tables` を使うのは `table_cat` / `table_schem` /
-/// `table_name` を全部リテラルで書けるため（識別子のクォートを手書きしなくて済む）。
+/// 形式（`system.metadata.catalogs.connector_name`）と存在・ビューかどうか（`system.jdbc.tables` の
+/// `table_type`。無ければ null、テーブルは `TABLE`、ビューは `VIEW`）を 1 つの SELECT にまとめる。
+/// `system.jdbc.tables` を使うのは `table_cat` / `table_schem` / `table_name` を全部リテラルで書けるため
+/// （識別子のクォートを手書きしなくて済む）。
 fn probe_sql(catalog: &str, schema: &str, table: &str) -> String {
     let catalog_literal = quote_literal(catalog);
     format!(
-        "SELECT (SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = {catalog_literal}), (SELECT count(*) FROM system.jdbc.tables WHERE table_cat = {catalog_literal} AND table_schem = {} AND table_name = {})",
+        "SELECT (SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = {catalog_literal}), (SELECT table_type FROM system.jdbc.tables WHERE table_cat = {catalog_literal} AND table_schem = {} AND table_name = {})",
         quote_literal(schema),
         quote_literal(table),
     )
 }
 
-/// `probe_sql` の応答から形式を決める。対象が存在しなければ（件数が 0 なら）None
+/// `probe_sql` の応答から形式を決める。対象が存在しなければ（`table_type` が null なら）None
 /// （Hive 側と同じ今までどおりの振る舞いに倒す）。hive でも iceberg でもない値も None。
+/// `table_type` が `VIEW` なら（hive と iceberg のカタログのうち）`View`。
 fn parse_probe_result(outcome: &Outcome) -> Option<TableFormat> {
     let row = outcome.rows.first()?;
-    let format = row.first()?.as_str();
-    let count = row.get(1)?.as_i64()?;
-    if count == 0 {
-        return None;
-    }
-    match format? {
-        "hive" => Some(TableFormat::Hive),
-        "iceberg" => Some(TableFormat::Iceberg),
-        _ => None,
+    let format = match row.first()?.as_str()? {
+        "hive" => TableFormat::Hive,
+        "iceberg" => TableFormat::Iceberg,
+        _ => return None,
+    };
+    match row.get(1)?.as_str()? {
+        "VIEW" => Some(TableFormat::View),
+        _ => Some(format),
     }
 }
 
 /// 文の種類とテーブルの形式の組み合わせから、本体・`.metadata` の書き方を上書きする文を決める。
+/// DROP TABLE・ALTER TABLE・SHOW CREATE TABLE × ビューは Trino で失敗するので、Hive と同じく上書きしない。
 pub(super) fn engine_ddl(statement: TargetStatement, format: TableFormat) -> Option<EngineDdl> {
     match (statement, format) {
         (TargetStatement::DropTable, TableFormat::Iceberg) => Some(EngineDdl::DropTableIceberg),
-        (TargetStatement::DropTable, TableFormat::Hive) => None,
+        (TargetStatement::DropTable, TableFormat::Hive | TableFormat::View) => None,
         (
             TargetStatement::AlterTableAddColumns | TargetStatement::AlterTableReplaceColumns,
             TableFormat::Hive,
         ) => Some(EngineDdl::AlterColumnsHive),
         (
             TargetStatement::AlterTableAddColumns | TargetStatement::AlterTableReplaceColumns,
-            TableFormat::Iceberg,
+            TableFormat::Iceberg | TableFormat::View,
         ) => None,
         (TargetStatement::ShowCreateTable, TableFormat::Iceberg) => {
             Some(EngineDdl::ShowCreateTableIceberg)
         }
-        (TargetStatement::ShowCreateTable, TableFormat::Hive) => None,
+        (TargetStatement::ShowCreateTable, TableFormat::Hive | TableFormat::View) => None,
         (TargetStatement::Describe, TableFormat::Iceberg) => Some(EngineDdl::DescribeIceberg),
+        (TargetStatement::Describe, TableFormat::View) => Some(EngineDdl::DescribeView),
         (TargetStatement::Describe, TableFormat::Hive) => None,
+        // 本物は Hive でも Iceberg でも `.txt` を binary で置き、UpdateCount は 0（2026-09-24 実測。#173）。
+        // どちらも SQL だけで決まる既定のままなので、書き方を上書きしない。
+        (TargetStatement::ShowColumns, _) => None,
     }
 }
 
@@ -289,6 +311,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn show_columns_は対象にし_書き方は上書きせず_s3_が無効でも形式を問い合わせる() {
+        // 形式は行の形（Hive は 20 桁に左詰め、Iceberg は詰めない）に使う（#173）。
+        assert_eq!(
+            target_statement("SHOW COLUMNS FROM t"),
+            Some(TargetStatement::ShowColumns)
+        );
+        for format in [TableFormat::Hive, TableFormat::Iceberg, TableFormat::View] {
+            assert_eq!(
+                engine_ddl(TargetStatement::ShowColumns, format),
+                None,
+                "{format:?}"
+            );
+        }
+        assert!(needs_format_for_update_count(TargetStatement::ShowColumns));
+    }
+
     #[tokio::test]
     async fn 形式の問い合わせが失敗すれば今までどおりに倒す() {
         // 127.0.0.1:1 には何も listen していないので接続に失敗する。
@@ -319,7 +358,7 @@ mod tests {
     fn probe_sql_はカタログ_スキーマ_テーブル名を全部リテラルで埋め込む() {
         assert_eq!(
             probe_sql("cat", "ns", "t"),
-            "SELECT (SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = 'cat'), (SELECT count(*) FROM system.jdbc.tables WHERE table_cat = 'cat' AND table_schem = 'ns' AND table_name = 't')"
+            "SELECT (SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = 'cat'), (SELECT table_type FROM system.jdbc.tables WHERE table_cat = 'cat' AND table_schem = 'ns' AND table_name = 't')"
         );
     }
 
@@ -327,36 +366,46 @@ mod tests {
     fn probe_sql_は単一引用符を含む名前を_quote_literal_で埋め込む() {
         assert_eq!(
             probe_sql("it's", "ns", "t"),
-            "SELECT (SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = 'it''s'), (SELECT count(*) FROM system.jdbc.tables WHERE table_cat = 'it''s' AND table_schem = 'ns' AND table_name = 't')"
+            "SELECT (SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = 'it''s'), (SELECT table_type FROM system.jdbc.tables WHERE table_cat = 'it''s' AND table_schem = 'ns' AND table_name = 't')"
         );
     }
 
-    fn outcome_with_probe_result(format: Option<&str>, count: i64) -> Outcome {
+    fn outcome_with_probe_result(format: Option<&str>, table_type: Option<&str>) -> Outcome {
+        let text = |value: Option<&str>| value.map_or(Value::Null, Value::from);
         Outcome {
-            rows: vec![vec![
-                format.map_or(Value::Null, |f| Value::String(f.to_string())),
-                Value::from(count),
-            ]],
+            rows: vec![vec![text(format), text(table_type)]],
             ..Outcome::default()
         }
     }
 
     #[test]
-    fn parse_probe_result_は形式と件数がそろえば形式を返す() {
+    fn parse_probe_result_は形式とテーブルがそろえば形式を返す() {
         assert_eq!(
-            parse_probe_result(&outcome_with_probe_result(Some("hive"), 1)),
+            parse_probe_result(&outcome_with_probe_result(Some("hive"), Some("TABLE"))),
             Some(TableFormat::Hive)
         );
         assert_eq!(
-            parse_probe_result(&outcome_with_probe_result(Some("iceberg"), 3)),
+            parse_probe_result(&outcome_with_probe_result(Some("iceberg"), Some("TABLE"))),
             Some(TableFormat::Iceberg)
         );
     }
 
     #[test]
-    fn parse_probe_result_は件数が_0_なら形式が読めても_none() {
+    fn parse_probe_result_はビューならカタログの形式によらず_view() {
+        // 本物は Hive のカタログのビューも Iceberg のカタログのビューも同じ形で返す（2026-09-24 実測 d5。#173）。
+        for format in ["hive", "iceberg"] {
+            assert_eq!(
+                parse_probe_result(&outcome_with_probe_result(Some(format), Some("VIEW"))),
+                Some(TableFormat::View),
+                "{format}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_probe_result_は対象が無ければ形式が読めても_none() {
         assert_eq!(
-            parse_probe_result(&outcome_with_probe_result(Some("iceberg"), 0)),
+            parse_probe_result(&outcome_with_probe_result(Some("iceberg"), None)),
             None
         );
     }
@@ -364,16 +413,45 @@ mod tests {
     #[test]
     fn parse_probe_result_はカタログが無ければ_none() {
         assert_eq!(
-            parse_probe_result(&outcome_with_probe_result(None, 0)),
+            parse_probe_result(&outcome_with_probe_result(None, None)),
             None
         );
     }
 
     #[test]
     fn parse_probe_result_は_hive_でも_iceberg_でもない形式は判定しない() {
+        for table_type in ["TABLE", "VIEW"] {
+            assert_eq!(
+                parse_probe_result(&outcome_with_probe_result(
+                    Some("delta_lake"),
+                    Some(table_type)
+                )),
+                None,
+                "{table_type}"
+            );
+        }
+    }
+
+    #[test]
+    fn engine_ddl_は_describe_とビューの組み合わせを_describe_view_にし_ほかの文は上書きしない() {
+        // DESCRIBE × ビューは DESCRIBE × Iceberg と同じ扱い（binary、先頭はエンジン ID、UpdateCount 0。
+        // 2026-09-24 実測 d5。#173）。ほかの文はビューに対して Trino で失敗するので Hive と同じく None。
         assert_eq!(
-            parse_probe_result(&outcome_with_probe_result(Some("delta_lake"), 5)),
-            None
+            engine_ddl(TargetStatement::Describe, TableFormat::View),
+            Some(EngineDdl::DescribeView)
         );
+        for statement in [
+            TargetStatement::DropTable,
+            TargetStatement::AlterTableAddColumns,
+            TargetStatement::AlterTableReplaceColumns,
+            TargetStatement::ShowCreateTable,
+            TargetStatement::ShowColumns,
+        ] {
+            assert_eq!(
+                engine_ddl(statement, TableFormat::View),
+                None,
+                "{statement:?}"
+            );
+        }
     }
 }

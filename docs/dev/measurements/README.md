@@ -11,7 +11,7 @@
 | [result-files.md](result-files.md) | 結果ファイルの名前・本体・Content-Type、失敗・取り消しのとき、INSERT／CTAS／DROP TABLE／ALTER TABLE の置き方、複合型の中の値の表記 | [result-files.md](../../result-files.md)、[ddl.md](../../ddl.md)、[caveats.md](../../caveats.md) |
 | [metadata.md](metadata.md) | `.metadata` の中身（protobuf のフィールド、型ごとの Precision／Scale／CaseSensitive、SHOW 系の不透明な形式） | [result-files.md](../../result-files.md)、[caveats.md](../../caveats.md) |
 | [statements.md](statements.md) | 先頭とキーワードの間のコメント、文の種類と `SubstatementType`、本物だけが弾く形、`EXPLAIN` の行の分け方と変種、`CREATE OR REPLACE TABLE ... AS` | [api.md](../../api.md)、[caveats.md](../../caveats.md) |
-| [query-results.md](query-results.md) | `GetQueryResults` の先頭行、ページング、`MaxResults`／`NextToken` の検証、QUEUED のクエリへの呼び出し | [api.md](../../api.md)、[caveats.md](../../caveats.md) |
+| [query-results.md](query-results.md) | `GetQueryResults` の先頭行、UTILITY 文の ColumnInfo と `DESCRIBE`／`SHOW COLUMNS` の行の形、ページング、`MaxResults`／`NextToken` の検証、QUEUED のクエリへの呼び出し | [api.md](../../api.md)、[caveats.md](../../caveats.md) |
 | [errors.md](errors.md) | リクエスト本文の解釈の失敗（`SerializationException`）、必須項目の欠落、`UnknownOperationException` | [caveats.md](../../caveats.md) |
 | [work-groups.md](work-groups.md) | `GetWorkGroup`、`ListWorkGroups` | [api.md](../../api.md)、[caveats.md](../../caveats.md) |
 | [client-request-token.md](client-request-token.md) | `ClientRequestToken` による冪等性とトークンの検証、`GetQueryExecution` の `QueryExecutionContext` の返り方 | [api.md](../../api.md)、[caveats.md](../../caveats.md) |

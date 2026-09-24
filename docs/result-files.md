@@ -51,9 +51,43 @@ DDL, the other `SHOW` statements, `DESCRIBE` and `EXPLAIN` write `<id>.txt` the 
   and a final `\n`: 393 bytes for `EXPLAIN SELECT 1` on Athena.
 - A statement that returns no rows writes an empty file, `CREATE TABLE` for
   example.
-- Columns are joined with a tab. Athena itself returns one already joined,
-  space-padded string per row; Trino returns the columns separately, so the
-  padding is not reproduced.
+- Columns are joined with a tab. `DESCRIBE` / `DESC` and `SHOW COLUMNS`
+  have a single value per row, built the way Athena builds it, so the file is
+  byte for byte Athena's for the tables measured (2026-09-24), padding
+  included:
+  - `SHOW COLUMNS` on a Hive table: one column name per row, padded with
+    spaces on the right to 20 characters (width counted in characters, not
+    bytes); a name of 20 characters or more is left as it is, never cut.
+    Partition columns are listed too. On an Iceberg table the names are not
+    padded.
+  - `DESCRIBE` on a Hive table: `<name>\t<type>\t<comment>`, each field padded
+    the same way. A missing comment becomes 20 spaces, and a comment is cut at
+    its first tab after padding. Types use Hive's spelling: `integer` is
+    `int`, `real` `float`, `varchar` `string`, `varbinary` `binary`,
+    `timestamp(3)` `timestamp`, `array(varchar)` `array<string>`,
+    `map(varchar, integer)` `map<string,int>`, `row("a" integer)`
+    `struct<a:int>`; `varchar(n)`, `char(n)`, `decimal(p,s)`, `bigint`,
+    `smallint`, `tinyint`, `double`, `boolean` and `date` are unchanged. When
+    the table has partition columns, they appear among the columns and again
+    after the four rows `\t \t `, `# Partition Information\t \t `,
+    `# col_name            \tdata_type           \tcomment             ` and
+    `\t \t `.
+  - `DESCRIBE` on an Iceberg table: nothing is padded. The rows are
+    `# Table schema:\t\t`, `# col_name\tdata_type\tcomment`, one
+    `<name>\t<type>\t<comment>` per column (an empty comment leaves the
+    trailing tab), `\t\t`, `# Partition spec:\t\t`,
+    `# field_name\tfield_transform\tcolumn_name` and one
+    `<field_name>\t<transform>\t<column>` per partition field, for example
+    `s\tidentity\ts`, `n_bucket\tbucket[4]\tn`, `s_trunc\ttruncate[3]\ts` and
+    `ts_day\tday\tts` (`year`, `month` and `hour` name the field the same
+    way). Types use Iceberg's spelling: `int`, `string`, `float`, `binary`,
+    `timestamp`, `decimal(10, 2)`, `array<string>`, `map<string, int>`,
+    `struct<a: int>`. athena-local reads the partition fields from Trino's
+    `SHOW CREATE TABLE` of the target, which it sends as an extra query; if
+    that query fails, the rows stop after the `# field_name` heading.
+  - `DESCRIBE` and `SHOW COLUMNS` on a view: `<name>\t<type>` with Trino's
+    type spelling (`n\tinteger`, `s\tvarchar(1)`), not padded, which is what
+    Athena returns as well.
 - On an Iceberg table, `DROP TABLE` writes a single newline on Athena, which
   returns two empty rows for zero columns; athena-local matches it there
   (measured 2026-09-20 and 2026-09-21, reproduced across three rounds). On a
@@ -203,7 +237,10 @@ reads:
   `Scale`, `Nullable`, `CaseSensitive`. For `SHOW CREATE TABLE` that is
   Athena's own column `createtab_stmt` / `string` rather than Trino's, so on a
   Hive table the file is Athena's 88 bytes apart from the query id (measured
-  2026-09-23; see [Supported API](api.md#supported-api)).
+  2026-09-23; see [Supported API](api.md#supported-api)). Likewise `DESCRIBE`
+  carries Athena's three `string` columns `col_name` / `data_type` /
+  `comment`, so on a Hive table its file is Athena's 152 bytes apart from the
+  query id (measured 2026-09-24).
 
 The query id follows Athena's own split: `SELECT`, DML, CTAS, `EXPLAIN` and the
 `SHOW` statements (including `SHOW CREATE VIEW`) carry the engine's query id

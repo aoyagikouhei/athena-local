@@ -2,10 +2,13 @@
 
 mod classification;
 mod execution;
+mod iceberg_partitions;
 mod query_execution;
 mod result_output;
 mod table_format;
 mod target_table;
+mod type_spelling;
+mod utility_rows;
 mod validation;
 mod work_group;
 

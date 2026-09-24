@@ -22,6 +22,9 @@ pub struct Outcome {
     pub id: Option<String>,
     /// Trino の updateType。DML と DDL で入る。
     pub update_type: Option<String>,
+    /// 完了時に作り直した文（SHOW COLUMNS など）の ColumnInfo。`convert::column_infos` が
+    /// Trino の列より優先する（#173）。Trino から受け取った結果では None。
+    pub athena_columns: Option<Vec<crate::athena::ColumnInfo>>,
 }
 
 pub struct Column {

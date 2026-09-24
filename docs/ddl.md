@@ -1,6 +1,6 @@
 # DDL that depends on the target table's format
 
-How `DROP TABLE`, `ALTER TABLE ... ADD COLUMNS` / `REPLACE COLUMNS` and `SHOW CREATE TABLE` write their result files depending on the target table's format, and how athena-local detects that format.
+How `DROP TABLE`, `ALTER TABLE ... ADD COLUMNS` / `REPLACE COLUMNS`, `SHOW CREATE TABLE`, `DESCRIBE` and `SHOW COLUMNS` write their result files depending on the target table's format, and how athena-local detects that format.
 
 `DROP TABLE` and `ALTER TABLE ... ADD COLUMNS` write a different `<id>.txt`
 and `.metadata` companion depending on whether the Trino catalog holding the
@@ -19,12 +19,21 @@ Iceberg table in the same round, each created both without and with a CTAS):
 | `ALTER TABLE ... REPLACE COLUMNS` | Iceberg | Athena itself fails the query | — | — |
 | `SHOW CREATE TABLE` | Hive | the DDL text | `application/octet-stream` | plain protobuf with the `QueryExecutionId` at its head |
 | `SHOW CREATE TABLE` | Iceberg | the DDL text (here, Trino's `SHOW CREATE TABLE` output) | `binary/octet-stream` | Athena writes an opaque blob (see [Caveats](caveats.md#result-files-and-metadata)); athena-local writes plain protobuf with the engine's query id at its head |
-| `DESCRIBE` | Hive | the column list | `application/octet-stream` | plain protobuf with the `QueryExecutionId` at its head |
-| `DESCRIBE` | Iceberg | the column list (here, Trino's `DESCRIBE` output) | `binary/octet-stream` | Athena writes an opaque blob; athena-local writes plain protobuf with the engine's query id at its head (measured 2026-09-24) |
+| `DESCRIBE` | Hive | the column list, padded to 20 characters in Hive's type spelling | `application/octet-stream` | plain protobuf with the `QueryExecutionId` at its head |
+| `DESCRIBE` | Iceberg | the column list and partition spec, unpadded in Iceberg's type spelling | `binary/octet-stream` | Athena writes an opaque blob; athena-local writes plain protobuf with the engine's query id at its head (measured 2026-09-24) |
+| `DESCRIBE` / `SHOW COLUMNS` | a view | `<name>\t<type>` per column, unpadded in Trino's type spelling | `binary/octet-stream` | Athena writes an opaque blob; athena-local writes plain protobuf with the engine's query id at its head (measured 2026-09-24) |
+
+`DESC` behaves exactly like `DESCRIBE` (measured 2026-09-24). The rows are
+spelled out under [Result files](result-files.md). `SHOW COLUMNS` keeps
+`binary/octet-stream` and an `UpdateCount` of `0` on every format; only its
+rows depend on the format (padded on a Hive table, unpadded on an Iceberg
+table).
 
 `SHOW CREATE TABLE` and `DESCRIBE` also split their `UpdateCount` by format:
-a Hive table leaves it out, an Iceberg table returns `0` (measured 2026-09-24;
-see [Supported API](api.md#supported-api)).
+a Hive table leaves it out, an Iceberg table and a view return `0` (measured
+2026-09-24; see [Supported API](api.md#supported-api)). `DESCRIBE` and
+`SHOW COLUMNS` on a view also get the `SubstatementType` `DESC_VIEW` and
+Athena's two `varchar` columns `column` / `type`.
 
 The 41-byte and 38-byte companions carry no `ColumnInfo` at all, which is
 outside what a `.metadata` file is otherwise for. Athena JDBC 3.8.1 reads them
@@ -52,23 +61,31 @@ were measured on 2026-09-21 on whichever table format Athena accepts them on
 six, only `DROP COLUMN` and `RENAME TO` can be run through athena-local; the
 rest are rejected at the syntax check, so their rows describe Athena alone.
 
-Only these five statements trigger the format probe below; no other statement
-sends it. `DROP TABLE` and `ALTER TABLE` send it only with
-`ATHENA_LOCAL_RESULTS=s3` (with `none` there is no result file for it to
-change), while `SHOW CREATE TABLE` and `DESCRIBE` send it with `none` too,
-because their `UpdateCount` depends on the answer. For a matching statement, athena-local
+Only the statements in the table above (`DESC` included) trigger the format
+probe below; no other statement sends it. `DROP TABLE` and `ALTER TABLE` send
+it only with `ATHENA_LOCAL_RESULTS=s3` (with `none` there is no result file
+for it to change), while `SHOW CREATE TABLE`, `DESCRIBE` and `SHOW COLUMNS`
+send it with `none` too, because their `UpdateCount` or rows depend on the
+answer. For a matching statement, athena-local
 sends the format probe as a single query, asking which connector backs the
 target's catalog and whether the target exists:
 
 ```sql
 SELECT
   (SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = '<catalog>'),
-  (SELECT count(*) FROM system.jdbc.tables
+  (SELECT table_type FROM system.jdbc.tables
    WHERE table_cat = '<catalog>' AND table_schem = '<schema>' AND table_name = '<table>')
 ```
 
+For `DESCRIBE` and `SHOW COLUMNS` the probe also reads the target's
+`table_type`, so that a view is told apart from a table in any catalog. For
+`DESCRIBE` on an Iceberg table athena-local then sends Trino's
+`SHOW CREATE TABLE` for the same name to read the partition spec (see
+[Result files](result-files.md) for what happens when it fails).
+
 The catalog, schema and table name come from a qualified name in the SQL when
-`DROP TABLE`, `ALTER TABLE ... ADD COLUMNS` or `SHOW CREATE TABLE` gives one (`t`, `ns.t` or
+`DROP TABLE`, `ALTER TABLE ... ADD COLUMNS`, `SHOW CREATE TABLE`, `DESCRIBE`
+or `SHOW COLUMNS FROM` / `IN` gives one (`t`, `ns.t` or
 `cat.ns.t`, quoted or not, with a leading `IF EXISTS` skipped for `DROP TABLE`;
 `ALTER TABLE IF EXISTS ...` gets no `SubstatementType` and runs as ordinary
 column-less DDL without the probe). Whichever part
@@ -91,11 +108,17 @@ athena-local falls back to ordinary column-less DDL (empty file, no
 `SHOW CREATE TABLE` and `DESCRIBE` never fall back to an empty file: in these
 cases they get the Hive row (`application/octet-stream`, the `QueryExecutionId`
 at the head of the `.metadata`, no `UpdateCount`), which differs from Athena
-when the target is an Iceberg table. `DESC`, `DESCRIBE EXTENDED` and
-`DESCRIBE FORMATTED` are not recognised as `DESCRIBE` here and always get the
-Hive row (how Athena treats them on an Iceberg table has not been measured),
-and a view in an Iceberg catalog is detected as an Iceberg table (Athena's
-`DESCRIBE` on a view has not been measured either).
+when the target is an Iceberg table or a view. The rows of `DESCRIBE` and
+`SHOW COLUMNS` fall back to the Hive shape as well (padded to 20 characters,
+Hive's type spelling, a `# Partition Information` block for partition
+columns). `DESCRIBE EXTENDED` and `DESCRIBE FORMATTED` are read with `EXTENDED` /
+`FORMATTED` as the table name, so they always get the Hive row (how Athena
+treats them on an Iceberg table has not been measured).
+
+A view is detected by its `table_type`, whichever connector backs its
+catalog, and gets the view row of the table above. Trino's
+`SHOW CREATE TABLE` fails on a view (write `SHOW CREATE VIEW`), but
+`DESCRIBE` and `SHOW COLUMNS` on it succeed.
 
 For `DROP TABLE`, that last fallback happens to match what real Athena does
 for `DROP TABLE IF EXISTS` on a missing table too (measured 2026-09-21). See

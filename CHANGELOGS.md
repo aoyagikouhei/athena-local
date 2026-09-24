@@ -11,6 +11,12 @@ later name the date they were measured on.
 
 ### Changed
 
+- `GetQueryResults` and the `.metadata` companion carry real Athena's columns
+  for `SHOW TABLES`, `SHOW SCHEMAS`, `SHOW COLUMNS` and `DESCRIBE` / `DESC`
+  (measured 2026-09-24) ([docs](docs/api.md#supported-api)).
+- `DESCRIBE` / `DESC` and `SHOW COLUMNS` return real Athena's rows, padding
+  included, in `GetQueryResults` and `<id>.txt`, and `DESC_VIEW` on a view
+  (measured 2026-09-24) ([docs](docs/result-files.md), [DDL](docs/ddl.md)).
 - `GetQueryResults` and the `.metadata` companion name the column of
   `SHOW CREATE TABLE` `createtab_stmt` / `string` and of `SHOW CREATE VIEW`
   `create view` / `varchar`, as real Athena does (measured 2026-09-23 and

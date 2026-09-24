@@ -27,15 +27,61 @@
 | `SHOW CREATE VIEW` | `create view` | `varchar` | 0 | false | `Create View` / varchar |
 | `SHOW TABLES` | `tab_name` | `string` | 0 | false | `Table` / varchar |
 | `SHOW DATABASES` | `database_name` | `string` | 0 | false | `Schema` / varchar |
+| `SHOW SCHEMAS`（#173 d3。下の項目） | `database_name` | `string` | 0 | false | `Schema` / varchar |
 | `SHOW VIEWS` | `views` | `varchar` | 0 | false | （Trino に無い） |
 | `SHOW PARTITIONS` | `partition` | `string` | 0 | false | （Trino に無い） |
 | `SHOW TBLPROPERTIES` | `prpt_name`, `prpt_value` | `string` | 0 | false | （Trino に無い） |
 | `SHOW COLUMNS` | `field`（1 列） | `string` | 0 | false | `Column`, `Type`, `Extra`, `Comment`（4 列） |
 | `DESCRIBE` | `col_name`, `data_type`, `comment`（3 列） | `string` | 0 | false | 同上（4 列） |
+| `DESC`（#173 d6。下の項目） | `col_name`, `data_type`, `comment`（3 列） | `string` | 0 | false | 同上（4 列） |
+| ビューへの `DESCRIBE`／`SHOW COLUMNS`（#173 d5。下の項目） | `column`, `type`（2 列） | `varchar` | 0 | false | 同上（4 列） |
 | `EXPLAIN` | `Query Plan` | `varchar` | 371（計画の文字数） | true | `Query Plan` / varchar（同じ。[statements.md](statements.md)） |
 
 - 採用: `SHOW CREATE TABLE`／`SHOW CREATE VIEW` の 2 文は `operation::classification::fixed_column` で本物の列名・型に置き換える（#161）。Hive の `SHOW CREATE TABLE` の `.metadata`（`c10-show-create-table.metadata.bytes`、88 バイト）は同じ列（`createtab_stmt`／`string`、7／8／10 無し）で、置き換え後の athena-local の出力とクエリ ID 以外が一致する（tests/show_create.rs で固定）。Iceberg と `SHOW CREATE VIEW` の `.metadata` は不透明なので列は GetQueryResults でしか確かめられない
-- 備考: `run-20260924-100851/u1` の `Create Table`／varchar／250／true は `TARGET=local`（athena-local 自身への実行）で、本物の値ではない。残りの `SHOW`／`DESCRIBE` は列数が違う文があるので #173 に分けた
+- 備考: `run-20260924-100851/u1` の `Create Table`／varchar／250／true は `TARGET=local`（athena-local 自身への実行）で、本物の値ではない。残りの `SHOW`／`DESCRIBE` は列数が違う文があるので #173 に分けた。表の `SHOW SCHEMAS`・`DESC`・ビューの 3 行は #173 のラウンド 1（下の「DESCRIBE／SHOW COLUMNS の行の形」）で測った値を、並べて読めるように足した（生データは下の項目のもの）
+
+## DESCRIBE／SHOW COLUMNS の行の形
+
+### DESCRIBE／SHOW COLUMNS の行の形（#173、ラウンド 1・2）
+- 日付: 2026-09-24（ラウンド 1 は 20:58〜21:05、ラウンド 2 は 21:21〜21:23） ／ issue: #173 ／ スクリプト: `tools/measure/unmeasured-batch/items-utility-rows.sh`（項目 d1〜d8。d7 は d1 に含む。`run.sh` に登録） ／ 生データ: `~/athena-unmeasured-batch-measurements/run-20260924-115811/{d1..d7}/`（ラウンド 1）、`run-20260924-122125/d8/`（ラウンド 2）。要約は各 run の `summary.txt`
+- 相手: 本物の Athena（engine version 3、workgroup `primary`）。StartQueryExecution はラウンド 1 が 43 回（後始末の DROP 7 本を含む）、ラウンド 2 が 6 回で、すべて SUCCEEDED。改行入りの列コメントは Glue が弾く（#146 r2）ので投げていない
+- 投げたもの（`<DB>` は実在のデータベース名。テーブル名はすべて `athena_local_probe_173_*` の使い捨て）:
+  - d1: Hive 外部テーブル 3 つ。(a) `ctl`: `(n int) PARTITIONED BY (p string)`、(b) `main`: 列名 19／20／21 文字（`c19_…`／`c20_…`／`c21_…`）、型 17 種（`bigint`／`smallint`／`tinyint`／`double`／`float`／`boolean`／`date`／`decimal(10,2)`／`varchar(10)`／`char(36)`／`string`／`timestamp`／`binary`／`array<string>`／`map<string,int>`／`struct<aa:int,b:int>`（20 文字）／`struct<aa:int,bb:int>`（21 文字））、コメント無し／`abc`／20 文字／21 文字、`PARTITIONED BY (p string COMMENT 'pc', q int, p21_… string)`、(c) `nonascii`: ``(`列名` int COMMENT 'コメント', n int)``。それぞれに `DESCRIBE`、(b) に `SHOW COLUMNS FROM`／`IN`、(c) に `SHOW COLUMNS FROM`
+  - d2: Iceberg `(n int COMMENT 'abc', s string, ts timestamp, d decimal(10,2), arr array<string>, st struct<a:int>, c21_… bigint) PARTITIONED BY (s, bucket(4, n), day(ts))` に `DESCRIBE`／`SHOW COLUMNS FROM`
+  - d3: `SHOW SCHEMAS`／`SHOW DATABASES`、それぞれ素・`LIKE '<DB の先頭 3 文字>*'`・`LIKE '<DB の先頭 3 文字>%'`
+  - d4: Iceberg のテーブルを 1 つ作り、`SHOW TABLES`、`SHOW TABLES FROM <DB>`、`SHOW TABLES IN <DB> LIKE '<名前の先頭>*'`、`SHOW TABLES IN <DB> '<名前の先頭>.*'`、`SHOW TABLES IN <DB> '<名前>'`
+  - d5: `CREATE VIEW <DB>.<v> AS SELECT 1 AS n, 'a' AS s` に `DESCRIBE`／`SHOW COLUMNS FROM`
+  - d6: Hive 外部 `(n int) PARTITIONED BY (p string)` に `DESCRIBE` と `DESC`
+  - d8: Iceberg `(n int, s string, ts timestamp, d2 date, ts2 timestamp, t_double double, t_float float, t_boolean boolean, t_binary binary, t_map map<string,int>, big bigint) PARTITIONED BY (year(ts), month(d2), hour(ts2), truncate(3, s))` に `DESCRIBE`／`SHOW COLUMNS FROM`（`hour` は同じ列に `year` があると Iceberg が弾くので別の列 `ts2`）
+- 返ったもの（どの文も `Data` は 1 行 1 個。`.txt` は GetQueryResults の値を `\n` でつないだものとバイト単位で同じ、末尾改行なし。行の中の `\t` はタブ）:
+  - **Hive の DESCRIBE の詰め方**（d1・d6）: ColumnInfo は `col_name`／`data_type`／`comment`（string、0、false）。各行は `<列名>\t<型>\t<コメント>` で、3 つのどれも 20 文字未満なら右を空白で 20 文字に詰め、20 文字以上はそのまま（`c20_…` は詰め無し、`c21_…` は切らない、`struct<aa:int,bb:int>`（21 文字）もそのまま、コメント `cmt21_…` もそのまま）。空のコメントは空白 20 個、`abc` は `abc` + 空白 17 個、`pc` は `pc` + 空白 18 個。末尾にタブは無い。幅は文字数（`列名` + 空白 18 個、`コメント` + 空白 16 個。本体 137 バイトで検算）。UpdateCount は無し、Content-Type は application、`.metadata` は 152 バイトの素の protobuf
+  - **Hive のパーティション**（d1・d6）: パーティション列は上半分にも普通の列として出て、その後に `\t \t `、`# Partition Information\t \t `、`# col_name            \tdata_type           \tcomment             `（`# col_name` + 空白 12 個）、`\t \t ` の 4 行、続けてパーティション列をもう一度同じ形で並べる。`ctl` は 7 行 291 バイト、`main` は 34 行 1997 バイト。パーティションの無いテーブル（`nonascii`）は見出し行群が無い
+  - **Hive の型の綴り**（d1）と、同じ型の Trino 482 の綴り（手元で確認）:
+
+| Athena（Hive の DESCRIBE） | Trino の DESCRIBE |
+| --- | --- |
+| `int` | `integer` |
+| `bigint`／`smallint`／`tinyint`／`double`／`boolean`／`date` | 同じ |
+| `float` | `real` |
+| `decimal(10,2)` | `decimal(10,2)` |
+| `varchar(10)` | `varchar(10)` |
+| `char(36)` | `char(36)` |
+| `string` | `varchar` |
+| `timestamp` | `timestamp(3)` |
+| `binary` | `varbinary` |
+| `array<string>` | `array(varchar)` |
+| `map<string,int>` | `map(varchar, integer)` |
+| `struct<aa:int,b:int>` | `row("aa" integer, "b" integer)` |
+
+  - **SHOW COLUMNS**（d1・d2・d8）: ColumnInfo は `field`（string、0、false）の 1 列。行は列名 1 つ。Hive は DESCRIBE の列名と同じ詰め方（`c19_…` + 空白 1 個、`c20_…`・`c21_…` はそのまま、`列名` + 空白 18 個）で、パーティション列も含む（`main` は 27 行 = DESCRIBE の上半分と同じ）。`FROM` と `IN` は同じ結果。Iceberg は詰めない（d2 は 7 行 37 バイト、d8 は 11 行 59 バイト）。UpdateCount 0、Content-Type は binary、`.metadata` は 312 バイトの不透明な形式
+  - **Iceberg の DESCRIBE**（d2・d8）: ColumnInfo は Hive と同じ 3 列。詰めない。行は `# Table schema:\t\t`、`# col_name\tdata_type\tcomment`、列ごとに `<列名>\t<型>\t<コメント>`（コメント無しは末尾が `\t`。d2 の `n\tint\tabc`、`s\tstring\t`）、`\t\t`、`# Partition spec:\t\t`、`# field_name\tfield_transform\tcolumn_name`、パーティションごとに 1 行。d2 は 15 行 278 バイト、d8 は 20 行 343 バイト。UpdateCount 0、Content-Type は binary、`.metadata` は 568 バイトの不透明な形式
+  - **Iceberg の型の綴り**（d2・d8）: `int`（Trino `integer`）、`string`（`varchar`）、`timestamp`（`timestamp(6)`）、`decimal(10, 2)`（`decimal(10,2)`。**カンマの後に空白**）、`array<string>`（`array(varchar)`）、`struct<a: int>`（`row("a" integer)`。**コロンの後に空白**）、`map<string, int>`（`map(varchar, integer)`。**カンマの後に空白**）、`bigint`・`date`・`double`・`boolean`（同じ）、`float`（`real`）、`binary`（`varbinary`）
+  - **Iceberg のパーティション行**（d2・d8。7 種）: `s\tidentity\ts`、`n_bucket\tbucket[4]\tn`、`ts_day\tday\tts`、`ts_year\tyear\tts`、`d2_month\tmonth\td2`、`ts2_hour\thour\tts2`、`s_trunc\ttruncate[3]\ts`。field_name は identity なら列名そのもの、ほかは `<列名>_<bucket|trunc|year|month|day|hour>`
+  - **ビュー**（d5）: `DESCRIBE` も `SHOW COLUMNS FROM` も SubstatementType は **`DESC_VIEW`**。ColumnInfo は `column`／`type`（どちらも varchar、Precision 0、CaseSensitive false）の 2 列。行は `n\tinteger`、`s\tvarchar(1)`（Trino の綴り、詰め無し）、22 バイト。UpdateCount 0、Content-Type は binary、`.metadata` は 440 バイトの不透明な形式
+  - **DESC**（d6）: `DESC t` は `DESCRIBE t` と同じ（SubstatementType `DESCRIBE_TABLE`、7 行 291 バイト、application、`.metadata` 152 バイト、UpdateCount 無し。行も一致）
+  - **SHOW SCHEMAS**（d3）: 本物も受ける。SubstatementType `SHOW_DATABASES`、ColumnInfo は `database_name`（string、0、false）、`SHOW DATABASES` と同じ 5 行 93 バイト、素の名前（詰め無し）。`LIKE '…*'`／`LIKE '…%'` は `SHOW SCHEMAS`・`SHOW DATABASES` とも 0 行・0 バイト（ColumnInfo は付く、UpdateCount 0）
+  - **SHOW TABLES**（d4）: `FROM <DB>`（14 行）、`IN <DB> LIKE '…*'`（1 行）、`IN <DB> '….*'`（1 行）、`IN <DB> '<名前>'`（1 行）はどれも `tab_name`（string、0、false）で、行は素の名前（詰め無し）
+- 備考: 採用（2026-09-24、統括役とユーザーの判断 D1〜D3・D10・D11）: 詰め方・見出し行群・型の綴り・パーティション行・ビューの 2 列と `DESC_VIEW`・`DESC` をそのまま再現する。`SHOW SCHEMAS LIKE` の `*`／`%` が 0 行になった理由（パターンの意味）は分からず、未実測に残す。Iceberg の `struct` の複数フィールドの区切り、その他の変換、非 BMP 文字の幅も [../unmeasured.md](../unmeasured.md) に残す。#146 r2 のコメント `a\tb` → `a` は、詰めた後に先頭のタブまでを取ったものと読める（d1 の `abc` + 空白 17 個と両立する）
 
 ## ページングと MaxResults／NextToken の検証
 

@@ -22,7 +22,7 @@ fn select_response() -> Value {
 /// 形式と存在を 1 つにまとめた問い合わせ（`src/operation/table_format.rs` の `probe_sql` と同じ形）。
 fn probe_sql(catalog: &str, schema: &str, table: &str) -> String {
     format!(
-        "SELECT (SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = '{catalog}'), (SELECT count(*) FROM system.jdbc.tables WHERE table_cat = '{catalog}' AND table_schem = '{schema}' AND table_name = '{table}')"
+        "SELECT (SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = '{catalog}'), (SELECT table_type FROM system.jdbc.tables WHERE table_cat = '{catalog}' AND table_schem = '{schema}' AND table_name = '{table}')"
     )
 }
 
@@ -31,20 +31,20 @@ fn probe_response(connector_name: &str) -> Value {
     json!({
         "columns": [
             { "name": "_col0", "type": "varchar" },
-            { "name": "_col1", "type": "bigint" }
+            { "name": "_col1", "type": "varchar" }
         ],
-        "data": [[connector_name, 1]]
+        "data": [[connector_name, "TABLE"]]
     })
 }
 
-/// 対象が存在しない（カタログはあるが件数が 0）応答。
+/// 対象が存在しない（カタログはあるが `table_type` が null）応答。
 fn probe_response_missing() -> Value {
     json!({
         "columns": [
             { "name": "_col0", "type": "varchar" },
-            { "name": "_col1", "type": "bigint" }
+            { "name": "_col1", "type": "varchar" }
         ],
-        "data": [["iceberg", 0]]
+        "data": [["iceberg", null]]
     })
 }
 
@@ -227,7 +227,7 @@ async fn drop_table_は_hive_なら今までどおり_0_バイトのまま() {
 
 #[tokio::test]
 async fn 存在しないテーブルの_drop_table_if_existsは_iceberg_でも今までどおり_0_バイトのまま() {
-    // カタログは iceberg だが対象テーブルが無い（件数 0）。Hive 側と同じ今までどおりの振る舞いに倒す。
+    // カタログは iceberg だが対象テーブルが無い（`table_type` が null）。Hive 側と同じ今までどおりの振る舞いに倒す。
     let harness = Harness::builder(drop_table_response())
         .route(
             &probe_sql("default_catalog", "default_schema", "t"),
@@ -302,7 +302,7 @@ async fn 取り消し済みなら形式の問い合わせも届かない() {
     let harness = Harness::builder(json!({
         "columns": [
             { "name": "_col0", "type": "varchar" },
-            { "name": "_col1", "type": "bigint" }
+            { "name": "_col1", "type": "varchar" }
         ]
     }))
     .endless()

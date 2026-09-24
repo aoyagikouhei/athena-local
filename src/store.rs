@@ -65,6 +65,10 @@ pub struct Execution {
     /// 決めて渡す（None = 省く。本物の null）。読む側で決め直さないのは、形式の判定が実行時にしか
     /// 取れないため（#160）。
     pub update_count: Option<i64>,
+    /// GetQueryExecution が SQL だけで決まる分類の代わりに返す SubstatementType。完了時に
+    /// `operation::execution` が対象の形式から決めて渡す（ビューへの DESCRIBE／SHOW COLUMNS の `DESC_VIEW`。
+    /// 完了前と、それ以外の文は None。#173）。`update_count` と同じく、形式の判定が実行時にしか取れないため。
+    pub substatement_type: Option<&'static str>,
     /// FAILED のときだけ入る。
     pub failure: Option<Failure>,
     /// StopQueryExecution が立て、実行中のタスクが見る。
@@ -184,6 +188,7 @@ impl Store {
             completed_at: None,
             result: None,
             update_count: None,
+            substatement_type: None,
             failure: None,
             cancel: Arc::default(),
         };
@@ -215,7 +220,11 @@ impl Store {
     }
 
     /// 終端状態からは何も書かない。先に CANCELLED になっていれば、あとから来た結果は捨てる。
-    pub fn finish(&self, id: &str, outcome: Result<(Outcome, Option<i64>), Failure>) {
+    pub fn finish(
+        &self,
+        id: &str,
+        outcome: Result<(Outcome, Option<i64>, Option<&'static str>), Failure>,
+    ) {
         let mut inner = self.lock();
         let Some(execution) = inner.executions.get_mut(id) else {
             return;
@@ -226,10 +235,11 @@ impl Store {
 
         execution.completed_at = Some(now());
         match outcome {
-            Ok((outcome, update_count)) => {
+            Ok((outcome, update_count, substatement_type)) => {
                 execution.state = State::Succeeded;
                 execution.result = Some(Arc::new(outcome));
                 execution.update_count = update_count;
+                execution.substatement_type = substatement_type;
             }
             Err(failure) => {
                 execution.state = State::Failed;
@@ -379,7 +389,7 @@ mod tests {
         assert_eq!(running.state, State::Running);
         assert!(running.started_at.is_some());
 
-        store.finish("id", Ok((Outcome::default(), None)));
+        store.finish("id", Ok((Outcome::default(), None, None)));
         let finished = store.get("id").unwrap();
         assert_eq!(finished.state, State::Succeeded);
         assert!(finished.result.is_some());
@@ -441,7 +451,7 @@ mod tests {
         store.mark_running("id");
         store.cancel("id");
 
-        store.finish("id", Ok((Outcome::default(), None)));
+        store.finish("id", Ok((Outcome::default(), None, None)));
         store.finish("id", Err(user_failure("late")));
 
         let execution = store.get("id").unwrap();
@@ -458,7 +468,7 @@ mod tests {
     fn 終わったクエリは止めても変わらない() {
         let store = submitted();
         store.mark_running("id");
-        store.finish("id", Ok((Outcome::default(), None)));
+        store.finish("id", Ok((Outcome::default(), None, None)));
 
         assert_eq!(store.cancel("id"), CancelOutcome::AlreadyFinished);
 
@@ -529,7 +539,7 @@ mod tests {
     fn ロックを取ると期限切れの実行が消える() {
         let store = Store::new(Duration::ZERO);
         store.submit("id", submission_with_token("SELECT 1", &test_token("zero")));
-        store.finish("id", Ok((Outcome::default(), None)));
+        store.finish("id", Ok((Outcome::default(), None, None)));
 
         // sweep_at を呼ばない。lock() が掃除を駆動していなければ残ってしまう。
         assert!(store.get("id").is_none());
@@ -538,7 +548,7 @@ mod tests {
     #[test]
     fn 終わった実行は保持期限を過ぎると消える() {
         let store = submitted();
-        store.finish("id", Ok((Outcome::default(), None)));
+        store.finish("id", Ok((Outcome::default(), None, None)));
         let completed = store
             .get("id")
             .unwrap()
@@ -553,7 +563,7 @@ mod tests {
     #[test]
     fn 保持期限ちょうどで消える() {
         let store = submitted();
-        store.finish("id", Ok((Outcome::default(), None)));
+        store.finish("id", Ok((Outcome::default(), None, None)));
         let completed = store
             .get("id")
             .unwrap()
@@ -568,7 +578,7 @@ mod tests {
     #[test]
     fn 保持期限の手前では消えない() {
         let store = submitted();
-        store.finish("id", Ok((Outcome::default(), None)));
+        store.finish("id", Ok((Outcome::default(), None, None)));
         let completed = store
             .get("id")
             .unwrap()
@@ -600,7 +610,7 @@ mod tests {
             store.submit("id1", submission_with_token("SELECT 1", &token)),
             SubmitOutcome::Created
         );
-        store.finish("id1", Ok((Outcome::default(), None)));
+        store.finish("id1", Ok((Outcome::default(), None, None)));
         let completed = store
             .get("id1")
             .unwrap()

@@ -54,7 +54,12 @@ pub fn result_set(
 /// `fixed_column` は本物が Trino の列によらず固定の列名・型で返す文（SHOW CREATE TABLE / VIEW）の
 /// 列名と型名で、あれば全列をその名前・型に置き換え、Precision・Scale は 0、CaseSensitive は false にする
 /// （`operation::classification::fixed_column`。2026-09-23／24 実測。#161）。
+/// 完了時に列を作り直した文（SHOW COLUMNS など）は `outcome.athena_columns` を優先し、
+/// `fixed_column` も当てない（`operation::utility_rows::reshape`。#173）。
 pub fn column_infos(outcome: &Outcome, fixed_column: Option<(&str, &str)>) -> Vec<ColumnInfo> {
+    if let Some(columns) = &outcome.athena_columns {
+        return columns.clone();
+    }
     outcome
         .columns
         .iter()
@@ -159,6 +164,35 @@ mod tests {
         assert_eq!(plain[0].name, "Create Table");
         assert_eq!(plain[0].type_name, "varchar");
         assert!(plain[0].case_sensitive);
+    }
+
+    #[test]
+    fn 作り直した列情報があれば_trino_の列と固定の列より優先する() {
+        use crate::trino::Column;
+
+        // SHOW COLUMNS は完了時に `field`／string の 1 列へ作り直す（#173）。
+        let mut outcome = Outcome {
+            columns: vec![Column {
+                name: "Column".to_string(),
+                type_name: "varchar".to_string(),
+                type_signature: None,
+            }],
+            ..Outcome::default()
+        };
+        let mut field = super::super::athena_type::to_column_info(&outcome.columns[0]);
+        field.name = "field".to_string();
+        field.type_name = "string".to_string();
+        outcome.athena_columns = Some(vec![field]);
+
+        let infos = column_infos(&outcome, Some(("createtab_stmt", "string")));
+        assert_eq!(infos.len(), 1);
+        assert_eq!(infos[0].name, "field");
+        // 作り直した値をそのまま使い、固定の列の Precision 0 などを当てない。
+        assert_eq!(infos[0].label, "Column");
+        assert!(infos[0].case_sensitive);
+
+        outcome.athena_columns = None;
+        assert_eq!(column_infos(&outcome, None)[0].name, "Column");
     }
 
     #[test]
