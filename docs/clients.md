@@ -151,6 +151,16 @@ athena-local alone: before running any SQL it lists schemas through AWS Glue
 `UnknownOperationException` (whether STS would be needed later was not
 reached).
 
+Even with Glue answered elsewhere, the `table`, `incremental`, `snapshot` and
+`seed` materializations would stop at their `CREATE TABLE ... AS`: dbt-athena
+puts Athena's own table properties (`table_type=...`, `is_external=...`) in
+its `WITH (...)`, athena-local passes SQL through unchanged, and Trino fails
+the query with `INVALID_TABLE_PROPERTY: ... table property 'table_type' does
+not exist` on both Hive and Iceberg catalogs (Trino 482, 2026-09-25). The
+`view` materialization's `create or replace view ... as` runs. `dbt run`
+against real Glue and STS with only Athena pointed at athena-local was not
+tried.
+
 For `EXPLAIN` and `SHOW FUNCTIONS`, dbt-athena returns the column-name row
 (`Query Plan`, or the `SHOW FUNCTIONS` header) as the first data row. Its
 cursor drops the first row of the first page only for statements other than
