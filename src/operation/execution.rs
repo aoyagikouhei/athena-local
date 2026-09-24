@@ -224,7 +224,11 @@ fn spawn_query(app: App, id: String) {
 
         let outcome = match run(&app.trino, &app.config, &execution).await {
             Ok((outcome, engine_ddl)) => {
-                result_output::write_result(&app, &execution, &id, outcome, engine_ddl).await
+                // UpdateCount は形式の判定を使うので、判定が手元にあるここで決めて Store に渡す（#160）。
+                let update_count = update_count(&execution.query, &outcome, engine_ddl);
+                result_output::write_result(&app, &execution, &id, outcome, engine_ddl)
+                    .await
+                    .map(|outcome| (outcome, update_count))
             }
             Err(error) => {
                 let failure = Failure::from_query_error(&error);
@@ -264,10 +268,15 @@ async fn run(
     // system.jdbc.tables は Trino 側の名前でしか引けない。issue #39 Phase 2）。
     // 結果 CSV の S3 書き込みが無効（ResultsMode::None）なら、result_output::write_result が判定結果を
     // 丸ごと捨てるので問い合わせない（Trino へのフル往復が無駄になるだけのレビュー指摘）。
-    let engine_ddl = if matches!(config.results, ResultsMode::None) {
+    // ただし判定を GetQueryResults の UpdateCount にも使う文（`table_format::needs_format_for_update_count`）
+    // は S3 が無効でも問い合わせる（#160）。
+    let statement = table_format::target_statement(&execution.query);
+    let engine_ddl = if matches!(config.results, ResultsMode::None)
+        && !statement.is_some_and(table_format::needs_format_for_update_count)
+    {
         None
     } else {
-        match table_format::target_statement(&execution.query) {
+        match statement {
             Some(statement) => match target_table::parse_target_table(
                 &execution.query,
                 statement,
@@ -346,9 +355,78 @@ fn split_explain_rows(query: &str, mut outcome: Outcome) -> Outcome {
     outcome
 }
 
+/// GetQueryResults の UpdateCount。本物は SELECT と SHOW でも 0 を返し、DDL では null を返す
+/// （2026-09-14 実測。SDK から見て null と省略は同じなので、DDL は省く）。DML と CTAS は Trino が返す
+/// 件数をそのまま載せる。DESCRIBE と SHOW CREATE TABLE は Hive のテーブル（と判定できないとき。`DESC` も）では
+/// null、Iceberg のテーブルでは 0（2026-09-24 実測。#160）。null になる文は `.txt` の Content-Type と
+/// `.metadata` の先頭 ID を決める `content_type::carries_execution_id` と同じ述語で選ぶ（本物でも
+/// UpdateCount の有無と Content-Type は一致している）。
+fn update_count(query: &str, outcome: &Outcome, engine_ddl: Option<EngineDdl>) -> Option<i64> {
+    if let Some(count) = outcome.update_count {
+        return Some(count);
+    }
+    if super::classification::statement_type(query) == "DDL" {
+        return None;
+    }
+    let iceberg = matches!(
+        engine_ddl,
+        Some(EngineDdl::ShowCreateTableIceberg | EngineDdl::DescribeIceberg)
+    );
+    if crate::content_type::carries_execution_id(query) && !iceberg {
+        return None;
+    }
+    Some(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_count_は件数が無ければ_ddl_以外で_0_になる() {
+        let counted = Outcome {
+            update_count: Some(3),
+            ..Outcome::default()
+        };
+        assert_eq!(
+            update_count("INSERT INTO t VALUES (1)", &counted, None),
+            Some(3)
+        );
+        assert_eq!(
+            update_count("CREATE TABLE c AS SELECT 1", &counted, None),
+            Some(3)
+        );
+
+        let uncounted = Outcome::default();
+        assert_eq!(update_count("SELECT 1", &uncounted, None), Some(0));
+        assert_eq!(update_count("SHOW TABLES", &uncounted, None), Some(0));
+        assert_eq!(
+            update_count("CREATE TABLE t (i int)", &uncounted, None),
+            None
+        );
+        assert_eq!(update_count("DROP TABLE t", &uncounted, None), None);
+    }
+
+    /// 2026-09-24 実測（#160）: Hive の DESCRIBE と SHOW CREATE TABLE は null、Iceberg なら 0。
+    #[test]
+    fn update_count_は_describe_と_hive_の_show_create_table_で省き_iceberg_なら_0() {
+        let uncounted = Outcome::default();
+        assert_eq!(update_count("DESCRIBE t", &uncounted, None), None);
+        assert_eq!(update_count("DESC t", &uncounted, None), None);
+        assert_eq!(
+            update_count("DESCRIBE t", &uncounted, Some(EngineDdl::DescribeIceberg)),
+            Some(0)
+        );
+        assert_eq!(update_count("SHOW CREATE TABLE t", &uncounted, None), None);
+        assert_eq!(
+            update_count(
+                "SHOW CREATE TABLE t",
+                &uncounted,
+                Some(EngineDdl::ShowCreateTableIceberg)
+            ),
+            Some(0)
+        );
+    }
 
     fn plan(rows: Vec<Vec<serde_json::Value>>) -> Outcome {
         Outcome {

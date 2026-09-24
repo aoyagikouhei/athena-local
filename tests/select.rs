@@ -554,6 +554,16 @@ async fn show_と_describe_の結果には列名行が入らない() {
             .call("GetQueryResults", json!({ "QueryExecutionId": id }))
             .await;
         assert_eq!(status, 200, "{query}");
+        // 本物は DESCRIBE（Hive のテーブル。判定できないときも同じ）で UpdateCount を返さず、
+        // SHOW では 0 を返す（2026-09-24 実測。#160）。
+        if query == "DESCRIBE t" {
+            assert!(
+                results.get("UpdateCount").is_none(),
+                "{query}: UpdateCount は省く: {results}"
+            );
+        } else {
+            assert_eq!(results["UpdateCount"], 0, "{query}");
+        }
 
         let rows = results["ResultSet"]["Rows"].as_array().unwrap();
         assert_eq!(rows.len(), 2, "{query}: データ 2 行だけ（列名行は無い）");

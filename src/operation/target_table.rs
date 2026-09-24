@@ -1,4 +1,4 @@
-//! `DROP TABLE` / `ALTER TABLE ... ADD COLUMNS` / `SHOW CREATE TABLE` の対象テーブルの修飾名解析。
+//! `DROP TABLE` / `ALTER TABLE ... ADD COLUMNS` / `SHOW CREATE TABLE` / `DESCRIBE` の対象テーブルの修飾名解析。
 //!
 //! Phase 2 では修飾名（`cat.ns.t` や引用符付きのカタログ名）も解析し、対象テーブルの存在も
 //! あわせて確かめる。修飾名にカタログ・スキーマが無ければ実行時の既定を当て、それでも
@@ -6,7 +6,7 @@
 
 use super::table_format::TargetStatement;
 
-/// `DROP TABLE` / `ALTER TABLE ... ADD COLUMNS` / `... REPLACE COLUMNS` / `SHOW CREATE TABLE` から
+/// `DROP TABLE` / `ALTER TABLE ... ADD COLUMNS` / `... REPLACE COLUMNS` / `SHOW CREATE TABLE` / `DESCRIBE` から
 /// 取り出した対象。カタログ・スキーマは修飾名に無ければ既定を当てた後の値（呼び出し元の別名解決前）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct TargetTable {
@@ -15,20 +15,22 @@ pub(super) struct TargetTable {
     pub(super) table: String,
 }
 
-/// `target_statement` の種類ごとに、`TABLE` の前に来るキーワードの並び（`DROP` / `ALTER` /
-/// `SHOW CREATE`）。
+/// `target_statement` の種類ごとに、名前の前に来るキーワードの並び（`DROP TABLE` / `ALTER TABLE` /
+/// `SHOW CREATE TABLE` / `DESCRIBE`）。DESCRIBE だけ `TABLE` を挟まない（#160）。
 fn keywords(statement: TargetStatement) -> &'static [&'static str] {
     match statement {
-        TargetStatement::DropTable => &["DROP"],
+        TargetStatement::DropTable => &["DROP", "TABLE"],
         TargetStatement::AlterTableAddColumns | TargetStatement::AlterTableReplaceColumns => {
-            &["ALTER"]
+            &["ALTER", "TABLE"]
         }
-        TargetStatement::ShowCreateTable => &["SHOW", "CREATE"],
+        TargetStatement::ShowCreateTable => &["SHOW", "CREATE", "TABLE"],
+        TargetStatement::Describe => &["DESCRIBE"],
     }
 }
 
 /// `DROP TABLE [IF EXISTS] <名前>` / `ALTER TABLE [IF EXISTS] <名前> ADD COLUMNS ...` /
-/// `SHOW CREATE TABLE <名前>` を解析し、カタログ・スキーマに既定値を当てる。修飾名にあればその値（引用符付きなら中身、無引用なら
+/// `SHOW CREATE TABLE <名前>` / `DESCRIBE <名前>` を解析し、カタログ・スキーマに既定値を当てる。
+/// 名前の後ろ（`DESCRIBE t PARTITION (...)` の PARTITION 以降など）は読まない。修飾名にあればその値（引用符付きなら中身、無引用なら
 /// Trino の規則で小文字）を使い、無ければ `default_catalog` / `default_schema`（実行時の値。
 /// 別名解決前）を使う。カタログかスキーマが決まらなければ None（今までどおりに倒す）。
 ///
@@ -63,8 +65,8 @@ pub(super) fn parse_target_table(
     })
 }
 
-/// `<キーワードの並び> TABLE` と、あれば `IF EXISTS` を読み飛ばし、名前が始まる位置を返す。
-/// 先頭が `<キーワードの並び> TABLE` でなければ None。並びは `DROP`、`ALTER`、`SHOW CREATE` のどれか。
+/// `<キーワードの並び>` と、あれば `IF EXISTS` を読み飛ばし、名前が始まる位置を返す。
+/// 先頭が `<キーワードの並び>` でなければ None。並びは `keywords` が返す。
 ///
 /// `catalog::skip_keyword` が先頭のトリビアを自分で読み飛ばすので、キーワードの手前では
 /// 読み飛ばさない。**最後の 1 回だけは残す**: `parse_qualified_name` はトリビアを読み飛ばさず、
@@ -74,7 +76,6 @@ fn table_name_start<'a>(query: &'a str, keywords: &[&str]) -> Option<&'a str> {
     for keyword in keywords {
         rest = crate::catalog::skip_keyword(rest, keyword)?;
     }
-    let rest = crate::catalog::skip_keyword(rest, "TABLE")?;
     let rest = match crate::catalog::skip_keyword(rest, "IF") {
         Some(after_if) => crate::catalog::skip_keyword(after_if, "EXISTS")?,
         None => rest,
@@ -137,6 +138,22 @@ mod tests {
                 table: "t".to_string(),
             })
         );
+    }
+
+    /// DESCRIBE は `TABLE` を挟まない（#160）。コメントは `skip_leading_trivia` が読み飛ばす。
+    #[test]
+    fn parse_target_table_は_describe_の直後の名前を読む() {
+        for query in ["DESCRIBE t", "DESCRIBE /* c */ t"] {
+            assert_eq!(
+                parse_target_table(query, TargetStatement::Describe, Some("cat"), Some("ns")),
+                Some(TargetTable {
+                    catalog: "cat".to_string(),
+                    schema: "ns".to_string(),
+                    table: "t".to_string(),
+                }),
+                "{query}"
+            );
+        }
     }
 
     #[test]

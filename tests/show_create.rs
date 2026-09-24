@@ -128,6 +128,11 @@ async fn show_create_table_は_iceberg_なら本体も_metadata_も_binary_で�
     let (harness, execution) = run_show_create_table("iceberg").await;
     let id = execution_id(&execution);
     assert_eq!(execution["QueryExecution"]["Status"]["State"], "SUCCEEDED");
+    // Iceberg のテーブルへの SHOW CREATE TABLE は本物が UpdateCount 0 を返す（2026-09-24 実測。#160）。
+    let (_, results) = harness
+        .call("GetQueryResults", json!({ "QueryExecutionId": id }))
+        .await;
+    assert_eq!(results["UpdateCount"], 0);
     assert_eq!(
         execution["QueryExecution"]["SubstatementType"],
         "SHOW_CREATE_TABLE"
@@ -167,6 +172,14 @@ async fn show_create_table_は_hive_なら今までどおり_application_で先�
     let (harness, execution) = run_show_create_table("hive").await;
     let id = execution_id(&execution);
     assert_eq!(execution["QueryExecution"]["Status"]["State"], "SUCCEEDED");
+    // Hive のテーブルへの SHOW CREATE TABLE は本物が UpdateCount を返さない（null。2026-09-24 実測。#160）。
+    let (_, results) = harness
+        .call("GetQueryResults", json!({ "QueryExecutionId": id }))
+        .await;
+    assert!(
+        results.get("UpdateCount").is_none(),
+        "UpdateCount は省く: {results}"
+    );
     assert_eq!(
         harness.trino_sqls(),
         [
@@ -193,4 +206,39 @@ async fn show_create_table_は_hive_なら今までどおり_application_で先�
         "{}",
         hex_of(&puts[1].body)
     );
+}
+
+/// UpdateCount が形式の問い合わせの結果を使うようになったので、結果ファイルを書かない
+/// `ATHENA_LOCAL_RESULTS=none` でも SHOW CREATE TABLE は形式を問い合わせる（#160。#39 の
+/// 「S3 が無効なら問い合わせない」は DROP TABLE / ALTER TABLE にだけ残る）。
+#[tokio::test]
+async fn 結果_s3_が無効でも_show_create_table_は形式を問い合わせ_iceberg_なら_update_count_が_0() {
+    let harness = Harness::builder(select_response())
+        .route(
+            &probe_sql("default_catalog", "default_schema", "t"),
+            probe_response("iceberg"),
+        )
+        .route("SHOW CREATE TABLE t", show_create_table_response())
+        .start()
+        .await;
+    let execution = harness
+        .run_query(json!({ "QueryString": "SHOW CREATE TABLE t" }))
+        .await;
+    assert_eq!(execution["QueryExecution"]["Status"]["State"], "SUCCEEDED");
+    assert_eq!(
+        harness.trino_sqls(),
+        [
+            probe_sql("default_catalog", "default_schema", "t"),
+            "SHOW CREATE TABLE t".to_string()
+        ]
+    );
+
+    let (_, results) = harness
+        .call(
+            "GetQueryResults",
+            json!({ "QueryExecutionId": execution_id(&execution) }),
+        )
+        .await;
+    assert_eq!(results["UpdateCount"], 0);
+    assert!(harness.s3_puts().is_empty());
 }

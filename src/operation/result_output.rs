@@ -42,9 +42,12 @@ pub(super) async fn write_result(
 
     // 列なしでも本体・`.metadata` を置く DDL（issue #39）は、本体も `.metadata` も
     // `ResultLocation` の既定（0 バイトの DDL の binary）ではなく application で置く。
-    // SHOW CREATE TABLE × Iceberg は逆に、SQL だけで決まる既定（application）を binary で上書きする（#151）。
+    // SHOW CREATE TABLE × Iceberg と DESCRIBE × Iceberg は逆に、SQL だけで決まる既定（application）を
+    // binary で上書きする（#151、#160）。
     let content_type = match engine_ddl {
-        Some(EngineDdl::ShowCreateTableIceberg) => Some(crate::content_type::BINARY),
+        Some(EngineDdl::ShowCreateTableIceberg | EngineDdl::DescribeIceberg) => {
+            Some(crate::content_type::BINARY)
+        }
         Some(_) => Some(ENGINE_DDL_CONTENT_TYPE),
         None => None,
     };
@@ -87,11 +90,11 @@ pub(super) async fn write_result(
         // ALTER TABLE の ADD COLUMNS / REPLACE COLUMNS × Hive だけは field 1 に実行 ID だけを置き、field 2（updateType）も
         // field 3（更新件数）も置かない。Trino の updateType は "ADD COLUMN"（Athena の
         // `ADD COLUMNS` と綴りが違う）なので、そのまま使うと誤った field 2 が付く（2026-09-21 実測）。
-        // SHOW CREATE TABLE × Iceberg は本物の `.metadata` が不透明で先頭 ID を観測できないので、
+        // SHOW CREATE TABLE × Iceberg と DESCRIBE × Iceberg は本物の `.metadata` が不透明で先頭 ID を観測できないので、
         // SQL だけで決まる QueryExecutionId ではなくエンジン ID（無ければ実行 ID）にする（#151）。
         let (query_id, update_type, update_count) = match engine_ddl {
             Some(EngineDdl::AlterColumnsHive) => (id, None, None),
-            Some(EngineDdl::ShowCreateTableIceberg) => (
+            Some(EngineDdl::ShowCreateTableIceberg | EngineDdl::DescribeIceberg) => (
                 outcome.id.as_deref().unwrap_or(id),
                 outcome.update_type.as_deref(),
                 outcome.update_count,
