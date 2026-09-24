@@ -44,14 +44,15 @@
   - ディスパッチ: 未対応のオペレーション（39）・前置き無しの未対応名（40）・前置き無しの実在する名前 `ListWorkGroups`（41）・`X-Amz-Target` 無し（42）・小文字（43）はすべて 400／`{"__type":"UnknownOperationException"}`（`Message` 無し）
   - `Content-Type: application/json`（44）は 200 で `{Output, Version}` という別の形、`Content-Type` 無し（45）と `application/x-amz-json-1.0`（46）は 404 で XML `<UnknownOperationException/>`
   - ClientRequestToken の検査は parse の後（ケース 38 は `queryString` の欠落が先）
-- 備考: 未実測の組み合わせの一部は #87 で実測した
+- 備考: 未実測の組み合わせの一部は #87 で実測した。`x-amzn-errortype` ヘッダは #2・#3・#9（[client-request-token.md](client-request-token.md)、[work-groups.md](work-groups.md)）でも一貫して応答に付かなかった。この #84 を含め 4 ラウンドとも同じ結果（athena-local は付け続けている。差分は #145）
 
 ### #84 で未実測だった型違いなどの組み合わせ
 - 日付: 不明（ノートに日付が無い。時系列は実測 11:44（資格情報の期限切れで 59〜61 だけ）・11:47（全部）。#84（2026-09-23 11:09 出荷）の後なので 2026-09-23 と推定） ／ issue: #87 ／ スクリプト: `tools/measure/raw-parse-errors.py`（旧 `84-measure-raw-parse-errors.py` に 15 項目を足したもの。git の履歴（7836738、2026-09-23「実測スクリプトに #84 で未実測のまま残した型の組み合わせを足す」）と合う）
 - 相手: 本物の Athena
 - 投げたもの: 15 項目（#84 の未実測の組み合わせ）
 - 返ったもの（ノートに書いてある範囲）: 実装した `type_mismatch` の腕から、次の組み合わせに本物が文言を返すと読める: `false`（`FALSE_VALUE`）、floating point → `NUMBER_VALUE`（小数 → String）、整数／真偽値 → 配列、map → 配列、整数／真偽値 → 構造体。小数 → Integer は `type_mismatch` が None を返す腕として固定（応答の形はノートに無い）。`strip_nulls` に配列の腕を足した（配列の要素の `null` の扱い）
-- 備考: 実際の文言・ステータスはノートに無い。README／CHANGELOG と生データを見る必要がある。タイトルの「揃えなかった 2 点」（#84 の小数の切り捨てと配列 → 入れ子の構造体）が今回揃えたのか揃えないままかはノートから判断できない
+  - 生データ `raw-20260923-114710/summary.txt`（11:47 の全項目ラウンドと見られる）の「ケース 55」（`StartQueryExecution` に `{"QueryString": "SELECT", "ExecutionParameters": [null], ...}`）: `__type: InvalidRequestException`／`AthenaErrorCode: MALFORMED_QUERY`／`ErrorCode: MALFORMED_QUERY`（`AthenaErrorCode` と同値）／`Message: line 1:7: mismatched input '<EOF>'. Expecting: '*', 'ALL', 'DISTINCT', <expression>`。`x-amzn-errortype` ヘッダ無し。`MALFORMED_QUERY` の本文にも `ErrorCode` キーが付くことをこのケースで確認できる
+- 備考: 実際の文言・ステータスはノートに無い。README／CHANGELOG と生データを見る必要がある。タイトルの「揃えなかった 2 点」（#84 の小数の切り捨てと配列 → 入れ子の構造体）が今回揃えたのか揃えないままかはノートから判断できない。ケース 55 の `ErrorCode` の値はノートに転記されていなかったので、#113（2026-09-24）で生データを読み直して補った（転記漏れの補完で、新しい実測ではない）
 
 ### 参考（範囲外の同ラウンドの観測）
 - 日付: 2026-09-23 ／ issue: #83 ／ スクリプト: 無し
