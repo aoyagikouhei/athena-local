@@ -194,8 +194,8 @@ mod tests {
 
     #[test]
     fn 複合型の中の_varbinary_は_java_の_byte_配列の_tostring_の形にする() {
-        // 本物は array / map / row の中の varbinary を `[B@` + 16 進（Java の byte[] の toString。
-        // identity hash なので中身を表さず、同じ配列の 2 要素でも別の値。2026-09-24 実測。#146・#149）。
+        // 本物は array / map / row の中の varbinary を `[B@` + 16 進（Java の byte[] の toString の形。
+        // 中身を表さず、測った 2 要素（違うバイト列）は無関係な値。2026-09-24 実測。#146・#149）。
         // athena-local は形だけ揃え、値はバイト列の FNV-1a 32 ビット（決定的）。先頭の 0 は落ちる
         // （`Aw==` = 03 は 7 桁）。トップレベルは 16 進のまま（上のテスト）。
         let varbinary = r#"{"rawType":"varbinary","arguments":[]}"#;

@@ -68,10 +68,10 @@ pub(super) fn varbinary(text: &str) -> String {
     }
 }
 
-/// 複合型（array / map / row）の中の varbinary。本物は Java の `byte[]` の `toString()`
-/// （`[B@` + identity hash の 16 進。先頭の 0 は付かず 1〜8 桁）を返し、中身を表さず、同じ配列の
-/// 2 要素でも別の値になる（2026-09-24 実測。#146・#149）。athena-local は形だけ揃え、値はバイト列の
-/// FNV-1a 32 ビットにして決定的にする（同じバイト列は同じ値。本物自身が安定しないので値は合わせない）。
+/// 複合型（array / map / row）の中の varbinary。本物は `[B@` + 16 進 1〜8 桁（Java の `byte[]` の
+/// `toString()` の形）を返し、数字は中身を表さない（2026-09-24 実測: `ARRAY[X'0102', X'03']` の 2 要素は
+/// 無関係な値。#146・#149）。等しいバイト列が同じ値になるか、実行ごとに変わるかは未実測。athena-local は
+/// 形だけ揃え、値はバイト列の FNV-1a 32 ビットにして決定的にする（同じバイト列は同じ値）。
 /// base64 として読めなければ受け取ったまま返す（トップレベルと同じ）。
 pub(super) fn nested_varbinary(text: &str) -> String {
     match decode_base64(text) {
