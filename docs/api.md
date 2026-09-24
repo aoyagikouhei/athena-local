@@ -76,6 +76,11 @@ Behaviour that matches real Athena:
   `(TYPE VALIDATE)`, whose single `boolean` value Athena renders as `true`,
   gives `Valid`, `true` and one empty row. `EXPLAIN ANALYZE` keeps the
   `SubstatementType` `EXPLAIN`.
+- `SHOW CREATE TABLE` and `SHOW CREATE VIEW` return one row per line of the
+  statement. Trino returns the whole text as a single value with embedded
+  newlines; Athena returns as many rows as the `<id>.txt` file has lines, with
+  no trailing empty row (measured 2026-09-16 and 2026-09-24 on Hive and Iceberg
+  tables and on a view). The `<id>.txt` file is unchanged by the split.
 - `double` and `real` values use Java's notation: `1.5`, `0.30000000000000004`,
   `1.0E20`, `1.0E-7`.
 - `array`, `map` and `row` values use Athena's notation rather than JSON:
