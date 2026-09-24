@@ -109,6 +109,7 @@
 - 構文エラー（`MALFORMED_QUERY`）の本文に `ErrorCode` キーが付くか（#3）→ #147（2026-09-24。`ErrorCode` `MALFORMED_QUERY` が付き、キーは `__type`・`AthenaErrorCode`・`ErrorCode`・`Message` の 4 つ。`x-amzn-errortype` ヘッダは無い。[measurements/errors.md](measurements/errors.md)）
 - ビューへの `DESCRIBE` の `UpdateCount`・Content-Type・`.metadata`（#160）→ #173（2026-09-24。`SHOW COLUMNS` も含め SubstatementType `DESC_VIEW`、`column`／`type` の varchar 2 列、UpdateCount 0、binary、`.metadata` は 440B の不透明な形式。[measurements/query-results.md](measurements/query-results.md) の「DESCRIBE／SHOW COLUMNS の行の形」）
 - Hive のテーブルへの `DESC t`（#160）→ #173（2026-09-24。`DESCRIBE t` と同じ。同じ項目）
+- 本物の Athena + PyAthena の `PandasCursor` で Iceberg の `DROP TABLE` を読むと `EmptyDataError` になるか（#111 の人間検証）→ #119（2026-09-25。本物でも `OperationalError: No columns to parse from file`。素の `Cursor` と Hive の `DROP TABLE` は例外なし。[measurements/clients.md](measurements/clients.md)）
 
 ## 測れないもの
 

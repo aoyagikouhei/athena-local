@@ -160,6 +160,21 @@
 
 ## PyAthena
 
+### 本物の Athena + PyAthena の PandasCursor で DROP TABLE を読む
+- 日付: 2026-09-25 ／ issue: #119 ／ スクリプト: `tools/measure/pyathena-drop-table.py`（`tools/dev.sh` 経由、venv は `tools/e2e/python-clients` の venv-wr） ／ 生データ: `~/athena-pyathena-drop-measurements/run-20260924-214303/`
+- 相手: 本物の Athena（ワークグループ `primary`、Catalog `AwsDataCatalog`、Database `<DB>`）。PyAthena 3.36.0、pandas 3.0.6、boto3 1.43.100
+- 投げたもの: CTAS で 1 行のテーブルを 3 本（Iceberg 2 本は `table_type = 'ICEBERG'`・`is_external = false`、Hive 1 本は `external_location` 付き）作り、`SHOW CREATE TABLE` で形式を裏取りしてから、それぞれ `DROP TABLE` を投げた。焦点は Iceberg × `PandasCursor`、対照は同じ形式の Iceberg × 素の `Cursor` と、Hive × `PandasCursor`（同じラウンド）
+- 返ったもの:
+
+  | 項目 | 例外 | StatementType / SubstatementType | 本体 `<id>.txt` | ColumnInfo |
+  | --- | --- | --- | --- | --- |
+  | Iceberg × PandasCursor | `pyathena.error.OperationalError: No columns to parse from file`（原因 `pandas.errors.EmptyDataError`） | DDL / DROP_TABLE | 1 バイト（`0a`）、application/octet-stream | 0 個 |
+  | Iceberg × Cursor（対照） | 無し | DDL / DROP_TABLE | 1 バイト（`0a`）、application/octet-stream | 0 個 |
+  | Hive × PandasCursor（対照） | 無し | DDL / DROP_TABLE | 0 バイト、binary/octet-stream | 0 個 |
+
+- 採用: athena-local 相手の #111（「PyAthena 3.36.0・awswrangler 3.17.1 の回帰確認」の表の DROP TABLE（Iceberg））と同じ例外が、本物でも出る。原因は PyAthena の `pandas/result_set.py` の `_read_csv`（長さ 0 のときだけ空の DataFrame を返し、1 バイトの改行は `read_csv` に渡す）で、本物も athena-local も同じ 1 バイトを置くため。athena-local は変えない。`docs/clients.md` の PyAthena の節の「not tried against Athena itself」を実測済みに書き換えた
+- 備考: 後始末で `DROP TABLE IF EXISTS` を 3 本投げ、Hive のデータの接頭辞（`<OUTPUT>tables-probe-119-hive/`）の下のオブジェクト 1 個を消した
+
 ### 失敗した DDL の <id>.txt を PyAthena が読むか
 - 日付: 2026-09-23 ／ issue: #111 ／ スクリプト: `tools/e2e/python-clients/verify.sh`（`check_pyathena.py`） ／ 生データ: verify.sh が `/tmp/athena-local-issue111-py.*` に残す
 - 相手: PyAthena 3.36.0（pandas 3.0.6）。athena-local の release ビルド（s3 モード）と手元の Trino 482 + MinIO。MinIO へのアクセスは `mc admin trace --json` で記録。本物の Athena ではない

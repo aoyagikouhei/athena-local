@@ -136,8 +136,9 @@ which writes their `<id>.txt` (`<id>.csv` for `SHOW FUNCTIONS`; see
 The pandas and arrow cursors read that file even for DDL. For `DROP TABLE` on
 an Iceberg table the file is a single newline, the same as Athena writes, and
 pandas raises `EmptyDataError` on it, which PyAthena 3.36.0 reports as
-`OperationalError` (seen against athena-local; not tried against Athena
-itself). Run DDL with the default cursor.
+`OperationalError`, against Athena itself as well (measured 2026-09-25; the
+default cursor and `DROP TABLE` on a Hive table, whose file is empty, raise
+nothing). Run DDL with the default cursor.
 
 ## dbt-athena
 
