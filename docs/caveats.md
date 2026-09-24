@@ -160,8 +160,14 @@ Known differences between athena-local and real Athena, grouped by topic.
 ## Value rendering
 
 - **`varbinary` inside `array` / `map` / `row`.** Top-level `varbinary` values
-  are converted from Trino's base64 to Athena's `01 02` form (measured). The same
-  form is used inside composite values, which was not measured.
+  are converted from Trino's base64 to Athena's `01 02` form (measured). Inside
+  a composite value real Athena instead prints the Java `byte[]` object,
+  `[B@2545d692` (`[B@` plus an identity hash in hex, 1 to 8 digits), which does
+  not encode the bytes and differs even between two equal elements of one array
+  (measured 2026-09-24). athena-local matches the shape and prints `[B@` plus a
+  32-bit FNV-1a hash of the bytes in hex, so the value is deterministic: equal
+  byte strings render the same, unlike on Athena. Neither form can be parsed
+  back into the bytes.
 - **Map key order.** Map entries are printed in ascending key order: numerically
   for numeric key types (`{9=a, 10=b}`), as strings otherwise (`{j=2, k=1}`).
   Both were measured against Athena; other key types were not.

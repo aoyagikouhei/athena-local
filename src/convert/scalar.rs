@@ -68,6 +68,25 @@ pub(super) fn varbinary(text: &str) -> String {
     }
 }
 
+/// 複合型（array / map / row）の中の varbinary。本物は Java の `byte[]` の `toString()`
+/// （`[B@` + identity hash の 16 進。先頭の 0 は付かず 1〜8 桁）を返し、中身を表さず、同じ配列の
+/// 2 要素でも別の値になる（2026-09-24 実測。#146・#149）。athena-local は形だけ揃え、値はバイト列の
+/// FNV-1a 32 ビットにして決定的にする（同じバイト列は同じ値。本物自身が安定しないので値は合わせない）。
+/// base64 として読めなければ受け取ったまま返す（トップレベルと同じ）。
+pub(super) fn nested_varbinary(text: &str) -> String {
+    match decode_base64(text) {
+        Some(bytes) => format!("[B@{:x}", fnv1a_32(&bytes)),
+        None => text.to_string(),
+    }
+}
+
+/// FNV-1a（32 ビット）。依存を足さず、Rust の版で変わらないハッシュにするため自前で持つ。
+fn fnv1a_32(bytes: &[u8]) -> u32 {
+    bytes.iter().fold(0x811c_9dc5_u32, |hash, byte| {
+        (hash ^ u32::from(*byte)).wrapping_mul(0x0100_0193)
+    })
+}
+
 /// 標準の base64（`+` `/`、`=` 埋め）。依存を足すほどではないので自前で読む。
 fn decode_base64(text: &str) -> Option<Vec<u8>> {
     let text = text.trim_end_matches('=');

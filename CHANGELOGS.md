@@ -11,6 +11,9 @@ later name the date they were measured on.
 
 ### Changed
 
+- A `varbinary` inside an `array`, `map` or `row` is rendered as `[B@<hex>`,
+  the shape real Athena prints (measured 2026-09-24), instead of the top-level
+  `01 02` hex form ([docs](docs/caveats.md#value-rendering)).
 - A `StartQueryExecution` retry with the same `ClientRequestToken` now also
   compares `QueryExecutionContext.Catalog`, as real Athena does (measured
   2026-09-24) ([docs](docs/api.md#supported-api)).
