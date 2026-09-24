@@ -29,7 +29,8 @@ pub(super) fn to_var_char_value(value: &Value, signature: Option<&Value>) -> Opt
 fn render(value: &Value, value_type: &ValueType) -> String {
     match (value_type, value) {
         (_, Value::Null) => "null".to_string(),
-        (ValueType::Varbinary, Value::String(text)) => super::scalar::varbinary(text),
+        // 複合型の中の varbinary は本物が `[B@<hex>` で返す（トップレベルの 16 進とは別。2026-09-24 実測）。
+        (ValueType::Varbinary, Value::String(text)) => super::scalar::nested_varbinary(text),
         (_, Value::String(text)) => text.clone(),
         (_, Value::Number(number)) => super::scalar::number_text(number),
         (ValueType::Array(element), Value::Array(items)) => {
@@ -192,11 +193,30 @@ mod tests {
     }
 
     #[test]
-    fn 配列の中の_varbinary_も_16_進にする() {
+    fn 複合型の中の_varbinary_は_java_の_byte_配列の_tostring_の形にする() {
+        // 本物は array / map / row の中の varbinary を `[B@` + 16 進（Java の byte[] の toString の形。
+        // 中身を表さず、測った 2 要素（違うバイト列）は無関係な値。2026-09-24 実測。#146・#149）。
+        // athena-local は形だけ揃え、値はバイト列の FNV-1a 32 ビット（決定的）。先頭の 0 は落ちる
+        // （`Aw==` = 03 は 7 桁）。トップレベルは 16 進のまま（上のテスト）。
         let varbinary = r#"{"rawType":"varbinary","arguments":[]}"#;
         assert_eq!(
-            format(r#"["AQI=",null]"#, &array_of(varbinary)),
-            Some("[01 02, null]".into())
+            format(r#"["AQI=","Aw==",null]"#, &array_of(varbinary)),
+            Some("[[B@ed74208a, [B@60c5eb2, null]".into())
+        );
+        let map = r#"{"rawType":"map","arguments":[
+            {"kind":"TYPE","value":{"rawType":"varchar","arguments":[{"kind":"LONG","value":1}]}},
+            {"kind":"TYPE","value":{"rawType":"varbinary","arguments":[]}}]}"#;
+        assert_eq!(
+            format(r#"{"k":"AQI="}"#, map),
+            Some("{k=[B@ed74208a}".into())
+        );
+        let row = r#"{"rawType":"row","arguments":[
+            {"kind":"NAMED_TYPE","value":{"fieldName":{"name":"b"},"typeSignature":{"rawType":"varbinary","arguments":[]}}}]}"#;
+        assert_eq!(format(r#"["AQI="]"#, row), Some("{b=[B@ed74208a}".into()));
+        // base64 として読めなければそのまま（トップレベルと同じ）。
+        assert_eq!(
+            format(r#"["not base64!"]"#, &array_of(varbinary)),
+            Some("[not base64!]".into())
         );
     }
 

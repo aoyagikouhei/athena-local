@@ -8,6 +8,8 @@
 
 - [ ] `SHOW CREATE TABLE` の本体と `.metadata` の Content-Type・`.metadata` の形式が、テーブルの形式で割れるか。#146（2026-09-24）の Iceberg のテーブルでは binary/octet-stream・不透明な形式（332B）・`UpdateCount` 0 で、#1（2026-09-16）・#70（2026-09-23）の記録（application/octet-stream・素の protobuf 88B・`UpdateCount` 無し）と食い違う。#1・#70 の対象テーブルの形式は記録に無い（[measurements/result-files.md](measurements/result-files.md) の「`SHOW CREATE VIEW` の Content-Type」の備考）
 
+- [ ] 複合型の中の varbinary の `[B@<hex>` の数字が、等しいバイト列で同じになるか、実行ごとに変わるか（#146 は `ARRAY[X'0102', X'03']` の違う 2 要素だけ。athena-local はバイト列の FNV-1a で決定的にしている。#149、2026-09-24）
+
 ## `.metadata`（[measurements/metadata.md](measurements/metadata.md)）
 
 - `SHOW` 5 文（`SHOW TABLES` / `DATABASES` / `COLUMNS` / `PARTITIONS` / `TBLPROPERTIES`）の本物の `.txt.metadata` は不透明な形式（base64 で 312 文字）。#24 で解析したが特定できず、AWS 側の仕様が公開されない限り埋まらないので測る対象から外す。athena-local は素の protobuf を置く（[docs/caveats.md](../caveats.md) に記載済み。JDBC が読めるかは下の「実クライアントでの疎通」）
