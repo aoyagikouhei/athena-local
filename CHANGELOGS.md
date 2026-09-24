@@ -11,6 +11,9 @@ later name the date they were measured on.
 
 ### Changed
 
+- `GetQueryResults` returns `SHOW CREATE TABLE` and `SHOW CREATE VIEW` one row
+  per line, as real Athena does (measured 2026-09-16 and 2026-09-24), instead
+  of a single value with embedded newlines ([docs](docs/api.md#supported-api)).
 - `GetQueryResults` and the `.metadata` companion carry real Athena's columns
   for `SHOW TABLES`, `SHOW SCHEMAS`, `SHOW COLUMNS` and `DESCRIBE` / `DESC`
   (measured 2026-09-24) ([docs](docs/api.md#supported-api)).

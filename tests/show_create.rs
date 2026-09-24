@@ -278,3 +278,75 @@ async fn 結果_s3_が無効でも_show_create_table_は形式を問い合わせ
     assert_eq!(results["UpdateCount"], 0);
     assert!(harness.s3_puts().is_empty());
 }
+
+/// GetQueryResults の Rows の 1 列目を文字列の並びにする。
+fn first_column(results: &Value) -> Vec<String> {
+    results["ResultSet"]["Rows"]
+        .as_array()
+        .expect("Rows がある")
+        .iter()
+        .map(|row| {
+            row["Data"][0]["VarCharValue"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        })
+        .collect()
+}
+
+/// Trino は SHOW CREATE の全文を改行入りの 1 値で返すが、本物の GetQueryResults は本体の 1 行を 1 行で返す
+/// （行数は本体の行数と同じで、末尾に空行は無い。SHOW CREATE VIEW 2 行、Iceberg の SHOW CREATE TABLE 9 行・
+/// 7 行、Hive の SHOW CREATE TABLE 12 行・19 行・22 行。2026-09-16・2026-09-24 実測。#181）。
+/// 本体（`.txt`）は行を `\n` でつなぐので、分けても今までと同じバイト列になる。
+#[tokio::test]
+async fn show_create_view_の_get_query_results_は本体の行ごとに分ける() {
+    let harness = Harness::builder(select_response())
+        .route("SHOW CREATE VIEW v", show_create_view_response())
+        .results_s3()
+        .start()
+        .await;
+    let execution = harness
+        .run_query(json!({
+            "QueryString": "SHOW CREATE VIEW v",
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+        }))
+        .await;
+    let id = execution_id(&execution);
+    let (_, results) = harness
+        .call("GetQueryResults", json!({ "QueryExecutionId": id }))
+        .await;
+    assert_eq!(
+        first_column(&results),
+        ["CREATE VIEW db.v AS", "SELECT 1 n"],
+        "{results}"
+    );
+    let puts = harness.s3_puts();
+    assert_eq!(puts[0].key, format!("athena/{id}.txt"));
+    assert_eq!(
+        String::from_utf8_lossy(&puts[0].body),
+        "CREATE VIEW db.v AS\nSELECT 1 n"
+    );
+}
+
+#[tokio::test]
+async fn show_create_table_の_get_query_results_は形式によらず本体の行ごとに分ける() {
+    for connector_name in ["hive", "iceberg"] {
+        let (harness, execution) = run_show_create_table(connector_name).await;
+        let id = execution_id(&execution);
+        let (_, results) = harness
+            .call("GetQueryResults", json!({ "QueryExecutionId": id }))
+            .await;
+        assert_eq!(
+            first_column(&results),
+            ["CREATE TABLE db.t (", "   n integer", ")"],
+            "{connector_name}: {results}"
+        );
+        let puts = harness.s3_puts();
+        assert_eq!(puts[0].key, format!("athena/{id}.txt"));
+        assert_eq!(
+            String::from_utf8_lossy(&puts[0].body),
+            "CREATE TABLE db.t (\n   n integer\n)",
+            "{connector_name}"
+        );
+    }
+}

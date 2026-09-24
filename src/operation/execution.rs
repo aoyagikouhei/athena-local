@@ -289,6 +289,7 @@ async fn run(
         result => result,
     }?;
     let outcome = completion::split_explain_rows(&execution.query, outcome);
+    let outcome = completion::split_show_create_rows(&execution.query, outcome);
     // Iceberg のテーブルの DESCRIBE だけ、パーティション行のために `SHOW CREATE TABLE` を別に投げる（#173）。
     let partitions = if statement == Some(table_format::TargetStatement::Describe)
         && format == Some(table_format::TableFormat::Iceberg)

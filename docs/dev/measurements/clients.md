@@ -278,6 +278,7 @@
   - 3 モードとも `failures=0`。auto の `loaded query result metadata` はケースの区切りの中に 1 件ずつあり、読んだファイルの Content-Type を MinIO で見て binary と確かめた
   - 結論: #151 で `.txt` と `.txt.metadata` を binary/octet-stream にした 2 文も、既定の auto で例外なく読む。Content-Type は読み方に影響しない（issue の推測どおり）。`docs/caveats.md` の「`SHOW` metadata is not the opaque form Athena writes」に追記した
   - GetQueryResults の行数が auto／S3 と食い違うのは athena-local 側の差分（Trino の結果を行に分けずに返す。本物は `SHOW CREATE VIEW` 2 行、Iceberg の `SHOW CREATE TABLE` 9 行。result-files.md の #151）。#181 に起票し、足場では INFO（既知の差分）に落とした
+    - → #181（2026-09-25）で `SHOW CREATE TABLE`／`VIEW` の結果を行ごとに分けるようにし、足場の INFO の扱いを外した。同じ足場で 9 ケースすべて auto = S3 = GetQueryResults（`SHOW CREATE VIEW` 2 行、Iceberg の `SHOW CREATE TABLE` 8 行）
   - ミューテーション: `content_type::carries_execution_id` に `VIEW` を足して `SHOW CREATE VIEW` を application に戻すと、`SHOW_CREATE_VIEW の .txt.metadata(auto)` が FAIL になることを確かめた
 
 ### 失敗した DDL の `<id>.txt` を Athena JDBC 3.x が読むか

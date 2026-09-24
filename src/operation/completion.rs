@@ -66,6 +66,31 @@ pub(super) fn split_explain_rows(query: &str, mut outcome: Outcome) -> Outcome {
     outcome
 }
 
+/// SHOW CREATE TABLE／SHOW CREATE VIEW の結果を本物と同じく本体の行ごとに分ける。Trino は全文を改行入りの
+/// 1 値で返すが、本物の GetQueryResults は `\n` で分けた行を返す（行数は本体の行数と同じで、EXPLAIN と
+/// 違って末尾に空行を足さない。Hive・Iceberg・ビューの 6 本で実測。2026-09-16・2026-09-24。#181）。
+/// `.txt` は行を `\n` でつなぐので、分けても本体のバイト列は変わらない。
+pub(super) fn split_show_create_rows(query: &str, mut outcome: Outcome) -> Outcome {
+    if !matches!(
+        super::classification::substatement_type(query),
+        Some("SHOW_CREATE_TABLE" | "SHOW_CREATE_VIEW")
+    ) {
+        return outcome;
+    }
+    let rows = std::mem::take(&mut outcome.rows);
+    outcome.rows = rows
+        .into_iter()
+        .flat_map(|row| match row.first() {
+            Some(serde_json::Value::String(text)) => text
+                .split('\n')
+                .map(|line| vec![serde_json::Value::from(line)])
+                .collect(),
+            _ => vec![row],
+        })
+        .collect();
+    outcome
+}
+
 /// GetQueryResults の UpdateCount。本物は SELECT と SHOW でも 0 を返し、DDL では null を返す
 /// （2026-09-14 実測。SDK から見て null と省略は同じなので、DDL は省く）。DML と CTAS は Trino が返す
 /// 件数をそのまま載せる。DESCRIBE と SHOW CREATE TABLE は Hive のテーブル（と判定できないとき。`DESC` も）では

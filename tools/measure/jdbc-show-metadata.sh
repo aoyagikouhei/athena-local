@@ -249,7 +249,7 @@ check_show_create_loaded() {
 #     その前の挙動で、#134 で外した。SELECT はドライバが見出し行を読み飛ばすので一致する。
 compare_row_counts() {
   local base="$OUT_ROOT/jdbc-S3.log"
-  local line label rows cols status got mismatch=0 total=0 want known=0
+  local line label rows cols status got mismatch=0 total=0 want
   while IFS= read -r line; do
     label=$(echo "$line" | awk '{print $2}')
     rows=$(echo "$line" | sed -E 's/.* rows=(-?[0-9]+).*/\1/')
@@ -264,24 +264,14 @@ compare_row_counts() {
     want=$rows
     got=$(grep "^RESULT $label " "$OUT_ROOT/jdbc-GetQueryResults.log" | sed -E 's/^RESULT [^ ]+ //')
     if [ "$got" != "rows=$want cols=$cols status=$status" ]; then
-      case "$label" in
-        # 既知の差分（#181）: athena-local は SHOW CREATE の結果を Trino のまま改行入りの 1 行で返す
-        # （本物は行ごとに分ける）。直れば一致して、ここを通らなくなる。
-        SHOW_CREATE_VIEW | SHOW_CREATE_TABLE_iceberg)
-          known=$((known + 1))
-          record "突き合わせ $label" INFO "既知の差分 #181。S3: rows=$want / GetQueryResults: ${got:-（無し）}"
-          ;;
-        *)
-          mismatch=$((mismatch + 1))
-          record "突き合わせ $label" FAIL "期待 GetQueryResults: rows=$want cols=$cols status=$status / 実際: ${got:-（無し）}"
-          ;;
-      esac
+      mismatch=$((mismatch + 1))
+      record "突き合わせ $label" FAIL "期待 GetQueryResults: rows=$want cols=$cols status=$status / 実際: ${got:-（無し）}"
     fi
   done < <(grep '^RESULT ' "$base" 2>/dev/null)
   if [ "$total" = "0" ]; then
     record "行数の突き合わせ" FAIL "S3 のログに RESULT 行が無い"
   elif [ "$mismatch" = "0" ]; then
-    record "行数の突き合わせ" PASS "$total ケースすべて auto = S3、GetQueryResults も既知の差分 $known 件（#181）を除いて一致"
+    record "行数の突き合わせ" PASS "$total ケースすべて auto = S3 = GetQueryResults で一致"
   fi
   {
     echo
