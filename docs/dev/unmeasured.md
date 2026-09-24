@@ -6,52 +6,33 @@
 
 ## 結果ファイル（[measurements/result-files.md](measurements/result-files.md)）
 
-- [ ] `CREATE TABLE` の重複の結果ファイル（Hive テーブルへの `ALTER TABLE` 失敗は #43 で実測済み: `RENAME TO` が理由を `<id>.txt` に書いた。失敗した `EXPLAIN` は #92 で実測済み: 何も置かない）
-- [ ] `.txt` の値に区切り文字（タブ）や改行が入るときのエスケープと、NULL の書き方（#1。1 回目で「まだ測れていない」とし、4 回目の記述では触れていない）
-- [ ] 失敗した `SHOW FUNCTIONS` が結果ファイルを置くか（#80）
-- [ ] `SHOW CREATE VIEW` の Content-Type（#76 のラウンドでは DB にビューが無く SKIPPED）
+- [ ] `SHOW CREATE TABLE` の本体と `.metadata` の Content-Type・`.metadata` の形式が、テーブルの形式で割れるか。#146（2026-09-24）の Iceberg のテーブルでは binary/octet-stream・不透明な形式（332B）・`UpdateCount` 0 で、#1（2026-09-16）・#70（2026-09-23）の記録（application/octet-stream・素の protobuf 88B・`UpdateCount` 無し）と食い違う。#1・#70 の対象テーブルの形式は記録に無い（[measurements/result-files.md](measurements/result-files.md) の「`SHOW CREATE VIEW` の Content-Type」の備考）
 
 ## `.metadata`（[measurements/metadata.md](measurements/metadata.md)）
 
-- [ ] `.metadata` の `timestamp with time zone`／`time with time zone`／`interval year to month`／`uuid`／`ipaddress` の Precision／Scale／CaseSensitive（field 7／8／10）の有無。**推測で実装している**
-- [ ] 更新件数 0 の `UPDATE` / `DELETE` / `MERGE`（`DELETE ... WHERE false` など）で本物が更新件数の field 3 を出すか（athena-local は `18 00` を書く。0 行の `INSERT` は Hive・Iceberg とも `18 00` を書くと実測済み。#35・#91）
 - `SHOW` 5 文（`SHOW TABLES` / `DATABASES` / `COLUMNS` / `PARTITIONS` / `TBLPROPERTIES`）の本物の `.txt.metadata` は不透明な形式（base64 で 312 文字）。#24 で解析したが特定できず、AWS 側の仕様が公開されない限り埋まらないので測る対象から外す。athena-local は素の protobuf を置く（[docs/caveats.md](../caveats.md) に記載済み。JDBC が読めるかは下の「実クライアントでの疎通」）
-- [ ] 0 行の CTAS（更新件数 0）で本物が field 3 を出すか（#5）
-- [ ] 列の Nullable（field 9）の 1（NOT_NULL）と 2（NULLABLE）（#5。観測したのは 3 = UNKNOWN だけ）
-
-## 文の種類（[measurements/statements.md](measurements/statements.md)）
-
-- [ ] `ALTER TABLE ... REPLACE COLUMN`（単数形）の受理と `SubstatementType`（#43。複数形の `REPLACE COLUMNS` だけ測った）
-- [ ] `ALTER TABLE ... DROP PARTITION` × Iceberg（#43）
 
 ## ClientRequestToken と保持期限（[measurements/client-request-token.md](measurements/client-request-token.md)）
 
-- [ ] `Catalog` の差が冪等性の衝突（`IDEMPOTENT_PARAMETER_MISMATCH`）になるか（`WorkGroup` は実測済み）
 - [ ] 本物がトークンを正規化するか（前後の空白、`"`、`\`、大文字小文字）
 - [ ] トークン長の制約（32〜128）がバイト数か文字数か（ASCII でしか測っていない）
-- [ ] トークンの検証と他の検証エラー（`OutputLocation` 無し等）の優先順位
-- [ ] 同じトークンの再送で `OutputLocation` が不正な値、または `QueryString` が構文エラーのとき、トークンの照合（`IDEMPOTENT_PARAMETER_MISMATCH`）と検証のどちらが先か（athena-local は `OutputLocation` の検証と構文チェックの後、`Store::submit` で照合する。#102）
+- [ ] トークンの検証と他の検証エラー（`OutputLocation` 無し等）の優先順位（`OutputLocation` の不正と構文エラーが同時のときは #146 で実測: `OutputLocation` が先。長さの足りないトークンが絡む組は AWS CLI が送れないので生 HTTP で測る。本物での実行は #147）
 - [ ] トークン対応表と実行情報の本物の保持期間（60 秒を超えることまでは実測。既定の 1 時間は athena-local 独自の値）
 - [ ] 期限切れのトークンを再送すると本物で新しい ID になるか、期限切れの ID の `GetQueryExecution` が `QUERY_EXECUTION_NOT_FOUND` か、`StopQueryExecution` が 400 か
-- [ ] `Database`／`OutputLocation` の「省略」と「既定と同じ値の明示」を本物が別物として扱うか
+- [ ] 出力先を強制しない（`EnforceWorkGroupConfiguration: false`）ワークグループで、`OutputLocation` の「省略」と「既定と同じ値の明示」を本物が別物として扱うか。#146（2026-09-24）は強制するワークグループでしか測れず、そこでは同じ `QueryExecutionId` が返った（`Database` の省略と `default` の明示は衝突）
 
 ## ワークグループ（[measurements/work-groups.md](measurements/work-groups.md)）
 
-- [ ] 出力先が設定されたワークグループの `GetWorkGroup` の `ResultConfiguration` の形
 - [ ] `ListWorkGroups` の順序が名前順であること（3 件だけの根拠のまま。作成・削除を伴うので #113 では測らない）
 
 ## エラー応答（[measurements/errors.md](measurements/errors.md)）
 
-- [ ] `QUEUED` のクエリへの `GetQueryResults` の文言（`RUNNING` のときの `Query has not yet finished. Current state: RUNNING` だけ実測。athena-local は `Current state: QUEUED` を返す。#102）
+- [ ] `QUEUED` のクエリへの `GetQueryResults` の文言（`RUNNING` のときの `Query has not yet finished. Current state: RUNNING` だけ実測。athena-local は `Current state: QUEUED` を返す。#102）。#146（2026-09-24）で軽い `SELECT` を 5 本続けて投げたが、キューの待ちが 47〜86 ミリ秒で、直後の `GetQueryExecution` はどれも SUCCEEDED だった（[measurements/query-results.md](measurements/query-results.md)）。捉えるには同時実行の上限まで詰めるなど別の手が要る
 - [ ] 構文エラー（`MALFORMED_QUERY`）など、冪等性の衝突とトークンの検証以外の `AthenaErrorCode` 付きエラーの本文に `ErrorCode` キーが付くか（#3。`ErrorCode` 付きの形を確かめたのはこの 2 つと、#83 の `GetQueryResults` の検証エラー、#87 の `ExecutionParameters` の要素が `null` のケース（[measurements/errors.md](measurements/errors.md) の「#84 で未実測だった型違いなどの組み合わせ」に追記済み）。ただし後者は `StartQueryExecution` の構文チェックの経路そのものを狙って測ったものではない。構文エラーの経路は #113 のバッチ（生 HTTP）で測る。本物での実行は #147）
 
 ## 実クライアントでの疎通（[measurements/clients.md](measurements/clients.md)）
 
 - [ ] Athena JDBC 3.0.0〜3.3.0 が素の protobuf の `.txt.metadata` を解けるか（#111 で測ったのは auto のある 3.4.0・3.5.0 だけ。3.3.0 以下は auto が無く、`ResultFetcher=S3` は `.txt.metadata` を取りに行かない。既定の経路 GetQueryResultsStream は athena-local が持たないので手元では測れない）
-
-## `ExecutionParameters`（値そのものを本物で測った記録はまだ無い。分類にからむ記録は [measurements/statements.md](measurements/statements.md) にある）
-
-- [ ] 空白入りの括弧で始まるクエリ（`( SELECT 1 )`）を本物がどう分類するか。括弧の直後にスペースが無い `(SELECT 1)` は #76 の生データの読み直しで `StatementType: DML`／`SubstatementType: SELECT` と確認済み（#113、[measurements/statements.md](measurements/statements.md)）。athena-local は式として通す（CHANGELOG の Unreleased / Fixed の項目。レビューで見つけた）。空白入りの `( SELECT 1 )` は #113 のバッチで測る（本物での実行は #146）
 
 ## Trino（[measurements/trino.md](measurements/trino.md)）
 
@@ -94,6 +75,20 @@
 - 失敗した DDL の `<id>.txt` を結果ファイルを読むクライアント（PyAthena、JDBC 3.x）が読んでも壊れないこと（#6）→ #111（2026-09-23。JDBC 3.0.0〜3.8.1 も PyAthena 3.36.0 の PandasCursor・Cursor も FAILED を見て例外を投げ、`<id>.txt` も `.txt.metadata` も取りに行かなかった。[measurements/clients.md](measurements/clients.md)。足場は `tools/e2e/jdbc-drivers/` と `tools/e2e/python-clients/`）
 - 暗号化系の `SHOW` に素の protobuf の `.txt.metadata` を返して Athena JDBC 3.5.1 未満が壊れないか（#5）→ #111（`.txt.metadata` を読み込む auto のある 3.4.0・3.5.0 は例外なく読んだ。3.4.0・3.5.0 の auto で準備の `CREATE TABLE` が既知の NoSuchKey。3.0.0〜3.3.0 は下の「実クライアントでの疎通」に残す。[measurements/clients.md](measurements/clients.md)）
 - 長時間運用でメモリが頭打ちになるか（保持期限による破棄の実効性）→ #111（2026-09-23。同じ負荷を 240 秒ずつ流し、保持 1 秒の VmRSS の暖機後の伸びは 17.9MiB（後半 3.1MiB）、保持 3600 秒は 3267.9MiB。最初の ID は 1 秒側で 400。足場は `tools/e2e/retention/verify.sh`。docs/caveats.md の Query lifecycle に書いた。数時間の推移は #121）
+- `CREATE TABLE` の重複の結果ファイル（#6）→ #146（2026-09-24。Hive の外部テーブルの 2 回目は FAILED で理由を `<id>.txt` に置き `.metadata` 無し、Iceberg の CTAS の 2 回目は何も置かない。[measurements/result-files.md](measurements/result-files.md)）
+- `.txt` の値に区切り文字（タブ）や改行が入るときのエスケープと、NULL の書き方（#1）→ #146（2026-09-24、3 回目。エスケープは無くタブも改行もそのまま。`GetQueryResults` は値の中の改行で行が分かれる。コメントの無い列は `DESCRIBE` で空白 20 個。列コメントの改行は Glue が受け付けず測れない）
+- 失敗した `SHOW FUNCTIONS` が結果ファイルを置くか（#80）→ #146（2026-09-24。`<id>.csv` も `.metadata` も置かない）
+- `SHOW CREATE VIEW` の Content-Type（#76）→ #146（2026-09-24。本体・`.metadata` とも binary/octet-stream で、`.metadata` は 312B の不透明な形式。対照の Iceberg の `SHOW CREATE TABLE` が既存の記録と食い違ったので上の「結果ファイル」に残した）
+- `.metadata` の `timestamp with time zone`／`time with time zone`／`interval year to month`／`uuid`／`ipaddress` の field 7／8／10 の有無（#5）→ #146（2026-09-24。推測で実装していたとおり: 前 2 つは 7／8／10 あり、`interval year to month` は 10 だけ、`uuid`・`ipaddress` は 3 つとも無し。[measurements/metadata.md](measurements/metadata.md)）
+- 更新件数 0 の `UPDATE` / `DELETE` / `MERGE` で本物が field 3 を出すか（#35・#91）→ #146（2026-09-24。3 文とも `18 00` を書く）
+- 0 行の CTAS（更新件数 0）で本物が field 3 を出すか（#5）→ #146（2026-09-24。`18 00` を書く）
+- `ALTER TABLE ... REPLACE COLUMN`（単数形）の受理と `SubstatementType`（#43）→ #146（2026-09-24。`StartQueryExecution` が `mismatched input 'REPLACE'` の `MALFORMED_QUERY` で受け付けない。[measurements/result-files.md](measurements/result-files.md)）
+- `ALTER TABLE ... DROP PARTITION` × Iceberg（#43）→ #146（2026-09-24。FAILED `Query type not supported by Athena Iceberg at this time`、`SubstatementType` は `ALTER_TABLE_DROP_PARTITION`、何も置かず `GetQueryResults` は `RESULT_NOT_FOUND`）
+- `Catalog` の差が冪等性の衝突（`IDEMPOTENT_PARAMETER_MISMATCH`）になるか（#3）→ #146（2026-09-24。大文字小文字だけの違いも実在しない名前も衝突。[measurements/client-request-token.md](measurements/client-request-token.md)）
+- 同じトークンの再送で `OutputLocation` が不正な値、または `QueryString` が構文エラーのとき、トークンの照合と検証のどちらが先か（#102）→ #146（2026-09-24。どちらも検証のエラーが先）
+- `Database`／`OutputLocation` の「省略」と「既定と同じ値の明示」を本物が別物として扱うか → #146（2026-09-24。`Database` は別物（衝突）。`OutputLocation` は出力先を強制するワークグループで同じ ID が返った。強制しないワークグループは上の「ClientRequestToken と保持期限」に残した）
+- 出力先が設定されたワークグループの `GetWorkGroup` の `ResultConfiguration` の形 → #146（2026-09-24。`{"OutputLocation": "s3://.../"}` だけ。[measurements/work-groups.md](measurements/work-groups.md)）
+- 空白入りの括弧で始まるクエリ（`( SELECT 1 )`）を本物がどう分類するか（#113）→ #146（2026-09-24。`( SELECT 1 )`・改行入りとも `DML`／`SELECT`。[measurements/statements.md](measurements/statements.md)）
 
 ## 測れないもの
 
@@ -105,3 +100,4 @@
 - `GetWorkGroup` の実測値（`EnforceWorkGroupConfiguration=false` 等）が工場出荷時の既定か、コンソールで変えた後の値か。測ったアカウントの `primary` は過去に設定を変えた可能性があり、新しいアカウントを作らないと区別できない（[measurements/work-groups.md](measurements/work-groups.md) の備考）
 - 列の field 2 / 3（SchemaName / TableName）が本物で出るか（#5）。実テーブルの `SELECT` でも出ないこと（`ColumnInfo` も空）は観測済み（[measurements/metadata.md](measurements/metadata.md)）だが、出す条件があるかどうかまでは本物では観測できない（判断: #113、2026-09-24）
 - `ListWorkGroups` の `MaxResults` 未指定時の既定ページサイズ（athena-local は 50）。51 個のワークグループを用意しないと境界が見えず、実アカウントに 51 件のワークグループを作ることになるのでユーザー判断で測らない（#113、2026-09-24）
+- 列の Nullable（field 9）の 1（NOT_NULL）と 2（NULLABLE）（#5）。本物では NOT NULL 列の Iceberg テーブルを DDL で作れない（Hive 風の `TBLPROPERTIES ('table_type'='ICEBERG')` も `WITH (...)` の綴りも `StartQueryExecution` が `MALFORMED_QUERY`）。NULL 可の列も 3（UNKNOWN）で、これまで観測したのは 3 だけ（#146、2026-09-24。[measurements/metadata.md](measurements/metadata.md)）

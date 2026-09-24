@@ -103,8 +103,8 @@ athena-local writes their `<id>.txt` with the `binary/octet-stream` default.
 follows `SHOW CREATE TABLE`. `SHOW FUNCTIONS` writes `<id>.csv` with a header
 row, as `application/octet-stream`, with `SubstatementType` `SHOW_FUNCTIONS`
 and with the engine's query id at the head of its `.metadata`, all as measured
-on 2026-09-23; whether a failed `SHOW FUNCTIONS` writes a result file was not
-measured, so athena-local writes none, as for every other `<id>.csv` statement.
+on 2026-09-23; a failed `SHOW FUNCTIONS` writes no result file, as on Athena
+(measured 2026-09-24) and as for every other `<id>.csv` statement.
 Two DDL combinations depend on the target table's format instead: `DROP TABLE`
 on an Iceberg table and `ALTER TABLE ... ADD COLUMNS` on a Hive table send
 their `<id>.txt` and `.metadata` as `application/octet-stream` (measured

@@ -108,7 +108,7 @@ pub(super) async fn write_result(
 /// （本物は StateChangeReason そのものを置き、その文言自体が `FAILED: ` で始まる。2026-09-17 実測）。
 /// 置くのは `<id>.txt` の文（DDL / SHOW など）だけで、`.metadata` は置かない（実測）。
 /// `.txt` の文でも EXPLAIN は置かない（本物はクエリエンジンで動く文に失敗時のファイルを置かない。2026-09-23 実測。#92）。
-/// `<id>.csv` の SHOW FUNCTIONS が失敗したときに本物が何を置くかは未測定で、他の `.csv` の文と同じく置かない（#80）。
+/// `<id>.csv` の SHOW FUNCTIONS が失敗しても、他の `.csv` の文と同じく置かない（本物も `<id>.csv` も `.metadata` も置かない。2026-09-24 実測。#80・#146）。
 /// 書けなくても FAILED と StateChangeReason は Trino のエラーのまま（`.txt` / `.metadata` と同じ扱い）。
 /// `.csv` の PUT が失敗して FAILED になる経路（`write_result`）はここを通らない。
 pub(super) async fn write_failure(app: &App, execution: &Execution, failure: &Failure) {

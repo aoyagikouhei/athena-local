@@ -47,6 +47,28 @@
 - 備考: toolbox（`tools/dev.sh`、資格情報はホストのシェルの環境変数）から本物の Athena に届き、出力がホストの `~` に出ることの確認を兼ねた（#129 の受け入れ条件）。athena-local の `GetWorkGroup` は `EnableMinimumEncryptionConfiguration` を「値が採れていない」として省いている（`src/operation/work_group.rs:37`）。`QuerySchedulingType` と合わせて返すかは #137 で扱う。
 - 採用した判断（#137、2026-09-24）: `EnableMinimumEncryptionConfiguration` は false で返す（SDK のモデルにあり、awscli 2.37.0 の出力にも出る）。`QuerySchedulingType` は SDK のモデルに無い（awscli 2.37.0 の出力に出ない）ので、`EngineVersion.Category` と同じく返さない。
 
+### 出力先が設定されたワークグループの GetWorkGroup
+- 日付: 2026-09-24 ／ issue: #146（バッチは #113） ／ スクリプト: `tools/measure/unmeasured-batch/run.sh`（項目 `w1`。run の開始時の確認でも同じ `GetWorkGroup` を呼んでいる） ／ 生データ: `$HOME/athena-unmeasured-batch-measurements/run-20260924-004554/w1/`（`primary.json`・`workgroup2.json`）、`.preflight/preflight-workgroup2.json`
+- 相手: 本物の Athena（ap-northeast-1、engine version 3）
+- 投げたもの: `GetWorkGroup` を `primary` と `<WORKGROUP2>`（出力先が設定済みの既存のワークグループ。別の用途で運用されているもの）に。AWS CLI の JSON 出力（`--debug` 無し）
+- 返ったもの:
+
+  | 項目 | `primary` | `<WORKGROUP2>` |
+  | --- | --- | --- |
+  | `State` | `ENABLED` | `ENABLED` |
+  | `Configuration.ResultConfiguration` | `{}` | **`{"OutputLocation": "s3://<BUCKET>/athena-query-results/"}`**（= `<OUTPUT>`。末尾は `/`。`EncryptionConfiguration` などほかのキーは無い） |
+  | `Configuration.EnforceWorkGroupConfiguration` | `false` | `true` |
+  | `Configuration.PublishCloudWatchMetricsEnabled` | `false` | `true` |
+  | `Configuration.BytesScannedCutoffPerQuery` | 無し | `107374182400` |
+  | `Configuration.RequesterPaysEnabled` | `false` | `false` |
+  | `Configuration.EngineVersion` | `AUTO` / `Athena engine version 3` | 同じ |
+  | `Configuration.EnableMinimumEncryptionConfiguration` | `false` | `false` |
+  | `Description` | 無し | 有り（運用側の説明文。中身は書かない） |
+  | `CreationTime` | 有り | 有り |
+
+  - `.preflight/preflight-workgroup2.json`（run の開始時）と `w1/workgroup2.json` は同じ内容
+- 備考: CLI の出力なので、ワイヤ上だけのキー（`QuerySchedulingType`、`EngineVersion.Category`。上の #129 の節）は見ていない。`<WORKGROUP2>` の値はそのワークグループの運用上の設定で、出力先を設定したときの既定値ではない。1 回目（run-20260924-004011）の開始時の確認でも同じ応答だった（issue #146 のノートの「実測の経緯」）
+
 ### 存在しないワークグループのエラー
 - 日付: 2026-09-17 ／ issue: #2 ／ スクリプト: `tools/measure/get-work-group.sh`（旧 `2-measure-workgroup.sh`） ／ 生データ: `$HOME/athena-workgroup-measurements/run-20260917-064427`
 - 相手: 本物の Athena

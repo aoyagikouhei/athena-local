@@ -78,3 +78,42 @@
   - **32 文字・128 文字はどちらも 200 で成功。** `QueryExecutionId` が返る。
   - **応答ヘッダに `x-amzn-errortype` は無い。** ヘッダの全体は `Connection` / `Content-Length` / `Content-Type` / `Date` / `x-amzn-RequestId` の 5 つだけ。
 - 備考: 3 回目は `raw-token-omit` だけ `URLError(gaierror(-2, 'Name or service not known'))`（名前解決の一時的な失敗）で届かず、他 5 件は届いた。4 回目は `URLError` のリトライ（2 秒 × 3 回）を入れ、6 件すべて届いた（`"attempts": 1`）。文字数はすべて ASCII で測ったので、バイト数か文字数かは未測定。
+
+### Catalog だけを変えた再送（大文字小文字の違いと実在しない名前）
+- 日付: 2026-09-24 ／ issue: #146（バッチは #113） ／ スクリプト: `tools/measure/unmeasured-batch/run.sh`（項目 `t1`） ／ 生データ: `$HOME/athena-unmeasured-batch-measurements/run-20260924-004554/t1/`
+- 相手: 本物の Athena（engine version 3、workgroup `primary`）
+- 投げたもの: 同じトークン・同じ `SELECT 1 AS t1_probe`・同じ Database `<DB>`・同じ OutputLocation `<OUTPUT>` で、`QueryExecutionContext.Catalog` だけを 1 本目 `AwsDataCatalog`、2 本目 `AWSDATACATALOG`、3 本目 `athena_local_probe_113_no_such_catalog`
+- 返ったもの:
+  - 1 本目: SUCCEEDED。`GetQueryExecution` の `QueryExecutionContext.Catalog` は `awsdatacatalog`（小文字で返る）。`<id>.csv` 15B・`<id>.csv.metadata` 87B（binary/octet-stream。field 1 は QueryExecutionId、field 2 は空文字、field 3 は 0。リテラルだけの SELECT の既知の形）
+  - 2 本目（大文字小文字だけの違い）: `InvalidRequestException`: `Idempotent parameters do not match`、`AthenaErrorCode` `IDEMPOTENT_PARAMETER_MISMATCH`。ID は返らない
+  - 3 本目（実在しない Catalog）: 2 本目と同じ
+- 備考: `Catalog` も冪等性の照合に入る。大文字小文字だけの違いも衝突になる（1 本目の Catalog は小文字にして返されるが、照合はそれとは別）
+
+### 同じトークンの再送で OutputLocation が不正・QueryString が構文エラーのとき
+- 日付: 2026-09-24 ／ issue: #146（バッチは #113。未実測にしたのは #102） ／ スクリプト: `tools/measure/unmeasured-batch/run.sh`（項目 `t5`） ／ 生データ: `$HOME/athena-unmeasured-batch-measurements/run-20260924-004554/t5/`
+- 相手: 本物の Athena（engine version 3、workgroup `primary`、Catalog `AwsDataCatalog`、Database `<DB>`）
+- 投げたもの: 同じトークンで 3 本。1 本目 `SELECT 1 AS t5_probe`（OutputLocation `<OUTPUT>`）、2 本目は同じ SQL で OutputLocation だけ `not-a-valid-s3-path`、3 本目は OutputLocation `<OUTPUT>` のまま SQL だけ `SELEC 1`
+- 返ったもの:
+  - 1 本目: SUCCEEDED（`<id>.csv` 15B・`.metadata` 87B、binary/octet-stream）
+  - 2 本目: `InvalidRequestException`: `outputLocation is not a valid S3 path.`、`AthenaErrorCode` `INVALID_INPUT`
+  - 3 本目: `InvalidRequestException`: `line 1:1: mismatched input 'SELEC'. Expecting: 'ALTER', 'ANALYZE', 'CALL', 'COMMENT', 'COMMIT', 'CREATE', 'DEALLOCATE', 'DELETE', 'DENY', 'DESC', 'DESCRIBE', 'DROP', 'EXECUTE', 'EXPLAIN', 'GRANT', 'INSERT', 'MERGE', 'PREPARE', 'REFRESH', 'RESET', 'REVOKE', 'ROLLBACK', 'SET', 'SHOW', 'START', 'TRUNCATE', 'UNLOAD', 'UPDATE', 'USE', <query>`、`AthenaErrorCode` `MALFORMED_QUERY`
+- 備考: どちらも `IDEMPOTENT_PARAMETER_MISMATCH` ではなく検証のエラー。OutputLocation の検証と構文チェックはトークンの照合より先
+
+### 不正な OutputLocation と構文エラーが同時のとき
+- 日付: 2026-09-24 ／ issue: #146（バッチは #113。`t4` のうち AWS CLI で送れる組） ／ スクリプト: `tools/measure/unmeasured-batch/run.sh`（項目 `t4c`） ／ 生データ: `$HOME/athena-unmeasured-batch-measurements/run-20260924-004554/t4c/`
+- 相手: 本物の Athena（engine version 3、workgroup `primary`、Catalog `AwsDataCatalog`、Database `<DB>`）
+- 投げたもの: 新しいトークン（UUID）で `SELEC 1`、OutputLocation `not-a-valid-s3-path`
+- 返ったもの: `InvalidRequestException`: `outputLocation is not a valid S3 path.`、`AthenaErrorCode` `INVALID_INPUT`
+- 備考: OutputLocation の検証が構文チェックより先。長さの足りないトークンが絡む組（`t4` の残り）は AWS CLI が送信前に弾くので生 HTTP で測る（#147）
+
+### Database・OutputLocation の「省略」と「既定と同じ値の明示」
+- 日付: 2026-09-24 ／ issue: #146（バッチは #113） ／ スクリプト: `tools/measure/unmeasured-batch/run.sh`（項目 `t8`） ／ 生データ: `$HOME/athena-unmeasured-batch-measurements/run-20260924-004554/t8/`
+- 相手: 本物の Athena（engine version 3、workgroup `<WORKGROUP2>`。出力先 `<OUTPUT>` が設定され `EnforceWorkGroupConfiguration: true`。[work-groups.md](work-groups.md) の「出力先が設定されたワークグループの GetWorkGroup」）
+- 投げたもの: 2 組。どちらも 1 本目と 2 本目は同じトークン
+  - (a) `SELECT 1 AS t8_probe`。1 本目は Catalog `AwsDataCatalog` だけで Database を省略、2 本目は Database `default` を明示（OutputLocation はどちらも `<OUTPUT>`）
+  - (b) `SELECT 2 AS t8_probe`。Catalog `AwsDataCatalog`・Database `<DB>`。1 本目は OutputLocation を省略、2 本目は `<OUTPUT>`（ワークグループの出力先と同じ値）を明示
+- 返ったもの:
+  - (a) 1 本目 SUCCEEDED（`QueryExecutionContext` は `{"Catalog": "awsdatacatalog"}` だけで `Database` は無い）。2 本目は `InvalidRequestException`: `Idempotent parameters do not match`、`IDEMPOTENT_PARAMETER_MISMATCH`
+  - (b) 1 本目 SUCCEEDED（OutputLocation は `<OUTPUT><id>.csv`）。**2 本目も成功し、1 本目と同じ `QueryExecutionId`** が返った
+  - 成功した 3 本の結果ファイルは `<id>.csv` 15B・`.metadata` 87B（binary/octet-stream）
+- 備考: Database は省略と `default` の明示を別物として扱う。OutputLocation の (b) は、ワークグループが出力先を強制する（リクエストの OutputLocation が使われない）条件でしか測っていない。強制しないワークグループで省略と明示を同じに扱うかは生データに無い
