@@ -11,6 +11,14 @@ later name the date they were measured on.
 
 ### Changed
 
+- `SHOW CREATE VIEW` writes its `.txt` and `.metadata` as `binary/octet-stream`
+  with the engine's query id at the head of the `.metadata`, and reports
+  `SubstatementType` `SHOW_CREATE_VIEW`, as real Athena does (measured
+  2026-09-24) ([docs](docs/result-files.md#result-files)).
+- `SHOW CREATE TABLE` on an Iceberg table writes its `.txt` and `.metadata` as
+  `binary/octet-stream` with the engine's query id at the head of the
+  `.metadata`, as real Athena does (measured 2026-09-24)
+  ([docs](docs/ddl.md#ddl-that-depends-on-the-target-tables-format)).
 - A `varbinary` inside an `array`, `map` or `row` is rendered as `[B@<hex>`,
   the shape real Athena prints (measured 2026-09-24), instead of the top-level
   `01 02` hex form ([docs](docs/caveats.md#value-rendering)).

@@ -50,6 +50,8 @@ pub(super) fn substatement_type(query: &str) -> Option<&'static str> {
             ("DATABASES" | "SCHEMAS", _) => "SHOW_DATABASES",
             ("COLUMNS", _) => "SHOW_COLUMNS",
             ("CREATE", "TABLE") => "SHOW_CREATE_TABLE",
+            // 2026-09-24 実測（#146・#151）。StatementType は他の SHOW と同じ UTILITY。
+            ("CREATE", "VIEW") => "SHOW_CREATE_VIEW",
             // 2026-09-23 実測（#80）。StatementType は他の SHOW と同じ UTILITY。
             ("FUNCTIONS", _) => "SHOW_FUNCTIONS",
             _ => return None,
@@ -205,6 +207,10 @@ mod tests {
             ("SHOW SCHEMAS", "SHOW_DATABASES"),
             ("SHOW COLUMNS IN db.t", "SHOW_COLUMNS"),
             ("SHOW CREATE TABLE t", "SHOW_CREATE_TABLE"),
+            // 2026-09-24 実測（#146・#151）。StatementType は他の SHOW と同じ UTILITY。
+            ("SHOW CREATE VIEW v", "SHOW_CREATE_VIEW"),
+            ("show create view v", "SHOW_CREATE_VIEW"),
+            ("-- c\nSHOW CREATE VIEW v", "SHOW_CREATE_VIEW"),
             // 2026-09-23 実測（#80）。
             ("SHOW FUNCTIONS", "SHOW_FUNCTIONS"),
             ("show /* c */ functions", "SHOW_FUNCTIONS"),
@@ -260,8 +266,8 @@ mod tests {
             // `TABLE t` は本物も SELECT（2026-09-22 実測。#65）。
             ("TABLE t", "SELECT"),
             ("(TABLE t) LIMIT 1", "SELECT"),
-            // 2 語目以降も読み飛ばした後の並びから取る。`metadata_query_id` の
-            // `("SHOW", "CREATE")` の分岐も同じ `words()` を使うので、ここで一緒に守る。
+            // 2 語目以降も読み飛ばした後の並びから取る（`.metadata` のクエリ ID を選ぶ
+            // `content_type::carries_execution_id` も同じ形の入力で守っている）。
             ("-- c\nSHOW CREATE TABLE t", "SHOW_CREATE_TABLE"),
         ] {
             assert_eq!(substatement_type(query), Some(expected), "{query:?}");
@@ -444,6 +450,8 @@ mod tests {
             ("SHOW /* c */ TABLES", "SHOW_TABLES"),
             ("SHOW /* c */ CREATE TABLE t", "SHOW_CREATE_TABLE"),
             ("SHOW CREATE /* c */ TABLE t", "SHOW_CREATE_TABLE"),
+            // `SHOW CREATE /* c */ VIEW` は本物でも成功する（2026-09-24 実測。#146）。
+            ("SHOW CREATE /* c */ VIEW v", "SHOW_CREATE_VIEW"),
             // 空白を挟まずにコメントが語に接していても区切りになる。
             ("DROP/* c */TABLE t", "DROP_TABLE"),
         ] {

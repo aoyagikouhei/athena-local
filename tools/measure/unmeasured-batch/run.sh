@@ -6,6 +6,7 @@
 #   #146: ONLY=r1,r2,r3,r4,x1,x2,m1,m2,m3,m5,s1,s2,p1,t1,t4c,t5,t8,w1,e1（約 10 分。落ちた項目は
 #         RUN_DIR=<同じ run> ONLY=<id,...> で再実行）
 #   #147: ONLY=t2,t3,t4,e2（生 HTTP）と、ONLY=t6 → 65 分以上あとに RUN_DIR=<同じ run> ONLY=t7
+#   #151: ONLY=r4,r5（SHOW CREATE TABLE の Content-Type がテーブルの形式で割れるかの対照。約 4 分）
 #
 # 使い方（tools/dev.sh 経由。ホストで直接叩かない）:
 #   tools/dev.sh env TARGET=local WAIT_RETENTION=0 bash tools/measure/unmeasured-batch/run.sh
@@ -32,7 +33,7 @@
 # 出力: ${DEV_HOST_HOME:-$HOME}/athena-unmeasured-batch-measurements/run-<日時>/<項目id>/
 #   に文ごとのファイル、run 直下に summary.tsv（機械可読）と summary.txt（そのまま貼れる要約）。
 #
-# items-result-files.sh（r1-r4, x1, x2）、items-metadata.sh（m1-m3, m5）、
+# items-result-files.sh（r1-r5, x1, x2）、items-metadata.sh（m1-m3, m5）、
 # items-statements.sh（s1, s2, p1）、items-token.sh（t1, t2, t3, t4, t5, t8, t4c）、
 # items-workgroup-errors.sh（w1, e1, e2）、items-retention.sh（t6, t7）に全 28 項目（既に
 # 答えのある 5 件を除く）を分けてある。t2・t3・t4・e2 は raw.py（生 HTTP。aws CLI では送れない
@@ -219,7 +220,7 @@ source "$SCRIPT_DIR/items-workgroup-errors.sh"
 # shellcheck source=tools/measure/unmeasured-batch/items-retention.sh
 source "$SCRIPT_DIR/items-retention.sh"
 
-ALL_ITEMS="r1 r2 r3 r4 x1 x2 m1 m2 m3 m5 s1 s2 p1 t4c t1 t2 t3 t4 t5 t8 w1 e1 e2"
+ALL_ITEMS="r1 r2 r3 r4 r5 x1 x2 m1 m2 m3 m5 s1 s2 p1 t4c t1 t2 t3 t4 t5 t8 w1 e1 e2"
 
 # --- フェーズ 2 の差し込み口: 保持期限の段階 A（ここ。本編より前）。段階 A は ONLY に t6 が
 # あるときだけ、段階 B（下）は t7 があるときだけ動かす。`ONLY=t6` で段階 A だけ流して終了し、

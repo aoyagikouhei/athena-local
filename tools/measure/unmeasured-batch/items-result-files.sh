@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# issue #113: 結果ファイル関連の未実測 6 項目（r1-r4, x1, x2）。単独では実行しない。
+# issue #113: 結果ファイル関連の未実測 6 項目（r1-r4, x1, x2）と、#151 で足した r5。単独では実行しない。
 # run.sh が source して item_r1 などを呼ぶ。
 #
 # r1・r2・x1 は Hive の外部テーブル（CREATE EXTERNAL TABLE ... LOCATION）を使う。この綴りは
@@ -109,6 +109,74 @@ item_r4() {
   record_created TABLE "$t" "$TCAT_ICEBERG" "$TDB"
   run_stmt "$dir" r4-show-create-table "SHOW CREATE TABLE $t" "$TCAT_ICEBERG" "$TDB"
   best_effort_drop TABLE "$t" "$TCAT_ICEBERG" "$TDB"
+}
+
+# r5（#151）: SHOW CREATE TABLE の Content-Type・.metadata の形式・UpdateCount が、テーブルの形式
+# （Hive / Iceberg）で割れるかを同じラウンドで対照つきで測る。#146 の r4（Iceberg の CTAS）が
+# binary・不透明な .metadata・UpdateCount 0 で、#1・#17・#52・#70 の Hive の外部テーブル
+# （application・素の protobuf 88B・UpdateCount 無し）と食い違った。r4 と一緒に ONLY=r4,r5 で流すと
+# Hive 外部テーブル（素の CREATE EXTERNAL TABLE）・Hive の CTAS・Iceberg の素の CREATE TABLE・
+# Iceberg の CTAS（r4）の 4 組が揃い、形式と作り方（CTAS かどうか）のどちらで割れるかが決まる。
+# 綴りは本物で成功済みのもの（tools/measure/drop-table-format.sh の prep-h-ctas と a・b。2026-09-20）。
+# Hive の CTAS は DROP で S3 にデータが残る（r4 のコメントと同じ）ので、置き場所を cleanup-hints に残す。
+# local では CREATE EXTERNAL TABLE が Trino の構文に無いので、その 1 本だけ失敗が期待どおり（r1・r2 と同じ）。
+item_r5() {
+  local id=$1 dir="$RUN_DIR/$id"
+  mkdir -p "$dir"
+  local hive_ext="${TDB}.${PROBE_PREFIX}_r5_hive_ext" hive_ctas="${TDB}.${PROBE_PREFIX}_r5_hive_ctas"
+  local ice_plain="${TDB}.${PROBE_PREFIX}_r5_ice_plain"
+  if probe_prefix_exists "$dir" "$TCAT_HIVE" "$TDB" "${PROBE_PREFIX}_r5"; then
+    skip_item "$id" all "同名のテーブルが既にある"
+    return 0
+  fi
+
+  # 1. Hive の外部テーブル（素の CREATE EXTERNAL TABLE）。#1・#70 の対象と同じ作り方。
+  local ext_loc="${OUTPUT}tables-probe-151-r5-hive-ext/"
+  run_stmt "$dir" r5-hive-ext-create "CREATE EXTERNAL TABLE $hive_ext (n int) LOCATION '$ext_loc'" "$TCAT_HIVE" "$TDB"
+  local ext_rc=$?
+  record_created TABLE "$hive_ext" "$TCAT_HIVE" "$TDB"
+  if [ "$ext_rc" -eq 0 ]; then
+    run_stmt "$dir" r5-hive-ext-show-create "SHOW CREATE TABLE $hive_ext" "$TCAT_HIVE" "$TDB"
+  else
+    skip_item "$id" hive-ext-show-create "Hive の外部テーブルを作れなかった（local では想定どおり）"
+  fi
+  best_effort_drop TABLE "$hive_ext" "$TCAT_HIVE" "$TDB"
+  record_cleanup_hint "r5 hive ext: $ext_loc"
+
+  # 2. Hive の CTAS（形式指定なし = Athena の既定）。データは OUTPUT の tables/<QueryExecutionId>/ に残る。
+  run_stmt "$dir" r5-hive-ctas-create "CREATE TABLE $hive_ctas AS SELECT 1 AS n" "$TCAT_HIVE" "$TDB"
+  local ctas_rc=$?
+  record_created TABLE "$hive_ctas" "$TCAT_HIVE" "$TDB"
+  if [ "$ctas_rc" -eq 0 ]; then
+    run_stmt "$dir" r5-hive-ctas-show-create "SHOW CREATE TABLE $hive_ctas" "$TCAT_HIVE" "$TDB"
+  else
+    skip_item "$id" hive-ctas-show-create "Hive の CTAS を作れなかった"
+  fi
+  best_effort_drop TABLE "$hive_ctas" "$TCAT_HIVE" "$TDB"
+  record_cleanup_hint "r5 hive ctas: ${OUTPUT}tables/<r5-hive-ctas-create の QueryExecutionId>/"
+
+  # 3. Iceberg の素の CREATE TABLE（CTAS でない）。local では Trino の Iceberg の綴りに合わせる。
+  local ice_loc="${OUTPUT}tables-probe-151-r5-ice-plain/"
+  local ice_sql
+  if [ "$TARGET" = local ]; then
+    ice_sql="CREATE TABLE $ice_plain (n int)"
+  else
+    ice_sql="CREATE TABLE $ice_plain (n int) LOCATION '$ice_loc' TBLPROPERTIES ('table_type'='ICEBERG')"
+  fi
+  run_stmt "$dir" r5-ice-plain-create "$ice_sql" "$TCAT_ICEBERG" "$TDB"
+  local ice_rc=$?
+  record_created TABLE "$ice_plain" "$TCAT_ICEBERG" "$TDB"
+  if [ "$ice_rc" -eq 0 ]; then
+    run_stmt "$dir" r5-ice-plain-show-create "SHOW CREATE TABLE $ice_plain" "$TCAT_ICEBERG" "$TDB"
+  else
+    skip_item "$id" ice-plain-show-create "Iceberg の素の CREATE TABLE を作れなかった"
+  fi
+  best_effort_drop TABLE "$ice_plain" "$TCAT_ICEBERG" "$TDB"
+
+  if [ "$TARGET" = local ]; then
+    declare_expectation "$id" local_ddl_fails fail "$([ "$ext_rc" -eq 0 ] && echo success || echo fail)" \
+      "CREATE EXTERNAL TABLEはTrinoの構文に無い"
+  fi
 }
 
 # x1: caveats.md:55「ブロックコメントを弾くほかの文」。動詞の直後に /* c */ を入れた変種と

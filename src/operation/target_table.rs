@@ -1,4 +1,4 @@
-//! `DROP TABLE` / `ALTER TABLE ... ADD COLUMNS` の対象テーブルの修飾名解析。
+//! `DROP TABLE` / `ALTER TABLE ... ADD COLUMNS` / `SHOW CREATE TABLE` の対象テーブルの修飾名解析。
 //!
 //! Phase 2 では修飾名（`cat.ns.t` や引用符付きのカタログ名）も解析し、対象テーブルの存在も
 //! あわせて確かめる。修飾名にカタログ・スキーマが無ければ実行時の既定を当て、それでも
@@ -6,8 +6,8 @@
 
 use super::table_format::TargetStatement;
 
-/// `DROP TABLE` / `ALTER TABLE ... ADD COLUMNS` / `... REPLACE COLUMNS` から取り出した対象。カタログ・スキーマは
-/// 修飾名に無ければ既定を当てた後の値（呼び出し元の別名解決前）。
+/// `DROP TABLE` / `ALTER TABLE ... ADD COLUMNS` / `... REPLACE COLUMNS` / `SHOW CREATE TABLE` から
+/// 取り出した対象。カタログ・スキーマは修飾名に無ければ既定を当てた後の値（呼び出し元の別名解決前）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct TargetTable {
     pub(super) catalog: String,
@@ -15,18 +15,20 @@ pub(super) struct TargetTable {
     pub(super) table: String,
 }
 
-/// `target_statement` の種類ごとに、テーブル名の前に来る動詞（`DROP` / `ALTER`）。
-fn verb(statement: TargetStatement) -> &'static str {
+/// `target_statement` の種類ごとに、`TABLE` の前に来るキーワードの並び（`DROP` / `ALTER` /
+/// `SHOW CREATE`）。
+fn keywords(statement: TargetStatement) -> &'static [&'static str] {
     match statement {
-        TargetStatement::DropTable => "DROP",
+        TargetStatement::DropTable => &["DROP"],
         TargetStatement::AlterTableAddColumns | TargetStatement::AlterTableReplaceColumns => {
-            "ALTER"
+            &["ALTER"]
         }
+        TargetStatement::ShowCreateTable => &["SHOW", "CREATE"],
     }
 }
 
-/// `DROP TABLE [IF EXISTS] <名前>` / `ALTER TABLE [IF EXISTS] <名前> ADD COLUMNS ...` を解析し、
-/// カタログ・スキーマに既定値を当てる。修飾名にあればその値（引用符付きなら中身、無引用なら
+/// `DROP TABLE [IF EXISTS] <名前>` / `ALTER TABLE [IF EXISTS] <名前> ADD COLUMNS ...` /
+/// `SHOW CREATE TABLE <名前>` を解析し、カタログ・スキーマに既定値を当てる。修飾名にあればその値（引用符付きなら中身、無引用なら
 /// Trino の規則で小文字）を使い、無ければ `default_catalog` / `default_schema`（実行時の値。
 /// 別名解決前）を使う。カタログかスキーマが決まらなければ None（今までどおりに倒す）。
 ///
@@ -38,7 +40,7 @@ pub(super) fn parse_target_table(
     default_catalog: Option<&str>,
     default_schema: Option<&str>,
 ) -> Option<TargetTable> {
-    let name = table_name_start(query, verb(statement))?;
+    let name = table_name_start(query, keywords(statement))?;
     let parts = parse_qualified_name(name)?;
 
     let (catalog, schema, table) = match <[String; 1]>::try_from(parts.clone()) {
@@ -61,14 +63,17 @@ pub(super) fn parse_target_table(
     })
 }
 
-/// `<動詞> TABLE` と、あれば `IF EXISTS` を読み飛ばし、名前が始まる位置を返す。
-/// 先頭が `<動詞> TABLE` でなければ None。`<動詞>` は `DROP` か `ALTER`。
+/// `<キーワードの並び> TABLE` と、あれば `IF EXISTS` を読み飛ばし、名前が始まる位置を返す。
+/// 先頭が `<キーワードの並び> TABLE` でなければ None。並びは `DROP`、`ALTER`、`SHOW CREATE` のどれか。
 ///
 /// `catalog::skip_keyword` が先頭のトリビアを自分で読み飛ばすので、キーワードの手前では
 /// 読み飛ばさない。**最後の 1 回だけは残す**: `parse_qualified_name` はトリビアを読み飛ばさず、
 /// 先頭が空白やコメントのままだと `read_name_part` が名前を 1 文字も読めずに None を返す。
-fn table_name_start<'a>(query: &'a str, verb: &str) -> Option<&'a str> {
-    let rest = crate::catalog::skip_keyword(query, verb)?;
+fn table_name_start<'a>(query: &'a str, keywords: &[&str]) -> Option<&'a str> {
+    let mut rest = query;
+    for keyword in keywords {
+        rest = crate::catalog::skip_keyword(rest, keyword)?;
+    }
     let rest = crate::catalog::skip_keyword(rest, "TABLE")?;
     let rest = match crate::catalog::skip_keyword(rest, "IF") {
         Some(after_if) => crate::catalog::skip_keyword(after_if, "EXISTS")?,
@@ -272,7 +277,7 @@ mod tests {
 
     #[test]
     fn parse_target_table_は_alter_table_replace_columns_の名前も読む() {
-        // REPLACE COLUMNS でも `verb` は ALTER なので、名前の位置は ADD COLUMNS と変わらない。
+        // REPLACE COLUMNS でも `keywords` は `["ALTER"]` なので、名前の位置は ADD COLUMNS と変わらない。
         assert_eq!(
             parse_target_table(
                 r#"ALTER TABLE cat."my ns".t REPLACE COLUMNS (n int, s string)"#,
@@ -333,6 +338,53 @@ mod tests {
     }
 
     #[test]
+    fn parse_target_table_は_show_create_table_の名前も読む() {
+        // `SHOW CREATE` の 2 語を読み飛ばしてから `TABLE` を読む（#151）。語の間のコメントも区切りとして読み飛ばす。
+        for (query, expected) in [
+            ("SHOW CREATE TABLE t", 既定付き("t")),
+            (
+                "SHOW CREATE TABLE ns.t",
+                Some(TargetTable {
+                    catalog: "cat".to_string(),
+                    schema: "ns".to_string(),
+                    table: "t".to_string(),
+                }),
+            ),
+            (
+                "SHOW CREATE TABLE other.ns2.t",
+                Some(TargetTable {
+                    catalog: "other".to_string(),
+                    schema: "ns2".to_string(),
+                    table: "t".to_string(),
+                }),
+            ),
+            (
+                r#"SHOW CREATE TABLE "s3tablescatalog/my-bucket".ns.t"#,
+                Some(TargetTable {
+                    catalog: "s3tablescatalog/my-bucket".to_string(),
+                    schema: "ns".to_string(),
+                    table: "t".to_string(),
+                }),
+            ),
+            ("SHOW /* c */ CREATE TABLE t", 既定付き("t")),
+            ("SHOW CREATE -- c\nTABLE t", 既定付き("t")),
+            // 無引用の大文字は Trino の規則で小文字にする。
+            ("show create table T", 既定付き("t")),
+        ] {
+            assert_eq!(
+                parse_target_table(
+                    query,
+                    TargetStatement::ShowCreateTable,
+                    Some("cat"),
+                    Some("ns")
+                ),
+                expected,
+                "{query:?}"
+            );
+        }
+    }
+
+    #[test]
     fn parse_qualified_name_と_catalog_skip_qualified_name_は同じ書き方を受け付ける() {
         // 名前を「取り出す」parse_qualified_name（ここ）と「読み飛ばす」
         // catalog::skip_qualified_name（classification.rs の ALTER TABLE 判定が使う）は
@@ -360,8 +412,8 @@ mod tests {
     fn parse_target_table_は_alter_table_でも_if_exists_を読み飛ばす() {
         // 本物の Athena には `ALTER TABLE IF EXISTS` の構文が無く、classification.rs の時点で
         // target_statement は None に落ちる（この文が実際に parse_target_table まで届くことは無い）。
-        // ここでは `table_name_start` の IF EXISTS の読み飛ばしが動詞（DROP / ALTER）によらず
-        // 共通のコードで効いていることを固定する。
+        // ここでは `table_name_start` の IF EXISTS の読み飛ばしがキーワードの並び
+        // （DROP / ALTER / SHOW CREATE）によらず共通のコードで効いていることを固定する。
         assert_eq!(
             parse_target_table(
                 "ALTER TABLE IF EXISTS cat.ns.t ADD COLUMNS (m int)",

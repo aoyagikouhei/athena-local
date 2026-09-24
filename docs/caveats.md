@@ -133,7 +133,8 @@ Known differences between athena-local and real Athena, grouped by topic.
   table in a `hive` catalog is treated as Hive, and the other way round).
   A connector that is neither `hive` nor `iceberg`, a `DROP TABLE IF EXISTS`
   on a missing target, and the other fallback cases listed on the DDL page get
-  ordinary column-less DDL (empty file, no `.metadata`). See
+  ordinary column-less DDL (empty file, no `.metadata`), or for
+  `SHOW CREATE TABLE` the Hive table's files. See
   [DDL that depends on the target table's format](ddl.md#ddl-that-depends-on-the-target-tables-format)
   for what this changes.
 
@@ -188,19 +189,22 @@ Known differences between athena-local and real Athena, grouped by topic.
   result file Athena would use. The `.metadata` companion is written (see
   [Result files](result-files.md)).
 - **`SHOW` metadata is not the opaque form Athena writes.** For `SHOW TABLES`,
-  `SHOW DATABASES`, `SHOW COLUMNS`, `SHOW PARTITIONS` and `SHOW TBLPROPERTIES`,
-  real Athena writes a base64 blob that does not decode as protobuf (measured
-  2026-09-16, 2026-09-17 and 2026-09-18). The blob is 312 base64 characters for
-  the first four statements and 460 for `SHOW TBLPROPERTIES`, decoding to a
-  fixed 233 and 345 bytes whatever the result holds. Only the leading byte
+  `SHOW DATABASES`, `SHOW COLUMNS`, `SHOW PARTITIONS`, `SHOW TBLPROPERTIES`,
+  `SHOW CREATE VIEW` and `SHOW CREATE TABLE` on an Iceberg table, real Athena
+  writes a base64 blob that does not decode as protobuf (measured 2026-09-16,
+  2026-09-17, 2026-09-18 and 2026-09-24). The blob is 312 base64 characters for
+  `SHOW TABLES`, `SHOW DATABASES`, `SHOW COLUMNS`, `SHOW PARTITIONS` and
+  `SHOW CREATE VIEW`, 332 for `SHOW CREATE TABLE` on an Iceberg table and 460
+  for `SHOW TBLPROPERTIES`, decoding to a fixed 233, 249 and 345 bytes whatever
+  the result holds. Only the leading byte
   `0x01` is stable: everything after it differs between measurement rounds and
   sometimes between two statements of the same round, and running the same
   `SHOW TABLES` twice over the same tables yields different bytes. That is
   consistent with an encrypted payload, but **what the format actually is has
   not been identified** and is not reproduced here. The result file itself is
   unaffected — it is the same plain text Athena writes for any other `SHOW`.
-  `SHOW CREATE TABLE` is not affected either: it writes plain protobuf, like
-  `DESCRIBE`. athena-local writes the same plain protobuf it writes for every
+  `SHOW CREATE TABLE` on a Hive table is not affected: it writes plain
+  protobuf, like `DESCRIBE`. athena-local writes the same plain protobuf it writes for every
   other statement, so a client that parses it sees the columns instead of
   failing. Athena JDBC 3.8.1 in its default `ResultFetcher=auto` fetches that
   companion file and reads it without an exception: verified for `SHOW TABLES`

@@ -15,6 +15,15 @@
 # 変更前の予測: 1 FAIL / 2 PASS / 3 FAIL / 4 FAIL(.metadata だけ不一致) / 5 FAIL / 6 FAIL /
 #               7a PASS / 7b PASS
 #
+# issue #151 で 8a〜11 を足した（SHOW CREATE VIEW と Iceberg への SHOW CREATE TABLE。2026-09-24 実測の規則）。
+#   SHOW CREATE VIEW（語の間のコメントも含む）      -> .txt も .metadata も binary、.metadata の先頭はエンジン（Trino）ID
+#   SHOW CREATE TABLE（Hive のテーブル）            -> .txt も .metadata も application、.metadata の先頭は QueryExecutionId
+#   SHOW CREATE TABLE（Iceberg のテーブル。修飾名でも、
+#                     QueryExecutionContext の Catalog で解決しても）-> binary、先頭はエンジン ID
+# .metadata の先頭 2 バイトは `0a <長さ>`（field 1 の length-delimited）で、長さだけを見る。
+#   0a 1b = Trino のクエリ ID（`20260924_...` の形で 27 文字）、0a 24 = QueryExecutionId（UUID 36 文字）。
+# 変更前の予測（#151）: 8a FAIL / 8b FAIL / 9 PASS / 10 FAIL / 11 FAIL
+#
 # 前提コマンド: tools/dev.sh 経由で動かす（toolbox に全部入っている）
 # 環境はルートの compose.yml の trino / minio / minio-init。開始時に down -v → up -d で作り直す。
 # S3（MinIO）側の確認は、toolbox の mc で minio:9000 を直接見る（#129）。
@@ -303,9 +312,11 @@ stat_size() {
 # 期待値は #70 の規則そのもの。本体の Content-Type（expect_body_ct）と
 # `.metadata` の Content-Type（expect_meta_ct。`absent` ならオブジェクトが無いこと）を判定する。
 # expect_body_size が空でなければ本体のバイト数も判定する。
+# expect_meta_head（#151）が空でなければ `.metadata` の先頭 2 バイトを 16 進（例: `0a1b`）で判定する。
+# 先頭は `0a <ID の長さ>` なので、ID の中身は比べず長さ（Trino の ID か UUID か）だけを見る。
 run_case() {
   local no="$1" name="$2" sql="$3" catalog="$4" database="$5" ext="$6"
-  local expect_body_ct="$7" expect_meta_ct="$8" expect_body_size="${9:-}"
+  local expect_body_ct="$7" expect_meta_ct="$8" expect_body_size="${9:-}" expect_meta_head="${10:-}"
 
   log "ケース $no: $name -- $sql"
 
@@ -369,12 +380,24 @@ run_case() {
     detail="$detail / .metadata=無し(期待 ${expect_meta_ct})"
   else
     meta_ct=$(stat_content_type "$meta_stat")
-    mc_get "${key}.metadata" "$EVIDENCE_DIR/$(basename "$key").metadata"
+    local meta_file
+    meta_file="$EVIDENCE_DIR/$(basename "$key").metadata"
+    mc_get "${key}.metadata" "$meta_file"
     if [ "$meta_ct" = "$expect_meta_ct" ]; then
       detail="$detail / .metadata=${meta_ct}(期待どおり)"
     else
       ok=0
       detail="$detail / .metadata=${meta_ct}(期待 ${expect_meta_ct})"
+    fi
+    if [ -n "$expect_meta_head" ]; then
+      local meta_head
+      meta_head=$(od -An -tx1 -N2 "$meta_file" 2>/dev/null | tr -d ' \n')
+      if [ "$meta_head" = "$expect_meta_head" ]; then
+        detail="$detail 先頭=${meta_head}(期待どおり)"
+      else
+        ok=0
+        detail="$detail 先頭=${meta_head:-読めない}(期待 ${expect_meta_head})"
+      fi
     fi
   fi
 
@@ -427,15 +450,32 @@ main() {
   fi
   record "セットアップ(hive テーブル)" PASS "hive.default.${t_desc} 作成済み"
 
+  # #151: Iceberg のテーブルとビュー。iceberg カタログの default スキーマは compose では作られていない
+  # （tools/compose/catalog/iceberg.properties は TESTING_FILE_METASTORE で、スキーマを持たない）ので作る。
+  trino_exec "CREATE SCHEMA IF NOT EXISTS iceberg.default" iceberg default || true
+  local t_ice="t_ct_ice_${RUN_ID}"
+  if ! trino_exec "CREATE TABLE iceberg.default.${t_ice} AS SELECT 1 AS n" iceberg default; then
+    record "セットアップ(iceberg テーブル)" FAIL "iceberg.default.${t_ice} の作成に失敗した（ケース 10・11 が実行できない）"
+    return 1
+  fi
+  record "セットアップ(iceberg テーブル)" PASS "iceberg.default.${t_ice} 作成済み"
+
+  local v_ct="v_ct_${RUN_ID}"
+  if ! trino_exec "CREATE VIEW hive.default.${v_ct} AS SELECT 1 AS n" hive default; then
+    record "セットアップ(hive ビュー)" FAIL "hive.default.${v_ct} の作成に失敗した（ケース 8a・8b が実行できない）"
+    return 1
+  fi
+  record "セットアップ(hive ビュー)" PASS "hive.default.${v_ct} 作成済み"
+
   if ! build_athena_local; then
     record "cargo build" FAIL "ビルドが失敗した"
-    record "ケース1〜7" SKIP "athena-local が起動できないため実行しなかった（ビルド失敗）"
+    record "ケース1〜11" SKIP "athena-local が起動できないため実行しなかった（ビルド失敗）"
     return 1
   fi
   record "cargo build" PASS "$BINARY を用意した"
 
   if ! start_athena_local; then
-    record "ケース1〜7" SKIP "athena-local が起動しなかったため実行しなかった"
+    record "ケース1〜11" SKIP "athena-local が起動しなかったため実行しなかった"
     return 1
   fi
   record "athena-local起動" PASS "$ATHENA_BASE で応答"
@@ -472,7 +512,26 @@ main() {
   run_case 7b "DROP_SCHEMA_hive_0バイト" \
     "DROP SCHEMA ${s_ddl}" hive default txt "$OCTET_STREAM" absent 0
 
+  # ケース 8（#151）: SHOW CREATE VIEW -> .txt も .metadata も binary、.metadata の先頭はエンジン ID
+  run_case 8a "SHOW_CREATE_VIEW" \
+    "SHOW CREATE VIEW ${v_ct}" hive default txt "$OCTET_STREAM" "$OCTET_STREAM" "" 0a1b
+  run_case 8b "SHOW_CREATE_comment_VIEW" \
+    "SHOW CREATE /* c */ VIEW ${v_ct}" hive default txt "$OCTET_STREAM" "$OCTET_STREAM" "" 0a1b
+
+  # ケース 9（#151 の対照）: Hive のテーブルへの SHOW CREATE TABLE -> application、先頭は QueryExecutionId
+  run_case 9 "SHOW_CREATE_TABLE_hive" \
+    "SHOW CREATE TABLE ${t_desc}" hive default txt "$APPLICATION" "$APPLICATION" "" 0a24
+
+  # ケース 10・11（#151）: Iceberg のテーブルへの SHOW CREATE TABLE -> binary、先頭はエンジン ID。
+  # 10 は修飾名（文脈は hive）、11 は QueryExecutionContext の Catalog で iceberg に解決させる。
+  run_case 10 "SHOW_CREATE_TABLE_iceberg_修飾名" \
+    "SHOW CREATE TABLE iceberg.default.${t_ice}" hive default txt "$OCTET_STREAM" "$OCTET_STREAM" "" 0a1b
+  run_case 11 "SHOW_CREATE_TABLE_iceberg_文脈" \
+    "SHOW CREATE TABLE ${t_ice}" iceberg default txt "$OCTET_STREAM" "$OCTET_STREAM" "" 0a1b
+
   log "セットアップで作ったテーブルを片づける"
+  trino_exec "DROP VIEW IF EXISTS hive.default.${v_ct}" hive default || true
+  trino_exec "DROP TABLE IF EXISTS iceberg.default.${t_ice}" iceberg default || true
   trino_exec "DROP TABLE IF EXISTS hive.default.${t_desc}" hive default || true
 
   return 0

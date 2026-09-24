@@ -92,14 +92,14 @@
 - `.metadata` の Content-Type は本体に追従させる（`ResultLocation` に持たせ、`metadata()` が引き継ぐ）。失敗ファイルは application 固定。テーブル形式に依存する DDL の上書きは本体と `.metadata` の両方に同じ値を渡す。（#70・#76、2026-09-23）
 - リテラルだけの `SELECT` は実測した形だけを受け、ほかは application に落とす（本物が binary にする形を取りこぼす方向にだけ外れる）。（#70、2026-09-23、ユーザーの選択。#76 で実測した形を足した）
 - `SELECT 1;` は本物では binary だが、Trino が弾くので判定を変えない。（#76、2026-09-23）
-- `.txt` の判定は先頭の語で、`DESCRIBE`／`DESC`、`EXPLAIN`、`SHOW CREATE` が application、それ以外の `.txt`（`SHOW` 系・DDL）が binary。この組は `.metadata` の先頭のクエリ ID を選ぶ組（`metadata_query_id`）と同じで、片方を変えたら両方を直す。INSERT・CTAS（`Manifest`／`Table`）は application。（#70、2026-09-23）
+- `.txt` の判定は先頭の語で、`DESCRIBE`／`DESC`、`EXPLAIN`、`SHOW CREATE TABLE`（3 語目まで見る）が application、それ以外の `.txt`（`SHOW CREATE VIEW` を含む `SHOW` 系・DDL）が binary。`DESCRIBE`／`DESC`／`SHOW CREATE TABLE` の組は `.metadata` の先頭に QueryExecutionId を載せる組と同じなので、1 つの述語 `content_type::carries_execution_id` に集約して Content-Type と `metadata_query_id` の両方から呼ぶ（#151、2026-09-24。それまでは 2 語目までの同じ組を 2 か所に書いて「片方を変えたら両方を直す」としていた）。`SHOW CREATE TABLE` 以外の `SHOW CREATE ...` は Athena の構文に無く未実測なので既定の binary に落とす。INSERT・CTAS（`Manifest`／`Table`）は application。（#70、2026-09-23）
 - `.csv` の `text/csv` は 0.3.0 からの未実測の推測値で、2026-09-17 の実測（6 件中 5 件が application、残る 1 件は `SELECT 1`）を根拠に `application/octet-stream` へ置き換えた。多数決で丸めていたことは #70 の規則で解消した。（#5、2026-09-17）
 
 ## `.metadata`
 
 - protobuf は依存を足さずに手書きでエンコードする（varint と length-delimited だけ）。理由: proto3 の既定値の省略に頼れない（Scale 0 を明示する `40 00` を出す）ので prost は向かない。長さは UTF-8 のバイト長。（#5、2026-09-17）
 - 先頭のクエリ ID（field 1）は文ごとに実測に合わせる。エンジン ID の文は Trino の応答の `id`、`DESCRIBE`／`DESC`／`SHOW CREATE TABLE` は athena-local の実行 ID。Trino の `id` が無ければ実行 ID。（#5、2026-09-17、ユーザーの判断 3）
-- 本物が不透明な形式を置く `SHOW` 5 文（`SHOW TABLES`／`DATABASES`／`COLUMNS`／`PARTITIONS`／`TBLPROPERTIES`）にも素の protobuf を書く。理由: Trino から列情報が取れ、JDBC 3.5.1 未満は metadata が無いと NoSuchKey で落ちる。形式は特定できず、JDBC 3.8.1 は athena-local の protobuf を読めた。（#5、2026-09-17、ユーザーの判断 2、#24、2026-09-19）
+- 本物が不透明な形式を置く `SHOW` 6 文（`SHOW TABLES`／`DATABASES`／`COLUMNS`／`PARTITIONS`／`TBLPROPERTIES`／`CREATE VIEW`。`CREATE VIEW` は #151、2026-09-24）にも素の protobuf を書く。先頭のクエリ ID は観測できないので EXPLAIN と同じくエンジン ID（#151）。理由: Trino から列情報が取れ、JDBC 3.5.1 未満は metadata が無いと NoSuchKey で落ちる。形式は特定できず、JDBC 3.8.1 は athena-local の protobuf を読めた。（#5、2026-09-17、ユーザーの判断 2、#24、2026-09-19）
 - 型ごとの表は `ColumnInfo` の型名（Athena の型名。real は `float`）で引く。Nullable は定数 3。列の field 2 / 3（SchemaName／TableName）は書かない。（#5、2026-09-17）
 - `ColumnInfo` の Precision／Scale を `Option` にして有無を持たせる案は採らない（`GetQueryResults` の JSON から `Precision` が消え、常に出す本物と食い違う）。`convert::column_infos` を `ColumnInfo` の唯一の生成元にし、`GetQueryResults` と `.metadata` の両方が通る。（#5、2026-09-17）
 - top の field 2 / 3 は `outcome.update_count` が `Some` の文（DML・CTAS）にだけ書く。SELECT で `Some(0)` に化かす `operation::update_count` は使わない。`update_type` は `clone()` で写す（`take()` すると DML の data を行にしない判定が壊れる）。field 2 には Trino の `update_type` をそのまま渡す。（#5、2026-09-17、#41、2026-09-20）
@@ -116,6 +116,7 @@
 - カタログ未指定・問い合わせの失敗・未知の `connector_name` は、すべて今までどおりの扱いに倒す（判定しない）。（#39、2026-09-20）
 - S3 への書き込みが無効なら形式を問い合わせない。取り消し済みなら問い合わせない。対象の文のときだけ問い合わせる。（#39、2026-09-20）
 - `DROP TABLE` × Iceberg の本体（改行 1 つ）と `ALTER` × Hive の本体（0 バイト）は条件をまとめずバリアントで分ける。`ADD COLUMNS` と `REPLACE COLUMNS` は Hive で同じ 38 バイトの `.metadata` を共有する（`(id, None, None)` で書く）。（#39、2026-09-20、#43、2026-09-21）
+- 形式の問い合わせを `SHOW CREATE TABLE` にも使い（Iceberg なら本体・`.metadata` とも binary、先頭はエンジン ID）、`EngineDdl` に上書きの向きが逆（application ではなく binary）の腕 `ShowCreateTableIceberg` を足した。`EngineDdl` の改名はしない（挙動を変えない大きな差分になるため。doc で「形式で書き方を上書きする文」と補う）。上書きの Content-Type・先頭 ID は `EngineDdl` のメソッドにせず `write_result` の `match` で腕ごとに分ける。（#151、2026-09-24）
 - 限界として、Athena は同じ `AwsDataCatalog` に両形式を混在させるが Trino は別カタログなので、本物と一致するのは利用者の Trino のカタログ構成と形式が揃っている場合だけ。これを利用者向けの文書に書く。（#39、2026-09-20）
 
 ## EXPLAIN
