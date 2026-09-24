@@ -264,6 +264,22 @@
   - 余分な `.csv.metadata` 3 個は、ドライバが接続時に流す接続テストの `SELECT`
 - 備考: GetQueryResults 列の「SHOW で +1 行」は当時の athena-local が UTILITY にも列名行を返していたため（#5 の「気づいたこと」4 と同じ観察）。#60 で本物（UTILITY は先頭行＝データ）に合わせて直したので、この +1 行は覆った（athena-local 側の当時の挙動）
 
+### binary な `.txt.metadata`（SHOW CREATE VIEW と Iceberg の SHOW CREATE TABLE）を Athena JDBC 3.8.1 が読むか
+- 日付: 2026-09-25 ／ issue: #163 ／ スクリプト: `tools/measure/jdbc-show-metadata.sh`（上の #57 の足場に 2 文を足した。Java 側は `tools/compose/jdbc-client/src/main/java/local/athenajdbccheck/Main.java` のシナリオ 57）
+- 相手: Athena JDBC 3.8.1（athena-local 相手。Trino 482 + MinIO + nginx の compose）
+- 投げたもの: `CREATE VIEW hive.default.<v> AS SELECT 1 AS n` と `CREATE TABLE iceberg.default.<t> (n integer)` を用意して、`SHOW CREATE VIEW <v>` と `SHOW CREATE TABLE <t>` を `ResultFetcher` の auto・S3 明示・GetQueryResults の 3 モードで（#57 の 7 文と同じラウンド）
+- 返ったもの:
+
+| 文 | `.txt.metadata` | auto | S3 明示 | GetQueryResults |
+|---|---|---|---|---|
+| `SHOW CREATE VIEW` | 素の protobuf、Content-Type `binary/octet-stream`、先頭 4 バイト `0a 1b 32 30`（Trino のクエリ ID） | `loaded query result metadata`、例外なし、`_col0:varchar` で 2 行 | 取りに行かない、2 行 | 1 行（列 `create view:varchar`、改行入りの 1 値） |
+| `SHOW CREATE TABLE`（Iceberg） | 同上 | 同上、8 行 | 取りに行かない、8 行 | 1 行（列 `createtab_stmt:string`、改行入りの 1 値） |
+
+  - 3 モードとも `failures=0`。auto の `loaded query result metadata` はケースの区切りの中に 1 件ずつあり、読んだファイルの Content-Type を MinIO で見て binary と確かめた
+  - 結論: #151 で `.txt` と `.txt.metadata` を binary/octet-stream にした 2 文も、既定の auto で例外なく読む。Content-Type は読み方に影響しない（issue の推測どおり）。`docs/caveats.md` の「`SHOW` metadata is not the opaque form Athena writes」に追記した
+  - GetQueryResults の行数が auto／S3 と食い違うのは athena-local 側の差分（Trino の結果を行に分けずに返す。本物は `SHOW CREATE VIEW` 2 行、Iceberg の `SHOW CREATE TABLE` 9 行。result-files.md の #151）。#181 に起票し、足場では INFO（既知の差分）に落とした
+  - ミューテーション: `content_type::carries_execution_id` に `VIEW` を足して `SHOW CREATE VIEW` を application に戻すと、`SHOW_CREATE_VIEW の .txt.metadata(auto)` が FAIL になることを確かめた
+
 ### 失敗した DDL の `<id>.txt` を Athena JDBC 3.x が読むか
 - 日付: 2026-09-23 ／ issue: #111 ／ スクリプト: `tools/e2e/jdbc-drivers/verify.sh`（判定は `judge.sh`、JVM 側は `tools/e2e/minio/jdbc-client/src/main/java/local/athenajdbccheck/FailedDdlScenario.java`） ／ 生データ: verify.sh が `/tmp/athena-local-issue111-jdbc.*` に残す
 - 相手: Athena JDBC 3.8.1・3.5.0・3.4.0・3.3.0・3.2.2・3.1.0・3.0.0（athena-local 相手。Trino 482 + MinIO + nginx の TLS 終端。本物の AWS ではない）
