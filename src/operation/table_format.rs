@@ -59,6 +59,12 @@ pub(super) fn target_statement(query: &str) -> Option<TargetStatement> {
     }
 }
 
+/// 形式の判定を GetQueryResults の UpdateCount にも使う文か。結果ファイルを書かない設定でも
+/// 問い合わせる根拠になる（#160）。DROP TABLE と ALTER TABLE は結果ファイルにしか効かない。
+pub(super) fn needs_format_for_update_count(statement: TargetStatement) -> bool {
+    matches!(statement, TargetStatement::ShowCreateTable)
+}
+
 /// テーブルの形式と存在を Trino に 1 回の問い合わせで確かめる。失敗・非対応の形式・
 /// 対象が存在しないときは None に倒す（`statement::bind` の分類の問い合わせと同型）。
 /// カタログ名は呼び出し元が別名解決した後の値を渡すこと（`system.metadata.catalogs` /

@@ -60,6 +60,10 @@ pub struct Execution {
     pub completed_at: Option<f64>,
     /// 成功したときだけ入る。
     pub result: Option<Arc<Outcome>>,
+    /// GetQueryResults の UpdateCount。完了時に `operation::execution` が文の種類と対象テーブルの形式から
+    /// 決めて渡す（None = 省く。本物の null）。読む側で決め直さないのは、形式の判定が実行時にしか
+    /// 取れないため（#160）。
+    pub update_count: Option<i64>,
     /// FAILED のときだけ入る。
     pub failure: Option<Failure>,
     /// StopQueryExecution が立て、実行中のタスクが見る。
@@ -178,6 +182,7 @@ impl Store {
             started_at: None,
             completed_at: None,
             result: None,
+            update_count: None,
             failure: None,
             cancel: Arc::default(),
         };
@@ -209,7 +214,7 @@ impl Store {
     }
 
     /// 終端状態からは何も書かない。先に CANCELLED になっていれば、あとから来た結果は捨てる。
-    pub fn finish(&self, id: &str, outcome: Result<Outcome, Failure>) {
+    pub fn finish(&self, id: &str, outcome: Result<(Outcome, Option<i64>), Failure>) {
         let mut inner = self.lock();
         let Some(execution) = inner.executions.get_mut(id) else {
             return;
@@ -220,9 +225,10 @@ impl Store {
 
         execution.completed_at = Some(now());
         match outcome {
-            Ok(outcome) => {
+            Ok((outcome, update_count)) => {
                 execution.state = State::Succeeded;
                 execution.result = Some(Arc::new(outcome));
+                execution.update_count = update_count;
             }
             Err(failure) => {
                 execution.state = State::Failed;
@@ -372,7 +378,7 @@ mod tests {
         assert_eq!(running.state, State::Running);
         assert!(running.started_at.is_some());
 
-        store.finish("id", Ok(Outcome::default()));
+        store.finish("id", Ok((Outcome::default(), None)));
         let finished = store.get("id").unwrap();
         assert_eq!(finished.state, State::Succeeded);
         assert!(finished.result.is_some());
@@ -434,7 +440,7 @@ mod tests {
         store.mark_running("id");
         store.cancel("id");
 
-        store.finish("id", Ok(Outcome::default()));
+        store.finish("id", Ok((Outcome::default(), None)));
         store.finish("id", Err(user_failure("late")));
 
         let execution = store.get("id").unwrap();
@@ -451,7 +457,7 @@ mod tests {
     fn 終わったクエリは止めても変わらない() {
         let store = submitted();
         store.mark_running("id");
-        store.finish("id", Ok(Outcome::default()));
+        store.finish("id", Ok((Outcome::default(), None)));
 
         assert_eq!(store.cancel("id"), CancelOutcome::AlreadyFinished);
 
@@ -522,7 +528,7 @@ mod tests {
     fn ロックを取ると期限切れの実行が消える() {
         let store = Store::new(Duration::ZERO);
         store.submit("id", submission_with_token("SELECT 1", &test_token("zero")));
-        store.finish("id", Ok(Outcome::default()));
+        store.finish("id", Ok((Outcome::default(), None)));
 
         // sweep_at を呼ばない。lock() が掃除を駆動していなければ残ってしまう。
         assert!(store.get("id").is_none());
@@ -531,7 +537,7 @@ mod tests {
     #[test]
     fn 終わった実行は保持期限を過ぎると消える() {
         let store = submitted();
-        store.finish("id", Ok(Outcome::default()));
+        store.finish("id", Ok((Outcome::default(), None)));
         let completed = store
             .get("id")
             .unwrap()
@@ -546,7 +552,7 @@ mod tests {
     #[test]
     fn 保持期限ちょうどで消える() {
         let store = submitted();
-        store.finish("id", Ok(Outcome::default()));
+        store.finish("id", Ok((Outcome::default(), None)));
         let completed = store
             .get("id")
             .unwrap()
@@ -561,7 +567,7 @@ mod tests {
     #[test]
     fn 保持期限の手前では消えない() {
         let store = submitted();
-        store.finish("id", Ok(Outcome::default()));
+        store.finish("id", Ok((Outcome::default(), None)));
         let completed = store
             .get("id")
             .unwrap()
@@ -593,7 +599,7 @@ mod tests {
             store.submit("id1", submission_with_token("SELECT 1", &token)),
             SubmitOutcome::Created
         );
-        store.finish("id1", Ok(Outcome::default()));
+        store.finish("id1", Ok((Outcome::default(), None)));
         let completed = store
             .get("id1")
             .unwrap()

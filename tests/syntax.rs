@@ -143,5 +143,8 @@ async fn ブロックコメント付きの_show_create_table_も本物と違い�
 
     assert_eq!(execution["QueryExecution"]["Status"]["State"], "SUCCEEDED");
     assert_eq!(harness.syntax_checks(), [sql]);
-    assert_eq!(harness.trino_sqls(), [sql]);
+    // 形式の問い合わせ（#160 で S3 無効でも飛ぶ）が 1 本前に入るが、本体は受け取った SQL のまま。
+    let sqls = harness.trino_sqls();
+    assert_eq!(sqls.len(), 2, "{sqls:?}");
+    assert_eq!(sqls.last().map(String::as_str), Some(sql));
 }
