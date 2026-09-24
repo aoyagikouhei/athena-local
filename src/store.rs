@@ -85,12 +85,14 @@ pub enum CancelOutcome {
     NotFound,
 }
 
-/// 同じ ClientRequestToken の再送かどうかを決める値。本物が比較する 3 つだけを持つ
-/// （2026-09-17 実測: ExecutionParameters と WorkGroup は比較されない。Catalog は未実測）。
-/// id を焼き込む前・既定を当てる前の生の値で比べる。
+/// 同じ ClientRequestToken の再送かどうかを決める値。本物が比較する 4 つだけを持つ
+/// （2026-09-17 実測: ExecutionParameters と WorkGroup は比較されない。Catalog は 2026-09-24 実測:
+/// 大文字小文字だけの違いも実在しない名前も衝突。#150）。id を焼き込む前・既定を当てる前の生の
+/// 値で比べる。
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Fingerprint {
     pub query: String,
+    pub catalog: Option<String>,
     pub database: Option<String>,
     pub output_location: Option<String>,
 }
@@ -297,6 +299,7 @@ mod tests {
     fn fingerprint(query: &str) -> Fingerprint {
         Fingerprint {
             query: query.to_string(),
+            catalog: None,
             database: None,
             output_location: None,
         }

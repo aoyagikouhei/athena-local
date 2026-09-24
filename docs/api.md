@@ -116,12 +116,14 @@ Behaviour that matches real Athena:
 - A `StartQueryExecution` retry with the same `ClientRequestToken` returns the
   same `QueryExecutionId` no matter what state the first query is in (queued,
   running, `SUCCEEDED`, `FAILED` or `CANCELLED`), and does not run the query
-  again. A retry whose `QueryString`, `QueryExecutionContext.Database` or
-  `ResultConfiguration.OutputLocation` differs from the first call instead fails
-  with `InvalidRequestException` / `AthenaErrorCode` and `ErrorCode`
-  `IDEMPOTENT_PARAMETER_MISMATCH` and `Message`
-  `Idempotent parameters do not match`. `ExecutionParameters` and `WorkGroup` are
-  not compared. `Catalog` has not been measured. Measured 2026-09-17.
+  again. A retry whose `QueryString`, `QueryExecutionContext.Catalog`,
+  `QueryExecutionContext.Database` or `ResultConfiguration.OutputLocation`
+  differs from the first call instead fails with `InvalidRequestException` /
+  `AthenaErrorCode` and `ErrorCode` `IDEMPOTENT_PARAMETER_MISMATCH` and
+  `Message` `Idempotent parameters do not match`. `Catalog` is compared as
+  sent, so a copy that differs only in case (`AWSDATACATALOG`) is a mismatch
+  too. `ExecutionParameters` and `WorkGroup` are not compared. Measured
+  2026-09-17 (`Catalog` on 2026-09-24).
 - `ClientRequestToken` is required. Omitting it (no key at all) fails with
   `InvalidRequestException` / `AthenaErrorCode` and `ErrorCode` `INVALID_INPUT`
   and `Message` `clientRequestToken is null or empty`. Its length must be

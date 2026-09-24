@@ -122,8 +122,20 @@ async fn 同じトークンでクエリを変えると_idempotent_parameter_mism
 }
 
 #[tokio::test]
-async fn 同じトークンで_database_か_output_location_を変えても衝突になる() {
+async fn 同じトークンで_catalog_database_output_location_のどれかを変えると衝突になる() {
+    // 本物は Catalog も照合に入れ、大文字小文字だけの違いも衝突にする（2026-09-24 実測。#146・#150）。
     for (name, first, second) in [
+        (
+            "catalog_case",
+            json!({
+                "QueryString": "SELECT 1",
+                "QueryExecutionContext": { "Catalog": "AwsDataCatalog" },
+            }),
+            json!({
+                "QueryString": "SELECT 1",
+                "QueryExecutionContext": { "Catalog": "AWSDATACATALOG" },
+            }),
+        ),
         (
             "database",
             json!({
@@ -146,13 +158,24 @@ async fn 同じトークンで_database_か_output_location_を変えても衝�
                 "ResultConfiguration": { "OutputLocation": "s3://b/y/" },
             }),
         ),
-        // 既定を当てる前の生の値で比べるので、省略と明示は別物（本物の扱いは未実測）。
+        // 既定を当てる前の生の値で比べるので、省略と既定と同じ値の明示は別物（Database は本物も
+        // 衝突。2026-09-24 実測。Catalog の省略と明示は未実測で、Database に倣う）。明示する値は
+        // Harness の既定（default_schema / default_catalog）そのもの。既定を当てた後の値で比べる
+        // 実装に書き換えると、この 2 ケースだけが落ちる。
         (
-            "database_omitted_then_given",
+            "database_omitted_then_default_given",
             json!({ "QueryString": "SELECT 1" }),
             json!({
                 "QueryString": "SELECT 1",
-                "QueryExecutionContext": { "Database": "db1" },
+                "QueryExecutionContext": { "Database": "default_schema" },
+            }),
+        ),
+        (
+            "catalog_omitted_then_default_given",
+            json!({ "QueryString": "SELECT 1" }),
+            json!({
+                "QueryString": "SELECT 1",
+                "QueryExecutionContext": { "Catalog": "default_catalog" },
             }),
         ),
     ] {

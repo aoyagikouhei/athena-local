@@ -11,6 +11,9 @@ later name the date they were measured on.
 
 ### Changed
 
+- A `StartQueryExecution` retry with the same `ClientRequestToken` now also
+  compares `QueryExecutionContext.Catalog`, as real Athena does (measured
+  2026-09-24) ([docs](docs/api.md#supported-api)).
 - Error responses no longer carry an `x-amzn-errortype` header, matching
   real Athena (measured 2026-09-17 to 2026-09-24); the error type is in the
   body's `__type` as before ([docs](docs/caveats.md#errors-and-request-bodies)).
