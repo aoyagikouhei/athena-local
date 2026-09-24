@@ -31,9 +31,11 @@ START_TIMEOUT="${START_TIMEOUT:-120}"
 PULL_TIMEOUT="${PULL_TIMEOUT:-600}"
 CATALOG_DIRS="catalog catalog-legacy catalog-nofsflag"
 CONTROL_TAG="482"
-# 482 の期待値。A2・D1・D4・C1・C2 は docs/dev/measurements/trino.md の「Trino のバージョン差」（#39）の表。
-# D2・D3 は同じ probe_sql で対照テーブル t1 の有無だけを入れ替えたもの（表には無い行）。
-EXPECTED=(hive iceberg '[["hive",1]]' '[["iceberg",1]]' '[["hive",0]]' '[["iceberg",0]]' 'DROP TABLE' 'ADD COLUMN')
+# 482 の期待値。A2・C1・C2 は docs/dev/measurements/trino.md の「Trino のバージョン差」（#39）の表。
+# D1〜D4 は probe.sh の D 節（src/operation/table_format.rs の probe_sql と同じ形）の値で、D2・D3 は
+# 対照テーブル t1 の有無だけを入れ替えたもの。#173 で probe_sql が件数から system.jdbc.tables の table_type に
+# 変わった（有れば "TABLE"、無ければ null）のに合わせた（#131、2026-09-25 に 482 で確認）。
+EXPECTED=(hive iceberg '[["hive","TABLE"]]' '[["iceberg","TABLE"]]' '[["hive",null]]' '[["iceberg",null]]' 'DROP TABLE' 'ADD COLUMN')
 COLUMNS_HDR=("A2 hive" "A2 iceberg" D1 D2 D3 D4 C1 C2)
 
 command -v jq >/dev/null || { echo "jq が要る"; exit 1; }
