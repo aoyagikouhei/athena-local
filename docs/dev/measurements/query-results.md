@@ -53,3 +53,21 @@
   - 1 ラウンド目: 13 項目 + 未測定 10（重いクエリが `sequence` の 5 万件制限で FAILED）。ここから「枠組みの上限 100000」と「0 行の UTILITY のトークン無視」を実装
   - 2 ラウンド目: 33 項目すべて（RUNNING／CANCELLED とトークン発行の規則）。ここから「満杯のページにトークン」を実装
 - 備考: ノートは値の全表を持たず、実装の要点だけを書いている。「枠組みの上限 100000」が何の上限か（`MaxResults` の API 定義の上限と読めるが）、RUNNING／CANCELLED の順序の結論、「満杯のページにトークン」の正確な規則（`end - offset == limit` のとき発行）はノートの自己レビューの分岐（`Some(_) if rows.is_empty()`／`filter(<= len)`／`end - offset == limit`）から読み取るしかない。詳細は README／CHANGELOG と生データを参照する必要がある
+
+## QUEUED のクエリへの GetQueryResults
+
+### QUEUED を捉えようとした 5 本（捉えられず）
+- 日付: 2026-09-24 ／ issue: #146（バッチは #113。未実測にしたのは #102） ／ スクリプト: `tools/measure/unmeasured-batch/run.sh`（項目 `e1`） ／ 生データ: `$HOME/athena-unmeasured-batch-measurements/run-20260924-004554/e1/`
+- 相手: 本物の Athena（engine version 3、workgroup `primary`、Catalog `AwsDataCatalog`、Database `<DB>`）
+- 投げたもの: `SELECT 1`〜`SELECT 5` を新しいトークンで続けて 5 本 `StartQueryExecution`。5 本を投げ終えてから、1 本ずつ `GetQueryExecution` と `GetQueryResults` を 1 回ずつ
+- 返ったもの: 5 本とも、その `GetQueryExecution` の State が SUCCEEDED で、`GetQueryResults` も成功（列名行 `_col0` と値の 2 行、`UpdateCount` 0）。QUEUED は 1 本も見えなかった
+
+  | 文 | `QueryQueueTimeInMillis` | `TotalExecutionTimeInMillis` | SubmissionDateTime（UTC） |
+  | --- | --- | --- | --- |
+  | `SELECT 1` | 47 | 283 | 00:55:16.370 |
+  | `SELECT 2` | 75 | 303 | 00:55:17.101 |
+  | `SELECT 3` | 86 | 340 | 00:55:17.838 |
+  | `SELECT 4` | 78 | 319 | 00:55:18.562 |
+  | `SELECT 5` | 80 | 318 | 00:55:19.313 |
+
+- 備考: キューの待ちは 100 ミリ秒未満で、投げてから CLI で状態を見に行くまでの間（1 本目は 5 本を投げ終えた後）に終わっている。`Query has not yet finished. Current state: QUEUED` の文言は測れていない

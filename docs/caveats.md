@@ -50,9 +50,14 @@ Known differences between athena-local and real Athena, grouped by topic.
   `SHOW /* c */ TABLES` and `CREATE` / `DROP /* c */ DATABASE` all succeed on
   Athena. Since athena-local sends the SQL to Trino unmodified, and Trino
   accepts a comment anywhere whitespace is allowed, every block-comment form
-  can succeed here where it would fail on real Athena. Whether other
-  statements that Athena parses the same way reject a block comment as well
-  is not measured.
+  can succeed here where it would fail on real Athena. Two more statements
+  fail on Athena with a block comment after the verb: `DESCRIBE /* c */ t`
+  (`ParseException line 1:0 cannot recognize input near 'DESCRIBE' '/' '*' in
+  describe statement`) and `MSCK REPAIR /* c */ TABLE t` (`ParseException line
+  1:12 missing EOF at '/' near 'REPAIR'`), both `ErrorCategory` 1 /
+  `ErrorType` 1003 with the reason written to `<id>.txt`; `SHOW PARTITIONS`,
+  `SHOW TBLPROPERTIES`, `SHOW COLUMNS FROM`, `SHOW CREATE VIEW` and
+  `CREATE EXTERNAL TABLE` with the same comment succeed (measured 2026-09-24).
 
 ## `ALTER TABLE` and format-dependent DDL
 
@@ -84,7 +89,10 @@ Known differences between athena-local and real Athena, grouped by topic.
   `ADD COLUMNS`, `DROP COLUMN`, `SET LOCATION`, `REPLACE COLUMNS`,
   `ADD PARTITION`, `DROP PARTITION` and `RENAME TO` each get the
   `SubstatementType` Athena returns (measured 2026-09-21). Note that
-  `ALTER_TABLE_REPLACE_COLUMN` is singular although the statement is plural.
+  `ALTER_TABLE_REPLACE_COLUMN` is singular although the statement is plural;
+  the singular statement `REPLACE COLUMN` is a syntax error on Athena
+  (`mismatched input 'REPLACE'`, `MALFORMED_QUERY`, measured 2026-09-24) and is
+  left unclassified here.
   Athena returns the `SubstatementType` even when the statement then fails at
   run time, so athena-local classifies these forms regardless of the target's
   format. Any other `ALTER TABLE` form is left unclassified, the same as any
@@ -105,15 +113,15 @@ Known differences between athena-local and real Athena, grouped by topic.
 - **Several `ALTER TABLE` combinations fail on Athena itself.** `DROP COLUMN` on
   a Hive table, and `SET TBLPROPERTIES` setting `comment` on an Iceberg table,
   are rejected by Athena's Hive/Iceberg backend. So are `REPLACE COLUMNS`,
-  `ADD PARTITION` and `SET LOCATION` on an Iceberg table, all three with
-  `Query type not supported by Athena Iceberg at this time`, and `RENAME TO` on
-  a Hive table, where Glue answers `Table cannot be renamed` (measured
-  2026-09-21). They fail before athena-local's own format-dependent behaviour
-  would matter — not a limitation of athena-local.
-- **`ADD PARTITION` and `DROP PARTITION` were measured on a partitioned Hive
-  table only.** Athena has no such syntax for Iceberg (see above), so the
-  Iceberg side of those two rows cannot exist; no other partition layout was
-  measured.
+  `ADD PARTITION`, `DROP PARTITION` and `SET LOCATION` on an Iceberg table, all
+  four with `Query type not supported by Athena Iceberg at this time`, and
+  `RENAME TO` on a Hive table, where Glue answers `Table cannot be renamed`
+  (measured 2026-09-21; `DROP PARTITION` on 2026-09-24). They fail before
+  athena-local's own format-dependent behaviour would matter — not a
+  limitation of athena-local.
+- **`ADD PARTITION` and `DROP PARTITION` succeed on a partitioned Hive table
+  only.** On an Iceberg table Athena accepts the statements but fails both at
+  run time (see above); no other partition layout was measured.
 - **Table format is detected per Trino catalog.** Real Athena keeps Hive and
   Iceberg tables side by side in one `AwsDataCatalog`; Trino can only put them
   in separate catalogs, so athena-local's detection follows your Trino catalog
@@ -203,15 +211,18 @@ Known differences between athena-local and real Athena, grouped by topic.
   `SHOW_DATABASES`, see [Supported API](api.md#supported-api)) and `SELECT * FROM "<table>$partitions"` for
   `SHOW PARTITIONS`; `SHOW TBLPROPERTIES` has no Trino spelling
   (`SHOW CREATE TABLE` includes the properties).
-- **Unmeasured `.metadata` details.** The update count of an `INSERT` that
-  inserts no row is written as `0` (`18 00`), which is what Athena writes for a
-  Hive table (measured 2026-09-20) and for an Iceberg table (measured
-  2026-09-23), each beside a one-row `INSERT` in the same round whose file
-  differed in that byte only. An `UPDATE`, `DELETE` or `MERGE` that changes no
-  rows (`DELETE ... WHERE false`) was not measured; athena-local writes `0` for
-  those too. Columns of type `timestamp with time zone`, `time with time zone`
-  and `interval year to month` were not measured and are written like
-  `timestamp` / `time` and `interval day to second`.
+- **Zero update counts and less common column types in `.metadata`.** The
+  update count of an `INSERT` that inserts no row is written as `0`
+  (`18 00`), which is what Athena writes for a Hive table (measured
+  2026-09-20) and for an Iceberg table (measured 2026-09-23), each beside a
+  one-row `INSERT` in the same round whose file differed in that byte only.
+  An `UPDATE`, `DELETE` or `MERGE` that changes no rows
+  (`DELETE ... WHERE false`) is written with `0` too, as Athena does on an
+  Iceberg table (measured 2026-09-24). Columns of type
+  `timestamp with time zone` and `time with time zone` are written like
+  `timestamp` / `time`, `interval year to month` like
+  `interval day to second`, and `uuid` and `ipaddress` without Precision,
+  Scale or CaseSensitive, all as Athena writes them (measured 2026-09-24).
 - **A missing bucket fails a query whose result is a CSV.** Athena reported
   `SUCCEEDED` for a `SELECT` whose output bucket did not exist (measured).
   athena-local makes a `SELECT` (or `SHOW FUNCTIONS`) `FAILED` so the mistake

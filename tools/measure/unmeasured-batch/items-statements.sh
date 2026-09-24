@@ -19,7 +19,7 @@ item_s1() {
   record_created TABLE "$t" "$TCAT_HIVE" "$TDB"
 
   run_stmt "$dir" s1-replace-column-singular "ALTER TABLE $t REPLACE COLUMN (n int, s string)" "$TCAT_HIVE" "$TDB"
-  run_stmt "$dir" s1-replace-columns-plural "ALTER TABLE $t REPLACE COLUMNS (n int, s varchar)" "$TCAT_HIVE" "$TDB"
+  run_stmt "$dir" s1-replace-columns-plural "ALTER TABLE $t REPLACE COLUMNS (n int, s string)" "$TCAT_HIVE" "$TDB"
 
   best_effort_drop TABLE "$t" "$TCAT_HIVE" "$TDB"
   record_cleanup_hint "s1 hive: $loc"

@@ -69,6 +69,7 @@ item_e1() {
     printf 'SELECT %d\n' "$n" >"$dir/$label.sql"
     athena_cli start-query-execution --query-string "SELECT $n" \
       --query-execution-context "Catalog=$TCAT_GENERIC,Database=$TDB" \
+      --result-configuration "OutputLocation=$OUTPUT" \
       --client-request-token "$tok" \
       >"$dir/$label.start.json" 2>"$dir/$label.start.err"
     ids+=("$(query_execution_id_of "$dir/$label.start.json")")
@@ -107,5 +108,5 @@ except Exception: print("?")' "$dir/$label.execution-immediate.json")
   echo "== e1: QUEUED を直後に観測できたか=$caught_queued"
 }
 
-# e2（生 HTTP。raw.py）。lib-aws.sh の run_raw_item が summary.tsv への変換を担う。
+# e2（生 HTTP。raw.py）。lib-raw.sh の run_raw_item が summary.tsv への変換を担う。
 item_e2() { run_raw_item "$1"; }

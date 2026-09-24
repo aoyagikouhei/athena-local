@@ -41,8 +41,11 @@ item_r1() {
   fi
 }
 
-# r2: .txt の値のタブ・改行・NULL。Hive の列コメントと TBLPROPERTIES にタブ・改行を入れ、
+# r2: .txt の値のタブ・改行・NULL。Hive の列コメントにタブ、TBLPROPERTIES にタブと改行を入れ、
 # DESCRIBE / SHOW TBLPROPERTIES で見る。もう 1 列はコメント無し（NULL）。
+# 列コメントに改行は入れられない（Glue の列コメントの制約 `[\u0020-...\t]*` に改行が無く、
+# 2026-09-24 の 1 回目で CREATE が ValidationException で落ちた）。TBLPROPERTIES の値の制約には
+# `\r\n\t` が含まれるので、改行はそちらで測る。
 item_r2() {
   local id=$1 dir="$RUN_DIR/$id"
   mkdir -p "$dir"
@@ -52,9 +55,9 @@ item_r2() {
     return 0
   fi
   local loc="${OUTPUT}tables-probe-113-r2/"
-  local weird=$'a\tb\nc'
+  local tab_only=$'a\tb' tab_and_newline=$'a\tb\nc'
   run_stmt "$dir" r2-create \
-    "CREATE EXTERNAL TABLE $t (n int COMMENT '${weird}', m int) LOCATION '$loc' TBLPROPERTIES ('note'='x${weird}y')" \
+    "CREATE EXTERNAL TABLE $t (n int COMMENT '${tab_only}', m int) LOCATION '$loc' TBLPROPERTIES ('note'='x${tab_and_newline}y')" \
     "$TCAT_HIVE" "$TDB"
   local create_rc=$?
   record_created TABLE "$t" "$TCAT_HIVE" "$TDB"

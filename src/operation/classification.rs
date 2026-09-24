@@ -3,7 +3,8 @@
 /// 空白とコメントを区切りにした大文字の語の並び（`catalog::words`）から、先頭の `(` を取り除いたもの。
 /// 先頭のコメント（2026-09-18 実測）もキーワードの間のコメント（2026-09-22 実測。#52）も語にならない。
 /// `(` だけの語（`( SELECT` のように直後に空白や改行があるとき）は取り除くと空になるので落とし、
-/// `(SELECT` と同じ判定にする（#64 のレビューで見つかった）。
+/// `(SELECT` と同じ判定にする（#64 のレビューで見つかった。本物も `( SELECT 1 )` と改行を挟んだ形を
+/// DML / SELECT にする。2026-09-24 実測。#146）。
 pub(super) fn words(query: &str) -> Vec<String> {
     crate::catalog::words(query)
         .into_iter()
@@ -114,7 +115,8 @@ fn alter_table_action(query: &str) -> Option<&'static str> {
             .map(|_| "ALTER_TABLE_DROP_PARTITION");
     }
     // REPLACE の値だけ単数形の COLUMN で終わる（2026-09-21 実測）。受けるのは本物に構文がある
-    // 複数形の COLUMNS だけで、単数形は測っていないので分類しない。
+    // 複数形の COLUMNS だけで、単数形の `REPLACE COLUMN` は本物が StartQueryExecution で
+    // `mismatched input 'REPLACE'` の構文エラーにする（2026-09-24 実測。#146）ので分類しない。
     if let Some(after_replace) = crate::catalog::skip_keyword(rest, "REPLACE") {
         return crate::catalog::skip_keyword(after_replace, "COLUMNS")
             .map(|_| "ALTER_TABLE_REPLACE_COLUMN");
@@ -173,7 +175,7 @@ mod tests {
         assert_eq!(statement_type("-- c\nSELECT 1"), "DML");
         assert_eq!(statement_type("/* c */ SHOW TABLES"), "UTILITY");
         // `(` の直後に空白や改行があっても、`(SELECT` と同じく括弧を飛ばして判定する
-        // （#64 のレビューで見つかった。空の語が先頭に残って UTILITY に落ちていた）。
+        // （#64 のレビューで見つかった。空の語が先頭に残って UTILITY に落ちていた）。本物も DML（2026-09-24 実測。#146）。
         assert_eq!(statement_type("( SELECT 1 )"), "DML");
         assert_eq!(
             statement_type("(\n  SELECT 1\n)\nUNION ALL\n(\n  SELECT 2\n)"),

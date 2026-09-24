@@ -1,7 +1,7 @@
 # shellcheck shell=bash
 # issue #113: ClientRequestToken の未実測 7 項目（t1, t2, t3, t4, t5, t8, t4c）。単独では
 # 実行しない。run.sh が source して item_t1 などを呼ぶ。t2・t3・t4 は aws CLI が短すぎる
-# トークンを送信前に弾くため raw.py（生 HTTP。lib-aws.sh の run_raw_item 経由）で測る。
+# トークンを送信前に弾くため raw.py（生 HTTP。lib-raw.sh の run_raw_item 経由）で測る。
 # t4c は t4 のうち aws CLI だけで送れる組（不正な OutputLocation × 構文エラー、有効な長さの
 # トークン）。raw.py 側の run_t4 はこれと同じ組（output-syntax）を含まないよう外してあり、
 # aws CLI では送れない短いトークンが絡む組だけを担う（重複を避けるため。issue-notes 参照）。
@@ -103,7 +103,7 @@ item_t4c() {
   fi
 }
 
-# t2・t3・t4（生 HTTP。raw.py）。lib-aws.sh の run_raw_item が summary.tsv への変換を担う。
+# t2・t3・t4（生 HTTP。raw.py）。lib-raw.sh の run_raw_item が summary.tsv への変換を担う。
 item_t2() { run_raw_item "$1"; }
 item_t3() { run_raw_item "$1"; }
 item_t4() { run_raw_item "$1"; }
@@ -134,7 +134,7 @@ item_t8() {
   fi
   local tok2
   tok2=$(new_token)
-  run_stmt "$dir" t8-output-omit "SELECT 2 AS t8_probe" "$TCAT_GENERIC" "$TDB" "$WORKGROUP2" "$tok2"
+  run_stmt "$dir" t8-output-omit "SELECT 2 AS t8_probe" "$TCAT_GENERIC" "$TDB" "$WORKGROUP2" "$tok2" omit
   run_stmt "$dir" t8-output-explicit "SELECT 2 AS t8_probe" "$TCAT_GENERIC" "$TDB" "$WORKGROUP2" "$tok2" \
     "$TARGET_WG2_OUTPUT"
   local outcome_output

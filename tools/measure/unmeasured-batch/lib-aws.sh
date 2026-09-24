@@ -247,8 +247,15 @@ declare_expectation() {
 
 # start-query-execution の引数配列を組む。結果はグローバル配列 STMT_ARGS に入れる
 # （bash の関数は配列を戻り値にできないため）。引数を省くときは "-" を渡す。
+# OutputLocation だけは "-" で $OUTPUT を付ける（本物の primary には既定の出力先が無く、
+# 付けないと "No output location provided" で 1 本も始まらない。local の athena-local は
+# 既定で補うので、ドライランでは気づけなかった。2026-09-24 の 1 回目で全滅）。
+# 省略そのものを測る文（t8 の output-omit）は "omit" を渡す。
 build_stmt_args() {
   local sql=$1 catalog=$2 database=$3 workgroup=$4 token=$5 output_override=$6
+  if [ "$output_override" = "-" ]; then
+    output_override=${OUTPUT:-omit}
+  fi
   STMT_ARGS=(--query-string "$sql" --client-request-token "$token")
   local qec=()
   [ "$catalog" != "-" ] && qec+=("Catalog=$catalog")
@@ -261,7 +268,7 @@ build_stmt_args() {
     )
     STMT_ARGS+=(--query-execution-context "$joined")
   fi
-  [ "$output_override" != "-" ] && STMT_ARGS+=(--result-configuration "OutputLocation=$output_override")
+  [ "$output_override" != "omit" ] && STMT_ARGS+=(--result-configuration "OutputLocation=$output_override")
   [ "$workgroup" != "-" ] && STMT_ARGS+=(--work-group "$workgroup")
 }
 

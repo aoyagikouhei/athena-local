@@ -71,7 +71,7 @@
 ### GetQueryResults
 
 - [ ] `QueryResultType` の `DATA_MANIFEST` を無視している
-- [ ] `ColumnInfo.Nullable` が常に `UNKNOWN`。本物の値は未実測
+- [ ] `ColumnInfo.Nullable` が常に `UNKNOWN`。本物もこれまで `UNKNOWN` しか返していない（NULL 可の列も `UNKNOWN`。NOT NULL 列は本物で作れず測れない。#146、2026-09-24。[unmeasured.md](unmeasured.md) の「測れないもの」）
 
 ### エラー応答
 

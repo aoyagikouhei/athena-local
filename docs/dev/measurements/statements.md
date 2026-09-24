@@ -76,6 +76,27 @@
   - Iceberg への `ALTER /* c */ TABLE` は成功
 - 備考: 「存在しないテーブルへの ALTER」が Hive 側と読めるかはノートからは曖昧（README の Caveat に「本物だけが弾く形（SHOW CREATE TABLE・Hive 側の ALTER）」と書いたとある）
 
+### キーワードの間のブロックコメント（DESCRIBE・SHOW 4 文・MSCK REPAIR TABLE・CREATE EXTERNAL TABLE）
+- 日付: 2026-09-24 ／ issue: #146（バッチは #113） ／ スクリプト: `tools/measure/unmeasured-batch/run.sh`（項目 `x1`） ／ 生データ: `$HOME/athena-unmeasured-batch-measurements/run-20260924-004554/x1/`
+- 相手: 本物の Athena（engine version 3、workgroup `primary`、Catalog `AwsDataCatalog`、Database `<DB>`）
+- 投げたもの: フィクスチャの Hive テーブル `t` = `CREATE EXTERNAL TABLE <DB>.athena_local_probe_113_x1 (n int) PARTITIONED BY (p string) LOCATION '<OUTPUT>tables-probe-113-x1/'` とビュー `v` = `CREATE VIEW <DB>.athena_local_probe_113_x1_view AS SELECT 1 AS n`（どちらも SUCCEEDED）。下表の 7 文を、コメント無しの対照と `/* c */` 入りで 1 本ずつ。`CREATE EXTERNAL TABLE` は別名の新しいテーブル（`..._x1_ext`・`..._x1_ext_c`、`LOCATION` も別）
+- 返ったもの:
+
+  | コメント入りの文 | 対照（コメント無し） | コメント入り |
+  | --- | --- | --- |
+  | `DESCRIBE /* c */ t` | SUCCEEDED、UTILITY / DESCRIBE_TABLE、本体 291B・`.metadata` 152B、application | **FAILED**、UTILITY / DESCRIBE_TABLE、`FAILED: ParseException line 1:0 cannot recognize input near 'DESCRIBE' '/' '*' in describe statement`、ErrorCategory 1 / ErrorType 1003。`<id>.txt` 100B（`StateChangeReason` と同じ文言、application）、`.metadata` 無し。`GetQueryResults` は 200 で `ResultSetMetadata: null` |
+  | `SHOW PARTITIONS /* c */ t` | SUCCEEDED、UTILITY / SHOW_PARTITIONS、本体 0B（パーティション無し）・`.metadata` 312B、binary | SUCCEEDED、同じ |
+  | `SHOW TBLPROPERTIES /* c */ t` | SUCCEEDED、UTILITY / SHOW_TABLE_PROPERTIES、本体 46B・`.metadata` 460B、binary | SUCCEEDED、同じ（本体の中身も同じ） |
+  | `SHOW COLUMNS FROM /* c */ t` | SUCCEEDED、UTILITY / SHOW_COLUMNS、本体 41B・`.metadata` 312B、binary | SUCCEEDED、同じ（本体の中身も同じ） |
+  | `MSCK REPAIR /* c */ TABLE t` | SUCCEEDED、DDL / MSCK_REPAIR、本体 55B（`Tables missing on filesystem:\tathena_local_probe_113_x1`）・`.metadata` 38B（`0a 24` + QueryExecutionId だけ）、application | **FAILED**、DDL / MSCK_REPAIR、`FAILED: ParseException line 1:12 missing EOF at '/' near 'REPAIR'`、ErrorCategory 1 / ErrorType 1003。`<id>.txt` 65B（`StateChangeReason` と同じ文言、application）、`.metadata` 無し |
+  | `SHOW CREATE /* c */ VIEW v` | SUCCEEDED、UTILITY / SHOW_CREATE_VIEW、本体 69B・`.metadata` 312B、binary | SUCCEEDED、同じ（本体の中身も同じ） |
+  | `CREATE EXTERNAL /* c */ TABLE ... (n int) LOCATION '...'` | SUCCEEDED、DDL / CREATE_TABLE、本体 0B、`.metadata` 無し、binary | SUCCEEDED、同じ |
+
+  - 「application」「binary」は本体と `.metadata` の Content-Type（置かれたものはどちらも同じ値）
+  - コメント入りで FAILED になった 2 本も、`StatementType`／`SubstatementType`／OutputLocation（`<id>.txt`）はコメント無しと同じに返る
+  - `MSCK REPAIR TABLE`（対照）の `GetQueryResults` は 1 行（本体と同じ文字列）を返すが、`ColumnInfo` は空で `UpdateCount` も無い
+- 備考: #17・#52 の `SHOW CREATE TABLE`（`/* c */ SHOW CREATE TABLE`・`SHOW CREATE /* c */ TABLE` が ParseException、ErrorCategory 1 / ErrorType 1003）と同じ形の失敗が `DESCRIBE` と `MSCK REPAIR TABLE` にもあった。一方 `SHOW CREATE /* c */ VIEW` は成功し、#52 の `SHOW CREATE /* c */ TABLE` と割れた。`summary.txt` の `x1-show-partitions-comment` の行で QueryExecutionId の一部が `<ACCOUNT_ID>` になっているのは、12 桁の数字を一律に伏せるマスクの副作用（アカウント ID ではない）
+
 ## 本物だけが実行時に弾く形（`/* c */ SHOW CREATE TABLE`）
 
 ### 範囲外の発見（同じラウンド）
@@ -109,6 +130,14 @@
 - 投げたもの: `(SELECT 1)`（括弧の直後にスペース無し）
 - 返ったもの: `g10-parenthesized.execution.json` で `StatementType: DML`／`SubstatementType: SELECT`。括弧で始まっても通常の `SELECT` と同じに分類される
 - 備考: `docs/dev/unmeasured.md` の「`ExecutionParameters`」節にあった「括弧で始まるクエリを本物がどう分類するか」を、#113 でこの生データを読み直して埋めた。前後にスペースを挟んだ `( SELECT 1 )` はこの生データには無く、#113 のバッチで別途測る（本物での実行は #146）。
+
+### 空白・改行を挟んだ括弧で始まる SELECT の分類
+- 日付: 2026-09-24 ／ issue: #146（バッチは #113） ／ スクリプト: `tools/measure/unmeasured-batch/run.sh`（項目 `p1`） ／ 生データ: `$HOME/athena-unmeasured-batch-measurements/run-20260924-004554/p1/`
+- 相手: 本物の Athena（engine version 3、workgroup `primary`、Catalog `AwsDataCatalog`、Database `<DB>`）
+- 投げたもの: 対照 `(SELECT 1)`、`( SELECT 1 )`、`(` + 改行 + `SELECT 1` + 改行 + `)`
+- 返ったもの: 3 本とも同じ。SUCCEEDED、`StatementType: DML`／`SubstatementType: SELECT`、`<id>.csv` 12B（`"_col0"\n"1"\n`）、`<id>.csv.metadata` 68B（field 1 はエンジン ID、列 `_col0` `integer` で 7 = 10・8 = 0・9 = 3・10 = 0）、Content-Type は本体・`.metadata` とも application/octet-stream。`GetQueryResults` は列名行 `_col0` と `1` の 2 行
+  - 3 本の `.metadata` は field 1（エンジン ID）を除いてバイト単位で同じ
+- 備考: 対照は上の #76 の `g10-parenthesized`（`DML`／`SELECT`）の再現
 
 ### SHOW FUNCTIONS の結果ファイル（#76 の生データの読み直し）
 - 日付: 2026-09-23（生データ `run-20260923-065415`） ／ issue: #80（実測は #76） ／ スクリプト: 無し（#76 のラウンドの生データ） ／ 生データ: `~/athena-content-type-measurements/run-20260923-065415/h1-show-functions.*`

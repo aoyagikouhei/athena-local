@@ -7,7 +7,8 @@
 use crate::athena::ColumnInfo;
 
 /// 9 Nullable の値。`ColumnInfo.nullable` は常に `"UNKNOWN"` なので定数にしている
-/// （1 = NOT_NULL、2 = NULLABLE は本物で未観測なので写像は作らない）。
+/// （1 = NOT_NULL、2 = NULLABLE は本物で観測できないので写像は作らない。NULL 可の列も本物は 3 で、
+/// NOT NULL 列の Iceberg テーブルは本物では DDL で作れない。2026-09-24 実測。#146）。
 const NULLABLE_UNKNOWN: u64 = 3;
 
 /// 結果ファイルの隣に置く `.metadata` の中身を作る。
@@ -25,7 +26,7 @@ pub(crate) fn to_metadata(
     }
     if let Some(update_count) = update_count {
         // 0 でも書く。0 行の INSERT は本物も `18 00` を書く（Hive は 2026-09-20、Iceberg は 2026-09-23 実測）。
-        // 0 件の UPDATE / DELETE / MERGE は未実測。
+        // 0 件の UPDATE / DELETE / MERGE と 0 行の CTAS も本物は `18 00` を書く（Iceberg で 2026-09-24 実測。#146）。
         put_varint_field(&mut buffer, 3, update_count as u64);
     }
     for column in columns {
@@ -62,12 +63,12 @@ fn optional_fields(type_name: &str) -> (bool, bool, bool) {
     match type_name {
         "tinyint" | "smallint" | "integer" | "bigint" | "double" | "float" | "decimal"
         | "varchar" | "char" | "varbinary" | "timestamp" | "time"
-        // 未実測。timestamp / time と同じ系統として同じ扱いにする。
+        // timestamp / time と同じく 7 / 8 / 10 を出す（2026-09-24 実測。#146）。
         | "timestamp with time zone" | "time with time zone" => (true, true, true),
-        // interval year to month は未実測。interval day to second と同じ扱いにする。
+        // interval year to month も interval day to second と同じく 10 だけを出す（2026-09-24 実測。#146）。
         "boolean" | "interval day to second" | "interval year to month" => (false, false, true),
         "date" => (false, true, true),
-        // array / map / row / json / string と未知の型は 3 つとも出さない。
+        // array / map / row / json / string と未知の型は 3 つとも出さない（uuid / ipaddress も本物は出さない。2026-09-24 実測。#146）。
         _ => (false, false, false),
     }
 }
@@ -266,7 +267,7 @@ mod tests {
 
     #[test]
     fn 未実測の型は同じ系統の型と同じフィールドを出す() {
-        // 本物では未実測の 2 つの型（docs/caveats.md の Result files and `.metadata` に「同じ系統の型と同じに書く」と書いてある）。
+        // 本物で 2026-09-24 に実測した 2 つの型（#146。本物の `.metadata` の列も同じ形だった）。
         // 期待値は手計算。timestamp with time zone は timestamp と同じく 7 / 8 / 10 を出し、
         // interval year to month は interval day to second と同じく 10 だけを出す。
         let columns = vec![
@@ -298,8 +299,8 @@ mod tests {
 
     #[test]
     fn 更新件数が_0_でも_field_3_を書く() {
-        // 0 件の更新（`DELETE ... WHERE false`）は本物で未実測。docs/caveats.md の Result files and `.metadata` に書いた
-        // 「athena-local は 0 を書く」という契約を固定する（proto3 の既定値の省略はしない）。
+        // 0 件の更新（`DELETE ... WHERE false`）も本物は `18 00` を書く（2026-09-24 実測。#146）。
+        // その形を固定する（proto3 の既定値の省略はしない）。
         let columns = vec![column("rows", "bigint", 19, 0, false)];
 
         let actual = to_metadata("q1", Some("DELETE"), Some(0), &columns);
