@@ -18,11 +18,11 @@ tools/dev.sh docker build -t aoyagikouhei/athena-local:dev .
 tools/dev.sh tools/e2e/minio/verify.sh             # 検証の足場（tools/e2e）。環境は compose.yml の trino / minio など。同時に流すなら COMPOSE_PROJECT_NAME
 ```
 
-CI（`.github/workflows/ci.yml`）の `check` ジョブはホストランナーで直に cargo を回す。`e2e` ジョブは toolbox の中で request-errors と paging-validation を流す（toolbox のイメージは GHA キャッシュ、cargo は `.toolbox/target/release` だけキャッシュ）。
+CI（`.github/workflows/ci.yml`）の `check` ジョブはホストランナーで直に cargo を回す。`e2e` ジョブは toolbox の中で request-errors と paging-validation を流し、`cargo test --locked` を回す（amd64 の toolbox で通すため。#184）（toolbox のイメージは GHA キャッシュ、cargo は `.toolbox/target/release` だけキャッシュ）。
 
 ## 検証の足場（toolbox）
 
-検証の足場（`tools/e2e/`）は、ホストで直接叩かず toolbox の中で動かす（理由は [decisions.md](decisions.md) の「開発の足場」）。toolbox はルートの [compose.yml](../../compose.yml) の dev サービスとして定義してあり、[tools/dev.sh](../../tools/dev.sh) がその呼び口（`docker compose run --rm --use-aliases dev env -- <コマンド>` の薄い包み）。ホストに要るのは Docker（compose プラグイン付き）だけ。
+検証の足場（`tools/e2e/`）は、ホストで直接叩かず toolbox の中で動かす（理由は [decisions.md](decisions.md) の「開発の足場」）。toolbox はルートの [compose.yml](../../compose.yml) の dev サービスとして定義してあり、[tools/dev.sh](../../tools/dev.sh) がその呼び口（`docker compose run --rm --use-aliases dev env -- <コマンド>` の薄い包み）。ホストに要るのは Docker（compose プラグイン付き）だけで、daemon はルート権限で動くもの（ソケットが `/var/run/docker.sock`）に限る。rootless docker では動かない（下の「確かめた環境」。#184）。
 
 ```bash
 tools/dev.sh cargo test
@@ -74,12 +74,19 @@ athena-local 自身は dev の中のプロセスで、足場は `127.0.0.1:<port
 
 ### 確かめた環境
 
-WSL2 の Ubuntu 24.04、ネイティブの Docker Engine、arm64 で、2026-09-25 に次を確かめた（#131。#127・#128 の人間検証の残り）。amd64 ホストでの `cargo test`、Docker Desktop／rootless docker、`~/.aws/credentials` だけでの実測は未確認（#184）。
+WSL2 の Ubuntu 24.04、ネイティブの Docker Engine、arm64 で、2026-09-25 に次を確かめた（#131。#127・#128 の人間検証の残り）。amd64 では CI の e2e ジョブ（ubuntu-24.04）が toolbox の中で `tools/dev.sh cargo test --locked` を毎回流す（#184）。Docker Desktop と、`~/.aws/credentials` だけでの実測は未確認（#184）。
 
 - `tools/dev.sh tools/e2e/minio/verify.sh` の走行中（ケース 1 の実行中）に端末で Ctrl-C を押すと、1 秒で終了コード 130 で抜け、足場の trap が `down -v trino minio minio-init` を流す。`docker ps -a --filter label=com.docker.compose.project=athena-local` は dev も含めて 0 件になる（compose.yml の `init: true` が効いている）。
 - `tools/dev.sh tools/e2e/jdbc-drivers/verify.sh` を既定の全 7 版（3.8.1〜3.0.0）で最後まで流して FAIL 0。
 - その走行中に同じプロジェクト名で `tools/dev.sh cargo test --locked` を動かし、tls-proxy から `dev` が 2 つのアドレスに解決されている間も、cargo test は全件通り、tls-proxy のログに接続失敗・upstream のエラー・5xx は 0 件（上の同時実行の項目の理由による）。
 - `tools/dev.sh tools/e2e/trino-probe/versions.sh` を既定の 5 版（480 475 470 440 400 の pull から）で最後まで流して FAIL 0（結果は [measurements/trino.md](measurements/trino.md) の #131 の節）。
+
+rootless docker（同じマシンに `dockerd-rootless-setuptool.sh install --force` で並べて入れ、CLI のコンテキストを `rootless` にした）では、toolbox のイメージはビルドできるが `tools/dev.sh cargo test` が `could not find Cargo.toml` で止まる（2026-09-25。#184）。理由は 2 つ:
+
+- rootless ではホストのユーザーがコンテナの root に対応し、compose.yml の `user: "${DEV_UID}:${DEV_GID}"`（コンテナの 1000）はホストの subuid（100999 など）になる。権限 750 のホームの下のリポジトリに入れず（`Permission denied`）、入れたとしても作るファイルがホストのユーザーの持ち物にならない。
+- `tools/dev.sh`（`DOCKER_GID`）と compose.yml（マウント）は `/var/run/docker.sock` を決め打ちしている。rootless の daemon のソケット（`$XDG_RUNTIME_DIR/docker.sock`）は渡らず、マウントされたルート権限の daemon のソケットは `nobody:nogroup` に見えて、dev の中の `docker` はどちらにもつながらない。
+
+対応するなら、rootless のときだけ dev を uid 0 で動かし、ソケットを `DOCKER_HOST` から決める形になる（未着手）。
 
 ## テスト
 
