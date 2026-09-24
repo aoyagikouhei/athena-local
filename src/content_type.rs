@@ -51,14 +51,6 @@ fn text_content_type(query: &str) -> &'static str {
     }
 }
 
-/// 本物が `.metadata` を素の protobuf で置き、先頭（field 1）に QueryExecutionId を載せる文:
-/// DESCRIBE（`DESC` も）と SHOW CREATE TABLE（2026-09-17 実測）。同じ文が本体と `.metadata` を
-/// application で置く（2026-09-23 実測）ので、Content-Type の判定と `.metadata` のクエリ ID の
-/// 選択（`operation/result_output.rs` の `metadata_query_id`）はこの述語を共有する（#151）。
-/// `SHOW CREATE` は 3 語目が `TABLE` のときだけで、`SHOW CREATE VIEW` は本物が不透明な `.metadata` を
-/// binary で置く（2026-09-24 実測。#146・#151）ので入れない。`SHOW CREATE SCHEMA` などほかの
-/// `SHOW CREATE ...` は Athena の構文に無く未実測で、`.txt` の既定（binary）に落ちる。
-/// 語は `catalog::words` で読むので、先頭やキーワードの間のコメントは語にならない。
 /// `.txt` を application/octet-stream で置く文（DESCRIBE・DESC・SHOW CREATE TABLE・EXPLAIN）。本物ではこの群が
 /// そのまま「GetQueryResults の UpdateCount を返さない文」でもある（2026-09-16〜24 実測。SHOW 系と DDL は 0 か
 /// 無し、SELECT は 0。#160、#169）ので、`operation/execution.rs` の `update_count` も同じ述語で選ぶ。
@@ -67,6 +59,14 @@ pub(crate) fn plain_text_statement(query: &str) -> bool {
     carries_execution_id(query) || words(query).first().is_some_and(|word| word == "EXPLAIN")
 }
 
+/// 本物が `.metadata` を素の protobuf で置き、先頭（field 1）に QueryExecutionId を載せる文:
+/// DESCRIBE（`DESC` も）と SHOW CREATE TABLE（2026-09-17 実測）。同じ文が本体と `.metadata` を
+/// application で置く（2026-09-23 実測）ので、Content-Type の判定と `.metadata` のクエリ ID の
+/// 選択（`operation/result_output.rs` の `metadata_query_id`）はこの述語を共有する（#151）。
+/// `SHOW CREATE` は 3 語目が `TABLE` のときだけで、`SHOW CREATE VIEW` は本物が不透明な `.metadata` を
+/// binary で置く（2026-09-24 実測。#146・#151）ので入れない。`SHOW CREATE SCHEMA` などほかの
+/// `SHOW CREATE ...` は Athena の構文に無く未実測で、`.txt` の既定（binary）に落ちる。
+/// 語は `catalog::words` で読むので、先頭やキーワードの間のコメントは語にならない。
 pub(crate) fn carries_execution_id(query: &str) -> bool {
     let words = words(query);
     let word = |index: usize| words.get(index).map(String::as_str).unwrap_or_default();
