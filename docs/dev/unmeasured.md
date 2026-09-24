@@ -14,11 +14,8 @@
 
 ## ClientRequestToken と保持期限（[measurements/client-request-token.md](measurements/client-request-token.md)）
 
-- [ ] 本物がトークンを正規化するか（前後の空白、`"`、`\`、大文字小文字）
-- [ ] トークン長の制約（32〜128）がバイト数か文字数か（ASCII でしか測っていない）
-- [ ] トークンの検証と他の検証エラー（`OutputLocation` 無し等）の優先順位（`OutputLocation` の不正と構文エラーが同時のときは #146 で実測: `OutputLocation` が先。長さの足りないトークンが絡む組は AWS CLI が送れないので生 HTTP で測る。本物での実行は #147）
-- [ ] トークン対応表と実行情報の本物の保持期間（60 秒を超えることまでは実測。既定の 1 時間は athena-local 独自の値）
-- [ ] 期限切れのトークンを再送すると本物で新しい ID になるか、期限切れの ID の `GetQueryExecution` が `QUERY_EXECUTION_NOT_FOUND` か、`StopQueryExecution` が 400 か
+- [ ] トークン対応表と実行情報の本物の正確な保持期間（67 分を超えることまでは実測。#147（2026-09-24）: 完了直後の再送も、完了から約 67 分後の再送も同じ ID で、その時点の `GetQueryExecution` は SUCCEEDED のまま見つかり、`StopQueryExecution` も成功した。既定の 1 時間は athena-local 独自の値で、本物より短い）
+- [ ] 期限切れのトークンを再送すると本物で新しい ID になるか、期限切れの ID の `GetQueryExecution` が `QUERY_EXECUTION_NOT_FOUND` か、`StopQueryExecution` が 400 か（#147 は完了から約 67 分後に投げたが期限切れにならず、測れなかった）
 - [ ] 出力先を強制しない（`EnforceWorkGroupConfiguration: false`）ワークグループで、`OutputLocation` の「省略」と「既定と同じ値の明示」を本物が別物として扱うか。#146（2026-09-24）は強制するワークグループでしか測れず、そこでは同じ `QueryExecutionId` が返った（`Database` の省略と `default` の明示は衝突）
 
 ## ワークグループ（[measurements/work-groups.md](measurements/work-groups.md)）
@@ -28,7 +25,6 @@
 ## エラー応答（[measurements/errors.md](measurements/errors.md)）
 
 - [ ] `QUEUED` のクエリへの `GetQueryResults` の文言（`RUNNING` のときの `Query has not yet finished. Current state: RUNNING` だけ実測。athena-local は `Current state: QUEUED` を返す。#102）。#146（2026-09-24）で軽い `SELECT` を 5 本続けて投げたが、キューの待ちが 47〜86 ミリ秒で、直後の `GetQueryExecution` はどれも SUCCEEDED だった（[measurements/query-results.md](measurements/query-results.md)）。捉えるには同時実行の上限まで詰めるなど別の手が要る
-- [ ] 構文エラー（`MALFORMED_QUERY`）など、冪等性の衝突とトークンの検証以外の `AthenaErrorCode` 付きエラーの本文に `ErrorCode` キーが付くか（#3。`ErrorCode` 付きの形を確かめたのはこの 2 つと、#83 の `GetQueryResults` の検証エラー、#87 の `ExecutionParameters` の要素が `null` のケース（[measurements/errors.md](measurements/errors.md) の「#84 で未実測だった型違いなどの組み合わせ」に追記済み）。ただし後者は `StartQueryExecution` の構文チェックの経路そのものを狙って測ったものではない。構文エラーの経路は #113 のバッチ（生 HTTP）で測る。本物での実行は #147）
 
 ## 実クライアントでの疎通（[measurements/clients.md](measurements/clients.md)）
 
@@ -89,6 +85,10 @@
 - `Database`／`OutputLocation` の「省略」と「既定と同じ値の明示」を本物が別物として扱うか → #146（2026-09-24。`Database` は別物（衝突）。`OutputLocation` は出力先を強制するワークグループで同じ ID が返った。強制しないワークグループは上の「ClientRequestToken と保持期限」に残した）
 - 出力先が設定されたワークグループの `GetWorkGroup` の `ResultConfiguration` の形 → #146（2026-09-24。`{"OutputLocation": "s3://.../"}` だけ。[measurements/work-groups.md](measurements/work-groups.md)）
 - 空白入りの括弧で始まるクエリ（`( SELECT 1 )`）を本物がどう分類するか（#113）→ #146（2026-09-24。`( SELECT 1 )`・改行入りとも `DML`／`SELECT`。[measurements/statements.md](measurements/statements.md)）
+- 本物がトークンを正規化するか（前後の空白、`"`、`\`、大文字小文字） → #147（2026-09-24。正規化しない。4 変種とも別の新しい ID、そのままの再送だけ同じ ID。[measurements/client-request-token.md](measurements/client-request-token.md)）
+- トークン長の制約（32〜128）がバイト数か文字数か → #147（2026-09-24。`あ`×20（60B）は「greater than or equal to 32」で拒否、`あ`×50（150B）は別の文言 `clientRequestToken exceeds maximum allowed length 128` で拒否。下限は文字数、上限はバイト数と読める。athena-local は両方 `chars().count()` なので上限が本物と違う）
+- トークンの検証と他の検証エラー（`OutputLocation` の不正・構文エラー）の優先順位 → #147（2026-09-24。長さの足りないトークンはどちらよりも先。#146 の `OutputLocation` → 構文と合わせて、トークン → `OutputLocation` → 構文）
+- 構文エラー（`MALFORMED_QUERY`）の本文に `ErrorCode` キーが付くか（#3）→ #147（2026-09-24。`ErrorCode` `MALFORMED_QUERY` が付き、キーは `__type`・`AthenaErrorCode`・`ErrorCode`・`Message` の 4 つ。`x-amzn-errortype` ヘッダは無い。[measurements/errors.md](measurements/errors.md)）
 
 ## 測れないもの
 

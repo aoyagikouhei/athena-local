@@ -1,8 +1,9 @@
 # shellcheck shell=bash
 # issue #113（フェーズ2）: t6・t7（保持期限）。単独では実行しない。run.sh の「フェーズ 2 の
 # 差し込み口」が retention_phase_a（本編の前）／retention_phase_b（本編の後・report.py の前）
-# を呼ぶ。ONLY に t6・t7 のどちらか片方でもあれば両方が動く（1 本のトークンの往復が
-# 段階 A（t6）→ 他の項目 → 締切まで待つ → 段階 B（t7）という 1 つの流れのため）。
+# を呼ぶ。段階 A は ONLY に t6 があるとき、段階 B は t7 があるときだけ動く（#147）。
+# 1 本のトークンの往復が 段階 A（t6）→ 他の項目 → 締切まで待つ → 段階 B（t7）という
+# 1 つの流れで、`ONLY=t6` → 65 分以上あとに `RUN_DIR=<同じ run> ONLY=t7` と 2 回に分けられる。
 #
 # 待ち時間: real は 65 分固定。local は run.sh が athena-local に渡した保持期限
 # （LOCAL_RETENTION_SECONDS、既定 120 秒）+ 5 秒。段階 A の完了時刻に足した締切を

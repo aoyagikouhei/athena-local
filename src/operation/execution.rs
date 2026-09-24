@@ -43,6 +43,7 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
         Ok(request) => request,
         Err(response) => return *response,
     };
+    // 検証の順は本物と同じトークン → OutputLocation → 構文（2026-09-24 実測）。
     let token = match client_request_token(&request) {
         Ok(token) => token,
         Err(response) => return *response,

@@ -300,14 +300,17 @@ Known differences between athena-local and real Athena, grouped by topic.
   `chars().count()`, which was only measured with ASCII input, so whether real
   Athena counts bytes or characters for non-ASCII tokens is unknown. A token
   that passes validation is used verbatim as a map key: case, leading/trailing
-  whitespace and non-ASCII characters are all significant. Whether real Athena
-  normalizes it has not been measured. `Database` and `OutputLocation` are
+  whitespace and non-ASCII characters are all significant. Real Athena does
+  not normalize it either: leading/trailing spaces, an upper-cased copy, and a
+  `"` or `\` in place of one character each started a new query (measured
+  2026-09-24). `Database` and `OutputLocation` are
   compared as sent, before `TRINO_SCHEMA` or `ATHENA_LOCAL_OUTPUT_LOCATION`
   fills them in, so a retry that spells out the default a first call left out
   is `IDEMPOTENT_PARAMETER_MISMATCH`; whether real Athena does the same has
   not been measured. The token → id mapping is kept in memory until the
   execution it points at is dropped (`ATHENA_LOCAL_RETENTION_SECONDS`), and
-  real Athena's token lifetime beyond 60 seconds has not been measured.
+  real Athena's token lifetime beyond 67 minutes (2026-09-24) has not
+  been measured.
   **Raw HTTP / curl clients must supply their own token** — the AWS CLI and
   SDKs add one automatically, but a request built by hand needs to set
   `ClientRequestToken` itself (measured).
@@ -316,7 +319,8 @@ Known differences between athena-local and real Athena, grouped by topic.
   `ATHENA_LOCAL_RETENTION_SECONDS` (one hour by default) and then dropped,
   together with the `ClientRequestToken` that points at it; queued and running
   queries are never dropped. Real Athena's retention period has not been
-  measured beyond 60 seconds, so one hour is athena-local's own number. Once a
+  measured beyond 67 minutes (2026-09-24), so one hour is
+  athena-local's own number. Once a
   query is dropped, `GetQueryExecution`, `GetQueryResults` and
   `StopQueryExecution` treat its id like an unknown one and fail with
   `QUERY_EXECUTION_NOT_FOUND`; what real Athena returns for an expired id has
@@ -436,7 +440,8 @@ Known differences between athena-local and real Athena, grouped by topic.
 - **Error body key casing.** Error responses use `Message` (capital M), and an
   error that carries `AthenaErrorCode` also carries `ErrorCode` with the same
   value; both match real Athena (measured for `IDEMPOTENT_PARAMETER_MISMATCH`
-  and `WorkGroup is not found.`). Errors without an `AthenaErrorCode`
+  and `WorkGroup is not found.`, and on 2026-09-24 for a syntax error's
+  `MALFORMED_QUERY`). Errors without an `AthenaErrorCode`
   (`SerializationException`, `InternalServerException`) carry neither
   `AthenaErrorCode` nor `ErrorCode`, as measured for `SerializationException`
   on 2026-09-23; `InternalServerException` cannot be measured, because only a

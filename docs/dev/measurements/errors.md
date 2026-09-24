@@ -54,6 +54,21 @@
   - 生データ `raw-20260923-114710/summary.txt`（11:47 の全項目ラウンドと見られる）の「ケース 55」（`StartQueryExecution` に `{"QueryString": "SELECT", "ExecutionParameters": [null], ...}`）: `__type: InvalidRequestException`／`AthenaErrorCode: MALFORMED_QUERY`／`ErrorCode: MALFORMED_QUERY`（`AthenaErrorCode` と同値）／`Message: line 1:7: mismatched input '<EOF>'. Expecting: '*', 'ALL', 'DISTINCT', <expression>`。`x-amzn-errortype` ヘッダ無し。`MALFORMED_QUERY` の本文にも `ErrorCode` キーが付くことをこのケースで確認できる
 - 備考: 実際の文言・ステータスはノートに無い。README／CHANGELOG と生データを見る必要がある。タイトルの「揃えなかった 2 点」（#84 の小数の切り捨てと配列 → 入れ子の構造体）が今回揃えたのか揃えないままかはノートから判断できない。ケース 55 の `ErrorCode` の値はノートに転記されていなかったので、#113（2026-09-24）で生データを読み直して補った（転記漏れの補完で、新しい実測ではない）
 
+### 構文エラー（`MALFORMED_QUERY`）の本文の `ErrorCode` と応答ヘッダ（生 HTTP）
+- 日付: 2026-09-24 ／ issue: #147（バッチは #113。未実測にしたのは #3） ／ スクリプト: `tools/measure/unmeasured-batch/run.sh`（項目 `e2`）、`tools/measure/unmeasured-batch/raw.py`（`run_e2`） ／ 生データ: `$HOME/athena-unmeasured-batch-measurements/run-20260924-024654/e2/`
+- 相手: 本物の Athena（SigV4 を botocore の `SigV4Auth` で署名した生 HTTP、`http.client`。workgroup は付けない＝`primary`）
+- 投げたもの: `StartQueryExecution` 1 本。`QueryString` `SELEC 1`、Catalog `AwsDataCatalog`、Database `<DB>`、OutputLocation `<OUTPUT>`、有効なトークン（16 進小文字 40 文字）。送ったヘッダは `Content-Type: application/x-amz-json-1.1`・`X-Amz-Target: AmazonAthena.StartQueryExecution`・`X-Amz-Date`・`Content-Length`（と署名）
+- 返ったもの:
+  - HTTP 400。応答ヘッダは `Date` / `Content-Type: application/x-amz-json-1.1` / `Content-Length: 454` / `Connection` / `x-amzn-RequestId` の 5 つだけで、**`x-amzn-errortype` は無い**
+  - 生の本文:
+
+    ```
+    {"__type":"InvalidRequestException","AthenaErrorCode":"MALFORMED_QUERY","ErrorCode":"MALFORMED_QUERY","Message":"line 1:1: mismatched input 'SELEC'. Expecting: 'ALTER', 'ANALYZE', 'CALL', 'COMMENT', 'COMMIT', 'CREATE', 'DEALLOCATE', 'DELETE', 'DENY', 'DESC', 'DESCRIBE', 'DROP', 'EXECUTE', 'EXPLAIN', 'GRANT', 'INSERT', 'MERGE', 'PREPARE', 'REFRESH', 'RESET', 'REVOKE', 'ROLLBACK', 'SET', 'SHOW', 'START', 'TRUNCATE', 'UNLOAD', 'UPDATE', 'USE', <query>"}
+    ```
+
+  - キーは `__type`・`AthenaErrorCode`・`ErrorCode`・`Message` の 4 つ。`ErrorCode` は `AthenaErrorCode` と同じ値 `MALFORMED_QUERY`、メッセージのキーは大文字始まりの `Message`
+- 備考: 構文チェックの経路でも `ErrorCode` が付く。同じ回の `t4-syntax-only`（[client-request-token.md](client-request-token.md) の「長さの足りないトークンと他の検証エラーが同時のとき」）も同じ本文だった。[client-request-token.md](client-request-token.md) の「冪等性（1 回目）」の備考で断定できなかった構文エラーの本文のキー（`message` か `Message` か）は、この生の本文では `Message`。`x-amzn-errortype` が付かないことはこれまでの実測と同じ（上の「リクエスト本文の解釈の失敗とディスパッチ」の備考。athena-local との差分は #145）
+
 ### 参考（範囲外の同ラウンドの観測）
 - 日付: 2026-09-23 ／ issue: #83 ／ スクリプト: 無し
 - 相手: 本物の Athena
