@@ -16,6 +16,7 @@
 
 - [ ] トークン対応表と実行情報の本物の正確な保持期間（67 分を超えることまでは実測。#147（2026-09-24）: 完了直後の再送も、完了から約 67 分後の再送も同じ ID で、その時点の `GetQueryExecution` は SUCCEEDED のまま見つかり、`StopQueryExecution` も成功した。既定の 1 時間は athena-local 独自の値で、本物より短い）
 - [ ] 期限切れのトークンを再送すると本物で新しい ID になるか、期限切れの ID の `GetQueryExecution` が `QUERY_EXECUTION_NOT_FOUND` か、`StopQueryExecution` が 400 か（#147 は完了から約 67 分後に投げたが期限切れにならず、測れなかった）
+- [ ] `Catalog` の「省略」と「既定と同じ値（`AwsDataCatalog`）の明示」を本物が別物として扱うか。#146 は値の違い（大文字小文字・実在しない名前）だけを測った。athena-local は `Database` に倣って別物（衝突）にしている（#150、2026-09-24）
 - [ ] 出力先を強制しない（`EnforceWorkGroupConfiguration: false`）ワークグループで、`OutputLocation` の「省略」と「既定と同じ値の明示」を本物が別物として扱うか。#146（2026-09-24）は強制するワークグループでしか測れず、そこでは同じ `QueryExecutionId` が返った（`Database` の省略と `default` の明示は衝突）
 
 ## ワークグループ（[measurements/work-groups.md](measurements/work-groups.md)）
