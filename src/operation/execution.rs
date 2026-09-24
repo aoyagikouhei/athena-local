@@ -17,7 +17,7 @@ use crate::response::{invalid_request_with_code, ok};
 use crate::results::ResultLocation;
 use crate::statement;
 use crate::store::{Execution, Fingerprint, Submission, SubmitOutcome};
-use crate::trino::{Outcome, QueryError, Trino};
+use crate::trino::{Cancel, Outcome, QueryError, Trino};
 
 use super::result_output;
 use super::table_format::{self, EngineDdl};
@@ -324,8 +324,46 @@ async fn run(
         result => result,
     }?;
     let outcome = split_explain_rows(&execution.query, outcome);
-    let outcome = super::utility_rows::reshape(&execution.query, outcome, format);
+    // Iceberg のテーブルの DESCRIBE だけ、パーティション行のために `SHOW CREATE TABLE` を別に投げる（#173）。
+    let partitions = if statement == Some(table_format::TargetStatement::Describe)
+        && format == Some(table_format::TableFormat::Iceberg)
+    {
+        iceberg_partition_specs(trino, config, &execution.query, catalog, database, cancel).await
+    } else {
+        Vec::new()
+    };
+    let outcome = super::utility_rows::reshape(&execution.query, outcome, format, &partitions);
     Ok((outcome, engine_ddl))
+}
+
+/// Iceberg のテーブルの DESCRIBE の対象を Trino の `SHOW CREATE TABLE` で引き、`partitioning` の要素を返す
+/// （2026-09-24 実測 d2・d8。#173）。名前は元の SQL の範囲をそのまま使い、本体と同じく別名を当てて
+/// 同じカタログ・スキーマで投げる（引用符と別名の解決を本体と揃える）。失敗や値が取れないときは空
+/// （ビューへの DESCRIBE は `SHOW CREATE TABLE` が失敗するが、DESCRIBE 自体は成功のまま）。
+async fn iceberg_partition_specs(
+    trino: &Trino,
+    config: &Config,
+    query: &str,
+    catalog: Option<&str>,
+    database: Option<&str>,
+    cancel: &Cancel,
+) -> Vec<String> {
+    let Some(after) = crate::catalog::skip_keyword(query, "DESCRIBE")
+        .or_else(|| crate::catalog::skip_keyword(query, "DESC"))
+    else {
+        return Vec::new();
+    };
+    let start = after.len() - crate::catalog::skip_leading_trivia(after).len();
+    let end = crate::catalog::skip_qualified_name(after, start);
+    let sql = format!("SHOW CREATE TABLE {}", &after[start..end]);
+    let sql = alias_qualified_names(&sql, &config.catalog_map);
+    let Ok(outcome) = trino.execute(&sql, catalog, database, cancel).await else {
+        return Vec::new();
+    };
+    match outcome.rows.first().and_then(|row| row.first()) {
+        Some(serde_json::Value::String(ddl)) => super::iceberg_partitions::parse_partitioning(ddl),
+        _ => Vec::new(),
+    }
 }
 
 /// EXPLAIN の結果を本物と同じくプランの行ごとに分ける。Trino は `Query Plan` 列の 1 行に改行入りの

@@ -2,12 +2,13 @@
 //! 本物はこれらの文を Trino と違う列数・行の形で返すので、`classification::fixed_column` の
 //! 列名の差し替えだけでは揃わない。完了時に `Outcome` の列と行を作り直し、GetQueryResults・
 //! `.txt`・`.metadata` に同じ値を渡す（`execution::split_explain_rows` と同じ置き場）。
-//! DESCRIBE は Hive のテーブル（と形式が判定できないとき）だけ作り直し、Iceberg は Trino の 4 列のまま。
+//! DESCRIBE は Hive のテーブル（と形式が判定できないとき）と Iceberg のテーブルで行の形が違う。
 
 use serde_json::Value;
 
-use super::hive_type::hive_type;
+use super::iceberg_partitions::partition_row;
 use super::table_format::TableFormat;
+use super::type_spelling;
 use crate::athena::ColumnInfo;
 use crate::trino::{Column, Outcome};
 
@@ -26,16 +27,26 @@ const PARTITION_HEADER: [&str; 4] = [
 /// SHOW COLUMNS なら、列を本物の `field`／string の 1 列に、行を列名 1 つずつの行に作り直す
 /// （2026-09-16／2026-09-24 実測。#173）。Hive のテーブル（と形式が判定できないとき）の DESCRIBE なら、
 /// 列を `col_name`／`data_type`／`comment` の string の 3 列に、行を 3 つをタブでつないだ 1 値の行に
-/// 作り直す（2026-09-24 実測。#173）。`update_count`・`id`・`update_type` は触らない。
-/// ほかの文（Iceberg のテーブルの DESCRIBE も）はそのまま返す。
-pub(super) fn reshape(query: &str, outcome: Outcome, format: Option<TableFormat>) -> Outcome {
+/// 作り直す（2026-09-24 実測。#173）。Iceberg のテーブルの DESCRIBE も同じ 3 列にし、行は詰めずに
+/// `partitions`（Trino の `SHOW CREATE TABLE` の `partitioning` の要素）からパーティション行を足す
+/// （2026-09-24 実測 d2・d8）。`update_count`・`id`・`update_type` は触らない。ほかの文はそのまま返す。
+pub(super) fn reshape(
+    query: &str,
+    outcome: Outcome,
+    format: Option<TableFormat>,
+    partitions: &[String],
+) -> Outcome {
     match super::classification::substatement_type(query) {
         Some("SHOW_COLUMNS") => {
             let rows = show_columns_rows(&outcome.rows, format);
             replace(outcome, &["field"], rows)
         }
-        Some("DESCRIBE_TABLE") if format != Some(TableFormat::Iceberg) => {
-            let rows = describe_hive_rows(&outcome.rows);
+        Some("DESCRIBE_TABLE") => {
+            let rows = if format == Some(TableFormat::Iceberg) {
+                describe_iceberg_rows(&outcome.rows, partitions)
+            } else {
+                describe_hive_rows(&outcome.rows)
+            };
             replace(outcome, &["col_name", "data_type", "comment"], rows)
         }
         _ => outcome,
@@ -100,7 +111,7 @@ fn describe_hive_rows(rows: &[Vec<Value>]) -> Vec<String> {
         format!(
             "{}\t{}\t{}",
             pad(cell(row, 0)),
-            pad(&hive_type(cell(row, 1))),
+            pad(&type_spelling::hive(cell(row, 1))),
             comment_field(cell(row, 3))
         )
     };
@@ -114,6 +125,38 @@ fn describe_hive_rows(rows: &[Vec<Value>]) -> Vec<String> {
         lines.extend(PARTITION_HEADER.map(str::to_string));
         lines.extend(partitions);
     }
+    lines
+}
+
+/// Trino の DESCRIBE（4 列）と `partitioning` の要素を、本物の Iceberg のテーブルの行にする
+/// （2026-09-24 実測 d2・d8。#173）。詰めない。
+/// 型は `type_spelling::iceberg`、コメントはそのまま（無ければ空）。パーティションの行は
+/// `iceberg_partitions::partition_row` が写せるものだけ（パーティションが無ければ見出しまで）。
+fn describe_iceberg_rows(rows: &[Vec<Value>], partitions: &[String]) -> Vec<String> {
+    let mut lines = vec![
+        "# Table schema:\t\t".to_string(),
+        "# col_name\tdata_type\tcomment".to_string(),
+    ];
+    lines.extend(rows.iter().map(|row| {
+        format!(
+            "{}\t{}\t{}",
+            cell(row, 0),
+            type_spelling::iceberg(cell(row, 1)),
+            cell(row, 3)
+        )
+    }));
+    lines.extend(
+        [
+            "\t\t",
+            "# Partition spec:\t\t",
+            "# field_name\tfield_transform\tcolumn_name",
+        ]
+        .map(str::to_string),
+    );
+    lines.extend(partitions.iter().filter_map(|spec| {
+        let (field_name, transform, column) = partition_row(spec)?;
+        Some(format!("{field_name}\t{transform}\t{column}"))
+    }));
     lines
 }
 
@@ -220,6 +263,7 @@ mod tests {
             "SHOW COLUMNS FROM t",
             trino_show_columns(),
             Some(TableFormat::Hive),
+            &[],
         );
 
         assert_eq!(outcome.columns.len(), 1);
@@ -250,7 +294,12 @@ mod tests {
 
     #[test]
     fn reshape_は_show_columns_と_describe_以外の文をそのまま返す() {
-        let outcome = reshape("SELECT 1", trino_show_columns(), Some(TableFormat::Hive));
+        let outcome = reshape(
+            "SELECT 1",
+            trino_show_columns(),
+            Some(TableFormat::Hive),
+            &[],
+        );
         assert_eq!(outcome.columns.len(), 4);
         assert_eq!(outcome.rows, [trino_row("n")]);
         assert!(outcome.athena_columns.is_none());
@@ -380,7 +429,7 @@ mod tests {
             " ".repeat(20)
         );
         for format in [Some(TableFormat::Hive), None] {
-            let outcome = reshape("DESCRIBE t", trino_describe(), format);
+            let outcome = reshape("DESCRIBE t", trino_describe(), format, &[]);
             let names: Vec<&str> = outcome.columns.iter().map(|c| c.name.as_str()).collect();
             assert_eq!(names, ["col_name", "data_type", "comment"], "{format:?}");
             assert!(
@@ -404,10 +453,99 @@ mod tests {
             assert_eq!(outcome.id.as_deref(), Some("engine"));
         }
 
-        // Iceberg の DESCRIBE はこのフェーズでは Trino の 4 列のまま（フェーズ 3 で作り直す）。
-        let outcome = reshape("DESCRIBE t", trino_describe(), Some(TableFormat::Iceberg));
-        assert_eq!(outcome.columns.len(), 4);
-        assert_eq!(outcome.rows, [describe_row("n", "integer", "", "")]);
-        assert!(outcome.athena_columns.is_none());
+        // Iceberg の DESCRIBE も同じ 3 列にし、行は詰めない（2026-09-24 実測 d2。#173）。
+        let outcome = reshape(
+            "DESCRIBE t",
+            trino_describe(),
+            Some(TableFormat::Iceberg),
+            &["n".to_string()],
+        );
+        let names: Vec<&str> = outcome.columns.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["col_name", "data_type", "comment"]);
+        let rows: Vec<Value> = [
+            "# Table schema:\t\t",
+            "# col_name\tdata_type\tcomment",
+            "n\tint\t",
+            "\t\t",
+            "# Partition spec:\t\t",
+            "# field_name\tfield_transform\tcolumn_name",
+            "n\tidentity\tn",
+        ]
+        .map(Value::from)
+        .into();
+        assert_eq!(
+            outcome.rows,
+            rows.into_iter().map(|row| vec![row]).collect::<Vec<_>>()
+        );
+        assert_eq!(outcome.athena_columns.map(|infos| infos.len()), Some(3));
+    }
+
+    /// 本物の d8（Iceberg、型 11 種・変換 4 種）の DESCRIBE の 20 行を、Trino 482 の DESCRIBE の形の入力と
+    /// `SHOW CREATE TABLE` の `partitioning` の要素から組む。
+    /// 採取元: ~/athena-unmeasured-batch-measurements/run-20260924-122125/d8/d8-describe.results-1.json
+    /// （2026-09-24 実測。#173）。
+    #[test]
+    fn describe_iceberg_rows_は本物の_d8_の_20_行と一致する() {
+        let rows = [
+            describe_row("n", "integer", "", ""),
+            describe_row("s", "varchar", "", ""),
+            describe_row("ts", "timestamp(6)", "", ""),
+            describe_row("d2", "date", "", ""),
+            describe_row("ts2", "timestamp(6)", "", ""),
+            describe_row("t_double", "double", "", ""),
+            describe_row("t_float", "real", "", ""),
+            describe_row("t_boolean", "boolean", "", ""),
+            describe_row("t_binary", "varbinary", "", ""),
+            describe_row("t_map", "map(varchar, integer)", "", ""),
+            describe_row("big", "bigint", "", ""),
+        ];
+        let partitions = ["year(ts)", "month(d2)", "hour(ts2)", "truncate(s, 3)"].map(String::from);
+        let expected = [
+            "# Table schema:\t\t",
+            "# col_name\tdata_type\tcomment",
+            "n\tint\t",
+            "s\tstring\t",
+            "ts\ttimestamp\t",
+            "d2\tdate\t",
+            "ts2\ttimestamp\t",
+            "t_double\tdouble\t",
+            "t_float\tfloat\t",
+            "t_boolean\tboolean\t",
+            "t_binary\tbinary\t",
+            "t_map\tmap<string, int>\t",
+            "big\tbigint\t",
+            "\t\t",
+            "# Partition spec:\t\t",
+            "# field_name\tfield_transform\tcolumn_name",
+            "ts_year\tyear\tts",
+            "d2_month\tmonth\td2",
+            "ts2_hour\thour\tts2",
+            "s_trunc\ttruncate[3]\ts",
+        ];
+        let actual = describe_iceberg_rows(&rows, &partitions);
+        assert_eq!(actual.len(), expected.len());
+        for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+            assert_eq!(actual, expected, "{} 行目", index + 1);
+        }
+    }
+
+    /// コメントは詰めずにそのまま、パーティションが無ければ見出しまで、測っていない変換の行は出さない。
+    #[test]
+    fn describe_iceberg_rows_はコメントをそのまま置き_パーティションが無ければ見出しまで() {
+        let rows = [
+            describe_row("n", "integer", "", "abc"),
+            describe_row("s", "varchar", "", ""),
+        ];
+        let head = [
+            "# Table schema:\t\t",
+            "# col_name\tdata_type\tcomment",
+            "n\tint\tabc",
+            "s\tstring\t",
+            "\t\t",
+            "# Partition spec:\t\t",
+            "# field_name\tfield_transform\tcolumn_name",
+        ];
+        assert_eq!(describe_iceberg_rows(&rows, &[]), head);
+        assert_eq!(describe_iceberg_rows(&rows, &["void(s)".to_string()]), head);
     }
 }
