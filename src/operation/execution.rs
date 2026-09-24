@@ -22,7 +22,7 @@ use crate::trino::{Outcome, QueryError, Trino};
 use super::completion;
 use super::format_probe;
 use super::result_output;
-use super::table_format::{self, EngineDdl};
+use super::table_format::{self, FormatOverride};
 
 /// OutputLocation も既定も無いときの本物の文言（2026-09-14 実測。"for  your" の空白 2 つも本物のまま）。
 const NO_OUTPUT_LOCATION: &str = "No output location provided. You did not provide an output location for  your query results. Either specify an S3 bucket location or enable Athena managed query results in your workgroup settings.";
@@ -219,11 +219,12 @@ fn spawn_query(app: App, id: String) {
         }
 
         let outcome = match run(&app.trino, &app.config, &execution).await {
-            Ok((outcome, engine_ddl, substatement_type)) => {
+            Ok((outcome, format_override, substatement_type)) => {
                 // UpdateCount は形式の判定を使うので、判定が手元にあるここで決めて Store に渡す（#160）。
                 // SubstatementType の上書き（ビューの `DESC_VIEW`）も同じく形式の判定から決まる（#173）。
-                let update_count = completion::update_count(&execution.query, &outcome, engine_ddl);
-                result_output::write_result(&app, &execution, &id, outcome, engine_ddl)
+                let update_count =
+                    completion::update_count(&execution.query, &outcome, format_override);
+                result_output::write_result(&app, &execution, &id, outcome, format_override)
                     .await
                     .map(|outcome| (outcome, update_count, substatement_type))
             }
@@ -241,7 +242,7 @@ fn spawn_query(app: App, id: String) {
 
 /// 値を分類して EXECUTE IMMEDIATE で包んで実行する。
 /// パラメータが無ければ分類は走らず、SQL は修飾名に別名を当てただけで送られる（to_trino_sql が判断する）。
-/// 戻り値の `Option<EngineDdl>` は、実行前にテーブルの形式を問い合わせて分かった、本体・`.metadata` の
+/// 戻り値の `Option<FormatOverride>` は、実行前にテーブルの形式を問い合わせて分かった、本体・`.metadata` の
 /// 書き方を上書きする文（issue #39。DROP TABLE × Iceberg、ALTER TABLE ADD COLUMNS × Hive、
 /// SHOW CREATE TABLE × Iceberg（#151））。戻り値の `Option<&'static str>` は、完了後の GetQueryExecution が
 /// SQL だけで決まる分類の代わりに返す SubstatementType（ビューへの DESCRIBE／SHOW COLUMNS の `DESC_VIEW`。#173）。
@@ -249,7 +250,7 @@ async fn run(
     trino: &Trino,
     config: &Config,
     execution: &Execution,
-) -> Result<(Outcome, Option<EngineDdl>, Option<&'static str>), QueryError> {
+) -> Result<(Outcome, Option<FormatOverride>, Option<&'static str>), QueryError> {
     // 省略した Catalog / Database にはここで既定を当てる（実行情報には残さない。#167）。
     // Trino に送るのは別名を当てた名前。実行情報には受け取った名前が残る。
     let raw_catalog = execution
@@ -264,7 +265,7 @@ async fn run(
     // 分類の問い合わせにも本体にも同じ取り消し要求を渡す。
     let cancel = &execution.cancel;
 
-    let (statement, format, engine_ddl, substatement_type) =
+    let (statement, format, format_override, substatement_type) =
         format_probe::probe_target_format(trino, config, execution, raw_catalog, database, cancel)
             .await;
 
@@ -305,5 +306,5 @@ async fn run(
         Vec::new()
     };
     let outcome = super::utility_rows::reshape(&execution.query, outcome, format, &partitions);
-    Ok((outcome, engine_ddl, substatement_type))
+    Ok((outcome, format_override, substatement_type))
 }

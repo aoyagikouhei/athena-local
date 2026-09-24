@@ -4,7 +4,7 @@ use crate::catalog::alias_qualified_names;
 use crate::config::Config;
 use crate::trino::{Cancel, Outcome, Trino};
 
-use super::table_format::EngineDdl;
+use super::table_format::FormatOverride;
 
 /// Iceberg のテーブルの DESCRIBE の対象を Trino の `SHOW CREATE TABLE` で引き、`partitioning` の要素を返す
 /// （2026-09-24 実測 d2・d8。#173）。名前は元の SQL の範囲をそのまま使い、本体と同じく別名を当てて
@@ -75,7 +75,7 @@ pub(super) fn split_explain_rows(query: &str, mut outcome: Outcome) -> Outcome {
 pub(super) fn update_count(
     query: &str,
     outcome: &Outcome,
-    engine_ddl: Option<EngineDdl>,
+    format_override: Option<FormatOverride>,
 ) -> Option<i64> {
     if let Some(count) = outcome.update_count {
         return Some(count);
@@ -84,11 +84,11 @@ pub(super) fn update_count(
         return None;
     }
     let iceberg = matches!(
-        engine_ddl,
+        format_override,
         Some(
-            EngineDdl::ShowCreateTableIceberg
-                | EngineDdl::DescribeIceberg
-                | EngineDdl::DescribeView
+            FormatOverride::ShowCreateTableIceberg
+                | FormatOverride::DescribeIceberg
+                | FormatOverride::DescribeView
         )
     );
     if crate::content_type::plain_text_statement(query) && !iceberg {
@@ -133,12 +133,16 @@ mod tests {
         assert_eq!(update_count("DESCRIBE t", &uncounted, None), None);
         assert_eq!(update_count("DESC t", &uncounted, None), None);
         assert_eq!(
-            update_count("DESCRIBE t", &uncounted, Some(EngineDdl::DescribeIceberg)),
+            update_count(
+                "DESCRIBE t",
+                &uncounted,
+                Some(FormatOverride::DescribeIceberg)
+            ),
             Some(0)
         );
         // ビューへの DESCRIBE も 0（2026-09-24 実測 d5。#173）。
         assert_eq!(
-            update_count("DESCRIBE v", &uncounted, Some(EngineDdl::DescribeView)),
+            update_count("DESCRIBE v", &uncounted, Some(FormatOverride::DescribeView)),
             Some(0)
         );
         assert_eq!(update_count("SHOW CREATE TABLE t", &uncounted, None), None);
@@ -156,7 +160,7 @@ mod tests {
             update_count(
                 "SHOW CREATE TABLE t",
                 &uncounted,
-                Some(EngineDdl::ShowCreateTableIceberg)
+                Some(FormatOverride::ShowCreateTableIceberg)
             ),
             Some(0)
         );
