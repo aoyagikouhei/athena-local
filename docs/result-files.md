@@ -79,8 +79,8 @@ which athena-local never produces.
 | --- | --- |
 | `SELECT` of literals only: `SELECT 1`, `SELECT 1, 2`, `SELECT 'a'`, `SELECT 1.5`, `SELECT -1`, `SELECT 1.5E0`, `SELECT true`, `SELECT 1, 'a'`, `SELECT 1 AS i`, `SELECT 1 AS "x"`, `SELECT 1 i`, `SELECT 1 AS i, 2 AS j`, `select 1`, with or without comments | `binary/octet-stream` |
 | Any other `SELECT`: an expression (`SELECT 1 + 1`, `SELECT 'a' \|\| 'b'`), a `CAST`, `NULL`, a typed literal (`DATE '2020-01-01'`), `ARRAY[1]`, a `WHERE`, a `LIMIT`, a `FROM`, `(SELECT 1)`, `VALUES 1`, `UNION`, or a table | `application/octet-stream` |
-| `SHOW TABLES`, `SHOW DATABASES`, `SHOW COLUMNS`, `SHOW TBLPROPERTIES`, `SHOW VIEWS`, `SHOW PARTITIONS`, `SHOW CREATE VIEW` | `binary/octet-stream` |
-| `DESCRIBE`, `DESC`, `EXPLAIN`, `SHOW CREATE TABLE`, `SHOW FUNCTIONS` (the `<id>.csv` above) | `application/octet-stream` |
+| `SHOW TABLES`, `SHOW DATABASES`, `SHOW COLUMNS`, `SHOW TBLPROPERTIES`, `SHOW VIEWS`, `SHOW PARTITIONS`, `SHOW CREATE VIEW`, `SHOW CREATE TABLE` on an Iceberg table (see [DDL](ddl.md#ddl-that-depends-on-the-target-tables-format)) | `binary/octet-stream` |
+| `DESCRIBE`, `DESC`, `EXPLAIN`, `SHOW CREATE TABLE` on a Hive table (an Iceberg table gets `binary/octet-stream`; see [DDL](ddl.md#ddl-that-depends-on-the-target-tables-format)), `SHOW FUNCTIONS` (the `<id>.csv` above) | `application/octet-stream` |
 | Column-less DDL (`CREATE DATABASE`, `DROP DATABASE`, ...) | `binary/octet-stream` |
 | `INSERT`, `UPDATE`, `DELETE`, `MERGE`, CTAS (`.metadata` only) | `application/octet-stream` |
 
@@ -101,7 +101,7 @@ Athena rejects `SHOW SESSION` and `SHOW STATS FOR t` at `StartQueryExecution`
 athena-local writes their `<id>.txt` with the `binary/octet-stream` default.
 `SHOW CREATE VIEW` is `binary/octet-stream` for both the `.txt` and its
 `.metadata`, with `SubstatementType` `SHOW_CREATE_VIEW`, unlike
-`SHOW CREATE TABLE` (measured 2026-09-24, also with a `/* c */` between
+`SHOW CREATE TABLE` on a Hive table (measured 2026-09-24, also with a `/* c */` between
 `CREATE` and `VIEW`); its real `.metadata` is one of the opaque ones (see
 [Caveats](caveats.md#result-files-and-metadata)).
 `SHOW FUNCTIONS` writes `<id>.csv` with a header
@@ -205,11 +205,13 @@ reads:
 The query id follows Athena's own split: `SELECT`, DML, CTAS, `EXPLAIN` and the
 `SHOW` statements (including `SHOW CREATE VIEW`) carry the engine's query id
 (Trino's here, Athena's engine id there), while `DESCRIBE` and
-`SHOW CREATE TABLE` carry the `QueryExecutionId`.
+`SHOW CREATE TABLE` on a Hive table carry the `QueryExecutionId`.
 For the `SHOW` statements whose real companion file is opaque (see [Caveats](caveats.md#result-files-and-metadata))
 Athena's own choice cannot be observed, so athena-local uses the engine id there
-by analogy with `EXPLAIN`. The two statements under
+by analogy with `EXPLAIN`. The statements under
 [DDL that depends on the target table's format](ddl.md#ddl-that-depends-on-the-target-tables-format)
 follow the same split: `DROP TABLE` on an Iceberg table carries the engine's
 query id, like `EXPLAIN`, while `ALTER TABLE ... ADD COLUMNS` on a Hive table
-carries the `QueryExecutionId`, like `DESCRIBE` (measured 2026-09-21).
+carries the `QueryExecutionId`, like `DESCRIBE` (measured 2026-09-21);
+`SHOW CREATE TABLE` on an Iceberg table, whose real companion is opaque, uses
+the engine id like the opaque `SHOW` statements.

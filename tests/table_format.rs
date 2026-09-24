@@ -4,6 +4,7 @@
 //! あわせて確かめる。Phase 3b は ALTER TABLE ... ADD COLUMNS × Hive を対象に足す
 //! （2026-09-21 実測）。41 バイト／38 バイトのバイト単位の固定は tests/metadata.rs に集約し、
 //! ここでは結合レベル（バイト数・Content-Type・キーの有無）だけを見る（計画レビュー F）。
+//! SHOW CREATE TABLE × 形式（issue #151）は tests/show_create.rs に置く（`probe_sql` の写しもそこにある）。
 
 mod common;
 

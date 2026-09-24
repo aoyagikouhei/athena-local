@@ -229,9 +229,9 @@ fn spawn_query(app: App, id: String) {
 
 /// 値を分類して EXECUTE IMMEDIATE で包んで実行する。
 /// パラメータが無ければ分類は走らず、SQL は修飾名に別名を当てただけで送られる（to_trino_sql が判断する）。
-/// 戻り値の `Option<EngineDdl>` は、実行前にテーブルの形式を問い合わせて分かった、
-/// 列が無くても本体・`.metadata` を置くべき文（issue #39。DROP TABLE × Iceberg、
-/// ALTER TABLE ADD COLUMNS × Hive）。
+/// 戻り値の `Option<EngineDdl>` は、実行前にテーブルの形式を問い合わせて分かった、本体・`.metadata` の
+/// 書き方を上書きする文（issue #39。DROP TABLE × Iceberg、ALTER TABLE ADD COLUMNS × Hive、
+/// SHOW CREATE TABLE × Iceberg（#151））。
 async fn run(
     trino: &Trino,
     config: &Config,
@@ -246,8 +246,8 @@ async fn run(
     // 分類の問い合わせにも本体にも同じ取り消し要求を渡す。
     let cancel = &execution.cancel;
 
-    // 対象の文（DROP TABLE・ALTER TABLE ADD COLUMNS）なら、実行前にテーブルの形式と存在を Trino に聞く。
-    // パラメータ分類のループより前に置く（対象テーブルは実行後に消えるため）。
+    // 対象の文（DROP TABLE・ALTER TABLE ADD COLUMNS・SHOW CREATE TABLE）なら、実行前に
+    // テーブルの形式と存在を Trino に聞く。パラメータ分類のループより前に置く（対象テーブルは実行後に消えるため）。
     // 修飾名にカタログ／スキーマがあればそれを、無ければ実行時の既定（別名解決前の値）を使う。
     // カタログには本体と同じ別名を当ててから問い合わせる（system.metadata.catalogs /
     // system.jdbc.tables は Trino 側の名前でしか引けない。issue #39 Phase 2）。

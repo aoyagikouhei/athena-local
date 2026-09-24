@@ -41,6 +41,8 @@ pub(crate) fn of(file: ResultFile, query: &str) -> &'static str {
 /// `.csv`（`ResultFile::Csv`）なのでここには届かず、SELECT と同じ判定で application になる
 /// （2026-09-23 実測。#80）。`SHOW SESSION` と `SHOW STATS` は
 /// 本物が StartQueryExecution で構文エラーにするので、値は無い（2026-09-23 実測。#76）。
+/// `SHOW CREATE TABLE` の判定は SQL だけで決まる Hive の値で、Iceberg のテーブルなら本物は binary なので、
+/// 形式の問い合わせの後に `operation/result_output.rs` が上書きする（2026-09-24 実測。#151）。
 fn text_content_type(query: &str) -> &'static str {
     if carries_execution_id(query) || words(query).first().is_some_and(|word| word == "EXPLAIN") {
         APPLICATION

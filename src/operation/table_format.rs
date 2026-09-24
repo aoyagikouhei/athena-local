@@ -1,6 +1,7 @@
-//! DROP TABLE と ALTER TABLE ... ADD COLUMNS の結果ファイルを、対象テーブルの形式
+//! DROP TABLE と ALTER TABLE ... ADD COLUMNS と SHOW CREATE TABLE の結果ファイルを、対象テーブルの形式
 //! （Trino のコネクタ）に応じて書き分ける。
 //! Phase 3b は ALTER TABLE ... ADD COLUMNS × Hive を対象に足す（2026-09-21 実測）。
+//! #151 は SHOW CREATE TABLE × Iceberg を対象に足す（2026-09-24 実測）。
 
 use crate::statement::quote_literal;
 use crate::trino::{Cancel, Outcome, Trino};
@@ -13,6 +14,9 @@ pub(super) enum TargetStatement {
     /// `ALTER TABLE ... REPLACE COLUMNS`。Hive では ADD COLUMNS と同じ `.metadata` を置き、
     /// Iceberg では本物が実行時に失敗する（2026-09-21 実測）。
     AlterTableReplaceColumns,
+    /// `SHOW CREATE TABLE`。Iceberg だけ本体・`.metadata` を binary/octet-stream で置く
+    /// （2026-09-24 実測。#151）。
+    ShowCreateTable,
 }
 
 /// 問い合わせで分かる、対象テーブルの Trino コネクタ。
@@ -22,8 +26,8 @@ pub(super) enum TableFormat {
     Iceberg,
 }
 
-/// 本物が列なしでも本体・`.metadata` を置く、文の種類とテーブルの形式の組み合わせ
-/// （2026-09-20〜21 実測）。
+/// テーブルの形式で本体・`.metadata` の書き方を上書きする、文の種類とテーブルの形式の組み合わせ
+/// （2026-09-20〜24 実測）。型名は DDL だけを対象にしていた頃のまま（#151 で改名はしない）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum EngineDdl {
     /// DROP TABLE × Iceberg。本体に改行 1 つ、`.metadata` に 41 バイト
@@ -35,9 +39,14 @@ pub(super) enum EngineDdl {
     /// `ADD COLUMNS` と綴りが違うので使わない。2026-09-21 実測）。REPLACE COLUMNS の
     /// `.metadata` は ADD COLUMNS と 1 バイトも変わらない（同じ日の実測で中身を突き合わせた）。
     AlterColumnsHive,
+    /// SHOW CREATE TABLE × Iceberg。本体は Trino の DDL 文をそのまま、`.metadata` は素の
+    /// protobuf だが、Content-Type は本体・`.metadata` とも binary/octet-stream にし、先頭
+    /// （field 1）はエンジン（Trino）のクエリ ID にする（本物の `.metadata` は不透明で先頭 ID を
+    /// 観測できないため、EXPLAIN に倣う。2026-09-24 実測。#151）。
+    ShowCreateTableIceberg,
 }
 
-/// この文が対象か。対象は DROP TABLE と、ALTER TABLE の ADD COLUMNS / REPLACE COLUMNS だけ
+/// この文が対象か。対象は DROP TABLE と、ALTER TABLE の ADD COLUMNS / REPLACE COLUMNS と、SHOW CREATE TABLE だけ
 /// （`substatement_type` の判定をそのまま使い、判定を二重に持たない）。
 /// 修飾名でカタログを明示していても対象にする（Phase 2）。
 pub(super) fn target_statement(query: &str) -> Option<TargetStatement> {
@@ -45,6 +54,7 @@ pub(super) fn target_statement(query: &str) -> Option<TargetStatement> {
         Some("DROP_TABLE") => Some(TargetStatement::DropTable),
         Some("ALTER_TABLE_ADD_COLUMN") => Some(TargetStatement::AlterTableAddColumns),
         Some("ALTER_TABLE_REPLACE_COLUMN") => Some(TargetStatement::AlterTableReplaceColumns),
+        Some("SHOW_CREATE_TABLE") => Some(TargetStatement::ShowCreateTable),
         _ => None,
     }
 }
@@ -97,7 +107,7 @@ fn parse_probe_result(outcome: &Outcome) -> Option<TableFormat> {
     }
 }
 
-/// 文の種類とテーブルの形式の組み合わせから、本物が列なしでも本体・`.metadata` を置く DDL を決める。
+/// 文の種類とテーブルの形式の組み合わせから、本体・`.metadata` の書き方を上書きする文を決める。
 pub(super) fn engine_ddl(statement: TargetStatement, format: TableFormat) -> Option<EngineDdl> {
     match (statement, format) {
         (TargetStatement::DropTable, TableFormat::Iceberg) => Some(EngineDdl::DropTableIceberg),
@@ -110,6 +120,10 @@ pub(super) fn engine_ddl(statement: TargetStatement, format: TableFormat) -> Opt
             TargetStatement::AlterTableAddColumns | TargetStatement::AlterTableReplaceColumns,
             TableFormat::Iceberg,
         ) => None,
+        (TargetStatement::ShowCreateTable, TableFormat::Iceberg) => {
+            Some(EngineDdl::ShowCreateTableIceberg)
+        }
+        (TargetStatement::ShowCreateTable, TableFormat::Hive) => None,
     }
 }
 
@@ -228,6 +242,32 @@ mod tests {
                 "{statement:?}"
             );
         }
+    }
+
+    #[test]
+    fn target_statement_は_show_create_table_も対象にし_show_create_view_は対象外にする() {
+        // 本物は SHOW CREATE TABLE の結果ファイルをテーブルの形式で書き分ける（2026-09-24 実測。#151）。
+        // SHOW CREATE VIEW は形式によらず binary なので問い合わせない。
+        assert_eq!(
+            target_statement("SHOW CREATE TABLE t"),
+            Some(TargetStatement::ShowCreateTable)
+        );
+        for query in ["SHOW CREATE VIEW v", "SHOW TABLES"] {
+            assert_eq!(target_statement(query), None, "{query:?}");
+        }
+    }
+
+    #[test]
+    fn engine_ddl_は_show_create_table_と_iceberg_の組み合わせだけ_some() {
+        // Iceberg は本体・`.metadata` とも binary、Hive は今までどおり application（2026-09-24 実測。#151）。
+        assert_eq!(
+            engine_ddl(TargetStatement::ShowCreateTable, TableFormat::Iceberg),
+            Some(EngineDdl::ShowCreateTableIceberg)
+        );
+        assert_eq!(
+            engine_ddl(TargetStatement::ShowCreateTable, TableFormat::Hive),
+            None
+        );
     }
 
     #[tokio::test]

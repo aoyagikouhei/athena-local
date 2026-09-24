@@ -23,7 +23,8 @@ const ENGINE_DDL_CONTENT_TYPE: &str = crate::content_type::APPLICATION;
 /// `engine_ddl` が `Some` の文（issue #39）は列が無くても `.metadata` を置き、Content-Type は
 /// 本体・付随ファイルとも application/octet-stream にする。本体に改行 1 つを足すのは
 /// DROP TABLE × Iceberg だけで、ALTER TABLE ADD COLUMNS × Hive の本体は 0 バイトのまま
-/// （2026-09-20／21 実測）。
+/// （2026-09-20／21 実測）。SHOW CREATE TABLE × Iceberg だけは本体・付随ファイルとも
+/// binary/octet-stream にし、`.metadata` の先頭をエンジン ID にする（2026-09-24 実測。#151）。
 pub(super) async fn write_result(
     app: &App,
     execution: &Execution,
@@ -41,7 +42,12 @@ pub(super) async fn write_result(
 
     // 列なしでも本体・`.metadata` を置く DDL（issue #39）は、本体も `.metadata` も
     // `ResultLocation` の既定（0 バイトの DDL の binary）ではなく application で置く。
-    let content_type = engine_ddl.is_some().then_some(ENGINE_DDL_CONTENT_TYPE);
+    // SHOW CREATE TABLE × Iceberg は逆に、SQL だけで決まる既定（application）を binary で上書きする（#151）。
+    let content_type = match engine_ddl {
+        Some(EngineDdl::ShowCreateTableIceberg) => Some(crate::content_type::BINARY),
+        Some(_) => Some(ENGINE_DDL_CONTENT_TYPE),
+        None => None,
+    };
 
     // 本体を書くのは SELECT の結果（.csv、更新件数が無いとき。SHOW FUNCTIONS もこちら。#80）と
     // DDL / SHOW（.txt）だけ。
@@ -76,20 +82,26 @@ pub(super) async fn write_result(
     // 列が無い文（CREATE TABLE、CREATE / DROP DATABASE）には本物も付随ファイルを置かない。
     // DROP TABLE × Iceberg（41 バイト）と ALTER TABLE ADD COLUMNS × Hive（38 バイト）だけは
     // 本物が列なしでも `.metadata` を置く（2026-09-20／21 実測。issue #39）。
+    // SHOW CREATE TABLE には必ず列（`Create Table`）があるので、形式によらず前の条件で置く。
     if !outcome.columns.is_empty() || engine_ddl.is_some() {
         // ALTER TABLE の ADD COLUMNS / REPLACE COLUMNS × Hive だけは field 1 に実行 ID だけを置き、field 2（updateType）も
         // field 3（更新件数）も置かない。Trino の updateType は "ADD COLUMN"（Athena の
         // `ADD COLUMNS` と綴りが違う）なので、そのまま使うと誤った field 2 が付く（2026-09-21 実測）。
-        let (query_id, update_type, update_count) =
-            if engine_ddl == Some(EngineDdl::AlterColumnsHive) {
-                (id, None, None)
-            } else {
-                (
-                    metadata_query_id(&execution.query, id, outcome.id.as_deref()),
-                    outcome.update_type.as_deref(),
-                    outcome.update_count,
-                )
-            };
+        // SHOW CREATE TABLE × Iceberg は本物の `.metadata` が不透明で先頭 ID を観測できないので、
+        // SQL だけで決まる QueryExecutionId ではなくエンジン ID（無ければ実行 ID）にする（#151）。
+        let (query_id, update_type, update_count) = match engine_ddl {
+            Some(EngineDdl::AlterColumnsHive) => (id, None, None),
+            Some(EngineDdl::ShowCreateTableIceberg) => (
+                outcome.id.as_deref().unwrap_or(id),
+                outcome.update_type.as_deref(),
+                outcome.update_count,
+            ),
+            _ => (
+                metadata_query_id(&execution.query, id, outcome.id.as_deref()),
+                outcome.update_type.as_deref(),
+                outcome.update_count,
+            ),
+        };
         write_metadata(
             writer,
             location,
@@ -136,8 +148,9 @@ pub(super) async fn write_failure(app: &App, execution: &Execution, failure: &Fa
 
 /// 付随ファイル `.metadata` を組み立てて置く。書けなくても実行は成功のまま（補助ファイルなので握りつぶす）。
 /// `query_id` / `update_type` / `update_count` は呼び出し元（`write_result`）が文の種類に応じて
-/// 決めた値（ALTER TABLE ADD COLUMNS × Hive だけは実行 ID・None・None に上書きされている）。
-/// `content_type` は本体と同じ上書き（列なしでも `.metadata` を置く DDL だけ `Some`）。
+/// 決めた値（ALTER TABLE ADD COLUMNS × Hive は実行 ID・None・None に、SHOW CREATE TABLE × Iceberg は
+/// エンジン ID に上書きされている）。
+/// `content_type` は本体と同じ上書き（形式の問い合わせで `EngineDdl` が決まった文だけ `Some`）。
 /// 上書きが無ければ本体と同じ既定の値になる（`ResultLocation::metadata`）。
 async fn write_metadata(
     writer: &results::ResultWriter,
@@ -165,6 +178,7 @@ async fn write_metadata(
 /// 本物の `.metadata` が不透明な形式の文（`SHOW TABLES` など 5 文と `SHOW CREATE VIEW`。2026-09-24 実測。
 /// #146・#151）は先頭 ID を観測できないので、EXPLAIN に倣ってエンジン ID にする。
 /// どの文が QueryExecutionId かは Content-Type の判定と同じ述語 `content_type::carries_execution_id` で決める。
+/// Iceberg のテーブルへの SHOW CREATE TABLE は `write_result` が形式の問い合わせの結果で上書きする（#151）。
 fn metadata_query_id<'a>(
     query: &str,
     execution_id: &'a str,

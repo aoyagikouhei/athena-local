@@ -116,6 +116,7 @@
 - カタログ未指定・問い合わせの失敗・未知の `connector_name` は、すべて今までどおりの扱いに倒す（判定しない）。（#39、2026-09-20）
 - S3 への書き込みが無効なら形式を問い合わせない。取り消し済みなら問い合わせない。対象の文のときだけ問い合わせる。（#39、2026-09-20）
 - `DROP TABLE` × Iceberg の本体（改行 1 つ）と `ALTER` × Hive の本体（0 バイト）は条件をまとめずバリアントで分ける。`ADD COLUMNS` と `REPLACE COLUMNS` は Hive で同じ 38 バイトの `.metadata` を共有する（`(id, None, None)` で書く）。（#39、2026-09-20、#43、2026-09-21）
+- 形式の問い合わせを `SHOW CREATE TABLE` にも使い（Iceberg なら本体・`.metadata` とも binary、先頭はエンジン ID）、`EngineDdl` に上書きの向きが逆（application ではなく binary）の腕 `ShowCreateTableIceberg` を足した。`EngineDdl` の改名はしない（挙動を変えない大きな差分になるため。doc で「形式で書き方を上書きする文」と補う）。上書きの Content-Type・先頭 ID は `EngineDdl` のメソッドにせず `write_result` の `match` で腕ごとに分ける。（#151、2026-09-24）
 - 限界として、Athena は同じ `AwsDataCatalog` に両形式を混在させるが Trino は別カタログなので、本物と一致するのは利用者の Trino のカタログ構成と形式が揃っている場合だけ。これを利用者向けの文書に書く。（#39、2026-09-20）
 
 ## EXPLAIN
