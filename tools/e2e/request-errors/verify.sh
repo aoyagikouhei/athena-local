@@ -11,7 +11,7 @@
 # （ATHENA_LOCAL_RESULTS=none）。
 #
 # 見るもの: HTTP ステータス、本文の __type・AthenaErrorCode・Message、本文のキー一覧。
-# athena-local は x-amzn-errortype ヘッダを送る（本物は送らない）ので、ヘッダは見ない。
+# x-amzn-errortype ヘッダは本物も athena-local も送らない（#145）ので、ヘッダは見ない。
 # 本物で Message が「無い」ケースは、本文のキーが __type だけであることを確かめる。
 # 本物で SerializationException に Message があるケースは、キーが __type と Message だけ
 # （AthenaErrorCode 無し）であることも確かめる。

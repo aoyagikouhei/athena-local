@@ -284,3 +284,25 @@ async fn 未対応のオペレーションと_x_amz_target_の異常は_unknown_
         );
     }
 }
+
+#[tokio::test]
+async fn エラー応答に_x_amzn_errortype_ヘッダを付けない() {
+    // 本物の Athena のエラー応答に x-amzn-errortype ヘッダは無い（#3・#9・#83・#84・#87・#147、
+    // 2026-09-17〜24 の生 HTTP の実測で一貫。応答ヘッダは Date / Content-Type / Content-Length /
+    // Connection / x-amzn-RequestId の 5 つだけ）。SDK は本文の `__type` から例外の型を決める。
+    // Harness の post はヘッダを捨てるので、ここだけ直接送る。
+    let harness = Harness::start(json!({ "columns": [], "data": [] })).await;
+    let response = reqwest::Client::new()
+        .post(&harness.athena_url)
+        .header("X-Amz-Target", "AmazonAthena.Nope")
+        .header("Content-Type", "application/x-amz-json-1.1")
+        .body("{}")
+        .send()
+        .await
+        .expect("athena-local に繋がらない");
+    assert_eq!(response.status().as_u16(), 400);
+    assert!(
+        response.headers().get("x-amzn-errortype").is_none(),
+        "本物と同じく x-amzn-errortype ヘッダは付けない"
+    );
+}

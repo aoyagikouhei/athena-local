@@ -44,7 +44,7 @@
   - ディスパッチ: 未対応のオペレーション（39）・前置き無しの未対応名（40）・前置き無しの実在する名前 `ListWorkGroups`（41）・`X-Amz-Target` 無し（42）・小文字（43）はすべて 400／`{"__type":"UnknownOperationException"}`（`Message` 無し）
   - `Content-Type: application/json`（44）は 200 で `{Output, Version}` という別の形、`Content-Type` 無し（45）と `application/x-amz-json-1.0`（46）は 404 で XML `<UnknownOperationException/>`
   - ClientRequestToken の検査は parse の後（ケース 38 は `queryString` の欠落が先）
-- 備考: 未実測の組み合わせの一部は #87 で実測した。`x-amzn-errortype` ヘッダは #2・#3・#9（[client-request-token.md](client-request-token.md)、[work-groups.md](work-groups.md)）でも一貫して応答に付かなかった。この #84 を含め 4 ラウンドとも同じ結果（athena-local は付け続けている。差分は #145）
+- 備考: 未実測の組み合わせの一部は #87 で実測した。`x-amzn-errortype` ヘッダは #2・#3・#9（[client-request-token.md](client-request-token.md)、[work-groups.md](work-groups.md)）でも一貫して応答に付かなかった。この #84 を含め 4 ラウンドとも同じ結果（athena-local も #145 で付けないようにした）
 
 ### #84 で未実測だった型違いなどの組み合わせ
 - 日付: 不明（ノートに日付が無い。時系列は実測 11:44（資格情報の期限切れで 59〜61 だけ）・11:47（全部）。#84（2026-09-23 11:09 出荷）の後なので 2026-09-23 と推定） ／ issue: #87 ／ スクリプト: `tools/measure/raw-parse-errors.py`（旧 `84-measure-raw-parse-errors.py` に 15 項目を足したもの。git の履歴（7836738、2026-09-23「実測スクリプトに #84 で未実測のまま残した型の組み合わせを足す」）と合う）
