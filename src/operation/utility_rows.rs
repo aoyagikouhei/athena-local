@@ -1,7 +1,7 @@
 //! SHOW COLUMNS／DESCRIBE の Trino の結果を、本物の列と 1 値の行に作り直す（#173）。
 //! 本物はこれらの文を Trino と違う列数・行の形で返すので、`classification::fixed_column` の
 //! 列名の差し替えだけでは揃わない。完了時に `Outcome` の列と行を作り直し、GetQueryResults・
-//! `.txt`・`.metadata` に同じ値を渡す（`execution::split_explain_rows` と同じ置き場）。
+//! `.txt`・`.metadata` に同じ値を渡す（`completion::split_explain_rows` と同じ置き場）。
 //! DESCRIBE は Hive のテーブル（と形式が判定できないとき）と Iceberg のテーブルで行の形が違う。
 //! ビューへの DESCRIBE と SHOW COLUMNS は、カタログの形式によらず同じ別の形になる。
 
