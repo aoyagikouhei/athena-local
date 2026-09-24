@@ -249,17 +249,18 @@ async fn show_create_table_の_metadata_も先頭が実行_id_になる() {
     assert_eq!(puts[1].key, format!("athena/{id}.txt.metadata"));
 
     // DESCRIBE と並んで field 1 が QueryExecutionId になるもう 1 つの文（2026-09-17 実測）。
-    // 列 `Create Table varchar` は 6 + 14 + 14 + 9 + 6 + 2 + 2 + 2 = 55 = 0x37。
+    // 列は Trino の `Create Table varchar` ではなく本物の `createtab_stmt string`（7／8／10 は出ない）で、
+    // 6 + 16 + 16 + 8 + 2 = 48 = 0x30。本物の 88 バイトと同じ形（2026-09-23 実測。#161）。
     assert_eq!(
         hex_of(&puts[1].body),
         hex(&format!(
             "{}
-             2237
+             2230
                0a04 68697665
-               220c 437265617465205461626c65
-               2a0c 437265617465205461626c65
-               3207 76617263686172
-               38ffffffff07 4000 4803 5001",
+               220e 6372656174657461625f73746d74
+               2a0e 6372656174657461625f73746d74
+               3206 737472696e67
+               4803",
             execution_id_field(&id)
         ))
     );

@@ -83,6 +83,20 @@ pub(super) fn substatement_type(query: &str) -> Option<&'static str> {
     })
 }
 
+/// 本物が Trino の列名・型によらず固定の列で返す文の、列名と Athena の型名。GetQueryResults の
+/// `ColumnInfo` と `.metadata` の両方に使う。`SHOW CREATE TABLE` は Hive／Iceberg とも
+/// `createtab_stmt`／`string`（2026-09-23／24 実測。#161）、`SHOW CREATE VIEW` は `create view`／`varchar`
+/// （2026-09-24 実測）。どちらも Precision・Scale は 0、CaseSensitive は false で、Trino の varchar の
+/// 見え方とは違う。ほかの `SHOW`／`DESCRIBE` も本物の列名は Trino と違うが、列数まで違う文があるので
+/// ここでは扱わない（未対応。#173）。
+pub(super) fn fixed_column(query: &str) -> Option<(&'static str, &'static str)> {
+    match substatement_type(query)? {
+        "SHOW_CREATE_TABLE" => Some(("createtab_stmt", "string")),
+        "SHOW_CREATE_VIEW" => Some(("create view", "varchar")),
+        _ => None,
+    }
+}
+
 /// `ALTER TABLE` の後ろのテーブル名を `catalog::skip_qualified_name` で読み飛ばし、
 /// その後ろのキーワードを 1 つずつ読み進めて ADD／DROP／REPLACE／RENAME／SET を判定する。
 /// 本物が実行時に失敗する組み合わせ（REPLACE COLUMNS・ADD PARTITION × Iceberg、

@@ -33,6 +33,15 @@ Behaviour that matches real Athena:
   other types (`tinyint` 3, `smallint` 5, `integer` 10, `bigint` 19, `double` and
   `float` 17, `timestamp` and `time` 3, `varbinary` 1073741824, 0 otherwise); `CaseSensitive` is true for `varchar` and
   `char`; `CatalogName` is `hive` with empty `SchemaName` / `TableName`.
+- `SHOW CREATE TABLE` reports its one column as `createtab_stmt` of type
+  `string` (on a Hive and on an Iceberg table alike) and `SHOW CREATE VIEW` as
+  `create view` of type `varchar`, both with `Precision` 0 and `CaseSensitive`
+  false, as real Athena does (measured 2026-09-23 and 2026-09-24), instead of
+  Trino's `Create Table` / `Create View` `varchar`. The `.metadata` companion
+  carries the same column, so the companion of `SHOW CREATE TABLE` on a Hive
+  table is byte-for-byte Athena's 88-byte file apart from the query id. The
+  other `SHOW` statements and `DESCRIBE` still carry Trino's column names (see
+  [Caveats](caveats.md#result-files-and-metadata)).
 - The `Query Plan` column of `EXPLAIN` is typed `varchar(<length of the plan
   text>)` by the engine: 371 for `EXPLAIN SELECT 1` on Athena engine version 3
   (measured 2026-09-15 and 2026-09-16), 400 for the same statement on Trino 482,

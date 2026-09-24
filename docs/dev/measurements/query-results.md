@@ -13,6 +13,30 @@
 - 返ったもの: DML（SELECT / EXPLAIN）は先頭行＝列名、UTILITY（SHOW TABLES / DATABASES / COLUMNS / CREATE TABLE / PARTITIONS / TBLPROPERTIES、DESCRIBE）は先頭行＝データで一貫。`.txt` の行数（見出し無し）とも一致
 - 備考: 例外として SHOW FUNCTIONS は後に #80 で `.csv`・列名行つきと分かった（#76 の生データ）。`TABLE t` は #65 で DML と分かった
 
+## UTILITY 文の ColumnInfo
+
+### SHOW／DESCRIBE の GetQueryResults の列名と型（既存の生データの読み直し）
+- 日付: 2026-09-24（読み直し。生データは 2026-09-23／24） ／ issue: #161（残りは #173） ／ スクリプト: 無し（読み直し） ／ 生データ: `~/athena-content-type-measurements/run-20260923-043027/c*-*.results.json`（#70）、`~/athena-unmeasured-batch-measurements/run-20260924-004554/r4/r4-show-create-view.results-1.json`（#146）、`run-20260924-062232/r5/*-show-create.results-1.json`（#151。Hive 外部・Hive CTAS・Iceberg 素の CREATE）、`run-20260924-095149/u1/u1-*-show-create.results-1.json`（#160。Hive 外部・Iceberg）
+- 相手: 本物の Athena（engine version 3、workgroup `primary`）
+- 投げたもの: 上のラウンドの `SHOW` 各文・`DESCRIBE`・`EXPLAIN` の GetQueryResults 応答の `ResultSetMetadata.ColumnInfo`
+- 返ったもの（`CatalogName` は `hive`、`SchemaName`／`TableName` は空、`Nullable` は `UNKNOWN`、`Scale` は 0。Trino の列は athena-local が Trino 482 で見た値）:
+
+| 文 | Name | Type | Precision | CaseSensitive | Trino の列 |
+| --- | --- | --- | --- | --- | --- |
+| `SHOW CREATE TABLE`（Hive 外部・Hive CTAS・Iceberg 素の CREATE・Iceberg の 5 本すべて） | `createtab_stmt` | `string` | 0 | false | `Create Table` / varchar |
+| `SHOW CREATE VIEW` | `create view` | `varchar` | 0 | false | `Create View` / varchar |
+| `SHOW TABLES` | `tab_name` | `string` | 0 | false | `Table` / varchar |
+| `SHOW DATABASES` | `database_name` | `string` | 0 | false | `Schema` / varchar |
+| `SHOW VIEWS` | `views` | `varchar` | 0 | false | （Trino に無い） |
+| `SHOW PARTITIONS` | `partition` | `string` | 0 | false | （Trino に無い） |
+| `SHOW TBLPROPERTIES` | `prpt_name`, `prpt_value` | `string` | 0 | false | （Trino に無い） |
+| `SHOW COLUMNS` | `field`（1 列） | `string` | 0 | false | `Column`, `Type`, `Extra`, `Comment`（4 列） |
+| `DESCRIBE` | `col_name`, `data_type`, `comment`（3 列） | `string` | 0 | false | 同上（4 列） |
+| `EXPLAIN` | `Query Plan` | `varchar` | 371（計画の文字数） | true | `Query Plan` / varchar（同じ。[statements.md](statements.md)） |
+
+- 採用: `SHOW CREATE TABLE`／`SHOW CREATE VIEW` の 2 文は `operation::classification::fixed_column` で本物の列名・型に置き換える（#161）。Hive の `SHOW CREATE TABLE` の `.metadata`（`c10-show-create-table.metadata.bytes`、88 バイト）は同じ列（`createtab_stmt`／`string`、7／8／10 無し）で、置き換え後の athena-local の出力とクエリ ID 以外が一致する（tests/show_create.rs で固定）。Iceberg と `SHOW CREATE VIEW` の `.metadata` は不透明なので列は GetQueryResults でしか確かめられない
+- 備考: `run-20260924-100851/u1` の `Create Table`／varchar／250／true は `TARGET=local`（athena-local 自身への実行）で、本物の値ではない。残りの `SHOW`／`DESCRIBE` は列数が違う文があるので #173 に分けた
+
 ## ページングと MaxResults／NextToken の検証
 
 ### GetQueryResults のページング引数の検証（順序と文言）

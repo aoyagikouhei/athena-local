@@ -61,6 +61,15 @@ fn engine_id_field() -> String {
     format!("0a1b{}", hex_of(TRINO_QUERY_ID.as_bytes()))
 }
 
+/// 本物が SHOW CREATE TABLE / VIEW に返す固定の列（Precision 0、CaseSensitive false。2026-09-23／24 実測）。
+fn fixed_column(name: &str, type_name: &str) -> Value {
+    json!({
+        "CatalogName": "hive", "SchemaName": "", "TableName": "",
+        "Name": name, "Label": name, "Type": type_name,
+        "Precision": 0, "Scale": 0, "Nullable": "UNKNOWN", "CaseSensitive": false
+    })
+}
+
 #[tokio::test]
 async fn show_create_view_は本体も_metadata_も_binary_で先頭がエンジン_id() {
     let harness = Harness::builder(select_response())
@@ -81,6 +90,16 @@ async fn show_create_view_は本体も_metadata_も_binary_で先頭がエンジ
     assert_eq!(
         execution["QueryExecution"]["SubstatementType"],
         "SHOW_CREATE_VIEW"
+    );
+    // 列は Trino の `Create View`／varchar ではなく本物の `create view`／varchar（Precision 0、
+    // CaseSensitive false。2026-09-24 実測。#161）。
+    let (_, results) = harness
+        .call("GetQueryResults", json!({ "QueryExecutionId": id }))
+        .await;
+    assert_eq!(
+        results["ResultSet"]["ResultSetMetadata"]["ColumnInfo"],
+        json!([fixed_column("create view", "varchar")]),
+        "{results}"
     );
 
     let puts = harness.s3_puts();
@@ -133,6 +152,12 @@ async fn show_create_table_は_iceberg_なら本体も_metadata_も_binary_で�
         .call("GetQueryResults", json!({ "QueryExecutionId": id }))
         .await;
     assert_eq!(results["UpdateCount"], 0);
+    // 列は Iceberg でも Hive と同じ `createtab_stmt`／string（2026-09-24 実測。#161）。
+    assert_eq!(
+        results["ResultSet"]["ResultSetMetadata"]["ColumnInfo"],
+        json!([fixed_column("createtab_stmt", "string")]),
+        "{results}"
+    );
     assert_eq!(
         execution["QueryExecution"]["SubstatementType"],
         "SHOW_CREATE_TABLE"
@@ -180,6 +205,12 @@ async fn show_create_table_は_hive_なら今までどおり_application_で先�
         results.get("UpdateCount").is_none(),
         "UpdateCount は省く: {results}"
     );
+    // 列は Trino の `Create Table`／varchar ではなく本物の `createtab_stmt`／string（2026-09-23 実測。#161）。
+    assert_eq!(
+        results["ResultSet"]["ResultSetMetadata"]["ColumnInfo"],
+        json!([fixed_column("createtab_stmt", "string")]),
+        "{results}"
+    );
     assert_eq!(
         harness.trino_sqls(),
         [
@@ -201,10 +232,15 @@ async fn show_create_table_は_hive_なら今までどおり_application_で先�
         puts[1].content_type.as_deref(),
         Some("application/octet-stream")
     );
-    assert!(
-        hex_of(&puts[1].body).starts_with(&format!("0a24{}", hex_of(id.as_bytes()))),
-        "{}",
-        hex_of(&puts[1].body)
+    // 本物の 88 バイトと同じ列（`createtab_stmt`／string は 7／8／10 を出さない）。
+    // 採取元: ~/athena-content-type-measurements/run-20260923-043027/c10-show-create-table.metadata.bytes
+    // （2026-09-23 実測。#161）。先頭の QueryExecutionId だけが実行ごとに変わる。
+    assert_eq!(
+        hex_of(&puts[1].body),
+        format!(
+            "0a24{}22300a0468697665220e6372656174657461625f73746d742a0e6372656174657461625f73746d743206737472696e674803",
+            hex_of(id.as_bytes())
+        )
     );
 }
 
