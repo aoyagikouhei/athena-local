@@ -9,7 +9,8 @@ use crate::catalog::{skip_keyword, skip_leading_trivia, skip_quoted, words};
 use crate::results::ResultFile;
 
 /// 本物がエンジンの計画を通さずに置くファイルの値（実測ではどれも `QueryPlanningTimeInMillis` が
-/// 無かった）: リテラルだけの SELECT、SHOW（SHOW CREATE TABLE を除く）、0 バイトの DDL。
+/// 無かった）: リテラルだけの SELECT、SHOW（SHOW CREATE TABLE を除く。SHOW CREATE VIEW はこちら。
+/// 2026-09-24 実測。#146・#151）、0 バイトの DDL。
 pub(crate) const BINARY: &str = "binary/octet-stream";
 /// それ以外: 式を含む SELECT、DESCRIBE、EXPLAIN、SHOW CREATE TABLE、SHOW FUNCTIONS（`.csv`）、DML と CTAS の `.metadata`、
 /// 失敗の理由の `.txt`（2026-09-17 実測）、DROP TABLE × Iceberg など列なしでも `.metadata` を置く DDL
@@ -33,22 +34,36 @@ pub(crate) fn of(file: ResultFile, query: &str) -> &'static str {
 }
 
 /// `.txt` の文。DESCRIBE（`DESC` も）・EXPLAIN・SHOW CREATE TABLE だけが application で、
-/// 残りの SHOW（TABLES・DATABASES・COLUMNS・TBLPROPERTIES・VIEWS・PARTITIONS）と 0 バイトの DDL は
-/// binary（2026-09-23 実測）。`("DESCRIBE" | "DESC", _) | ("SHOW", "CREATE")` の組は
-/// `operation/result_output.rs` の `metadata_query_id`（`.metadata` に QueryExecutionId を載せる文）と
-/// 同じで、片方を変えたら両方を変える（こちらは `EXPLAIN` も application に入れる
-/// 点と、語の分割に `catalog::words` を使う点が違う）。`SHOW CREATE VIEW` は未測定で（測る DB に
-/// ビューが無かった）、`SHOW CREATE TABLE` の判定に揃えている。`SHOW FUNCTIONS` は `.txt` ではなく
+/// 残りの SHOW（TABLES・DATABASES・COLUMNS・TBLPROPERTIES・VIEWS・PARTITIONS・CREATE VIEW）と
+/// 0 バイトの DDL は binary（2026-09-23／24 実測）。DESCRIBE と SHOW CREATE TABLE の組は
+/// `carries_execution_id`（`.metadata` に QueryExecutionId を載せる文）で、こちらは `EXPLAIN` も
+/// application に入れる点が違う。`SHOW FUNCTIONS` は `.txt` ではなく
 /// `.csv`（`ResultFile::Csv`）なのでここには届かず、SELECT と同じ判定で application になる
 /// （2026-09-23 実測。#80）。`SHOW SESSION` と `SHOW STATS` は
 /// 本物が StartQueryExecution で構文エラーにするので、値は無い（2026-09-23 実測。#76）。
 fn text_content_type(query: &str) -> &'static str {
+    if carries_execution_id(query) || words(query).first().is_some_and(|word| word == "EXPLAIN") {
+        APPLICATION
+    } else {
+        BINARY
+    }
+}
+
+/// 本物が `.metadata` を素の protobuf で置き、先頭（field 1）に QueryExecutionId を載せる文:
+/// DESCRIBE（`DESC` も）と SHOW CREATE TABLE（2026-09-17 実測）。同じ文が本体と `.metadata` を
+/// application で置く（2026-09-23 実測）ので、Content-Type の判定と `.metadata` のクエリ ID の
+/// 選択（`operation/result_output.rs` の `metadata_query_id`）はこの述語を共有する（#151）。
+/// `SHOW CREATE` は 3 語目が `TABLE` のときだけで、`SHOW CREATE VIEW` は本物が不透明な `.metadata` を
+/// binary で置く（2026-09-24 実測。#146・#151）ので入れない。`SHOW CREATE SCHEMA` などほかの
+/// `SHOW CREATE ...` は Athena の構文に無く未実測で、`.txt` の既定（binary）に落ちる。
+/// 語は `catalog::words` で読むので、先頭やキーワードの間のコメントは語にならない。
+pub(crate) fn carries_execution_id(query: &str) -> bool {
     let words = words(query);
     let word = |index: usize| words.get(index).map(String::as_str).unwrap_or_default();
-    match (word(0), word(1)) {
-        ("DESCRIBE" | "DESC" | "EXPLAIN", _) | ("SHOW", "CREATE") => APPLICATION,
-        _ => BINARY,
-    }
+    matches!(
+        (word(0), word(1), word(2)),
+        ("DESCRIBE" | "DESC", _, _) | ("SHOW", "CREATE", "TABLE")
+    )
 }
 
 /// `SELECT` の後ろが、リテラル（`-` を付けてもよい整数・小数・指数つきの数、`'...'`、TRUE／FALSE）に
@@ -221,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    fn txt_は_show_と_ddl_が_binary_で_describe_explain_show_create_が_application() {
+    fn txt_は_show_と_ddl_が_binary_で_describe_explain_show_create_table_が_application() {
         let txt = |query| of(ResultFile::Text, query);
         for query in [
             "SHOW TABLES IN db",
@@ -231,6 +246,12 @@ mod tests {
             "SHOW VIEWS IN db",
             "SHOW PARTITIONS t",
             "SHOW /* c */ TABLES",
+            // SHOW CREATE VIEW は SHOW CREATE TABLE と違って binary（2026-09-24 実測。#146・#151）。
+            // 3 語目まで見るので、コメントや先頭の行コメントを挟んでも TABLE と取り違えない。
+            "SHOW CREATE VIEW v",
+            "show create view v",
+            "SHOW CREATE /* c */ VIEW v",
+            "-- c\nSHOW CREATE VIEW v",
             "CREATE DATABASE d",
             "DROP TABLE t",
             "ALTER TABLE t ADD COLUMNS (m int)",

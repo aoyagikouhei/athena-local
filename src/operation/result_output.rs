@@ -162,16 +162,62 @@ async fn write_metadata(
 /// `.metadata` の先頭（field 1）に載せるクエリ ID。2026-09-17 実測では DESCRIBE と
 /// SHOW CREATE TABLE だけが QueryExecutionId で、SELECT・DML・CTAS・EXPLAIN・DROP TABLE は
 /// エンジン（Trino）のクエリ ID だった。SHOW FUNCTIONS もエンジンのクエリ ID（2026-09-23 実測。#80）。
+/// 本物の `.metadata` が不透明な形式の文（`SHOW TABLES` など 5 文と `SHOW CREATE VIEW`。2026-09-24 実測。
+/// #146・#151）は先頭 ID を観測できないので、EXPLAIN に倣ってエンジン ID にする。
+/// どの文が QueryExecutionId かは Content-Type の判定と同じ述語 `content_type::carries_execution_id` で決める。
 fn metadata_query_id<'a>(
     query: &str,
     execution_id: &'a str,
     engine_id: Option<&'a str>,
 ) -> &'a str {
-    let words = super::classification::words(query);
-    let word = |index: usize| words.get(index).map(String::as_str).unwrap_or_default();
+    if crate::content_type::carries_execution_id(query) {
+        execution_id
+    } else {
+        engine_id.unwrap_or(execution_id)
+    }
+}
 
-    match (word(0), word(1)) {
-        ("DESCRIBE" | "DESC", _) | ("SHOW", "CREATE") => execution_id,
-        _ => engine_id.unwrap_or(execution_id),
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn metadata_query_id_は_describe_と_show_create_table_だけ実行_id_で_show_create_view_はエンジン_id()
+     {
+        let exec = "11111111-2222-3333-4444-555555555555";
+        let engine = "20260924_000000_00000_local";
+        for query in [
+            "DESCRIBE t",
+            "DESC t",
+            "SHOW CREATE TABLE t",
+            "show create table t",
+            "SHOW CREATE /* c */ TABLE t",
+            "-- c\nSHOW CREATE TABLE t",
+        ] {
+            assert_eq!(
+                metadata_query_id(query, exec, Some(engine)),
+                exec,
+                "{query:?}"
+            );
+        }
+        // 本物の `.metadata` が不透明な形式の文は、`SHOW TABLES` や EXPLAIN と同じくエンジン ID
+        // （2026-09-24 実測。#146・#151。本物の先頭 ID は観測できないので既存方針に揃える）。
+        for query in [
+            "SHOW CREATE VIEW v",
+            "show create view v",
+            "SHOW CREATE /* c */ VIEW v",
+            "-- c\nSHOW CREATE VIEW v",
+            "SHOW TABLES",
+            "EXPLAIN SELECT 1",
+            "SELECT 1",
+        ] {
+            assert_eq!(
+                metadata_query_id(query, exec, Some(engine)),
+                engine,
+                "{query:?}"
+            );
+            // Trino の `id` が無ければ実行 ID に倒す。
+            assert_eq!(metadata_query_id(query, exec, None), exec, "{query:?}");
+        }
     }
 }
