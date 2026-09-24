@@ -11,6 +11,9 @@ later name the date they were measured on.
 
 ### Changed
 
+- Error responses no longer carry an `x-amzn-errortype` header, matching
+  real Athena (measured 2026-09-17 to 2026-09-24); the error type is in the
+  body's `__type` as before ([docs](docs/caveats.md#errors-and-request-bodies)).
 - `GetWorkGroup` returns `Configuration.EnableMinimumEncryptionConfiguration`
   as `false` (measured 2026-09-23) ([docs](docs/caveats.md#workgroups)).
 - Caveats that said "not measured" now cite the 2026-09-24 measurements
