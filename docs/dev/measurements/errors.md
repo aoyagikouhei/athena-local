@@ -67,7 +67,7 @@
     ```
 
   - キーは `__type`・`AthenaErrorCode`・`ErrorCode`・`Message` の 4 つ。`ErrorCode` は `AthenaErrorCode` と同じ値 `MALFORMED_QUERY`、メッセージのキーは大文字始まりの `Message`
-- 備考: 構文チェックの経路でも `ErrorCode` が付く。同じ回の `t4-syntax-only`（[client-request-token.md](client-request-token.md) の「長さの足りないトークンと他の検証エラーが同時のとき」）も同じ本文だった。[client-request-token.md](client-request-token.md) の「冪等性（1 回目）」の備考で断定できなかった構文エラーの本文のキー（`message` か `Message` か）は、この生の本文では `Message`。`x-amzn-errortype` が付かないことはこれまでの実測と同じ（上の「リクエスト本文の解釈の失敗とディスパッチ」の備考。athena-local との差分は #145）
+- 備考: 構文チェックの経路でも `ErrorCode` が付く。同じ回の `t4-syntax-only`（[client-request-token.md](client-request-token.md) の「長さの足りないトークンと他の検証エラーが同時のとき」）も同じ本文だった。[client-request-token.md](client-request-token.md) の「冪等性（1 回目）」の備考で断定できなかった構文エラーの本文のキー（`message` か `Message` か）は、この生の本文では `Message`。`x-amzn-errortype` が付かないことはこれまでの実測と同じ（上の「リクエスト本文の解釈の失敗とディスパッチ」の備考。athena-local も #145 で付けないようにした）
 
 ### 参考（範囲外の同ラウンドの観測）
 - 日付: 2026-09-23 ／ issue: #83 ／ スクリプト: 無し
