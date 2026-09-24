@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# issue #173: DESCRIBE／SHOW COLUMNS／SHOW SCHEMAS／SHOW TABLES の GetQueryResults の行の形（d1〜d7）。
+# issue #173: DESCRIBE／SHOW COLUMNS／SHOW SCHEMAS／SHOW TABLES の GetQueryResults の行の形（d1〜d8）。
 # 単独では実行しない。run.sh が source して item_d1 などを呼ぶ。
 #
 # 既存の生データで分かっていること（Hive の DESCRIBE は列名・型を 20 桁に左詰め、20 桁ちょうどは
@@ -14,6 +14,7 @@
 #   d5 ビューへの DESCRIBE と SHOW COLUMNS
 #   d6 DESC（DESCRIBE との対）
 #   d7 20 桁を超えるパーティション列名と timestamp（d1 に含む）
+#   d8 （ラウンド 2）Iceberg の変換 year／month／hour／truncate と、d2 に無かった型の綴り
 #
 # 行の形は run_stmt が残す <label>.results-N.json（全ページ）から shape_case が要約し、kind=shape の行で
 # summary に出す（ColumnInfo・行数・各行の Data の個数・.txt 本体が行と一致するか、行ごとの repr）。
@@ -324,4 +325,75 @@ item_d7() {
   else
     skip_item "$id" included "d1 に含む。ONLY に d1 が無いので未測定"
   fi
+}
+
+# d8（#173 ラウンド 2）: d2 で測れなかった Iceberg の変換 year／month／hour／truncate の field_name と
+# field_transform、型 date／double／float／boolean／binary／map の綴りを DESCRIBE で測る。対照は SHOW COLUMNS。
+# 変換の書き方は d2 の bucket(4, n)・day(ts) と同じ「引数が先・列が後」。通らなければ次の順に落とし、
+# 落とした理由を info に出す:
+#   1. year(ts), month(d2), hour(ts2), truncate(3, s)（Athena の文書の truncate(L, col) の順。hour は別の列 ts2 に
+#      付ける。同じ列に year と hour を並べると Iceberg が redundant partition で弾く（local の Trino で確認）ため）
+#   2. truncate(s, 3) に替える（引数の順が逆なら通る）
+#   3. hour(ts2) を外す（hour の変換そのものが通らないなら通る）
+#   4. 2 と 3 の両方
+# local は Trino の綴り（truncate(s, 3) の順しか無い）なので 1 と 3 だけ試す。
+item_d8() {
+  local id=$1 dir="$RUN_DIR/$id"
+  mkdir -p "$dir"
+  if probe_prefix_exists "$dir" "$TCAT_ICEBERG" "$TDB" "${UTIL_PREFIX}_d8"; then
+    skip_item "$id" all "同名のテーブルが既にある"
+    return 0
+  fi
+  local t="${TDB}.${UTIL_PREFIX}_d8"
+  local loc="${OUTPUT}tables-probe-173-d8/"
+  # 試す PARTITIONED BY の並び（ラベル・変換の並び・説明）。先に成功したもので止める。
+  local -a labels parts notes
+  local head
+  if [ "$TARGET" = local ]; then
+    local tcols="n integer, s varchar, ts timestamp(6), d2 date, ts2 timestamp(6), t_double double, t_float real"
+    tcols+=", t_boolean boolean, t_binary varbinary, t_map map(varchar, integer), big bigint"
+    head="CREATE TABLE $t ($tcols)"
+    labels=(d8-create d8-create-no-hour)
+    parts=("'year(ts)', 'month(d2)', 'hour(ts2)', 'truncate(s, 3)'" "'year(ts)', 'month(d2)', 'truncate(s, 3)'")
+    notes=("year(ts), month(d2), hour(ts2), truncate(s, 3)" "hour(ts2) を外した")
+  else
+    local cols="n int, s string, ts timestamp, d2 date, ts2 timestamp, t_double double, t_float float"
+    cols+=", t_boolean boolean, t_binary binary, t_map map<string,int>, big bigint"
+    head="CREATE TABLE $t ($cols)"
+    labels=(d8-create d8-create-trunc-swap d8-create-no-hour d8-create-trunc-swap-no-hour)
+    parts=("year(ts), month(d2), hour(ts2), truncate(3, s)" "year(ts), month(d2), hour(ts2), truncate(s, 3)"
+      "year(ts), month(d2), truncate(3, s)" "year(ts), month(d2), truncate(s, 3)")
+    notes=("year(ts), month(d2), hour(ts2), truncate(3, s)" "truncate(3, s) を truncate(s, 3) に替えた"
+      "hour(ts2) を外した" "truncate(s, 3) に替え、hour(ts2) も外した")
+  fi
+  local i rc=1 made=""
+  for i in "${!labels[@]}"; do
+    local sql
+    if [ "$TARGET" = local ]; then
+      sql="$head WITH (partitioning = ARRAY[${parts[$i]}])"
+    else
+      sql="$head PARTITIONED BY (${parts[$i]}) LOCATION '$loc' TBLPROPERTIES ('table_type'='ICEBERG')"
+    fi
+    run_stmt "$dir" "${labels[$i]}" "$sql" "$TCAT_ICEBERG" "$TDB"
+    rc=$?
+    # 失敗した CREATE でも、後始末の一覧には 1 度だけ載せる（同じ名前なので DROP は 1 本）。
+    [ "$i" -eq 0 ] && record_created TABLE "$t" "$TCAT_ICEBERG" "$TDB"
+    if [ "$rc" -eq 0 ]; then
+      made=${labels[$i]}
+      if [ "$i" -eq 0 ]; then
+        util_info "$id" partitioning "PARTITIONED BY (${parts[$i]}) で作れた"
+      else
+        util_info "$id" partitioning "${notes[$i]}ら作れた: PARTITIONED BY (${parts[$i]})"
+      fi
+      break
+    fi
+    util_info "$id" "fail-${labels[$i]}" "PARTITIONED BY (${parts[$i]}) が通らない: $(util_fail_note "$dir" "${labels[$i]}")"
+  done
+  if [ -n "$made" ]; then
+    shape_case d8-describe "DESCRIBE $t" "$TCAT_ICEBERG" "$TDB"
+    shape_case d8-show-columns "SHOW COLUMNS FROM $t" "$TCAT_ICEBERG" "$TDB"
+  else
+    skip_item "$id" iceberg "どの PARTITIONED BY でも Iceberg のテーブルを作れなかった（上の info を見る）"
+  fi
+  best_effort_drop TABLE "$t" "$TCAT_ICEBERG" "$TDB"
 }
