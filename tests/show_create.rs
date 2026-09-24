@@ -41,7 +41,7 @@ fn show_create_table_response() -> Value {
 /// tests/table_format.rs の写し。ずれればルートに当たらず Iceberg のテストが落ちる）。
 fn probe_sql(catalog: &str, schema: &str, table: &str) -> String {
     format!(
-        "SELECT (SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = '{catalog}'), (SELECT count(*) FROM system.jdbc.tables WHERE table_cat = '{catalog}' AND table_schem = '{schema}' AND table_name = '{table}')"
+        "SELECT (SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = '{catalog}'), (SELECT table_type FROM system.jdbc.tables WHERE table_cat = '{catalog}' AND table_schem = '{schema}' AND table_name = '{table}')"
     )
 }
 
@@ -50,9 +50,9 @@ fn probe_response(connector_name: &str) -> Value {
     json!({
         "columns": [
             { "name": "_col0", "type": "varchar" },
-            { "name": "_col1", "type": "bigint" }
+            { "name": "_col1", "type": "varchar" }
         ],
-        "data": [[connector_name, 1]]
+        "data": [[connector_name, "TABLE"]]
     })
 }
 

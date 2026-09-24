@@ -7,15 +7,22 @@
 ## 結果ファイル（[measurements/result-files.md](measurements/result-files.md)）
 
 - [ ] `SHOW CREATE TABLE`／`SHOW CREATE VIEW` 以外の `SHOW CREATE ...`（`SCHEMA`／`MATERIALIZED VIEW`／`FUNCTION`。Trino にはある）を本物の `StartQueryExecution` が受けるか、受けるなら `.txt` の Content-Type と `.metadata` の形式。athena-local は `.txt` の既定（binary、エンジン ID）に落としている（#151、2026-09-24。`SHOW SESSION`／`STATS` と同じく本物が弾く可能性が高い）
-- [ ] Iceberg のテーブルへの `DESC t`・`DESCRIBE EXTENDED t`・`DESCRIBE FORMATTED t`・`DESCRIBE t PARTITION (...)`・`DESCRIBE t col` の `UpdateCount`・Content-Type・`.metadata`（`DESCRIBE t` は Hive で null・application、Iceberg で 0・binary・不透明。#160、2026-09-24）。athena-local は `DESC` を `DESCRIBE_TABLE` に分類せず、`EXTENDED` などは名前として読むので、どれも Hive 扱い（null・application）
-- [ ] ビューへの `DESCRIBE` の `UpdateCount`・Content-Type・`.metadata`（本物のビューは Glue の VIRTUAL_VIEW。athena-local は Iceberg のカタログのビューを Iceberg のテーブルと判定する（形式の問い合わせが `table_type` で絞らないため）。#160、2026-09-24）
+- [ ] Iceberg のテーブルへの `DESCRIBE EXTENDED t`・`DESCRIBE FORMATTED t`・`DESCRIBE t PARTITION (...)`・`DESCRIBE t col` の `UpdateCount`・Content-Type・`.metadata`・行の形（`DESCRIBE t` は Hive で null・application、Iceberg で 0・binary・不透明。#160、2026-09-24）。athena-local は `EXTENDED` などを名前として読むので、どれも Hive 扱い（null・application）。`DESC t` は Hive で `DESCRIBE t` と同じと測った（#173）ので Iceberg でも `DESCRIBE` と同じに扱っていて、Iceberg の `DESC t` そのものは測っていない
 - [ ] `SHOW CREATE TABLE"t"`（`TABLE` と引用符付きの名前の間に空白が無い形）を本物が受けるか、受けるなら分類と Content-Type。athena-local は `catalog::words` で `TABLE"T"` が 1 語になり、`SubstatementType` は None、`.txt` は既定の binary（#151、2026-09-24）
 
 - [ ] 複合型の中の varbinary の `[B@<hex>` の数字が、等しいバイト列で同じになるか、実行ごとに変わるか（#146 は `ARRAY[X'0102', X'03']` の違う 2 要素だけ。athena-local はバイト列の FNV-1a で決定的にしている。#149、2026-09-24）
 
+## GetQueryResults（[measurements/query-results.md](measurements/query-results.md)）
+
+- [ ] Iceberg のテーブルの `DESCRIBE` で、フィールドが 2 つ以上の `struct` の区切り。測ったのは 1 フィールドの `struct<a: int>` だけ。athena-local は `map<string, int>` に倣って `, ` でつなぐ（#173、2026-09-24）
+- [ ] Iceberg のパーティション変換のうち、`identity`／`bucket`／`truncate`／`year`／`month`／`day`／`hour` 以外（`void` など）の `# Partition spec:` の下の行。athena-local は行を出さない（#173、2026-09-24）
+- [ ] Hive のテーブルの `DESCRIBE`／`SHOW COLUMNS` の 20 文字の詰めで、非 BMP 文字（絵文字など、UTF-16 で 2 単位）を 1 文字と数えるか。測ったのは BMP の `列名`・`コメント` だけ（文字数で数えた）。athena-local は Unicode のスカラ値の数で数える（#173、2026-09-24）
+- [ ] `SHOW SCHEMAS LIKE`／`SHOW DATABASES LIKE` のパターンの意味。実在するデータベース名の先頭 3 文字に `*` を付けても `%` を付けても 0 行だった（#173、2026-09-24）。athena-local は Trino の `LIKE` のまま
+- [ ] Hive・Iceberg の `DESCRIBE` で測っていない型（`timestamp with time zone`、`time`、`interval`、`json`、`uuid` など）の綴り。athena-local は Trino の綴りのまま（#173、2026-09-24）
+
 ## `.metadata`（[measurements/metadata.md](measurements/metadata.md)）
 
-- `SHOW` 5 文（`SHOW TABLES` / `DATABASES` / `COLUMNS` / `PARTITIONS` / `TBLPROPERTIES`）と `SHOW CREATE VIEW`、Iceberg のテーブルへの `SHOW CREATE TABLE` の本物の `.txt.metadata` は不透明な形式（base64 で 312 文字。`TBLPROPERTIES` は 460、Iceberg の `SHOW CREATE TABLE` は 332）。#24 で解析したが特定できず、AWS 側の仕様が公開されない限り埋まらないので測る対象から外す。athena-local は素の protobuf を置く（[docs/caveats.md](../caveats.md) に記載済み。JDBC が読めるかは下の「実クライアントでの疎通」）
+- `SHOW` 5 文（`SHOW TABLES` / `DATABASES` / `COLUMNS` / `PARTITIONS` / `TBLPROPERTIES`）と `SHOW CREATE VIEW`、Iceberg のテーブルへの `SHOW CREATE TABLE`・`DESCRIBE`、ビューへの `DESCRIBE`／`SHOW COLUMNS` の本物の `.txt.metadata` は不透明な形式（base64 で 312 文字。`TBLPROPERTIES` は 460、Iceberg の `SHOW CREATE TABLE` は 332、Iceberg の `DESCRIBE` は 568、ビューは 440。ビューは #173）。#24 で解析したが特定できず、AWS 側の仕様が公開されない限り埋まらないので測る対象から外す。athena-local は素の protobuf を置く（[docs/caveats.md](../caveats.md) に記載済み。JDBC が読めるかは下の「実クライアントでの疎通」）
 
 ## ClientRequestToken と保持期限（[measurements/client-request-token.md](measurements/client-request-token.md)）
 
@@ -100,6 +107,8 @@
 - トークン長の制約（32〜128）がバイト数か文字数か → #147（2026-09-24。`あ`×20（60B）は「greater than or equal to 32」で拒否、`あ`×50（150B）は別の文言 `clientRequestToken exceeds maximum allowed length 128` で拒否。下限は文字数、上限はバイト数と読める。athena-local は #153 で上限にバイト数の検査を足した。両方で超える組は上の「ClientRequestToken と保持期限」に残した）
 - トークンの検証と他の検証エラー（`OutputLocation` の不正・構文エラー）の優先順位 → #147（2026-09-24。長さの足りないトークンはどちらよりも先。#146 の `OutputLocation` → 構文と合わせて、トークン → `OutputLocation` → 構文）
 - 構文エラー（`MALFORMED_QUERY`）の本文に `ErrorCode` キーが付くか（#3）→ #147（2026-09-24。`ErrorCode` `MALFORMED_QUERY` が付き、キーは `__type`・`AthenaErrorCode`・`ErrorCode`・`Message` の 4 つ。`x-amzn-errortype` ヘッダは無い。[measurements/errors.md](measurements/errors.md)）
+- ビューへの `DESCRIBE` の `UpdateCount`・Content-Type・`.metadata`（#160）→ #173（2026-09-24。`SHOW COLUMNS` も含め SubstatementType `DESC_VIEW`、`column`／`type` の varchar 2 列、UpdateCount 0、binary、`.metadata` は 440B の不透明な形式。[measurements/query-results.md](measurements/query-results.md) の「DESCRIBE／SHOW COLUMNS の行の形」）
+- Hive のテーブルへの `DESC t`（#160）→ #173（2026-09-24。`DESCRIBE t` と同じ。同じ項目）
 
 ## 測れないもの
 

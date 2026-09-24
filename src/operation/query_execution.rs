@@ -164,7 +164,10 @@ fn to_query_execution(id: &str, execution: &Execution) -> QueryExecution {
         query_execution_id: id.to_string(),
         query: execution.query.clone(),
         statement_type: super::classification::statement_type(&execution.query).to_string(),
-        substatement_type: super::classification::substatement_type(&execution.query)
+        // 完了時に形式から決まった値（ビューの `DESC_VIEW`）があれば、SQL だけで決まる分類より優先する（#173）。
+        substatement_type: execution
+            .substatement_type
+            .or_else(|| super::classification::substatement_type(&execution.query))
             .map(str::to_string),
         result_configuration: execution.result_location.as_ref().map(|location| {
             ResultConfiguration {

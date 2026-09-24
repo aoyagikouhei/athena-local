@@ -3,6 +3,7 @@
 //! 列名の差し替えだけでは揃わない。完了時に `Outcome` の列と行を作り直し、GetQueryResults・
 //! `.txt`・`.metadata` に同じ値を渡す（`execution::split_explain_rows` と同じ置き場）。
 //! DESCRIBE は Hive のテーブル（と形式が判定できないとき）と Iceberg のテーブルで行の形が違う。
+//! ビューへの DESCRIBE と SHOW COLUMNS は、カタログの形式によらず同じ別の形になる。
 
 use serde_json::Value;
 
@@ -29,7 +30,9 @@ const PARTITION_HEADER: [&str; 4] = [
 /// 列を `col_name`／`data_type`／`comment` の string の 3 列に、行を 3 つをタブでつないだ 1 値の行に
 /// 作り直す（2026-09-24 実測。#173）。Iceberg のテーブルの DESCRIBE も同じ 3 列にし、行は詰めずに
 /// `partitions`（Trino の `SHOW CREATE TABLE` の `partitioning` の要素）からパーティション行を足す
-/// （2026-09-24 実測 d2・d8）。`update_count`・`id`・`update_type` は触らない。ほかの文はそのまま返す。
+/// （2026-09-24 実測 d2・d8）。ビューへの DESCRIBE と SHOW COLUMNS は、どちらも列を `column`／`type` の
+/// varchar の 2 列に、行を `<列名>\t<Trino の型>`（詰め無し）の 1 値の行に作り直す（2026-09-24 実測 d5）。
+/// `update_count`・`id`・`update_type` は触らない。ほかの文はそのまま返す。
 pub(super) fn reshape(
     query: &str,
     outcome: Outcome,
@@ -37,9 +40,17 @@ pub(super) fn reshape(
     partitions: &[String],
 ) -> Outcome {
     match super::classification::substatement_type(query) {
+        Some("SHOW_COLUMNS" | "DESCRIBE_TABLE") if format == Some(TableFormat::View) => {
+            let rows = outcome
+                .rows
+                .iter()
+                .map(|row| format!("{}\t{}", cell(row, 0), cell(row, 1)))
+                .collect();
+            replace(outcome, &[("column", "varchar"), ("type", "varchar")], rows)
+        }
         Some("SHOW_COLUMNS") => {
             let rows = show_columns_rows(&outcome.rows, format);
-            replace(outcome, &["field"], rows)
+            replace(outcome, &[("field", "string")], rows)
         }
         Some("DESCRIBE_TABLE") => {
             let rows = if format == Some(TableFormat::Iceberg) {
@@ -47,33 +58,43 @@ pub(super) fn reshape(
             } else {
                 describe_hive_rows(&outcome.rows)
             };
-            replace(outcome, &["col_name", "data_type", "comment"], rows)
+            replace(
+                outcome,
+                &[
+                    ("col_name", "string"),
+                    ("data_type", "string"),
+                    ("comment", "string"),
+                ],
+                rows,
+            )
         }
         _ => outcome,
     }
 }
 
-/// 列を `names` の string の列（Precision・Scale 0、CaseSensitive false）に、行を 1 値の行に置き換える。
-fn replace(mut outcome: Outcome, names: &[&str], rows: Vec<String>) -> Outcome {
+/// 列を `columns`（名前と型の対）の列（Precision・Scale 0、CaseSensitive false）に、行を 1 値の行に置き換える。
+/// ビューの varchar も 0/false なので（2026-09-24 実測 d5）、`athena_type` の表（varchar は 2147483647/true）
+/// ではなくここで決めた ColumnInfo を `athena_columns` に置く。
+fn replace(mut outcome: Outcome, columns: &[(&str, &str)], rows: Vec<String>) -> Outcome {
     outcome.rows = rows
         .into_iter()
         .map(|text| vec![Value::from(text)])
         .collect();
-    outcome.columns = names
+    outcome.columns = columns
         .iter()
-        .map(|name| Column {
+        .map(|(name, type_name)| Column {
             name: name.to_string(),
-            type_name: "string".to_string(),
+            type_name: type_name.to_string(),
             type_signature: None,
         })
         .collect();
     outcome.athena_columns = Some(
-        names
+        columns
             .iter()
-            .map(|name| ColumnInfo {
+            .map(|(name, type_name)| ColumnInfo {
                 name: name.to_string(),
                 label: name.to_string(),
-                type_name: "string".to_string(),
+                type_name: type_name.to_string(),
                 nullable: "UNKNOWN".to_string(),
                 case_sensitive: false,
                 catalog_name: "hive".to_string(),
@@ -478,6 +499,49 @@ mod tests {
             rows.into_iter().map(|row| vec![row]).collect::<Vec<_>>()
         );
         assert_eq!(outcome.athena_columns.map(|infos| infos.len()), Some(3));
+    }
+
+    #[test]
+    fn reshape_はビューへの_describe_と_show_columns_を_column_と_type_の_varchar_の_2_列にする() {
+        // 本物はビューへの DESCRIBE と SHOW COLUMNS を同じ形で返す（2026-09-24 実測 d5。#173）。
+        // 型は Trino の綴りのまま、詰めない。コメントは出さない。
+        let trino_view = || Outcome {
+            rows: vec![
+                describe_row("n", "integer", "", "abc"),
+                describe_row("s", "varchar(1)", "", ""),
+            ],
+            ..trino_show_columns()
+        };
+        for query in ["DESCRIBE v", "DESC v", "SHOW COLUMNS FROM v"] {
+            let outcome = reshape(query, trino_view(), Some(TableFormat::View), &[]);
+            let columns: Vec<(&str, &str)> = outcome
+                .columns
+                .iter()
+                .map(|c| (c.name.as_str(), c.type_name.as_str()))
+                .collect();
+            assert_eq!(
+                columns,
+                [("column", "varchar"), ("type", "varchar")],
+                "{query}"
+            );
+            assert_eq!(
+                outcome.rows,
+                [[Value::from("n\tinteger")], [Value::from("s\tvarchar(1)")]],
+                "{query}"
+            );
+            let infos = outcome.athena_columns.expect("作り直した ColumnInfo");
+            let names: Vec<&str> = infos.iter().map(|c| c.name.as_str()).collect();
+            assert_eq!(names, ["column", "type"], "{query}");
+            for info in &infos {
+                assert_eq!(info.label, info.name);
+                assert_eq!(info.type_name, "varchar");
+                assert_eq!((info.precision, info.scale), (0, 0));
+                assert!(!info.case_sensitive);
+                assert_eq!(info.catalog_name, "hive");
+                assert_eq!(info.nullable, "UNKNOWN");
+            }
+            assert_eq!(outcome.id.as_deref(), Some("engine"));
+        }
     }
 
     /// 本物の d8（Iceberg、型 11 種・変換 4 種）の DESCRIBE の 20 行を、Trino 482 の DESCRIBE の形の入力と

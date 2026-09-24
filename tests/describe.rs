@@ -29,7 +29,7 @@ fn describe_response() -> Value {
 /// tests/table_format.rs の写し。ずれればルートに当たらず Iceberg のテストが落ちる）。
 fn probe_sql(catalog: &str, schema: &str, table: &str) -> String {
     format!(
-        "SELECT (SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = '{catalog}'), (SELECT count(*) FROM system.jdbc.tables WHERE table_cat = '{catalog}' AND table_schem = '{schema}' AND table_name = '{table}')"
+        "SELECT (SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = '{catalog}'), (SELECT table_type FROM system.jdbc.tables WHERE table_cat = '{catalog}' AND table_schem = '{schema}' AND table_name = '{table}')"
     )
 }
 
@@ -37,9 +37,9 @@ fn probe_response(connector_name: &str) -> Value {
     json!({
         "columns": [
             { "name": "_col0", "type": "varchar" },
-            { "name": "_col1", "type": "bigint" }
+            { "name": "_col1", "type": "varchar" }
         ],
-        "data": [[connector_name, 1]]
+        "data": [[connector_name, "TABLE"]]
     })
 }
 
@@ -273,8 +273,9 @@ async fn describe_は_iceberg_のパーティション付きのテーブルで�
     );
 }
 
-/// ビューへの DESCRIBE では Trino の `SHOW CREATE TABLE` が失敗するが、DESCRIBE 自体は成功のままで
-/// パーティション行を出さない（形式の問い合わせはビューも Iceberg と数える。docs/ddl.md）。
+/// Iceberg のテーブルで Trino の `SHOW CREATE TABLE` が失敗しても、DESCRIBE 自体は成功のままで
+/// パーティション行を出さない（ビューは形式の問い合わせの `table_type` で見分けて `SHOW CREATE TABLE` を
+/// 投げないので、ここには来ない。#173 フェーズ 4）。
 #[tokio::test]
 async fn describe_は_show_create_table_が失敗しても成功のままでパーティション行を出さない() {
     let (harness, execution) = run_iceberg_describe(
@@ -623,4 +624,175 @@ async fn desc_は_describe_と同じく形式を問い合わせて同じ行を�
     assert_eq!(values, partitioned_describe_rows());
     assert_describe_columns(&results);
     assert!(results.get("UpdateCount").is_none(), "{results}");
+}
+
+/// ビュー `CREATE VIEW v AS SELECT 1 AS n, 'a' AS s` への Trino の `DESCRIBE`／`SHOW COLUMNS`（4 列）。
+fn view_describe_response() -> Value {
+    json!({
+        "columns": [
+            { "name": "Column", "type": "varchar" },
+            { "name": "Type", "type": "varchar" },
+            { "name": "Extra", "type": "varchar" },
+            { "name": "Comment", "type": "varchar" }
+        ],
+        "data": [
+            ["n", "integer", "", ""],
+            ["s", "varchar(1)", "", ""]
+        ]
+    })
+}
+
+/// 対象がビューで、カタログの形式が `connector_name` である形式の問い合わせの応答。
+fn view_probe_response(connector_name: &str) -> Value {
+    json!({
+        "columns": [
+            { "name": "_col0", "type": "varchar" },
+            { "name": "_col1", "type": "varchar" }
+        ],
+        "data": [[connector_name, "VIEW"]]
+    })
+}
+
+/// ビュー `v` への `query` を、形式の問い合わせが `connector_name` とビューを返す偽 Trino で実行する。
+/// ビューには `SHOW CREATE TABLE` を投げない（形式の問い合わせ・本体の 2 本だけ）。
+async fn run_view(query: &str, connector_name: &str) -> (Harness, Value) {
+    let harness = Harness::builder(view_describe_response())
+        .route(
+            &probe_sql("default_catalog", "default_schema", "v"),
+            view_probe_response(connector_name),
+        )
+        .route(query, view_describe_response())
+        .results_s3()
+        .start()
+        .await;
+    let execution = harness
+        .run_query(json!({
+            "QueryString": query,
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+        }))
+        .await;
+    assert_eq!(execution["QueryExecution"]["Status"]["State"], "SUCCEEDED");
+    assert_eq!(
+        harness.trino_sqls(),
+        [
+            probe_sql("default_catalog", "default_schema", "v"),
+            query.to_string()
+        ]
+    );
+    (harness, execution)
+}
+
+/// 本物のビューへの DESCRIBE／SHOW COLUMNS の形（2026-09-24 実測 d5。#173）。
+/// 採取元: ~/athena-unmeasured-batch-measurements/run-20260924-115811/d5/d5-describe.results-1.json と
+/// d5-show-columns.results-1.json。列は `column`／`type` の varchar（Precision・Scale 0、CaseSensitive false）、
+/// 行は 1 値で `<列名>\t<Trino の型>`（詰め無し）、`.txt` は 22 バイトの binary、`.metadata` も binary で
+/// 先頭はエンジン ID、UpdateCount 0、完了後の SubstatementType は `DESC_VIEW`。
+async fn assert_view_result(harness: &Harness, execution: &Value) {
+    let id = execution_id(execution);
+    assert_eq!(execution["QueryExecution"]["StatementType"], "UTILITY");
+    assert_eq!(execution["QueryExecution"]["SubstatementType"], "DESC_VIEW");
+
+    let (values, results) = show_columns_results(harness, execution).await;
+    let expected = ["n\tinteger", "s\tvarchar(1)"];
+    assert_eq!(values, expected);
+    assert_eq!(results["UpdateCount"], 0);
+    let columns = results["ResultSet"]["ResultSetMetadata"]["ColumnInfo"]
+        .as_array()
+        .unwrap();
+    let names: Vec<&str> = columns
+        .iter()
+        .map(|column| column["Name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["column", "type"], "{results}");
+    for column in columns {
+        assert_eq!(column["Label"], column["Name"]);
+        assert_eq!(column["Type"], "varchar");
+        assert_eq!(column["Precision"], 0);
+        assert_eq!(column["Scale"], 0);
+        assert_eq!(column["CaseSensitive"], false);
+        assert_eq!(column["Nullable"], "UNKNOWN");
+        assert_eq!(column["CatalogName"], "hive");
+    }
+
+    let puts = harness.s3_puts();
+    assert_eq!(puts.len(), 2, "{puts:?}");
+    assert_eq!(puts[0].key, format!("athena/{id}.txt"));
+    assert_eq!(puts[0].content_type.as_deref(), Some("binary/octet-stream"));
+    assert_eq!(puts[0].body.len(), 22);
+    assert_eq!(
+        String::from_utf8(puts[0].body.clone()).unwrap(),
+        expected.join("\n")
+    );
+    assert_eq!(puts[1].key, format!("athena/{id}.txt.metadata"));
+    assert_eq!(puts[1].content_type.as_deref(), Some("binary/octet-stream"));
+    assert!(
+        hex_of(&puts[1].body).starts_with(&engine_id_field()),
+        "{}",
+        hex_of(&puts[1].body)
+    );
+}
+
+#[tokio::test]
+async fn describe_は_hive_カタログのビューなら_column_と_type_の_2_列で_desc_view_になる() {
+    let (harness, execution) = run_view("DESCRIBE v", "hive").await;
+    assert_view_result(&harness, &execution).await;
+}
+
+#[tokio::test]
+async fn show_columns_もビューなら_describe_と同じ形で_desc_view_になる() {
+    let (harness, execution) = run_view("SHOW COLUMNS FROM v", "hive").await;
+    assert_view_result(&harness, &execution).await;
+}
+
+/// 本物は Iceberg のカタログ（Glue）のビューも同じ形で返す。athena-local はカタログの形式によらず
+/// `table_type` で見分け、`SHOW CREATE TABLE` も投げない（`run_view` が確かめる）。
+#[tokio::test]
+async fn describe_は_iceberg_カタログのビューでも同じ形で_show_create_table_を投げない() {
+    let (harness, execution) = run_view("DESCRIBE v", "iceberg").await;
+    assert_view_result(&harness, &execution).await;
+}
+
+#[tokio::test]
+async fn desc_もビューなら_describe_と同じ形で_desc_view_になる() {
+    let (harness, execution) = run_view("DESC v", "hive").await;
+    assert_view_result(&harness, &execution).await;
+}
+
+/// `DESC_VIEW` は完了時に形式の問い合わせから決まるので、完了前（RUNNING）は SQL だけで決まる
+/// `DESCRIBE_TABLE` のまま（docs/caveats.md）。
+#[tokio::test]
+async fn ビューへの_describe_も完了前は_describe_table_のまま() {
+    let harness = Harness::builder(view_describe_response())
+        .endless()
+        .route(
+            &probe_sql("default_catalog", "default_schema", "v"),
+            view_probe_response("hive"),
+        )
+        .start()
+        .await;
+    let id = harness
+        .start_query(json!({
+            "QueryString": "DESCRIBE v",
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+        }))
+        .await;
+    common::wait_for("本体の nextUri を辿り始める", || {
+        harness.trino_calls().iter().any(|call| call == "GET /next")
+    })
+    .await;
+
+    let (status, execution) = harness
+        .call("GetQueryExecution", json!({ "QueryExecutionId": id }))
+        .await;
+    assert_eq!(status, 200, "{execution}");
+    assert_eq!(execution["QueryExecution"]["Status"]["State"], "RUNNING");
+    assert_eq!(
+        execution["QueryExecution"]["SubstatementType"],
+        "DESCRIBE_TABLE"
+    );
+
+    let (status, _) = harness
+        .call("StopQueryExecution", json!({ "QueryExecutionId": id }))
+        .await;
+    assert_eq!(status, 200);
 }

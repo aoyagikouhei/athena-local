@@ -39,9 +39,24 @@ Behaviour that matches real Athena:
   false, as real Athena does (measured 2026-09-23 and 2026-09-24), instead of
   Trino's `Create Table` / `Create View` `varchar`. The `.metadata` companion
   carries the same column, so the companion of `SHOW CREATE TABLE` on a Hive
-  table is byte-for-byte Athena's 88-byte file apart from the query id. The
-  other `SHOW` statements and `DESCRIBE` still carry Trino's column names (see
-  [Caveats](caveats.md#result-files-and-metadata)).
+  table is byte-for-byte Athena's 88-byte file apart from the query id.
+  `SHOW TABLES` reports `tab_name`, `SHOW SCHEMAS` `database_name`,
+  `SHOW COLUMNS` the single column `field` and `DESCRIBE` / `DESC` the three
+  columns `col_name` / `data_type` / `comment`, all `string` with `Precision` 0
+  and `CaseSensitive` false, in `GetQueryResults` and in the `.metadata`
+  companion alike (measured 2026-09-23 and 2026-09-24).
+- `SHOW COLUMNS` and `DESCRIBE` return Athena's rows rather than Trino's four
+  columns: one value per row, which for `DESCRIBE` is the column name, type and
+  comment joined with tabs. On a Hive table (or when the format cannot be
+  determined) each field is padded with spaces to 20 characters and types use
+  Hive's spelling (`int`, `string`, `array<string>`), with a
+  `# Partition Information` block after the columns when the table is
+  partitioned; on an Iceberg table nothing is padded and `DESCRIBE` lists
+  `# Table schema:` and `# Partition spec:` sections in Iceberg's spelling. On
+  a view both statements return Athena's two `varchar` columns `column` /
+  `type` with `name<TAB>type` rows (measured 2026-09-24). See
+  [Result files](result-files.md) for the exact rows and
+  [Caveats](caveats.md#result-files-and-metadata) for what still differs.
 - The `Query Plan` column of `EXPLAIN` is typed `varchar(<length of the plan
   text>)` by the engine: 371 for `EXPLAIN SELECT 1` on Athena engine version 3
   (measured 2026-09-15 and 2026-09-16), 400 for the same statement on Trino 482,
@@ -103,7 +118,13 @@ Behaviour that matches real Athena:
   `UTILITY` / `SHOW_TABLES`, `SHOW FUNCTIONS` is `UTILITY` / `SHOW_FUNCTIONS`
   (measured 2026-09-23), `CREATE TABLE ... AS SELECT` is `DDL` /
   `CREATE_TABLE_AS_SELECT`, and so on. Trino spellings map to Athena's
-  (`CREATE SCHEMA` is `CREATE_DATABASE`, `SHOW SCHEMAS` is `SHOW_DATABASES`).
+  (`CREATE SCHEMA` is `CREATE_DATABASE`, `SHOW SCHEMAS` is `SHOW_DATABASES`;
+  Athena accepts `SHOW SCHEMAS` too and classifies it the same way, measured
+  2026-09-24). `DESC` is `UTILITY` / `DESCRIBE_TABLE` like `DESCRIBE`.
+  `DESCRIBE` and `SHOW COLUMNS` on a view are `UTILITY` / `DESC_VIEW`, as on
+  Athena (measured 2026-09-24); athena-local knows the target is a view only
+  once the query has run, so the value is decided when the query completes
+  and `GetQueryExecution` reports `DESCRIBE_TABLE` or `SHOW_COLUMNS` until then.
   `VACUUM` is `DML` and `OPTIMIZE` is `DDL`.
   Statements whose `SubstatementType` was not measured leave the field out.
   Leading whitespace and comments (`-- ...`, `/* ... */`, possibly interleaved)

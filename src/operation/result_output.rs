@@ -44,10 +44,13 @@ pub(super) async fn write_result(
     // `ResultLocation` の既定（0 バイトの DDL の binary）ではなく application で置く。
     // SHOW CREATE TABLE × Iceberg と DESCRIBE × Iceberg は逆に、SQL だけで決まる既定（application）を
     // binary で上書きする（#151、#160）。
+    // DESCRIBE × ビューも DESCRIBE × Iceberg と同じ（2026-09-24 実測 d5。#173）。
     let content_type = match engine_ddl {
-        Some(EngineDdl::ShowCreateTableIceberg | EngineDdl::DescribeIceberg) => {
-            Some(crate::content_type::BINARY)
-        }
+        Some(
+            EngineDdl::ShowCreateTableIceberg
+            | EngineDdl::DescribeIceberg
+            | EngineDdl::DescribeView,
+        ) => Some(crate::content_type::BINARY),
         Some(_) => Some(ENGINE_DDL_CONTENT_TYPE),
         None => None,
     };
@@ -94,7 +97,11 @@ pub(super) async fn write_result(
         // SQL だけで決まる QueryExecutionId ではなくエンジン ID（無ければ実行 ID）にする（#151）。
         let (query_id, update_type, update_count) = match engine_ddl {
             Some(EngineDdl::AlterColumnsHive) => (id, None, None),
-            Some(EngineDdl::ShowCreateTableIceberg | EngineDdl::DescribeIceberg) => (
+            Some(
+                EngineDdl::ShowCreateTableIceberg
+                | EngineDdl::DescribeIceberg
+                | EngineDdl::DescribeView,
+            ) => (
                 outcome.id.as_deref().unwrap_or(id),
                 outcome.update_type.as_deref(),
                 outcome.update_count,

@@ -193,28 +193,35 @@ Known differences between athena-local and real Athena, grouped by topic.
   athena-local writes no manifest at all; `OutputLocation` still names the
   result file Athena would use. The `.metadata` companion is written (see
   [Result files](result-files.md)).
-- **Column names of `SHOW` and `DESCRIBE` are Trino's, except for
-  `SHOW CREATE TABLE` / `SHOW CREATE VIEW`.** Real Athena names the column of
-  `SHOW TABLES` `tab_name`, of `SHOW DATABASES` `database_name`, of
-  `SHOW VIEWS` `views`, of `SHOW PARTITIONS` `partition`, of
-  `SHOW TBLPROPERTIES` `prpt_name` / `prpt_value`, of `SHOW COLUMNS` `field`
-  (one column) and of `DESCRIBE` `col_name` / `data_type` / `comment` (three
-  columns), typed `string` (`varchar` for `SHOW VIEWS`), measured 2026-09-23.
-  athena-local passes Trino's names and columns through for the statements
-  Trino runs (`Table`, `Schema`, and the four columns `Column` / `Type` /
-  `Extra` / `Comment` of `SHOW COLUMNS` and `DESCRIBE`) in `GetQueryResults`
-  and in the `.metadata` companion; only `SHOW CREATE TABLE` and
-  `SHOW CREATE VIEW` are aligned (see [Supported API](api.md#supported-api)).
-  The `.txt` body is the same either way, since it carries no header row.
+- **`SHOW` and `DESCRIBE` results differ from Athena's in a few unmeasured
+  corners.** Their columns and rows follow Athena (see
+  [Supported API](api.md#supported-api) and [Result files](result-files.md)),
+  but athena-local builds them from Trino's results, so:
+  - Only the type spellings measured on Athena are translated. Any other type
+    keeps Trino's spelling, for example `timestamp(3) with time zone` or
+    `interval day to second` (not measured).
+  - On an Iceberg table, a `struct` with more than one field is written with
+    `, ` between the fields, following Iceberg's `map<string, int>`; only a
+    single-field `struct<a: int>` was measured.
+  - A partition transform other than `identity`, `bucket`, `truncate`,
+    `year`, `month`, `day` and `hour` gets no row under `# Partition spec:`.
+  - On a view, `SubstatementType` becomes `DESC_VIEW` only when the query
+    completes (see [Supported API](api.md#supported-api)).
+  - `SHOW SCHEMAS LIKE '<pattern>'` returns Trino's matches; how Athena reads
+    the pattern was not measured (on Athena, `LIKE '<prefix>*'` and
+    `LIKE '<prefix>%'` with the prefix of an existing database both gave no
+    rows, for `SHOW DATABASES` as well).
+  The Athena-only `SHOW` statements Trino rejects are covered below.
 - **`SHOW` metadata is not the opaque form Athena writes.** For `SHOW TABLES`,
   `SHOW DATABASES`, `SHOW COLUMNS`, `SHOW PARTITIONS`, `SHOW TBLPROPERTIES`,
-  `SHOW CREATE VIEW`, and `SHOW CREATE TABLE` and `DESCRIBE` on an Iceberg
-  table, real Athena writes a base64 blob that does not decode as protobuf
+  `SHOW CREATE VIEW`, `SHOW CREATE TABLE` and `DESCRIBE` on an Iceberg
+  table, and `DESCRIBE` / `SHOW COLUMNS` on a view, real Athena writes a base64
+  blob that does not decode as protobuf
   (measured 2026-09-16, 2026-09-17, 2026-09-18 and 2026-09-24). The blob is 312
   base64 characters for `SHOW TABLES`, `SHOW DATABASES`, `SHOW COLUMNS`,
   `SHOW PARTITIONS` and `SHOW CREATE VIEW`, 332 for `SHOW CREATE TABLE` on an
-  Iceberg table, 440 or 460 for `SHOW TBLPROPERTIES` and 568 for `DESCRIBE` on
-  an Iceberg table, decoding to a fixed size whatever the result holds. Only the leading byte
+  Iceberg table, 440 or 460 for `SHOW TBLPROPERTIES`, 440 for `DESCRIBE` and
+  `SHOW COLUMNS` on a view and 568 for `DESCRIBE` on an Iceberg table, decoding to a fixed size whatever the result holds. Only the leading byte
   `0x01` is stable: everything after it differs between measurement rounds and
   sometimes between two statements of the same round, and running the same
   `SHOW TABLES` twice over the same tables yields different bytes. That is
@@ -227,16 +234,19 @@ Known differences between athena-local and real Athena, grouped by topic.
   failing. Athena JDBC 3.8.1 in its default `ResultFetcher=auto` fetches that
   companion file and reads it without an exception: verified for `SHOW TABLES`
   on 2026-09-17, and on 2026-09-22 for `SHOW SCHEMAS` (one column) and
-  `SHOW COLUMNS` (Trino's four columns, 205 bytes) in the same run. The driver
+  `SHOW COLUMNS` (Trino's four columns, 205 bytes, observed before
+  `SHOW COLUMNS` was reduced to Athena's single column) in the same run. The driver
   logs `loaded query result metadata` for each, then still presents the `.txt`
   body as a single `varchar` column named `_col0`, one row per line; with
   `ResultFetcher=S3` it does not fetch the `.txt.metadata` at all, and with
-  `ResultFetcher=GetQueryResults` it never touches S3. The other three
-  statements cannot reach the file: `SHOW DATABASES`, `SHOW PARTITIONS` and
-  `SHOW TBLPROPERTIES` are Athena syntax that Trino's grammar lacks, so the
-  syntax check rejects them (`mismatched input 'DATABASES'` and so on, returned
-  as `InvalidRequestException` before any file is written; Trino 482,
-  2026-09-22). Write `SHOW SCHEMAS` for `SHOW DATABASES` (classified as
+  `ResultFetcher=GetQueryResults` it never touches S3. The other four
+  statements cannot reach the file: `SHOW DATABASES`, `SHOW VIEWS`,
+  `SHOW PARTITIONS` and `SHOW TBLPROPERTIES` are Athena syntax that Trino's
+  grammar lacks, so the syntax check rejects them (`mismatched input
+  'DATABASES'` and so on, returned as `InvalidRequestException` before any
+  file is written; Trino 482, 2026-09-22 and 2026-09-24, whose expected-token
+  list after `SHOW` has no `VIEWS`, `PARTITIONS` or `TBLPROPERTIES`). Write
+  `SHOW SCHEMAS` for `SHOW DATABASES` (classified as
   `SHOW_DATABASES`, see [Supported API](api.md#supported-api)) and `SELECT * FROM "<table>$partitions"` for
   `SHOW PARTITIONS`; `SHOW TBLPROPERTIES` has no Trino spelling
   (`SHOW CREATE TABLE` includes the properties).

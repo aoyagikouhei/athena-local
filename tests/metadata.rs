@@ -364,13 +364,13 @@ async fn drop_table_は_iceberg_なら_41_バイトの_metadata_を置く() {
     // キーの有無は tests/table_format.rs（計画レビュー F）。
     let harness = Harness::builder(json!({ "updateType": "DROP TABLE" }))
         .route(
-            "SELECT (SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = 'default_catalog'), (SELECT count(*) FROM system.jdbc.tables WHERE table_cat = 'default_catalog' AND table_schem = 'default_schema' AND table_name = 't')",
+            "SELECT (SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = 'default_catalog'), (SELECT table_type FROM system.jdbc.tables WHERE table_cat = 'default_catalog' AND table_schem = 'default_schema' AND table_name = 't')",
             json!({
                 "columns": [
                     { "name": "_col0", "type": "varchar" },
-                    { "name": "_col1", "type": "bigint" }
+                    { "name": "_col1", "type": "varchar" }
                 ],
-                "data": [["iceberg", 1]]
+                "data": [["iceberg", "TABLE"]]
             }),
         )
         .results_s3()
@@ -407,13 +407,13 @@ async fn alter_table_add_columns_は_hive_なら_38_バイトの_metadata_を置
     // 結合レベルのバイト数・Content-Type・キーの有無は tests/table_format.rs（計画レビュー F）。
     let harness = Harness::builder(json!({ "updateType": "ADD COLUMN" }))
         .route(
-            "SELECT (SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = 'default_catalog'), (SELECT count(*) FROM system.jdbc.tables WHERE table_cat = 'default_catalog' AND table_schem = 'default_schema' AND table_name = 't')",
+            "SELECT (SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = 'default_catalog'), (SELECT table_type FROM system.jdbc.tables WHERE table_cat = 'default_catalog' AND table_schem = 'default_schema' AND table_name = 't')",
             json!({
                 "columns": [
                     { "name": "_col0", "type": "varchar" },
-                    { "name": "_col1", "type": "bigint" }
+                    { "name": "_col1", "type": "varchar" }
                 ],
-                "data": [["hive", 1]]
+                "data": [["hive", "TABLE"]]
             }),
         )
         .results_s3()
