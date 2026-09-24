@@ -70,6 +70,16 @@ athena-local 自身は dev の中のプロセスで、足場は `127.0.0.1:<port
 - 同時に流すなら、プロジェクト名をホストの環境変数で分ける: `COMPOSE_PROJECT_NAME=athena-local-b tools/dev.sh tools/e2e/minio/verify.sh`。dev もその中の足場も同じ別プロジェクト（別のネットワーク・コンテナ・named volume）で動く。`tools/dev.sh COMPOSE_PROJECT_NAME=... <コマンド>` の形では dev 自身が既定のプロジェクトに入り、足場だけが別のプロジェクトになるので効かない。
 - プロジェクトを分けても同時に流せないもの: jdbc 系の 3 本（`tools/e2e/jdbc-drivers/verify.sh`、`tools/measure/jdbc-metadata.sh`、`tools/measure/jdbc-show-metadata.sh`）は、どのプロジェクトからも `tools/compose/jdbc-client/target` を bind するので、同時に 1 本だけ。
 - named volume（Trino のデータ、MinIO のデータ、maven のキャッシュ `jdbc-client-m2`）はプロジェクトごとに別。共有されるのは `.toolbox/`（cargo はロックで直列にする）と `/tmp`（証跡は `mktemp` で一意）だけ。
+- jdbc 系の足場の走行中に、同じプロジェクト名で `tools/dev.sh cargo test` のような足場でないコマンドを動かすのはかまわない。そのあいだ compose のネットワークでは `dev` が 2 つのアドレスに解決されるが、tls-proxy の nginx は `resolver` 無しで `dev:8087` を書いているので名前解決は起動時の 1 回だけで、jdbc 系の足場は開始時に tls-proxy を作り直し、preflight で別の dev がいれば止まる。つまり nginx が掴む `dev` は足場の dev の 1 つだけになる（#131）。
+
+### 確かめた環境
+
+WSL2 の Ubuntu 24.04、ネイティブの Docker Engine、arm64 で、2026-09-25 に次を確かめた（#131。#127・#128 の人間検証の残り）。amd64 ホストでの `cargo test`、Docker Desktop／rootless docker、`~/.aws/credentials` だけでの実測は未確認（#184）。
+
+- `tools/dev.sh tools/e2e/minio/verify.sh` の走行中（ケース 1 の実行中）に端末で Ctrl-C を押すと、1 秒で終了コード 130 で抜け、足場の trap が `down -v trino minio minio-init` を流す。`docker ps -a --filter label=com.docker.compose.project=athena-local` は dev も含めて 0 件になる（compose.yml の `init: true` が効いている）。
+- `tools/dev.sh tools/e2e/jdbc-drivers/verify.sh` を既定の全 7 版（3.8.1〜3.0.0）で最後まで流して FAIL 0。
+- その走行中に同じプロジェクト名で `tools/dev.sh cargo test --locked` を動かし、tls-proxy から `dev` が 2 つのアドレスに解決されている間も、cargo test は全件通り、tls-proxy のログに接続失敗・upstream のエラー・5xx は 0 件（上の同時実行の項目の理由による）。
+- `tools/dev.sh tools/e2e/trino-probe/versions.sh` を既定の 5 版（480 475 470 440 400 の pull から）で最後まで流して FAIL 0（結果は [measurements/trino.md](measurements/trino.md) の #131 の節）。
 
 ## テスト
 

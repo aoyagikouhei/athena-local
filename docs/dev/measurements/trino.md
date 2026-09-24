@@ -51,6 +51,16 @@
   - 400: JVM の起動時に `NullPointerException: Cannot invoke "jdk.internal.platform.CgroupInfo.getMountPoint()" because "anyController" is null`。イメージ同梱の JDK がこの環境の cgroup v2 で落ちた（catalog 設定とは無関係）
 - 備考: 本物の Athena ではない。値を取れた 480・475 は、`connector_name`（`hive` / `iceberg` の小文字）・probe_sql の結果・`updateType` のすべてが 482 と同じ。440 は `system.metadata.catalogs` に `connector_name` 列があり、`hive` / `iceberg`（小文字）を返し、存在しないテーブルへの probe（D3・D4）も 482 と同じ形。存在するテーブルへの probe と `updateType` は、書き込みができず未測定。470 と 400 はこの足場では起動条件が整わず未測定。A2 の列は 480・475・440 とも `catalog_name, connector_id, connector_name`
 
+### Trino の旧版（400〜480）の再走行（probe_sql の table_type 化の後）
+- 日付: 2026-09-25 ／ issue: #131 ／ スクリプト: `tools/e2e/trino-probe/versions.sh`（`tools/dev.sh` 経由。既定の 5 版と、対照の `TRINO_TAGS=482`） ／ 生データ: `/tmp/athena-local-issue111-trino.3aP3sR`（5 版）
+- 相手: 手元の Trino 480 / 475 / 470 / 440 / 400 と 482（WSL2 の Ubuntu 24.04、ネイティブの Docker Engine、arm64。toolbox の中から compose の trino を差し替え）
+- 投げたもの: 上の #111 と同じ（`probe.sh` の D 節は #173 で `src/operation/table_format.rs` の probe_sql に合わせて、件数から `system.jdbc.tables` の `table_type` を取る形に変わっている）
+- 返ったもの:
+  - 5 版とも最後まで走り、FAIL 0。採用 catalog・SKIP・起動しない理由（470 は 3 つの catalog とも通らない、400 は JDK が cgroup v2 で落ちる）・440 の準備の失敗は上の #111 と同じ
+  - D1〜D4 は 480・475 で `[["hive","TABLE"]]`／`[["iceberg","TABLE"]]`／`[["hive",null]]`／`[["iceberg",null]]`、440 は D1・D2 が準備の失敗で `null`
+  - 対照の 482 も同じ値を返したが、`versions.sh` の 482 の期待値が件数の形（`[["hive",1]]` など）のままで、`TRINO_TAGS=482` では FAIL 1（D1〜D4 の不一致）になった。#173 で probe.sh だけを直し、期待値を直し忘れていた（既定の 5 版には 482 が入らないので、INFO の「差あり」に隠れていた）
+- 採用: `versions.sh` の期待値を `table_type` の形に直した（#131）。直した後の `TRINO_TAGS=482` は PASS。480・475 の D1〜D4 は新しい期待値と同じなので、#111 の結論（`connector_name` と probe_sql の結果と `updateType` が 482 と同じ）は変わらない
+
 ### MERGE の updateType と `.metadata`
 - 日付: 不明（ノートに日付が無い。時系列は 19:00〜19:07。#49（2026-09-22 17:2x）で 17 項目だった verify.sh が 19 項目になっているので 2026-09-22 と推定） ／ issue: #56 ／ スクリプト: `tools/e2e/minio/verify.sh`（旧 `39-e2e/verify.sh`）（ケース 9 を追加）
 - 相手: 手元の Trino 482 + MinIO（`tools/e2e/minio/`（旧 `39-e2e/`） の足場、athena-local 経由）
