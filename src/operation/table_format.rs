@@ -32,7 +32,7 @@ pub(super) enum TargetStatement {
 /// ビューを別の戻り値（`(TableFormat, bool)` など）にせず形式の 1 つとして持つのは、呼び出し元
 /// （`run` の `iceberg_partition_specs` の条件、`utility_rows::reshape` の形式ごとの分岐）が
 /// `== Some(TableFormat::Iceberg)` で比べていて、ビューが自然に Iceberg の腕から外れるため。
-/// `engine_ddl` の網羅 match には腕が増えるが、ビューを足し忘れた組み合わせはコンパイラが検出する。
+/// `format_override` の網羅 match には腕が増えるが、ビューを足し忘れた組み合わせはコンパイラが検出する。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TableFormat {
     Hive,
@@ -41,9 +41,9 @@ pub(super) enum TableFormat {
 }
 
 /// テーブルの形式で本体・`.metadata` の書き方を上書きする、文の種類とテーブルの形式の組み合わせ
-/// （2026-09-20〜24 実測）。型名は DDL だけを対象にしていた頃のまま（#151 で改名はしない）。
+/// （2026-09-20〜24 実測）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum EngineDdl {
+pub(super) enum FormatOverride {
     /// DROP TABLE × Iceberg。本体に改行 1 つ、`.metadata` に 41 バイト
     /// （field 1 = Trino のエンジンのクエリ ID、field 2 = `DROP TABLE`）。
     DropTableIceberg,
@@ -143,24 +143,29 @@ fn parse_probe_result(outcome: &Outcome) -> Option<TableFormat> {
 
 /// 文の種類とテーブルの形式の組み合わせから、本体・`.metadata` の書き方を上書きする文を決める。
 /// DROP TABLE・ALTER TABLE・SHOW CREATE TABLE × ビューは Trino で失敗するので、Hive と同じく上書きしない。
-pub(super) fn engine_ddl(statement: TargetStatement, format: TableFormat) -> Option<EngineDdl> {
+pub(super) fn format_override(
+    statement: TargetStatement,
+    format: TableFormat,
+) -> Option<FormatOverride> {
     match (statement, format) {
-        (TargetStatement::DropTable, TableFormat::Iceberg) => Some(EngineDdl::DropTableIceberg),
+        (TargetStatement::DropTable, TableFormat::Iceberg) => {
+            Some(FormatOverride::DropTableIceberg)
+        }
         (TargetStatement::DropTable, TableFormat::Hive | TableFormat::View) => None,
         (
             TargetStatement::AlterTableAddColumns | TargetStatement::AlterTableReplaceColumns,
             TableFormat::Hive,
-        ) => Some(EngineDdl::AlterColumnsHive),
+        ) => Some(FormatOverride::AlterColumnsHive),
         (
             TargetStatement::AlterTableAddColumns | TargetStatement::AlterTableReplaceColumns,
             TableFormat::Iceberg | TableFormat::View,
         ) => None,
         (TargetStatement::ShowCreateTable, TableFormat::Iceberg) => {
-            Some(EngineDdl::ShowCreateTableIceberg)
+            Some(FormatOverride::ShowCreateTableIceberg)
         }
         (TargetStatement::ShowCreateTable, TableFormat::Hive | TableFormat::View) => None,
-        (TargetStatement::Describe, TableFormat::Iceberg) => Some(EngineDdl::DescribeIceberg),
-        (TargetStatement::Describe, TableFormat::View) => Some(EngineDdl::DescribeView),
+        (TargetStatement::Describe, TableFormat::Iceberg) => Some(FormatOverride::DescribeIceberg),
+        (TargetStatement::Describe, TableFormat::View) => Some(FormatOverride::DescribeView),
         (TargetStatement::Describe, TableFormat::Hive) => None,
         // 本物は Hive でも Iceberg でも `.txt` を binary で置き、UpdateCount は 0（2026-09-24 実測。#173）。
         // どちらも SQL だけで決まる既定のままなので、書き方を上書きしない。

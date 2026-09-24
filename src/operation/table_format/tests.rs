@@ -84,31 +84,31 @@ fn target_statement_は_2_パートの名前を既定カタログの文として
 }
 
 #[test]
-fn engine_ddl_は_drop_table_と_iceberg_の組み合わせだけ_some() {
+fn format_override_は_drop_table_と_iceberg_の組み合わせだけ_some() {
     assert_eq!(
-        engine_ddl(TargetStatement::DropTable, TableFormat::Iceberg),
-        Some(EngineDdl::DropTableIceberg)
+        format_override(TargetStatement::DropTable, TableFormat::Iceberg),
+        Some(FormatOverride::DropTableIceberg)
     );
     assert_eq!(
-        engine_ddl(TargetStatement::DropTable, TableFormat::Hive),
+        format_override(TargetStatement::DropTable, TableFormat::Hive),
         None
     );
 }
 
 #[test]
-fn engine_ddl_は_列を変える_alter_table_と_hive_の組み合わせだけ_some() {
+fn format_override_は_列を変える_alter_table_と_hive_の組み合わせだけ_some() {
     // ADD COLUMNS と REPLACE COLUMNS は Hive で同じ .metadata を置く（2026-09-21 実測）。
     for statement in [
         TargetStatement::AlterTableAddColumns,
         TargetStatement::AlterTableReplaceColumns,
     ] {
         assert_eq!(
-            engine_ddl(statement, TableFormat::Hive),
-            Some(EngineDdl::AlterColumnsHive),
+            format_override(statement, TableFormat::Hive),
+            Some(FormatOverride::AlterColumnsHive),
             "{statement:?}"
         );
         assert_eq!(
-            engine_ddl(statement, TableFormat::Iceberg),
+            format_override(statement, TableFormat::Iceberg),
             None,
             "{statement:?}"
         );
@@ -129,14 +129,14 @@ fn target_statement_は_show_create_table_も対象にし_show_create_view_は�
 }
 
 #[test]
-fn engine_ddl_は_show_create_table_と_iceberg_の組み合わせだけ_some() {
+fn format_override_は_show_create_table_と_iceberg_の組み合わせだけ_some() {
     // Iceberg は本体・`.metadata` とも binary、Hive は今までどおり application（2026-09-24 実測。#151）。
     assert_eq!(
-        engine_ddl(TargetStatement::ShowCreateTable, TableFormat::Iceberg),
-        Some(EngineDdl::ShowCreateTableIceberg)
+        format_override(TargetStatement::ShowCreateTable, TableFormat::Iceberg),
+        Some(FormatOverride::ShowCreateTableIceberg)
     );
     assert_eq!(
-        engine_ddl(TargetStatement::ShowCreateTable, TableFormat::Hive),
+        format_override(TargetStatement::ShowCreateTable, TableFormat::Hive),
         None
     );
 }
@@ -150,7 +150,7 @@ fn show_columns_は対象にし_書き方は上書きせず_s3_が無効でも�
     );
     for format in [TableFormat::Hive, TableFormat::Iceberg, TableFormat::View] {
         assert_eq!(
-            engine_ddl(TargetStatement::ShowColumns, format),
+            format_override(TargetStatement::ShowColumns, format),
             None,
             "{format:?}"
         );
@@ -263,12 +263,12 @@ fn parse_probe_result_は_hive_でも_iceberg_でもない形式は判定しな�
 }
 
 #[test]
-fn engine_ddl_は_describe_とビューの組み合わせを_describe_view_にし_ほかの文は上書きしない() {
+fn format_override_は_describe_とビューの組み合わせを_describe_view_にし_ほかの文は上書きしない() {
     // DESCRIBE × ビューは DESCRIBE × Iceberg と同じ扱い（binary、先頭はエンジン ID、UpdateCount 0。
     // 2026-09-24 実測 d5。#173）。ほかの文はビューに対して Trino で失敗するので Hive と同じく None。
     assert_eq!(
-        engine_ddl(TargetStatement::Describe, TableFormat::View),
-        Some(EngineDdl::DescribeView)
+        format_override(TargetStatement::Describe, TableFormat::View),
+        Some(FormatOverride::DescribeView)
     );
     for statement in [
         TargetStatement::DropTable,
@@ -278,7 +278,7 @@ fn engine_ddl_は_describe_とビューの組み合わせを_describe_view_に�
         TargetStatement::ShowColumns,
     ] {
         assert_eq!(
-            engine_ddl(statement, TableFormat::View),
+            format_override(statement, TableFormat::View),
             None,
             "{statement:?}"
         );

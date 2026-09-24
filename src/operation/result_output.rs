@@ -8,11 +8,11 @@ use crate::results::{self, ResultFile, ResultLocation};
 use crate::store::Execution;
 use crate::trino::Outcome;
 
-use super::table_format::EngineDdl;
+use super::table_format::FormatOverride;
 
 /// DROP TABLE × Iceberg など、列が無くても本体・`.metadata` を置く DDL の Content-Type
 /// （2026-09-20 実測。本体も `.metadata` も application/octet-stream）。
-const ENGINE_DDL_CONTENT_TYPE: &str = crate::content_type::APPLICATION;
+const DDL_OVERRIDE_CONTENT_TYPE: &str = crate::content_type::APPLICATION;
 
 /// 本体と付随ファイル `.metadata` の両方を置いてから結果を返す。SUCCEEDED にするのは
 /// 書き終わってからにする（クライアントは SUCCEEDED を見た直後に S3 を読みに行く）。
@@ -20,7 +20,7 @@ const ENGINE_DDL_CONTENT_TYPE: &str = crate::content_type::APPLICATION;
 /// （Trino では既に実行し終えており、本物の Athena も補助ファイルの書き込みでは失敗にしない）。
 /// `.metadata` は列がある文に置き、書けなくても SUCCEEDED のまま。
 /// DML と CTAS は本体を置かず `.metadata` だけを置く（2026-09-17 実測）。
-/// `engine_ddl` が `Some` の文（issue #39）は列が無くても `.metadata` を置き、Content-Type は
+/// `format_override` が `Some` の文（issue #39）は列が無くても `.metadata` を置き、Content-Type は
 /// 本体・付随ファイルとも application/octet-stream にする。本体に改行 1 つを足すのは
 /// DROP TABLE × Iceberg だけで、ALTER TABLE ADD COLUMNS × Hive の本体は 0 バイトのまま
 /// （2026-09-20／21 実測）。SHOW CREATE TABLE × Iceberg だけは本体・付随ファイルとも
@@ -30,7 +30,7 @@ pub(super) async fn write_result(
     execution: &Execution,
     id: &str,
     outcome: Outcome,
-    engine_ddl: Option<EngineDdl>,
+    format_override: Option<FormatOverride>,
 ) -> Result<Outcome, Failure> {
     let (Some(writer), Some(location)) = (&app.results, &execution.result_location) else {
         return Ok(outcome);
@@ -45,13 +45,13 @@ pub(super) async fn write_result(
     // SHOW CREATE TABLE × Iceberg と DESCRIBE × Iceberg は逆に、SQL だけで決まる既定（application）を
     // binary で上書きする（#151、#160）。
     // DESCRIBE × ビューも DESCRIBE × Iceberg と同じ（2026-09-24 実測 d5。#173）。
-    let content_type = match engine_ddl {
+    let content_type = match format_override {
         Some(
-            EngineDdl::ShowCreateTableIceberg
-            | EngineDdl::DescribeIceberg
-            | EngineDdl::DescribeView,
+            FormatOverride::ShowCreateTableIceberg
+            | FormatOverride::DescribeIceberg
+            | FormatOverride::DescribeView,
         ) => Some(crate::content_type::BINARY),
-        Some(_) => Some(ENGINE_DDL_CONTENT_TYPE),
+        Some(_) => Some(DDL_OVERRIDE_CONTENT_TYPE),
         None => None,
     };
 
@@ -66,7 +66,7 @@ pub(super) async fn write_result(
             // 改行 1 つ（0x0a）。to_text は列の空を見て 0 バイトを返すので使わない。
             // 本体を書くのは DROP TABLE × Iceberg だけで、`.metadata` を置く文のすべてではない
             // （ALTER TABLE ADD COLUMNS × Hive の本体は 0 バイト。2026-09-20 実測）。
-            _ if matches!(engine_ddl, Some(EngineDdl::DropTableIceberg)) => vec![b'\n'],
+            _ if matches!(format_override, Some(FormatOverride::DropTableIceberg)) => vec![b'\n'],
             // 先頭の列名行を入れるのは GetQueryResults と同じく DML（EXPLAIN）だけで、
             // DDL / SHOW / DESCRIBE（UTILITY）には入れない（2026-09-15／16 実測。#60 / #63）。
             _ => results::to_text(
@@ -89,18 +89,18 @@ pub(super) async fn write_result(
     // DROP TABLE × Iceberg（41 バイト）と ALTER TABLE ADD COLUMNS × Hive（38 バイト）だけは
     // 本物が列なしでも `.metadata` を置く（2026-09-20／21 実測。issue #39）。
     // SHOW CREATE TABLE には必ず列（`Create Table`）があるので、形式によらず前の条件で置く。
-    if !outcome.columns.is_empty() || engine_ddl.is_some() {
+    if !outcome.columns.is_empty() || format_override.is_some() {
         // ALTER TABLE の ADD COLUMNS / REPLACE COLUMNS × Hive だけは field 1 に実行 ID だけを置き、field 2（updateType）も
         // field 3（更新件数）も置かない。Trino の updateType は "ADD COLUMN"（Athena の
         // `ADD COLUMNS` と綴りが違う）なので、そのまま使うと誤った field 2 が付く（2026-09-21 実測）。
         // SHOW CREATE TABLE × Iceberg と DESCRIBE × Iceberg は本物の `.metadata` が不透明で先頭 ID を観測できないので、
         // SQL だけで決まる QueryExecutionId ではなくエンジン ID（無ければ実行 ID）にする（#151）。
-        let (query_id, update_type, update_count) = match engine_ddl {
-            Some(EngineDdl::AlterColumnsHive) => (id, None, None),
+        let (query_id, update_type, update_count) = match format_override {
+            Some(FormatOverride::AlterColumnsHive) => (id, None, None),
             Some(
-                EngineDdl::ShowCreateTableIceberg
-                | EngineDdl::DescribeIceberg
-                | EngineDdl::DescribeView,
+                FormatOverride::ShowCreateTableIceberg
+                | FormatOverride::DescribeIceberg
+                | FormatOverride::DescribeView,
             ) => (
                 outcome.id.as_deref().unwrap_or(id),
                 outcome.update_type.as_deref(),
@@ -164,7 +164,7 @@ pub(super) async fn write_failure(app: &App, execution: &Execution, failure: &Fa
 /// 決めた値（ALTER TABLE ADD COLUMNS × Hive は実行 ID・None・None に、SHOW CREATE TABLE × Iceberg は
 /// エンジン ID に上書きされている）。
 /// `columns` は GetQueryResults と同じ `convert::column_infos`（SHOW CREATE TABLE / VIEW の固定の列名も
-/// 当てたもの）。`content_type` は本体と同じ上書き（形式の問い合わせで `EngineDdl` が決まった文だけ `Some`）。
+/// 当てたもの）。`content_type` は本体と同じ上書き（形式の問い合わせで `FormatOverride` が決まった文だけ `Some`）。
 /// 上書きが無ければ本体と同じ既定の値になる（`ResultLocation::metadata`）。
 async fn write_metadata(
     writer: &results::ResultWriter,

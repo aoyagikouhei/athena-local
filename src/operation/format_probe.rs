@@ -4,7 +4,7 @@ use crate::config::{Config, ResultsMode};
 use crate::store::Execution;
 use crate::trino::{Cancel, Trino};
 
-use super::table_format::{self, EngineDdl};
+use super::table_format::{self, FormatOverride};
 use super::target_table;
 
 /// 対象の文の種類・テーブルの形式・形式から決まる組み合わせ・`SubstatementType` の上書きを、この順のタプルで返す。
@@ -19,7 +19,7 @@ pub(super) async fn probe_target_format(
 ) -> (
     Option<table_format::TargetStatement>,
     Option<table_format::TableFormat>,
-    Option<EngineDdl>,
+    Option<FormatOverride>,
     Option<&'static str>,
 ) {
     // 対象の文（DROP TABLE・ALTER TABLE ADD COLUMNS・SHOW CREATE TABLE）なら、実行前に
@@ -61,9 +61,9 @@ pub(super) async fn probe_target_format(
             None => None,
         }
     };
-    let engine_ddl = statement
+    let format_override = statement
         .zip(format)
-        .and_then(|(statement, format)| table_format::engine_ddl(statement, format));
+        .and_then(|(statement, format)| table_format::format_override(statement, format));
     // 本物はビューへの DESCRIBE と SHOW COLUMNS を `DESC_VIEW` と分類する（2026-09-24 実測 d5。#173）。
     let substatement_type = (format == Some(table_format::TableFormat::View)
         && matches!(
@@ -74,5 +74,5 @@ pub(super) async fn probe_target_format(
             )
         ))
     .then_some("DESC_VIEW");
-    (statement, format, engine_ddl, substatement_type)
+    (statement, format, format_override, substatement_type)
 }
