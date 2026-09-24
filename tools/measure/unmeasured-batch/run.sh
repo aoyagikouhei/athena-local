@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # issue #113: 未実測 28 件（既に答えがある 5 件は除く）を本物の Athena に投げるバッチ。
 # #113 ではバッチを作って TARGET=local でドライランするところまで。本物での実行は、SQL / API の
-# 項目（aws CLI で投げるもの）を #146、生 HTTP（raw.py）と保持期限（t6/t7）を #147 で、ONLY で
-# 項目群ごとに段階的に流す（1 件の失敗が他を道連れにしないため）。
+# 項目（aws CLI で投げるもの）を #146、生 HTTP（raw.py）と保持期限（t6/t7）を #147 で流す
+# （1 件の失敗が他を道連れにしないため。生 HTTP の preflight は ONLY に生 HTTP の項目があるときだけ通す）:
+#   #146: ONLY=r1,r2,r3,r4,x1,x2,m1,m2,m3,m5,s1,s2,p1,t1,t4c,t5,t8,w1,e1（約 10 分。落ちた項目は
+#         RUN_DIR=<同じ run> ONLY=<id,...> で再実行）
+#   #147: ONLY=t2,t3,t4,e2（生 HTTP）と、ONLY=t6 → 65 分以上あとに RUN_DIR=<同じ run> ONLY=t7
 #
 # 使い方（tools/dev.sh 経由。ホストで直接叩かない）:
 #   tools/dev.sh env TARGET=local WAIT_RETENTION=0 bash tools/measure/unmeasured-batch/run.sh
@@ -77,6 +80,11 @@ want_item() {
 }
 RETENTION_SELECTED=0
 if want_item t6 || want_item t7; then RETENTION_SELECTED=1; fi
+# 生 HTTP（raw.py）の項目。real ではこれが 1 つも無ければ raw.py の preflight を通さない
+# （署名や送り先の不備で aws CLI の項目まで止めないため。#146）。local は常に通す
+# （raw.py の送り先が athena-local である証拠を毎回残す。#113 の受け入れ判定 2）。
+RAW_SELECTED=0
+if want_item t2 || want_item t3 || want_item t4 || want_item e2; then RAW_SELECTED=1; fi
 
 # 作るテーブル・ビューの接頭辞。作る前に SHOW TABLES で同名が無いことを確かめる（probe_prefix_exists）。
 PROBE_PREFIX="athena_local_probe_113"
@@ -151,8 +159,12 @@ else
   RAW_ENDPOINT="https://athena.$REGION.amazonaws.com/"
   RAW_TARGET=real
 
-  echo "== preflight: raw.py で ListWorkGroups を確認する（aws CLI の疎通とは別経路）"
-  raw_preflight
+  if [ "$RAW_SELECTED" = 1 ]; then
+    echo "== preflight: raw.py で ListWorkGroups を確認する（aws CLI の疎通とは別経路）"
+    raw_preflight
+  else
+    echo "== preflight: 生 HTTP の項目（t2/t3/t4/e2）が無いので raw.py の preflight は通さない"
+  fi
 
   echo "== preflight: GetWorkGroup($WORKGROUP2) の OutputLocation を確認する"
   if ! get_work_group "$RUN_DIR/.preflight" preflight-workgroup2 "$WORKGROUP2"; then

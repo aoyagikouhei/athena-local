@@ -7,7 +7,7 @@ raw-client-request-token.py（token_mode）を雛形にしている。
 
 --endpoint は必須で既定値を持たない（本物にも athena-local にも取り違えて送らないため）。
 
-使い方（run.sh の lib-aws.sh の run_raw_item / raw_preflight から呼ばれる。単体で試すなら）:
+使い方（run.sh の lib-raw.sh の run_raw_item / raw_preflight から呼ばれる。単体で試すなら）:
     tools/dev.sh python3 tools/measure/unmeasured-batch/raw.py t2 \\
       --endpoint http://127.0.0.1:8087/ --region ap-northeast-1 \\
       --out-dir "$RUN_DIR/t2" --output s3://bucket/prefix/ --target local

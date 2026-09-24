@@ -107,5 +107,5 @@ except Exception: print("?")' "$dir/$label.execution-immediate.json")
   echo "== e1: QUEUED を直後に観測できたか=$caught_queued"
 }
 
-# e2（生 HTTP。raw.py）。lib-aws.sh の run_raw_item が summary.tsv への変換を担う。
+# e2（生 HTTP。raw.py）。lib-raw.sh の run_raw_item が summary.tsv への変換を担う。
 item_e2() { run_raw_item "$1"; }
