@@ -131,7 +131,10 @@ Behaviour that matches real Athena:
   not the "missing" one); outside that range the same error shape is used with
   `Message` `1 validation error detected: Value at 'clientRequestToken' failed
   to satisfy constraint: Member must have length greater than or equal to 32`
-  (or `less than or equal to 128`). Measured 2026-09-17.
+  (or `less than or equal to 128`). A token of at most 128 characters that is
+  longer than 128 UTF-8 bytes is rejected too, with `Message`
+  `clientRequestToken exceeds maximum allowed length 128` (no `1 validation
+  error detected:` prefix). Measured 2026-09-17 and 2026-09-24.
 
 Not implemented: every other operation, SigV4 verification, creating, updating
 and deleting workgroups (`GetWorkGroup` and `ListWorkGroups` are supported),
