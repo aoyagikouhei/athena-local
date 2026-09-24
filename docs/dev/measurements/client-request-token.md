@@ -232,3 +232,23 @@
   - `GetQueryExecution`: 成功（`t7-get.err` は空）。`QueryExecution` 直下のキーは `EngineVersion`、`Query`、`QueryExecutionContext`、`QueryExecutionId`、`ResultConfiguration`、`ResultReuseConfiguration`、`StatementType`、`Statistics`、`Status`、`SubstatementType`、`WorkGroup`。State は `SUCCEEDED`
   - `StopQueryExecution`（終端状態の ID）: 成功（`t7-stop.err` は空、終了コード 0 で summary は「成功」）。`t7-stop.json` は 0 バイト（AWS CLI は空の応答では何も出力しないので、ワイヤ上の本文が `{}` だったかはこの保存物からは分からない）
 - 備考: 本物のトークンの窓と実行情報の保持は 65 分（実際は約 67 分）より長い。正確な期限はこの測定では分からない。期限切れのトークン・ID の挙動（新しい ID になるか、`QUERY_EXECUTION_NOT_FOUND` か、`StopQueryExecution` が 400 か）は、期限切れの状態を作れなかったので測れていない。依頼時の要約では経過を「約 72 分」としていたが、上の mtime から約 67 分に直した（2026-09-24、フェーズ 2 の転記）
+
+### 保持期限によるメモリの頭打ち（1 時間の負荷）
+- 日付: 2026-09-25 ／ issue: #121（#111 の人間検証） ／ スクリプト: `tools/e2e/retention/verify.sh`（`tools/dev.sh DURATION=3600 ROWS=100 tools/e2e/retention/verify.sh`） ／ 生データ: `/tmp/athena-local-issue111-retention.Jqx6gq/`（`load-{high,low}.csv`、`summary.txt`）
+- 相手: athena-local の release ビルド（`main-121` の時点の main）と手元の Trino 482（memory カタログ）。WSL2 の Ubuntu 24.04、arm64。本物の Athena ではない
+- 投げたもの: 同じ負荷（逐次 1 本で Start → GetQueryExecution を 0.1 秒ごと → GetQueryResults 1 ページ。1 件 100 行・約 0.1MiB）を、保持 3600 秒（対照）と保持 1 秒で 3600 秒ずつ。暖機 20 秒。VmRSS を 5 秒ごとに記録
+- 返ったもの:
+
+  | 経過（秒） | 保持 3600 秒の RSS（MiB） | 完了数 | 保持 1 秒の RSS（MiB） | 完了数 |
+  | --- | --- | --- | --- | --- |
+  | 600 | 654.5 | 5,565 | 11.3 | 5,782 |
+  | 1,200 | 1,248.2 | 10,662 | 11.7 | 11,612 |
+  | 1,800 | 1,789.3 | 15,265 | 11.4 | 17,351 |
+  | 2,400 | 2,264.0 | 19,368 | 11.7 | 23,089 |
+  | 3,000 | 2,707.8 | 23,208 | 11.4 | 28,895 |
+  | 3,600 | 3,127.3 | 26,832 | 11.6 | 34,610 |
+
+  - 判定（`load.py --judge`）はすべて PASS。(a) 対照の伸び 3,103.6MiB（後半 1,330.5／前半 1,773.0）、(b) 保持 1 秒の伸び 3.5MiB（対照の 0.25 倍 775.9MiB 以下）、(c) 保持 1 秒の後半 0.2MiB／前半 3.3MiB、(d) 最初の ID の GetQueryExecution は保持 1 秒で 400 `QUERY_EXECUTION_NOT_FOUND`、対照で 200、(e) 完了数の比 1.29（0.7〜1.3）
+  - 保持 1 秒の側で 34,610 件中 1 件だけ、完了後のポーリング（0.1 秒ごと）が 400 `QUERY_EXECUTION_NOT_FOUND` になった。完了からポーリングまでに保持期限の 1 秒を過ぎた実行で、保持期限を極端に短くした側の想定どおりの振る舞い（対照は 0 件）
+- 採用: 保持期限による破棄は 1 時間の負荷でも効き、RSS は暖機後から最後まで 11〜12MiB で平らだった（#111 の 240 秒の代理指標の結論を 15 倍の長さで確かめた）。`docs/caveats.md` の Query lifecycle の保持期限の項に添えた
+- 備考: 完了数の比 1.29 は判定の上限 1.3 に近い。保持 1 秒の側が速いのは、対照側がメモリを 3GiB まで使うぶん遅くなるためと見られる（原因は確かめていない）。数時間（2 時間以上）は流していない
