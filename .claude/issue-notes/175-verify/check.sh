@@ -18,7 +18,7 @@ cd "$(git rev-parse --show-toplevel)"
 BASE="a34621c"
 # フェーズ 1 が完了した時点のコミット。phase2 の正規化 diff の比較元（execution.rs + completion.rs）。
 # フェーズ 1 をコミットしたらここに SHA を書く（未設定なら phase2 の項目 5 は NG にする）。
-PHASE1_SHA="${PHASE1_SHA:-}"
+PHASE1_SHA="${PHASE1_SHA:-4bbbae7}"
 
 SRC=src/operation/execution.rs
 DST=src/operation/completion.rs
@@ -30,7 +30,7 @@ BASE_TOTAL_TESTS=396
 # 3. `grep -rc '^\s*///' src/ --include=*.rs | awk -F: '{s+=$2} END {print s}'` → 723
 BASE_DOCS=723
 # フェーズ 2 で抽出した関数に doc コメントを書いたら、その /// 行数をここに足す（既定 0 = 未実装）。
-EXTRA_DOC_PHASE2=0
+EXTRA_DOC_PHASE2=2
 # 6. `awk '/^mod tests \{/ {exit} {print}' src/operation/execution.rs | grep -cE '\b(if|match|return)\b|\?[;)]'` → 45
 BASE_BRANCHES=45
 

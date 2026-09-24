@@ -20,9 +20,9 @@ use crate::store::{Execution, Fingerprint, Submission, SubmitOutcome};
 use crate::trino::{Outcome, QueryError, Trino};
 
 use super::completion;
+use super::format_probe;
 use super::result_output;
 use super::table_format::{self, EngineDdl};
-use super::target_table;
 
 /// OutputLocation も既定も無いときの本物の文言（2026-09-14 実測。"for  your" の空白 2 つも本物のまま）。
 const NO_OUTPUT_LOCATION: &str = "No output location provided. You did not provide an output location for  your query results. Either specify an S3 bucket location or enable Athena managed query results in your workgroup settings.";
@@ -264,58 +264,9 @@ async fn run(
     // 分類の問い合わせにも本体にも同じ取り消し要求を渡す。
     let cancel = &execution.cancel;
 
-    // 対象の文（DROP TABLE・ALTER TABLE ADD COLUMNS・SHOW CREATE TABLE）なら、実行前に
-    // テーブルの形式と存在を Trino に聞く。パラメータ分類のループより前に置く（対象テーブルは実行後に消えるため）。
-    // 修飾名にカタログ／スキーマがあればそれを、無ければ実行時の既定（別名解決前の値）を使う。
-    // カタログには本体と同じ別名を当ててから問い合わせる（system.metadata.catalogs /
-    // system.jdbc.tables は Trino 側の名前でしか引けない。issue #39 Phase 2）。
-    // 結果 CSV の S3 書き込みが無効（ResultsMode::None）なら、result_output::write_result が判定結果を
-    // 丸ごと捨てるので問い合わせない（Trino へのフル往復が無駄になるだけのレビュー指摘）。
-    // ただし判定を GetQueryResults の UpdateCount にも使う文（`table_format::needs_format_for_update_count`）
-    // は S3 が無効でも問い合わせる（#160）。形式は SHOW COLUMNS の行の形にも使う（`utility_rows::reshape`。#173）。
-    let statement = table_format::target_statement(&execution.query);
-    let format = if matches!(config.results, ResultsMode::None)
-        && !statement.is_some_and(table_format::needs_format_for_update_count)
-    {
-        None
-    } else {
-        match statement {
-            Some(statement) => match target_table::parse_target_table(
-                &execution.query,
-                statement,
-                raw_catalog,
-                database,
-            ) {
-                Some(target) => {
-                    let target_catalog = config.trino_catalog(&target.catalog);
-                    table_format::probe_format(
-                        trino,
-                        target_catalog,
-                        &target.schema,
-                        &target.table,
-                        database,
-                        cancel,
-                    )
-                    .await
-                }
-                None => None,
-            },
-            None => None,
-        }
-    };
-    let engine_ddl = statement
-        .zip(format)
-        .and_then(|(statement, format)| table_format::engine_ddl(statement, format));
-    // 本物はビューへの DESCRIBE と SHOW COLUMNS を `DESC_VIEW` と分類する（2026-09-24 実測 d5。#173）。
-    let substatement_type = (format == Some(table_format::TableFormat::View)
-        && matches!(
-            statement,
-            Some(
-                table_format::TargetStatement::Describe
-                    | table_format::TargetStatement::ShowColumns
-            )
-        ))
-    .then_some("DESC_VIEW");
+    let (statement, format, engine_ddl, substatement_type) =
+        format_probe::probe_target_format(trino, config, execution, raw_catalog, database, cancel)
+            .await;
 
     // 分類も本体と同じカタログ・スキーマで問い合わせ、関数の解決先を揃える。
     let mut bound = Vec::with_capacity(execution.execution_parameters.len());

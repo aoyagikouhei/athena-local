@@ -3,6 +3,7 @@
 mod classification;
 mod completion;
 mod execution;
+mod format_probe;
 mod iceberg_partitions;
 mod query_execution;
 mod result_output;
