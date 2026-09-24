@@ -470,7 +470,24 @@
   - SHOW CREATE VIEW の本体: `CREATE VIEW <DB>.athena_local_probe_113_r4_view AS\nSELECT 1 n`（末尾に改行は無い。69B は実名での長さ）
   - SHOW CREATE TABLE の本体は 9 行: `CREATE TABLE <DB>.athena_local_probe_113_r4_table (`、`  n int)`、`LOCATION '<OUTPUT>tables-probe-113-r4'`、`TBLPROPERTIES (`、`  'table_type'='iceberg',`、`  'compression_level'='3',`、`  'format'='PARQUET',`、`  'write_compression'='ZSTD'`、`);`（末尾に改行は無い。`LOCATION` の末尾の `/` は落ちている）
   - どちらの SHOW CREATE も `Statistics` に `QueryPlanningTimeInMillis` が無い
-- 備考: 同じ run の x1（[statements.md](statements.md) の「キーワードの間のブロックコメント（DESCRIBE・SHOW 4 文・MSCK REPAIR TABLE・CREATE EXTERNAL TABLE）」）でも、別のビューへの `SHOW CREATE VIEW` が本体 69B・`.metadata` 312B・binary で同じだった。**対照の `SHOW CREATE TABLE` は、既存の記録と食い違う**: #1（2026-09-16、上の「`.txt` の Content-Type」と「`.txt` の中身と置かれ方（4 回目）」）は本体 application・`.metadata` 88B の素の protobuf・`UpdateCount` 無し、#70（2026-09-23、上の「結果ファイルの Content-Type の規則」）は application。今回は Iceberg のテーブルで binary・不透明な形式・`UpdateCount` 0。#1・#70 の対象テーブルの形式はこのファイルに記録が無い。どちらを採るか（テーブルの形式で割れるのか）は未決
+- 備考: 同じ run の x1（[statements.md](statements.md) の「キーワードの間のブロックコメント（DESCRIBE・SHOW 4 文・MSCK REPAIR TABLE・CREATE EXTERNAL TABLE）」）でも、別のビューへの `SHOW CREATE VIEW` が本体 69B・`.metadata` 312B・binary で同じだった。**対照の `SHOW CREATE TABLE` は、既存の記録と食い違う**: #1（2026-09-16、上の「`.txt` の Content-Type」と「`.txt` の中身と置かれ方（4 回目）」）は本体 application・`.metadata` 88B の素の protobuf・`UpdateCount` 無し、#70（2026-09-23、上の「結果ファイルの Content-Type の規則」）は application。今回は Iceberg のテーブルで binary・不透明な形式・`UpdateCount` 0。#1・#70 の対象テーブルの形式はこのファイルに記録が無い。どちらを採るか（テーブルの形式で割れるのか）は未決（→ 下の「`SHOW CREATE TABLE` の Content-Type はテーブルの形式で割れる」で決着。#151）
+
+### `SHOW CREATE TABLE` の Content-Type はテーブルの形式で割れる（Hive／Iceberg × 素の CREATE／CTAS の対照）
+- 日付: 2026-09-24 ／ issue: #151 ／ スクリプト: `tools/measure/unmeasured-batch/run.sh`（項目 `r4` と `r5`。`ONLY=r4,r5`） ／ 生データ: `$HOME/athena-unmeasured-batch-measurements/run-20260924-062232/{r4,r5}/`
+- 相手: 本物の Athena（engine version 3、workgroup `primary`、Catalog `AwsDataCatalog`、Database `<DB>`）。上の #146 の r4 と同じ条件
+- 投げたもの: 同じラウンドに、形式（Hive／Iceberg）と作り方（素の CREATE／CTAS）を 1 つずつ変えた 4 テーブルへの `SHOW CREATE TABLE` と、r4 の `SHOW CREATE VIEW`。Hive 外部テーブルは `CREATE EXTERNAL TABLE <DB>.<t> (n int) LOCATION '<OUTPUT>tables-probe-151-r5-hive-ext/'`、Hive CTAS は `CREATE TABLE <DB>.<t> AS SELECT 1 AS n`、Iceberg の素の CREATE は `CREATE TABLE <DB>.<t> (n int) LOCATION '<OUTPUT>tables-probe-151-r5-ice-plain/' TBLPROPERTIES ('table_type'='ICEBERG')`、Iceberg CTAS は r4 と同じ。形式は `SHOW CREATE TABLE` の本文（Hive は `ROW FORMAT SERDE`／`STORED AS`、Iceberg は `'table_type'='iceberg'`）で裏取り
+- 返ったもの（18 文すべて SUCCEEDED。後始末の DROP 5 本も SUCCEEDED）:
+
+  | 文 | 対象 | SubstatementType | 本体 | `.metadata` | Content-Type（本体 / `.metadata`） | `UpdateCount` |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | SHOW CREATE VIEW | ビュー（`CREATE VIEW ... AS SELECT 1 AS n`） | SHOW_CREATE_VIEW | `<id>.txt` 69B | 312B の不透明な形式 | binary / binary | 0 |
+  | SHOW CREATE TABLE | Hive 外部テーブル（素の CREATE） | SHOW_CREATE_TABLE | 447B | 88B の素の protobuf（先頭 `0a 24` + QueryExecutionId） | application / application | 無し（null） |
+  | SHOW CREATE TABLE | Hive CTAS | SHOW_CREATE_TABLE | 710B | 88B の素の protobuf | application / application | 無し（null） |
+  | SHOW CREATE TABLE | Iceberg 素の CREATE | SHOW_CREATE_TABLE | 233B | 332B の不透明な形式 | binary / binary | 0 |
+  | SHOW CREATE TABLE | Iceberg CTAS（r4） | SHOW_CREATE_TABLE | 268B | 332B の不透明な形式 | binary / binary | 0 |
+
+- 採用: **テーブルの形式で割れる。** 作り方（素の CREATE／CTAS）では変わらない。#1（2026-09-16）・#17・#52・#70・#76 の Hive の外部テーブルの記録（application・素の protobuf 88B・`UpdateCount` 無し）と、#146（2026-09-24）の Iceberg の記録（binary・不透明な形式・`UpdateCount` 0）はどちらも正しく、食い違いの原因は対象テーブルの形式。#1・#70 の対象は生データの本文（`ROW FORMAT SERDE ...ParquetHiveSerDe`）から Hive と裏付けられる（`$HOME/athena-txt-measurements/run-20260916-090202/show-create-table.*`、`$HOME/athena-content-type-measurements/run-20260923-043027/c10-show-create-table.*`）
+- 備考: Iceberg の `SHOW CREATE TABLE` と `SHOW CREATE VIEW` は `Statistics` に `QueryPlanningTimeInMillis` が無く、`SHOW TABLES` などと同じエンジン側の経路に見える（機構の推測）。Hive の `SHOW CREATE TABLE` の `UpdateCount` が無い（null）のは `DESCRIBE` と同じで、athena-local は DDL 以外を 0 にしているので Hive のこの 2 文ではずれる（#151 で起票）
 
 **食い違い: 結果ファイルの Content-Type**
 

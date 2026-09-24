@@ -6,13 +6,11 @@
 
 ## 結果ファイル（[measurements/result-files.md](measurements/result-files.md)）
 
-- [ ] `SHOW CREATE TABLE` の本体と `.metadata` の Content-Type・`.metadata` の形式が、テーブルの形式で割れるか。#146（2026-09-24）の Iceberg のテーブルでは binary/octet-stream・不透明な形式（332B）・`UpdateCount` 0 で、#1（2026-09-16）・#70（2026-09-23）の記録（application/octet-stream・素の protobuf 88B・`UpdateCount` 無し）と食い違う。#1・#70 の対象テーブルの形式は記録に無い（[measurements/result-files.md](measurements/result-files.md) の「`SHOW CREATE VIEW` の Content-Type」の備考）
-
 - [ ] 複合型の中の varbinary の `[B@<hex>` の数字が、等しいバイト列で同じになるか、実行ごとに変わるか（#146 は `ARRAY[X'0102', X'03']` の違う 2 要素だけ。athena-local はバイト列の FNV-1a で決定的にしている。#149、2026-09-24）
 
 ## `.metadata`（[measurements/metadata.md](measurements/metadata.md)）
 
-- `SHOW` 5 文（`SHOW TABLES` / `DATABASES` / `COLUMNS` / `PARTITIONS` / `TBLPROPERTIES`）の本物の `.txt.metadata` は不透明な形式（base64 で 312 文字）。#24 で解析したが特定できず、AWS 側の仕様が公開されない限り埋まらないので測る対象から外す。athena-local は素の protobuf を置く（[docs/caveats.md](../caveats.md) に記載済み。JDBC が読めるかは下の「実クライアントでの疎通」）
+- `SHOW` 5 文（`SHOW TABLES` / `DATABASES` / `COLUMNS` / `PARTITIONS` / `TBLPROPERTIES`）と `SHOW CREATE VIEW`、Iceberg のテーブルへの `SHOW CREATE TABLE` の本物の `.txt.metadata` は不透明な形式（base64 で 312 文字。`TBLPROPERTIES` は 460、Iceberg の `SHOW CREATE TABLE` は 332）。#24 で解析したが特定できず、AWS 側の仕様が公開されない限り埋まらないので測る対象から外す。athena-local は素の protobuf を置く（[docs/caveats.md](../caveats.md) に記載済み。JDBC が読めるかは下の「実クライアントでの疎通」）
 
 ## ClientRequestToken と保持期限（[measurements/client-request-token.md](measurements/client-request-token.md)）
 
@@ -60,7 +58,7 @@
 - 列 0 個の `.metadata` を Athena JDBC が読めるか（#39）→ #46
 - Trino が `MERGE` に `updateType: "MERGE"` を返すか（#41）→ #56（[measurements/trino.md](measurements/trino.md)）
 - 本物が動詞と `TABLE` の間のコメントをどう扱うか（#49）→ #52
-- #70 で未測定だった形（`DESC`、`SELECT` の変種、`SHOW FUNCTIONS`／`SESSION`／`STATS`、28.9 MB より上のマルチパートの境界）→ #76。`SHOW SESSION`・`SHOW STATS` は本物が `StartQueryExecution` で拒否した。`DESC` とマルチパートの境界の値は #76 の抽出には無く、[docs/result-files.md](../result-files.md) の表と記述による。`SHOW CREATE VIEW` は上の「結果ファイル」に残した
+- #70 で未測定だった形（`DESC`、`SELECT` の変種、`SHOW FUNCTIONS`／`SESSION`／`STATS`、28.9 MB より上のマルチパートの境界）→ #76。`SHOW SESSION`・`SHOW STATS` は本物が `StartQueryExecution` で拒否した。`DESC` とマルチパートの境界の値は #76 の抽出には無く、[docs/result-files.md](../result-files.md) の表と記述による。`SHOW CREATE VIEW` は #146・#151 で測った（下の行）
 - 末尾が改行で終わらない `EXPLAIN (FORMAT JSON)`／`EXPLAIN (TYPE IO)` の行数と `EXPLAIN ANALYZE`（#73）→ #92
 - `GetQueryResults` のページング検証の 3 点（`ListWorkGroups` の上限と空文字の同時、RUNNING／CANCELLED のクエリへの不正な `NextToken`、0 行の結果への `NextToken`。#83）→ #85
 - リクエスト本文の型違いなどの未実測の組み合わせ（#84）→ #87
@@ -77,7 +75,8 @@
 - `CREATE TABLE` の重複の結果ファイル（#6）→ #146（2026-09-24。Hive の外部テーブルの 2 回目は FAILED で理由を `<id>.txt` に置き `.metadata` 無し、Iceberg の CTAS の 2 回目は何も置かない。[measurements/result-files.md](measurements/result-files.md)）
 - `.txt` の値に区切り文字（タブ）や改行が入るときのエスケープと、NULL の書き方（#1）→ #146（2026-09-24、3 回目。エスケープは無くタブも改行もそのまま。`GetQueryResults` は値の中の改行で行が分かれる。コメントの無い列は `DESCRIBE` で空白 20 個。列コメントの改行は Glue が受け付けず測れない）
 - 失敗した `SHOW FUNCTIONS` が結果ファイルを置くか（#80）→ #146（2026-09-24。`<id>.csv` も `.metadata` も置かない）
-- `SHOW CREATE VIEW` の Content-Type（#76）→ #146（2026-09-24。本体・`.metadata` とも binary/octet-stream で、`.metadata` は 312B の不透明な形式。対照の Iceberg の `SHOW CREATE TABLE` が既存の記録と食い違ったので上の「結果ファイル」に残した）
+- `SHOW CREATE VIEW` の Content-Type（#76）→ #146（2026-09-24。本体・`.metadata` とも binary/octet-stream で、`.metadata` は 312B の不透明な形式。対照の Iceberg の `SHOW CREATE TABLE` が既存の記録と食い違ったので「結果ファイル」に残し、#151 で決着）
+- `SHOW CREATE TABLE` の Content-Type・`.metadata` の形式がテーブルの形式で割れるか（#146）→ #151（2026-09-24。同じラウンドで Hive／Iceberg × 素の CREATE／CTAS の 4 組を測り、形式で割れると決着。[measurements/result-files.md](measurements/result-files.md) の「`SHOW CREATE TABLE` の Content-Type はテーブルの形式で割れる」）
 - `.metadata` の `timestamp with time zone`／`time with time zone`／`interval year to month`／`uuid`／`ipaddress` の field 7／8／10 の有無（#5）→ #146（2026-09-24。推測で実装していたとおり: 前 2 つは 7／8／10 あり、`interval year to month` は 10 だけ、`uuid`・`ipaddress` は 3 つとも無し。[measurements/metadata.md](measurements/metadata.md)）
 - 更新件数 0 の `UPDATE` / `DELETE` / `MERGE` で本物が field 3 を出すか（#35・#91）→ #146（2026-09-24。3 文とも `18 00` を書く）
 - 0 行の CTAS（更新件数 0）で本物が field 3 を出すか（#5）→ #146（2026-09-24。`18 00` を書く）
