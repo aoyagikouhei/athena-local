@@ -14,7 +14,7 @@
 | [query-results.md](query-results.md) | `GetQueryResults` の先頭行、ページング、`MaxResults`／`NextToken` の検証、QUEUED のクエリへの呼び出し | [api.md](../../api.md)、[caveats.md](../../caveats.md) |
 | [errors.md](errors.md) | リクエスト本文の解釈の失敗（`SerializationException`）、必須項目の欠落、`UnknownOperationException` | [caveats.md](../../caveats.md) |
 | [work-groups.md](work-groups.md) | `GetWorkGroup`、`ListWorkGroups` | [api.md](../../api.md)、[caveats.md](../../caveats.md) |
-| [client-request-token.md](client-request-token.md) | `ClientRequestToken` による冪等性とトークンの検証 | [api.md](../../api.md)、[caveats.md](../../caveats.md) |
+| [client-request-token.md](client-request-token.md) | `ClientRequestToken` による冪等性とトークンの検証、`GetQueryExecution` の `QueryExecutionContext` の返り方 | [api.md](../../api.md)、[caveats.md](../../caveats.md) |
 | [clients.md](clients.md) | クライアント（AWS CLI、Athena JDBC 3.x、Grafana、awswrangler、PyAthena、dbt-athena）の挙動とソース読み。本物の Athena ではない | [clients.md](../../clients.md)、[caveats.md](../../caveats.md) |
 | [trino.md](trino.md) | 手元の Trino 482／483 での実測。本物の Athena ではない | — |
 

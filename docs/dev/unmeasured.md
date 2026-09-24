@@ -19,6 +19,8 @@
 
 - [ ] トークン対応表と実行情報の本物の正確な保持期間（67 分を超えることまでは実測。#147（2026-09-24）: 完了直後の再送も、完了から約 67 分後の再送も同じ ID で、その時点の `GetQueryExecution` は SUCCEEDED のまま見つかり、`StopQueryExecution` も成功した。既定の 1 時間は athena-local 独自の値で、本物より短い）
 - [ ] 期限切れのトークンを再送すると本物で新しい ID になるか、期限切れの ID の `GetQueryExecution` が `QUERY_EXECUTION_NOT_FOUND` か、`StopQueryExecution` が 400 か（#147 は完了から約 67 分後に投げたが期限切れにならず、測れなかった）
+- [ ] `GetQueryExecution` が S3 Tables（`s3tablescatalog/<bucket>`）や連携カタログの `Catalog` をどう返すか（`AwsDataCatalog` と実在しない名前は小文字で返った。#157、2026-09-24。アカウントに他のカタログが無く測れていない）
+- [ ] SQL の修飾名のカタログ（`"AwsDataCatalog".db.t` など）を本物が大文字小文字を区別せずに解決するか（`QueryExecutionContext` の Catalog／Database は区別しない。#157、2026-09-24）
 - [ ] `Catalog` の「省略」と「既定と同じ値（`AwsDataCatalog`）の明示」を本物が別物として扱うか。#146 は値の違い（大文字小文字・実在しない名前）だけを測った。athena-local は `Database` に倣って別物（衝突）にしている（#150、2026-09-24）
 - [ ] 出力先を強制しない（`EnforceWorkGroupConfiguration: false`）ワークグループで、`OutputLocation` の「省略」と「既定と同じ値の明示」を本物が別物として扱うか。#146（2026-09-24）は強制するワークグループでしか測れず、そこでは同じ `QueryExecutionId` が返った（`Database` の省略と `default` の明示は衝突）
 - [ ] トークンの長さが文字数でもバイト数でも 128 を超えるとき（非 ASCII で 129 文字以上）、本物の文言が枠組みの検証（`Member must have length less than or equal to 128`）と `clientRequestToken exceeds maximum allowed length 128` のどちらか。#147（2026-09-24）は `あ`×50（50 文字・150 バイト）と ASCII 129 文字しか測っていない。athena-local は枠組みの検証（文字数）を先に置く（#153）

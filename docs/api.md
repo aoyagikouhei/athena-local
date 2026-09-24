@@ -5,7 +5,7 @@ The Athena operations athena-local answers, and the Athena behaviour it reproduc
 | Operation | Notes |
 | --- | --- |
 | `StartQueryExecution` | Returns an id immediately; the query runs in the background. `ExecutionParameters` are supported (see [`ExecutionParameters`](parameters.md)). `ClientRequestToken` is required and makes retries idempotent (see below) |
-| `GetQueryExecution` | `QUEUED` → `RUNNING` → `SUCCEEDED` / `FAILED` / `CANCELLED`. Trino errors land in `Status.StateChangeReason`. `WorkGroup` is the name `StartQueryExecution` was given, or `primary` when it was omitted |
+| `GetQueryExecution` | `QUEUED` → `RUNNING` → `SUCCEEDED` / `FAILED` / `CANCELLED`. Trino errors land in `Status.StateChangeReason`. `WorkGroup` is the name `StartQueryExecution` was given, or `primary` when it was omitted. `QueryExecutionContext.Catalog` is returned lower-cased and `Database` as sent, as real Athena does (measured 2026-09-24; see [Caveats](caveats.md#query-lifecycle)) |
 | `GetQueryResults` | Paginated with `MaxResults` / `NextToken` (1..1000, default 1000 rows including the header row). Out-of-range `MaxResults` and malformed `NextToken` fail the way Athena does (see [Caveats](caveats.md#paging)) |
 | `StopQueryExecution` | Marks a queued or running query `CANCELLED` immediately and sends `DELETE` to Trino's `nextUri`. Stopping a finished query succeeds and changes nothing |
 | `GetWorkGroup` | Accepts any workgroup name and returns the same configuration for all of them. `Configuration.ResultConfiguration.OutputLocation` reflects `ATHENA_LOCAL_OUTPUT_LOCATION` when it is set with `ATHENA_LOCAL_RESULTS=s3`. `Configuration.ResultConfiguration` is always present, and is `{}` otherwise (with `ATHENA_LOCAL_RESULTS=none` the variable is ignored) |

@@ -151,7 +151,11 @@ Known differences between athena-local and real Athena, grouped by topic.
   only when its catalog is a double-quoted identifier that equals an alias
   exactly, including case. `AwsDataCatalog.db.users` (unquoted) and
   `"S3TablesCatalog/my-bucket".db.users` (different case) are sent as written.
-  Whether Athena treats catalog names case-insensitively has not been measured.
+  Real Athena resolves `QueryExecutionContext.Catalog` and `Database`
+  case-insensitively (`SHOW TABLES` under `AWSDATACATALOG` and under an
+  upper-cased database name both listed the tables, measured 2026-09-24);
+  whether it does the same for the catalog of a qualified name in SQL has not
+  been measured.
   A name Trino can have, such as `AwsDataCatalog`, needs no alias at all: call
   the Trino catalog `awsdatacatalog` and qualified names resolve, quoted or not,
   since Trino lowercases identifiers. Error messages name the Trino catalog
@@ -328,7 +332,13 @@ Known differences between athena-local and real Athena, grouped by topic.
   workgroup that enforces its configuration; a workgroup that does not (the
   shape athena-local presents) has not been measured, so athena-local keeps
   comparing the value as sent. Omitting `Catalog` and then spelling it out has
-  not been measured either. The token → id mapping is kept in memory until the
+  not been measured either. `GetQueryExecution` returns `Catalog` lower-cased
+  (`AwsDataCatalog`, `AWSDATACATALOG` and a non-existent mixed-case name all
+  came back lower-cased, measured 2026-09-24) and `Database` as sent (an
+  upper-cased database name stayed upper-cased); the lower-casing is display only, the
+  idempotency check and the name sent to Trino use the value as received. How
+  real Athena displays an S3 Tables or federated catalog name has not been
+  measured (the account had none). The token → id mapping is kept in memory until the
   execution it points at is dropped (`ATHENA_LOCAL_RETENTION_SECONDS`, one
   hour by default), which is shorter than real Athena's: a token resent about
   67 minutes after the query finished still returned the same id (measured
