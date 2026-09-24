@@ -33,6 +33,11 @@ later name the date they were measured on.
   body's `__type` as before ([docs](docs/caveats.md#errors-and-request-bodies)).
 - `GetWorkGroup` returns `Configuration.EnableMinimumEncryptionConfiguration`
   as `false` (measured 2026-09-23) ([docs](docs/caveats.md#workgroups)).
+- The retention caveat and the `ATHENA_LOCAL_RETENTION_SECONDS` entry now say
+  that the one-hour default is shorter than real Athena's, which still knew a
+  query and its token 67 minutes after completion (measured 2026-09-24)
+  ([docs](docs/caveats.md#query-lifecycle),
+  [docs](docs/configuration.md#configuration)).
 - Caveats that said "not measured" now cite the 2026-09-24 measurements
   ([docs](docs/caveats.md#result-files-and-metadata)).
 - The caveats on `ClientRequestToken` normalization, on real Athena's

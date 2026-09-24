@@ -329,9 +329,10 @@ Known differences between athena-local and real Athena, grouped by topic.
   shape athena-local presents) has not been measured, so athena-local keeps
   comparing the value as sent. Omitting `Catalog` and then spelling it out has
   not been measured either. The token → id mapping is kept in memory until the
-  execution it points at is dropped (`ATHENA_LOCAL_RETENTION_SECONDS`), and
-  real Athena's token lifetime beyond 67 minutes (2026-09-24) has not
-  been measured.
+  execution it points at is dropped (`ATHENA_LOCAL_RETENTION_SECONDS`, one
+  hour by default), which is shorter than real Athena's: a token resent about
+  67 minutes after the query finished still returned the same id (measured
+  2026-09-24), and how much longer the real lifetime is has not been measured.
   **Raw HTTP / curl clients must supply their own token** — the AWS CLI and
   SDKs add one automatically, but a request built by hand needs to set
   `ClientRequestToken` itself (measured).
@@ -339,9 +340,15 @@ Known differences between athena-local and real Athena, grouped by topic.
   reached `SUCCEEDED`, `FAILED` or `CANCELLED` is kept for
   `ATHENA_LOCAL_RETENTION_SECONDS` (one hour by default) and then dropped,
   together with the `ClientRequestToken` that points at it; queued and running
-  queries are never dropped. Real Athena's retention period has not been
-  measured beyond 67 minutes (2026-09-24), so one hour is
-  athena-local's own number. Once a
+  queries are never dropped. **This is shorter than real Athena.** About 67
+  minutes after a query finished, real Athena still answered
+  `GetQueryExecution` with `SUCCEEDED`, accepted `StopQueryExecution` on it and
+  returned the same id for the resent token (measured 2026-09-24); AWS
+  documents query history as kept for 45 days. The exact lifetime has not been
+  measured, and one hour is kept as the default because the memory used by
+  finished queries is only bounded by this period (see below); raise
+  `ATHENA_LOCAL_RETENTION_SECONDS` when a client needs to read a query back
+  later than that. Once a
   query is dropped, `GetQueryExecution`, `GetQueryResults` and
   `StopQueryExecution` treat its id like an unknown one and fail with
   `QUERY_EXECUTION_NOT_FOUND`; what real Athena returns for an expired id has
