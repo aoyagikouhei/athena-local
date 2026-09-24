@@ -303,11 +303,17 @@ Known differences between athena-local and real Athena, grouped by topic.
   whitespace and non-ASCII characters are all significant. Real Athena does
   not normalize it either: leading/trailing spaces, an upper-cased copy, and a
   `"` or `\` in place of one character each started a new query (measured
-  2026-09-24). `Database` and `OutputLocation` are
-  compared as sent, before `TRINO_SCHEMA` or `ATHENA_LOCAL_OUTPUT_LOCATION`
-  fills them in, so a retry that spells out the default a first call left out
-  is `IDEMPOTENT_PARAMETER_MISMATCH`; whether real Athena does the same has
-  not been measured. The token → id mapping is kept in memory until the
+  2026-09-24). `Catalog`, `Database` and `OutputLocation` are
+  compared as sent, before `TRINO_CATALOG`, `TRINO_SCHEMA` or
+  `ATHENA_LOCAL_OUTPUT_LOCATION` fills them in, so a retry that spells out the
+  default a first call left out is `IDEMPOTENT_PARAMETER_MISMATCH`. Real Athena
+  does the same for `Database` (omitted, then `default`: mismatch, measured
+  2026-09-24). For `OutputLocation` it returned the same id when the retry
+  spelled out the workgroup's output location, but that was measured only on a
+  workgroup that enforces its configuration; a workgroup that does not (the
+  shape athena-local presents) has not been measured, so athena-local keeps
+  comparing the value as sent. Omitting `Catalog` and then spelling it out has
+  not been measured either. The token → id mapping is kept in memory until the
   execution it points at is dropped (`ATHENA_LOCAL_RETENTION_SECONDS`), and
   real Athena's token lifetime beyond 67 minutes (2026-09-24) has not
   been measured.

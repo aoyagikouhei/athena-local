@@ -147,7 +147,7 @@
 ### StartQueryExecution と ClientRequestToken
 
 - 同じトークン・同じパラメータなら、先行クエリの状態によらず同じ `QueryExecutionId` を返し、新しい実行を作らない。（#3、2026-09-17）
-- フィンガープリントは `QueryString`・`QueryExecutionContext.Database`・`ResultConfiguration.OutputLocation` の 3 つだけで、既定を当てる前の生のリクエスト値で比べる。`ExecutionParameters` と `WorkGroup` は本物が比べないので入れず、測っていない `Catalog` も入れない。（#3、2026-09-17）
+- フィンガープリントは `QueryString`・`QueryExecutionContext.Catalog`・`QueryExecutionContext.Database`・`ResultConfiguration.OutputLocation` の 4 つで、既定を当てる前の生のリクエスト値で比べる。`ExecutionParameters` と `WorkGroup` は本物が比べないので入れない。`Catalog` は #3 では測っていなかったので入れず、#146 で本物が比べる（大文字小文字違いも衝突）と分かったので #150 で足した。`OutputLocation` の「省略」と「既定と同じ値の明示」は、本物では強制するワークグループでしか測れておらず（同じ ID）、athena-local が当たる強制しない条件は未実測なので、生の値で比べたまま（ユーザー判断）。（#3、2026-09-17 → #150、2026-09-24）
 - トークンは正規化しない。正規化が要ると分かったら `Store` に渡す直前の 1 箇所だけ直す。（#3、2026-09-17）
 - トークンの照合は `submit` の 1 ロックの中（`OutputLocation` の検証と構文チェックの後）で行い、早期のチェックは置かない。構文エラーで弾かれたトークンは登録されない。理由: 判定を 2 箇所に持つとずれを作れる。（#3、2026-09-17）
 - トークンの長さは 32 文字未満（空文字を含む）と 129 文字以上を本物と同じ文言で弾き、文字数で数える。キーが無いときは自前の文言（`clientRequestToken is null or empty`）で、本文の解釈の後に見る。（#3、2026-09-17、#84、2026-09-23）

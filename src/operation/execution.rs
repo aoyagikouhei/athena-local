@@ -151,6 +151,7 @@ fn context_defaults(
 ) -> (Option<String>, Option<String>, Fingerprint) {
     let fingerprint = Fingerprint {
         query: query_string.to_string(),
+        catalog: context.catalog.clone(),
         database: context.database.clone(),
         output_location: result_configuration
             .as_ref()
