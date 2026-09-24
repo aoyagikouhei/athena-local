@@ -337,7 +337,10 @@ Known differences between athena-local and real Athena, grouped by topic.
   (`AwsDataCatalog`, `AWSDATACATALOG` and a non-existent mixed-case name all
   came back lower-cased, measured 2026-09-24) and `Database` as sent (an
   upper-cased database name stayed upper-cased); the lower-casing is display only, the
-  idempotency check and the name sent to Trino use the value as received. How
+  idempotency check and the name sent to Trino use the value as received. A
+  `Catalog` or `Database` the request left out is left out of the response too
+  (measured 2026-09-24): `TRINO_CATALOG` and `TRINO_SCHEMA` are applied only
+  when the query is sent to Trino, not echoed back. How
   real Athena displays an S3 Tables or federated catalog name has not been
   measured (the account had none). The token → id mapping is kept in memory until the
   execution it points at is dropped (`ATHENA_LOCAL_RETENTION_SECONDS`, one

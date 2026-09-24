@@ -54,7 +54,6 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
 
     let context = request.query_execution_context.unwrap_or_default();
     let (catalog, database, fingerprint) = context_defaults(
-        app,
         context,
         &request.query_string,
         &request.result_configuration,
@@ -153,9 +152,8 @@ fn client_request_token(request: &StartQueryExecutionRequest) -> Result<String, 
     Ok(token)
 }
 
-/// QueryExecutionContext の既定値と、冪等化用のフィンガープリント（既定を当てる前の生の値）を組む。
+/// QueryExecutionContext の Catalog / Database（受け取ったまま）と、冪等化用のフィンガープリント（同じく生の値）を組む。
 fn context_defaults(
-    app: &App,
     context: QueryExecutionContext,
     query_string: &str,
     result_configuration: &Option<ResultConfiguration>,
@@ -168,13 +166,10 @@ fn context_defaults(
             .as_ref()
             .and_then(|configuration| configuration.output_location.clone()),
     };
-    let catalog = context
-        .catalog
-        .or_else(|| app.config.default_catalog.clone());
-    let database = context
-        .database
-        .or_else(|| app.config.default_database.clone());
-    (catalog, database, fingerprint)
+    // 既定（TRINO_CATALOG / TRINO_SCHEMA）はここでは当てない。本物は省略した Catalog / Database を
+    // GetQueryExecution に返さない（キー無し。2026-09-24 実測、#167）ので、実行情報には受け取った値だけを
+    // 残し、既定は Trino に送るとき（`run`）に当てる。
+    (context.catalog, context.database, fingerprint)
 }
 
 /// OutputLocation から結果の置き場所を決める。本物と同じく s3:// の形でない値は受け付けない
@@ -252,12 +247,17 @@ async fn run(
     config: &Config,
     execution: &Execution,
 ) -> Result<(Outcome, Option<EngineDdl>), QueryError> {
+    // 省略した Catalog / Database にはここで既定を当てる（実行情報には残さない。#167）。
     // Trino に送るのは別名を当てた名前。実行情報には受け取った名前が残る。
-    let catalog = execution
+    let raw_catalog = execution
         .catalog
         .as_deref()
-        .map(|catalog| config.trino_catalog(catalog));
-    let database = execution.database.as_deref();
+        .or(config.default_catalog.as_deref());
+    let catalog = raw_catalog.map(|catalog| config.trino_catalog(catalog));
+    let database = execution
+        .database
+        .as_deref()
+        .or(config.default_database.as_deref());
     // 分類の問い合わせにも本体にも同じ取り消し要求を渡す。
     let cancel = &execution.cancel;
 
@@ -280,8 +280,8 @@ async fn run(
             Some(statement) => match target_table::parse_target_table(
                 &execution.query,
                 statement,
-                execution.catalog.as_deref(),
-                execution.database.as_deref(),
+                raw_catalog,
+                database,
             ) {
                 Some(target) => {
                     let target_catalog = config.trino_catalog(&target.catalog);

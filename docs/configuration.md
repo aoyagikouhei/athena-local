@@ -7,8 +7,8 @@ Environment variables athena-local reads at startup, and how catalog aliases wor
 | `ATHENA_LOCAL_BIND` | `0.0.0.0:8080` | Listen address |
 | `TRINO_URL` | `http://trino:8080` | Trino to execute SQL on |
 | `TRINO_USER` | `athena-local` | Value of the `X-Trino-User` header |
-| `TRINO_CATALOG` | *(none)* | Default catalog when the request has no `QueryExecutionContext.Catalog` |
-| `TRINO_SCHEMA` | *(none)* | Default schema when the request has no `QueryExecutionContext.Database` |
+| `TRINO_CATALOG` | *(none)* | Default catalog sent to Trino when the request has no `QueryExecutionContext.Catalog`. Not echoed by `GetQueryExecution` (see [Supported API](api.md#supported-api)) |
+| `TRINO_SCHEMA` | *(none)* | Default schema sent to Trino when the request has no `QueryExecutionContext.Database`. Not echoed by `GetQueryExecution` |
 | `TRINO_CATALOG_MAP` | *(none)* | Catalog aliases: `<athena name>=<trino name>`, comma separated. A malformed value stops the server at startup |
 | `ATHENA_LOCAL_RETENTION_SECONDS` | `3600` | How long a finished query (`SUCCEEDED` / `FAILED` / `CANCELLED`) and its `ClientRequestToken` are kept, in seconds. Queued and running queries are never dropped. The default is shorter than real Athena, which still knew a query and its token 67 minutes after completion (measured 2026-09-24; see [Query lifecycle](caveats.md#query-lifecycle)). A value that is not a positive integer stops the server at startup. There is no "keep forever" value, so use a large number instead |
 | `ATHENA_LOCAL_RESULTS` | `none` | `s3` writes results to `OutputLocation`: a `SELECT` and `SHOW FUNCTIONS` as CSV, DDL, other `SHOW`, `DESCRIBE` and `EXPLAIN` as text, and only a `.metadata` companion for `INSERT` / `UPDATE` / `DELETE` / `MERGE` and CTAS (see [Result files](result-files.md#result-files)). `none` writes nothing |

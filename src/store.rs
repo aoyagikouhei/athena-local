@@ -46,6 +46,7 @@ pub struct Execution {
     pub query: String,
     /// StartQueryExecution の ExecutionParameters（加工前）。
     pub execution_parameters: Vec<String>,
+    /// QueryExecutionContext の Catalog / Database を受け取ったまま（省略なら None。既定は Trino に送るときに当てる。#167）。
     pub catalog: Option<String>,
     pub database: Option<String>,
     /// 結果の置き場所。OutputLocation（またはその既定）が無ければ None。
