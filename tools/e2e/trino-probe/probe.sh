@@ -117,12 +117,12 @@ post "SELECT 1 AS n" c4_select_1_iceberg iceberg default
 echo
 echo "=== D. 本番の probe_sql と同じ形（system.metadata.catalogs + system.jdbc.tables を1クエリで） ==="
 # src/operation/table_format.rs の probe_sql() と同じ組み立て。
-# table_cat / table_schem / table_name を3つとも指定したときの count(*) が
+# table_cat / table_schem / table_name を3つとも指定したときの table_type（TABLE／VIEW、無ければ null。#173）が
 # 存在するテーブルで1、しないテーブルで0になるかを見る。
-post "SELECT (SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = 'hive'), (SELECT count(*) FROM system.jdbc.tables WHERE table_cat = 'hive' AND table_schem = 'default' AND table_name = 't1')" d1_probe_hive_exists
-post "SELECT (SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = 'iceberg'), (SELECT count(*) FROM system.jdbc.tables WHERE table_cat = 'iceberg' AND table_schem = 'default' AND table_name = 't1')" d2_probe_iceberg_exists
-post "SELECT (SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = 'hive'), (SELECT count(*) FROM system.jdbc.tables WHERE table_cat = 'hive' AND table_schem = 'default' AND table_name = 'nope')" d3_probe_hive_missing
-post "SELECT (SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = 'iceberg'), (SELECT count(*) FROM system.jdbc.tables WHERE table_cat = 'iceberg' AND table_schem = 'default' AND table_name = 'nope')" d4_probe_iceberg_missing
+post "SELECT (SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = 'hive'), (SELECT table_type FROM system.jdbc.tables WHERE table_cat = 'hive' AND table_schem = 'default' AND table_name = 't1')" d1_probe_hive_exists
+post "SELECT (SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = 'iceberg'), (SELECT table_type FROM system.jdbc.tables WHERE table_cat = 'iceberg' AND table_schem = 'default' AND table_name = 't1')" d2_probe_iceberg_exists
+post "SELECT (SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = 'hive'), (SELECT table_type FROM system.jdbc.tables WHERE table_cat = 'hive' AND table_schem = 'default' AND table_name = 'nope')" d3_probe_hive_missing
+post "SELECT (SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = 'iceberg'), (SELECT table_type FROM system.jdbc.tables WHERE table_cat = 'iceberg' AND table_schem = 'default' AND table_name = 'nope')" d4_probe_iceberg_missing
 # table_schem/table_name は一致するがカタログが違う（3つ全部を見ているかの確認。0件のはず）
 post "SELECT count(*) FROM system.jdbc.tables WHERE table_cat = 'no_such_catalog' AND table_schem = 'default' AND table_name = 't1'" d5_probe_wrong_catalog
 

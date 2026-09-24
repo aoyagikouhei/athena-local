@@ -9,7 +9,7 @@
 #   SHOW COLUMNS  : `field`／string／0／false の 1 列。Hive は列名を 20 桁に左詰め（20 桁以上は詰めない。パーティション列も含む）、
 #                   Iceberg は詰めない。UpdateCount 0。
 #   DESCRIBE Hive : `col_name`／`data_type`／`comment` の 3 列（string／0／false）。各行の Data は 1 個で
-#                   `<列名 %-20s>\t<Hive の型 %-20s>\t<コメント>`（コメントが空なら空白 20 個、空でなければ詰めずタブの手前まで）。
+#                   `<列名 %-20s>\t<Hive の型 %-20s>\t<コメント>`（コメントも %-20s に詰めてから先頭のタブの手前まで。空なら空白 20 個）。
 #                   パーティション付きは通常列（パーティション列も含む）の後に見出し 4 行とパーティション列。UpdateCount 無し。
 #   DESCRIBE Iceberg（パーティション無し）: 同じ 3 列で、詰め無しの 6 行。UpdateCount 0。
 #   DESCRIBE Iceberg（パーティション付き）: 上の 6 行の間に列の行（`name\t<Iceberg の型>\t<コメント>`、詰め無し）、
@@ -120,14 +120,13 @@ name_of_len() {
   printf '%s' "$s"
 }
 
-# Hive の DESCRIBE の 1 行。コメントが空なら空白 20 個、空でなければ詰めずにタブの手前まで。
+# Hive の DESCRIBE の 1 行。コメントも 20 桁に詰めてから先頭のタブの手前まで（空なら空白 20 個、`abc` なら
+# `abc` + 空白 17 個、`a<TAB>b` なら `a`。2026-09-24 実測 d1・#146）。
 hive_describe_row() {
   local name="$1" type="$2" comment="$3"
-  if [ -z "$comment" ]; then
-    printf '%-20s\t%-20s\t%-20s' "$name" "$type" ""
-  else
-    printf '%-20s\t%-20s\t%s' "$name" "$type" "${comment%%"$TAB"*}"
-  fi
+  local padded
+  padded=$(printf '%-20s' "$comment")
+  printf '%-20s\t%-20s\t%s' "$name" "$type" "${padded%%"$TAB"*}"
 }
 
 # Hive の DESCRIBE のパーティション見出し 4 行（各行は改行なし。呼び出し側で \n 連結する）。

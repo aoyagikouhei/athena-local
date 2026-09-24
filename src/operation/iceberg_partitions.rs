@@ -145,6 +145,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn parse_partitioning_は_with_より前の引用符付き識別子の中の単引用符に惑わされない() {
+        // 列名 `"it's"` の `'` を文字列リテラルの始まりと読むと、`ARRAY['s'` までを 1 つのリテラルと
+        // 取り違える。二重引用符の中は `skip_quoted` で丸ごと読み飛ばす。
+        assert_eq!(
+            parse_partitioning(
+                "CREATE TABLE iceberg.ns.t (\n   \"it's\" integer,\n   s varchar\n)\nWITH (\n   partitioning = ARRAY['s']\n)"
+            ),
+            ["s"]
+        );
+    }
+
     fn row(field_name: &str, transform: &str, column: &str) -> Option<(String, String, String)> {
         Some((
             field_name.to_string(),
