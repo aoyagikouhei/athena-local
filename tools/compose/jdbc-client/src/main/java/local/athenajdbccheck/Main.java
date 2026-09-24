@@ -27,6 +27,8 @@ import java.util.Properties;
  *                  Athena の原文をそのまま投げて、athena-local がどう弾くかを記録する（REJECTED は失敗に数えない）。
  *                  各ケースは機械可読な 1 行 `RESULT <label> rows=<n> cols=<c> status=<...>` を出し、
  *                  スクリプト側が ResultFetcher の違いで行数が変わらないことを突き合わせる。
+ *                  issue #163 で SHOW CREATE VIEW と Iceberg のテーブルへの SHOW CREATE TABLE を足した
+ *                  （.txt と .txt.metadata を binary/octet-stream で置く 2 文）。
  *   "111"       -> 失敗した DDL の <id>.txt を読みに行かないか（issue #111。FailedDdlScenario）
  *
  * 3 つ目の引数は OutputLocation、4 つ目は JDBC URL（issue #111。旧版ドライバのループで版ごとに
@@ -183,6 +185,15 @@ public final class Main {
         runProbe(conn, "SHOW_TBLPROPERTIES(原文)", "SHOW TBLPROPERTIES " + t);
         // 対照: Trino でパーティションを見る書き方（SELECT なので .csv 経路）
         runShowCase(conn, "SELECT_partitions(対照)", "SELECT * FROM hive.default.\"t_jdbc_show_" + runId + "$partitions\"");
+
+        // 焦点 5・6（issue #163）: #151 で本体も .metadata も binary/octet-stream にした 2 文。.txt.metadata は
+        // 素の protobuf（先頭はエンジン ID）のままで、JDBC が読めるかは未確認だった。
+        String v = "hive.default.v_jdbc_show_" + runId;
+        String tIceberg = "iceberg.default.t_jdbc_show_iceberg_" + runId;
+        runSetup(conn, "CREATE VIEW " + v + " AS SELECT 1 AS n");
+        runSetup(conn, "CREATE TABLE " + tIceberg + " (n integer)");
+        runShowCase(conn, "SHOW_CREATE_VIEW", "SHOW CREATE VIEW " + v);
+        runShowCase(conn, "SHOW_CREATE_TABLE_iceberg", "SHOW CREATE TABLE " + tIceberg);
     }
 
     /** 結果を最後まで読み、RESULT 行を出す。例外は失敗に数える。 */

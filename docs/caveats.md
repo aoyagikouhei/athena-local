@@ -235,7 +235,10 @@ Known differences between athena-local and real Athena, grouped by topic.
   companion file and reads it without an exception: verified for `SHOW TABLES`
   on 2026-09-17, and on 2026-09-22 for `SHOW SCHEMAS` (one column) and
   `SHOW COLUMNS` (Trino's four columns, 205 bytes, observed before
-  `SHOW COLUMNS` was reduced to Athena's single column) in the same run. The driver
+  `SHOW COLUMNS` was reduced to Athena's single column) in the same run, and on
+  2026-09-25 for `SHOW CREATE VIEW` and `SHOW CREATE TABLE` on an Iceberg
+  table, whose companion (led by Trino's query id) is written as
+  `binary/octet-stream` like their `.txt`. The driver
   logs `loaded query result metadata` for each, then still presents the `.txt`
   body as a single `varchar` column named `_col0`, one row per line; with
   `ResultFetcher=S3` it does not fetch the `.txt.metadata` at all, and with

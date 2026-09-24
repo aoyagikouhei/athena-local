@@ -6,6 +6,8 @@
 # 本物の Athena は SHOW TABLES / SHOW DATABASES / SHOW COLUMNS / SHOW PARTITIONS / SHOW TBLPROPERTIES の
 # .txt.metadata に不透明な形式（docs/caveats.md）を置くが、athena-local は素の protobuf を置く。
 # JDBC が読めることを実機で確かめたのは SHOW TABLES だけ（#5）だったので、残りを測る。
+# issue #163 で SHOW CREATE VIEW と Iceberg のテーブルへの SHOW CREATE TABLE を足した（#151 で .txt と
+# .txt.metadata を binary/octet-stream にした 2 文。.txt.metadata は素の protobuf のまま）。
 #
 # Trino の文法には SHOW DATABASES / SHOW PARTITIONS / SHOW TBLPROPERTIES が無い。そこで同じラウンドに
 #   - Trino の同義文（SHOW SCHEMAS = athena-local が SHOW_DATABASES に分類する文、SHOW COLUMNS FROM）
@@ -159,16 +161,17 @@ collect_metadata() {
   joined=$(printf '%s ' "${sizes[@]}")
   record ".metadata 回収" PASS "$(echo "$keys" | wc -l) 個。バイト数: $joined（中身は $dir/*.od）"
 
-  # 焦点: SHOW SCHEMAS / SHOW COLUMNS / SHOW TABLES の 3 文が 3 ラウンド（auto / S3 / GetQueryResults）で
-  # 置く .txt.metadata は 9 個のはず。原文の 3 文（SHOW DATABASES / PARTITIONS / TBLPROPERTIES）が
-  # もし Trino に通って .txt.metadata を置いたら 9 を超える。少なければ SHOW の .txt.metadata が置かれていない。
+  # 焦点: SHOW SCHEMAS / SHOW COLUMNS / SHOW TABLES / SHOW CREATE VIEW / SHOW CREATE TABLE（Iceberg）の 5 文が
+  # 3 ラウンド（auto / S3 / GetQueryResults）で置く .txt.metadata は 15 個のはず（#163 で 9 から増やした）。
+  # 原文の 3 文（SHOW DATABASES / PARTITIONS / TBLPROPERTIES）がもし Trino に通って .txt.metadata を置いたら
+  # 15 を超える。少なければ SHOW の .txt.metadata が置かれていない。
   local txt_meta csv_meta
   txt_meta=$(echo "$keys" | grep -c '\.txt\.metadata$')
   csv_meta=$(echo "$keys" | grep -c '\.csv\.metadata$')
-  if [ "$txt_meta" = "9" ]; then
-    record "SHOW の .txt.metadata の存在" PASS ".txt.metadata が 9 個（3 文 × 3 ラウンド。原文 3 文は置いていない）"
+  if [ "$txt_meta" = "15" ]; then
+    record "SHOW の .txt.metadata の存在" PASS ".txt.metadata が 15 個（5 文 × 3 ラウンド。原文 3 文は置いていない）"
   else
-    record "SHOW の .txt.metadata の存在" FAIL ".txt.metadata が $txt_meta 個（期待 9。一覧: $listing）"
+    record "SHOW の .txt.metadata の存在" FAIL ".txt.metadata が $txt_meta 個（期待 15。一覧: $listing）"
   fi
   # 9 個 = \$partitions の SELECT × 3 ラウンド + ドライバが接続時に流す接続テストの SELECT × 3 ラウンド
   # （#5 で見つけた `-- Athena JDBC driver connection test\nSELECT 1`。#52 で先頭コメントを読み飛ばすようになり .csv になった）
@@ -203,13 +206,39 @@ check_metadata_loaded() {
   local n
   n=$(grep -c 'loaded query result metadata from "[^"]*\.txt\.metadata"' "$OUT_ROOT/jdbc-auto.log" 2>/dev/null)
   n=${n:-0}
-  if [ "$n" -ge 3 ]; then
-    record "ドライバが .txt.metadata を読んだ(auto)" PASS "loaded query result metadata ... .txt.metadata が $n 件（SHOW 3 文）"
+  if [ "$n" -ge 5 ]; then
+    record "ドライバが .txt.metadata を読んだ(auto)" PASS "loaded query result metadata ... .txt.metadata が $n 件（SHOW 5 文）"
   else
-    record "ドライバが .txt.metadata を読んだ(auto)" FAIL "該当ログが $n 件（期待 3 以上）。ログ: $OUT_ROOT/jdbc-auto.log"
+    record "ドライバが .txt.metadata を読んだ(auto)" FAIL "該当ログが $n 件（期待 5 以上）。ログ: $OUT_ROOT/jdbc-auto.log"
   fi
   n=$(grep -c 'loaded query result metadata from "[^"]*\.txt\.metadata"' "$OUT_ROOT/jdbc-S3.log" 2>/dev/null)
   record "ドライバが .txt.metadata を読んだ(S3 明示)" INFO "該当ログが ${n:-0} 件（S3 を明示すると SHOW の .txt.metadata は取りに行かない。観察のみ）"
+  return 0
+}
+
+# issue #163: SHOW CREATE VIEW と Iceberg への SHOW CREATE TABLE について、auto のドライバが読み込んだ
+# .txt.metadata を文ごとに特定し、それが binary/octet-stream で置かれた素の protobuf であることを確かめる
+# （件数の判定だけでは、読んだのが別の文の .txt.metadata でも満たされる）。ケースの区切り（`--- <label> ---`
+# から `RESULT <label> `）の中にある `loaded query result metadata` の行を、その文のものとみなす。
+check_show_create_loaded() {
+  local label block file ct head
+  for label in SHOW_CREATE_VIEW SHOW_CREATE_TABLE_iceberg; do
+    block=$(awk -v s="--- $label ---" -v e="RESULT $label " \
+      'index($0, s) == 1 {on = 1} on {print} on && index($0, e) == 1 {exit}' "$OUT_ROOT/jdbc-auto.log")
+    file=$(echo "$block" | grep 'loaded query result metadata from' | grep -o '[^/"]*\.txt\.metadata' | head -1)
+    if [ -z "$file" ]; then
+      record "$label の .txt.metadata(auto)" FAIL "ケースの区切りの中に loaded query result metadata ... .txt.metadata が無い。ログ: $OUT_ROOT/jdbc-auto.log"
+      continue
+    fi
+    ct=$(mc_run "mc stat --json 'local/$BUCKET/$PREFIX/$file'" 2>/dev/null \
+      | jq -r '.metadata["Content-Type"] // .metadata["content-type"] // empty' | head -1)
+    head=$(od -An -tx1 -N4 "$OUT_ROOT/metadata/$file" 2>/dev/null | tr -d ' \n')
+    if [ "$ct" = "binary/octet-stream" ]; then
+      record "$label の .txt.metadata(auto)" PASS "ドライバが $file（Content-Type $ct、先頭 4 バイト $head）を読み込み、例外なし"
+    else
+      record "$label の .txt.metadata(auto)" FAIL "読み込んだ $file の Content-Type が ${ct:-（取れない）}（期待 binary/octet-stream。#151 の前提が崩れている）"
+    fi
+  done
   return 0
 }
 
@@ -220,7 +249,7 @@ check_metadata_loaded() {
 #     その前の挙動で、#134 で外した。SELECT はドライバが見出し行を読み飛ばすので一致する。
 compare_row_counts() {
   local base="$OUT_ROOT/jdbc-S3.log"
-  local line label rows cols status got mismatch=0 total=0 want
+  local line label rows cols status got mismatch=0 total=0 want known=0
   while IFS= read -r line; do
     label=$(echo "$line" | awk '{print $2}')
     rows=$(echo "$line" | sed -E 's/.* rows=(-?[0-9]+).*/\1/')
@@ -235,14 +264,24 @@ compare_row_counts() {
     want=$rows
     got=$(grep "^RESULT $label " "$OUT_ROOT/jdbc-GetQueryResults.log" | sed -E 's/^RESULT [^ ]+ //')
     if [ "$got" != "rows=$want cols=$cols status=$status" ]; then
-      mismatch=$((mismatch + 1))
-      record "突き合わせ $label" FAIL "期待 GetQueryResults: rows=$want cols=$cols status=$status / 実際: ${got:-（無し）}"
+      case "$label" in
+        # 既知の差分（#181）: athena-local は SHOW CREATE の結果を Trino のまま改行入りの 1 行で返す
+        # （本物は行ごとに分ける）。直れば一致して、ここを通らなくなる。
+        SHOW_CREATE_VIEW | SHOW_CREATE_TABLE_iceberg)
+          known=$((known + 1))
+          record "突き合わせ $label" INFO "既知の差分 #181。S3: rows=$want / GetQueryResults: ${got:-（無し）}"
+          ;;
+        *)
+          mismatch=$((mismatch + 1))
+          record "突き合わせ $label" FAIL "期待 GetQueryResults: rows=$want cols=$cols status=$status / 実際: ${got:-（無し）}"
+          ;;
+      esac
     fi
   done < <(grep '^RESULT ' "$base" 2>/dev/null)
   if [ "$total" = "0" ]; then
     record "行数の突き合わせ" FAIL "S3 のログに RESULT 行が無い"
   elif [ "$mismatch" = "0" ]; then
-    record "行数の突き合わせ" PASS "$total ケースすべて auto = S3 = GetQueryResults で一致"
+    record "行数の突き合わせ" PASS "$total ケースすべて auto = S3、GetQueryResults も既知の差分 $known 件（#181）を除いて一致"
   fi
   {
     echo
@@ -273,6 +312,7 @@ run_jdbc_case "GetQueryResults" "GetQueryResults"
 collect_metadata
 check_s3_access
 check_metadata_loaded
+check_show_create_loaded
 compare_row_counts
 
 log "完了"
