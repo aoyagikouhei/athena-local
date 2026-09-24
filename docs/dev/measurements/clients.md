@@ -101,6 +101,22 @@
 
 - 備考: `dbt run-operation` は Glue も STS も呼ばず、`is_work_group_output_location_enforced()` の中で GetWorkGroup を 1 回だけ呼んだ（athena-local は `EnforceWorkGroupConfiguration=false` を返すので値は偽）。`dbt run` は Glue の `GetDatabases`（スキーマの一覧）が最初の壁で、CTAS の方言（`table_type`/`is_external`）までは届かない。Glue・STS の代役は範囲外（#111 の設計判断）。dbt-athena の impl が作る client は profile の `endpoint_url` を使わないので、`AWS_ENDPOINT_URL*` で向けないと本物の AWS に出る（`AWS_ENDPOINT_URL` を中継に向けた状態で Glue が中継に届いたことで確かめた）
 
+### dbt-athena の CTAS を athena-local 経由で Trino に流す
+- 日付: 2026-09-25 ／ issue: #120 ／ スクリプト: 無し（toolbox で compose の trino・minio を立て、athena-local の release ビルドに curl で StartQueryExecution を送った）
+- 相手: athena-local（`TRINO_CATALOG_MAP=awsdatacatalog=iceberg`）と手元の Trino 482。本物の Athena・Glue ではない。SQL の形は dbt-athena 1.11.1 のマクロ（`dbt/include/athena/macros/materializations/models/table/create_table_as.sql:134-163`、`models/view/create_view_as.sql:6`）から写した
+- 投げたもの: dbt の `table` の materialization と同じ形の CTAS を 2 本（Hive: `create table hive.default.m_hive with (table_type='hive', is_external=true, external_location='s3://...', format='parquet') as select 1 as id`、Iceberg: `create table "awsdatacatalog"."default"."m_ice" with (table_type='iceberg', is_external=false, location='s3://...', format='parquet') as select 1 as id`）。対照に、Athena 固有のプロパティを抜いた CTAS（`with (format='parquet')`）と、`view` の materialization と同じ `create or replace view "awsdatacatalog"."default"."v" as select 1 as id`
+- 返ったもの:
+
+  | 文 | 状態 | 理由 |
+  | --- | --- | --- |
+  | dbt の CTAS（Hive） | FAILED | `INVALID_TABLE_PROPERTY: line 3:7: Catalog 'hive' table property 'table_type' does not exist`（ErrorCategory 2、ErrorType 1000） |
+  | dbt の CTAS（Iceberg） | FAILED | `INVALID_TABLE_PROPERTY: line 3:7: Catalog 'iceberg' table property 'table_type' does not exist`（同上） |
+  | 対照: `with (format='parquet')` の CTAS | SUCCEEDED | — |
+  | 対照: `create or replace view` | SUCCEEDED | — |
+
+- 採用: dbt-athena の `create_table_as` マクロは、S3 Tables 以外では `WITH` に必ず `table_type` と `is_external` を入れ、`table`・`incremental`・`snapshot`・`seed` の materialization がこのマクロを使う。athena-local は SQL の本文を書き換えない（CLAUDE.md）ので、本物の Glue・STS を用意して `GetDatabases` を通しても、これらは CTAS で止まる。`view` は通る。`docs/clients.md` の dbt-athena の節に書いた
+- 備考: Trino は最初の不正なプロパティ（`table_type`）で止まるので、`is_external` が弾かれることは直接は見ていない（Trino の hive／iceberg コネクタのプロパティに無い名前）。本物の Glue・STS と組み合わせた `dbt run` は流していない（#120 で「手元で確かめて閉じる」を選択）
+
 ## awswrangler
 
 ### awswrangler 3.17.1 の read_sql_query(ctas_approach=False)
