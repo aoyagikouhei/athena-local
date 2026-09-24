@@ -134,7 +134,7 @@ item_t8() {
   fi
   local tok2
   tok2=$(new_token)
-  run_stmt "$dir" t8-output-omit "SELECT 2 AS t8_probe" "$TCAT_GENERIC" "$TDB" "$WORKGROUP2" "$tok2"
+  run_stmt "$dir" t8-output-omit "SELECT 2 AS t8_probe" "$TCAT_GENERIC" "$TDB" "$WORKGROUP2" "$tok2" omit
   run_stmt "$dir" t8-output-explicit "SELECT 2 AS t8_probe" "$TCAT_GENERIC" "$TDB" "$WORKGROUP2" "$tok2" \
     "$TARGET_WG2_OUTPUT"
   local outcome_output

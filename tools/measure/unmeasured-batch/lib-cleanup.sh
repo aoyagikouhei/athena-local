@@ -43,6 +43,7 @@ best_effort_drop() {
     athena_cli start-query-execution \
       --query-string "DROP $kind IF EXISTS $name" \
       --query-execution-context "Catalog=$catalog,Database=$database" \
+      --result-configuration "OutputLocation=$OUTPUT" \
       --client-request-token "$(new_token)" \
       >/dev/null 2>&1 || rc=1
     # local には drops.tsv（real 専用）が無いので、report.py の DDL 内訳・呼び出し回数に
@@ -56,6 +57,7 @@ best_effort_drop() {
   if athena_cli start-query-execution \
     --query-string "DROP $kind IF EXISTS $name" \
     --query-execution-context "Catalog=$catalog,Database=$database" \
+    --result-configuration "OutputLocation=$OUTPUT" \
     --client-request-token "$(new_token)" \
     >"$out" 2>/dev/null; then
     local id

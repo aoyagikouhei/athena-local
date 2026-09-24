@@ -69,6 +69,7 @@ item_e1() {
     printf 'SELECT %d\n' "$n" >"$dir/$label.sql"
     athena_cli start-query-execution --query-string "SELECT $n" \
       --query-execution-context "Catalog=$TCAT_GENERIC,Database=$TDB" \
+      --result-configuration "OutputLocation=$OUTPUT" \
       --client-request-token "$tok" \
       >"$dir/$label.start.json" 2>"$dir/$label.start.err"
     ids+=("$(query_execution_id_of "$dir/$label.start.json")")
