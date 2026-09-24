@@ -3,9 +3,10 @@
 # COPY するファイルを足すときは、tools/dev.sh のタグの計算にもそのファイルを入れる。
 
 # mc はマルチアーキの manifest list のダイジェストで固定する（:latest だと toolbox のタグ（Dockerfile の sha256）を
-# 変えないまま中身が変わる）。#129。版を上げるときは `docker buildx imagetools inspect quay.io/minio/mc:latest` で
-# ダイジェストを取り直す。
-FROM quay.io/minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727 AS mc
+# 変えないまま中身が変わる）。#129。版を上げるときは `docker buildx imagetools inspect docker.io/pgsty/mc:latest` で
+# ダイジェストを取り直す。quay.io/minio/mc は 2026-09-25 に 401 で取れなくなったので、MinIO のフォーク
+# pgsty/silo の mc（同じ /usr/bin/mc）に替えた（#178）。
+FROM docker.io/pgsty/mc@sha256:cfc83108c3abb371f8fb84d99c1fdc88f8c237e022409b0081fb7c0a3be634dd AS mc
 
 # ルートの Dockerfile の builder と同じタグにする。変えるときは両方。
 FROM rust:1.98-bookworm

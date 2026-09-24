@@ -20,8 +20,8 @@ awswrangler 3.17.1・PyAthena 3.36.0・dbt-athena 1.11.1 を、athena-local の 
 | サービス | イメージ | 足場からの宛先 |
 |---|---|---|
 | Trino（`trino`） | `trinodb/trino:482` | `trino:8080` |
-| MinIO（`minio`） | `quay.io/minio/minio:latest` | `minio:9000`（S3 API） |
-| MinIO 初期化（`minio-init`） | `quay.io/minio/mc:latest` | 無し（使い捨て） |
+| MinIO（`minio`） | `docker.io/pgsty/silo:latest` | `minio:9000`（S3 API） |
+| MinIO 初期化（`minio-init`） | `docker.io/pgsty/mc:latest` | 無し（使い捨て） |
 | trace | toolbox の `mc`（バックグラウンドプロセス。#129） | `minio:9000` |
 | athena-local（s3 モード） | `$CARGO_TARGET_DIR`（`tools/dev.sh` では `.toolbox/target`）の release/athena-local | dev 内の `127.0.0.1:8098` |
 | athena-local（none モード） | 同上 | dev 内の `127.0.0.1:8099` |

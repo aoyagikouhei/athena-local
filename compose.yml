@@ -74,7 +74,7 @@ services:
       - trino-iceberg-data:/data/iceberg
 
   minio:
-    image: quay.io/minio/minio:latest
+    image: docker.io/pgsty/silo:latest
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
@@ -92,7 +92,7 @@ services:
 
   # 使い捨て。起動のたびに athena-results バケットを（無ければ）作って終了する。
   minio-init:
-    image: quay.io/minio/mc:latest
+    image: docker.io/pgsty/mc:latest
     depends_on:
       minio:
         condition: service_healthy

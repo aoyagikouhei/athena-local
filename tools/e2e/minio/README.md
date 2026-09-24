@@ -18,15 +18,17 @@ DROP TABLE の結果ファイルがテーブルの形式（Hive / Iceberg）で�
 | サービス | イメージ | 足場からの宛先 |
 |---|---|---|
 | Trino（`trino`） | `trinodb/trino:482` | `trino:8080` |
-| MinIO（`minio`） | `quay.io/minio/minio:latest` | `minio:9000`（S3 API） |
-| MinIO 初期化（`minio-init`） | `quay.io/minio/mc:latest` | 無し（使い捨て） |
+| MinIO（`minio`） | `docker.io/pgsty/silo:latest` | `minio:9000`（S3 API） |
+| MinIO 初期化（`minio-init`） | `docker.io/pgsty/mc:latest` | 無し（使い捨て） |
 | athena-local | （docker イメージは使わず `cargo build --release` の実行バイナリ。`$CARGO_TARGET_DIR`（`tools/dev.sh` では `.toolbox/target`）の release/athena-local） | dev 内の `127.0.0.1:8087` |
 
 同時実行は `docs/dev/development.md` の「足場の環境と同時実行」。
 
 MinIO のイメージは 2024 年以降 `minio/minio` / `minio/mc`（Docker Hub）が
-`pull access denied` になり、`quay.io/minio/minio` / `quay.io/minio/mc` に移っている
-（2026-09-21 実測）。
+`pull access denied` になり、`quay.io/minio/minio` / `quay.io/minio/mc` に移っていた
+（2026-09-21 実測）。その quay も 2026-09-25 に 401 で取れなくなったので、MinIO のフォーク
+[pgsty/silo](https://github.com/pgsty/silo) のサーバー `pgsty/silo` とクライアント `pgsty/mc` に替えた（#178）。
+サーバーは `server /data` を `silo server /data` に読み替え、`MINIO_*` の環境変数と `/minio/health/live` はそのまま使える。
 
 認証情報はローカル専用のダミー（`minioadmin` / `minioadmin`）。本物の AWS の認証情報は登場しない。
 
