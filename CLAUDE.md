@@ -22,7 +22,7 @@ tools/dev.sh docker build -t aoyagikouhei/athena-local:dev .
 tools/dev.sh tools/e2e/minio/verify.sh             # 検証の足場（tools/e2e）。環境は compose.yml の trino / minio など。同時に流すなら COMPOSE_PROJECT_NAME（docs/dev/development.md）
 ```
 
-CI（`.github/workflows/ci.yml`）の `check` はホストランナーで直に `fmt --check`、`clippy -D warnings`、`test --locked` を回し、`e2e` は toolbox（`tools/dev.sh`）の中で軽い足場（request-errors、paging-validation）を流す。`v*` タグを push すると `docker.yml` が amd64 / arm64 のイメージを Docker Hub に publish する。リリースの手順（版の書き換えからタグと publish の確認まで）は `.claude/skills/release/SKILL.md`（`/release X.Y.Z`）に従う。
+CI（`.github/workflows/ci.yml`）の `check` はホストランナーで直に `fmt --check`、`clippy -D warnings`、`test --locked` を回し、`e2e` は toolbox（`tools/dev.sh`）の中で軽い足場（request-errors、paging-validation）と `cargo test --locked`（amd64 の toolbox での確認）を流す。`v*` タグを push すると `docker.yml` が amd64 / arm64 のイメージを Docker Hub に publish する。リリースの手順（版の書き換えからタグと publish の確認まで）は `.claude/skills/release/SKILL.md`（`/release X.Y.Z`）に従う。
 
 ## アーキテクチャ
 
