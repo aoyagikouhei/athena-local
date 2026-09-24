@@ -11,6 +11,9 @@ later name the date they were measured on.
 
 ### Changed
 
+- `GetQueryResults` leaves `UpdateCount` out for `EXPLAIN` (every variant), as
+  real Athena does (measured 2026-09-16 to 2026-09-23), instead of returning
+  `0` ([docs](docs/api.md#supported-api)).
 - `GetQueryExecution` no longer fills `QueryExecutionContext.Catalog` /
   `Database` from `TRINO_CATALOG` / `TRINO_SCHEMA` when the request left them
   out; the defaults are still applied when the query is sent to Trino, and the

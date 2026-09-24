@@ -62,8 +62,9 @@ Behaviour that matches real Athena:
 - DML (`INSERT` / `UPDATE` / `DELETE` / `MERGE`) and CTAS return no rows, set
   `UpdateCount`, and list a `rows` (`bigint`) column in `ColumnInfo`. DDL without a
   count returns neither rows nor columns. Measured on Hive-format and Iceberg tables.
-- `SELECT` and `SHOW` return `UpdateCount` `0`; DDL leaves it out (Athena sends
-  `null`, which SDKs read the same way). `DESCRIBE` and `SHOW CREATE TABLE`
+- `SELECT` and `SHOW` return `UpdateCount` `0`; DDL and `EXPLAIN` (every
+  variant, `EXPLAIN ANALYZE` included; measured 2026-09-16 to 2026-09-23) leave
+  it out (Athena sends `null`, which SDKs read the same way). `DESCRIBE` and `SHOW CREATE TABLE`
   follow the target table's format: on a Hive table (or when the format cannot
   be determined) they leave `UpdateCount` out, on an Iceberg table they return
   `0` (measured 2026-09-24; see

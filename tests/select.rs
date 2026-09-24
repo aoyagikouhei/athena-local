@@ -663,6 +663,11 @@ async fn explain_の結果には_select_と同じく列名行が入る() {
         )
         .await;
 
+    // 本物は EXPLAIN（8 変種とも）で UpdateCount を返さない（null。2026-09-16〜23 実測。#169）。
+    assert!(
+        results.get("UpdateCount").is_none(),
+        "UpdateCount は省く: {results}"
+    );
     let rows = results["ResultSet"]["Rows"].as_array().unwrap();
     let values: Vec<_> = rows
         .iter()
@@ -721,6 +726,10 @@ async fn explain_type_validate_の真偽値の結果も文字列にして末尾�
     assert_eq!(values, ["Valid", "true", ""]);
     let column = &results["ResultSet"]["ResultSetMetadata"]["ColumnInfo"][0];
     assert_eq!(column["Type"], "boolean");
+    assert!(
+        results.get("UpdateCount").is_none(),
+        "UpdateCount は省く: {results}"
+    );
 
     let puts = harness.s3_puts();
     assert_eq!(
