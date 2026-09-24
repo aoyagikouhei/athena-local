@@ -27,6 +27,7 @@
 
 使い方は [development.md](development.md) の「検証の足場（toolbox）」。
 
+- 新しい issue に着手したら、ブランチを切った直後に過去の issue のノート（`.claude/issue-notes`）を全部消す。Skill が新しいノートを書く前に消す。理由: 古いノートには後で覆った事実が残っていて、正のドキュメント（docs/dev）より先に読まれると誤った前提で開発が進む。過去のノートは履歴に残る。（#98・#100。理由を CLAUDE.md から移した。#190）
 - 検証の足場（`tools/e2e/`）は toolbox の中で動かし、ホストのコマンドに依存しない。理由: ホストの PATH にある同名の別物（Docker で包んだ `aws`、snap 製の `jq`、astral でない `uv`）を踏むたびに足場とコメントに回避策を積み上げていた（2026-09-16〜23）。動く場所をコンテナに固定すれば、回避策ごと要らなくなる。（#127、2026-09-23）
 - toolbox は `docker run` の直呼びではなく、ルートの `compose.yml` の dev サービスにして `tools/dev.sh` から `docker compose run` で呼ぶ。理由: 段階 2 で trino などを同じファイルに足す（#126 の方針）。（#127、2026-09-23）
 - 段階 1 の dev サービスは `network_mode: host`。理由: 足場の宛先（`127.0.0.1:<port>`）を変えずに無改造で動かす。（#127、2026-09-23。#128 で変更: dev は compose のネットワークに入った）
@@ -57,6 +58,7 @@
 
 ## SQL の字句処理と文の分類
 
+- SQL の本文を書き換えない約束の唯一の例外として、`TRINO_CATALOG_MAP` の別名を引用符付きの修飾名に当てる置換（`catalog.rs`）を入れた。理由: Trino には `/` を含むカタログ名を作れず、S3 Tables の修飾名はほかに Trino へ通す方法が無い。汎用ツールとして入れ、条件は広げない。引用符の無い名前や大文字小文字の違う名前は、Trino 側のカタログ名を合わせる回避策（`docs/configuration.md`・`docs/caveats.md`）で受ける。（2026-09-15。理由を CLAUDE.md から移した。#190）
 - SQL の字句走査の道具（`skip_leading_trivia`、`skip_quoted`、`comment_end`、`skip_keyword` など）は `src/catalog.rs` に集める。新しいモジュール（`lexer.rs`）は作らない。理由: 字句処理が 2 ファイルに散る。区切りは全部 ASCII なので UTF-8 の境界は壊れない。（#17、2026-09-18、#49、2026-09-22）
 - `skip_keyword` は `catalog.rs` に 1 つだけ置く（内部で `skip_leading_trivia` を呼ぶ版）。同名の別定義は作らない。ラッパーを残して呼び出し元を変えずに済ませる案は、前例になるので採らない。（#49、2026-09-22。#44 の「2 版を統合しない」を変更）
 - `catalog.rs` の可視性は、doc に「どのファイルが再利用するか」と issue 番号を書いたものを `pub(crate)`、それが無い私的な補助を private にする。呼び出しは `crate::catalog::foo()` のフルパスで書く。（#49、2026-09-22）
