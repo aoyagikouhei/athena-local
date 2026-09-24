@@ -121,7 +121,9 @@ run_phase1() {
   rm -f "$before_f" "$after_f"
 
   echo "== 5. 純粋な移動か（ファイルごとに、use・mod・//!・空行を除いて行をソートして diff） =="
-  local strip='grep -vE '\''^[[:space:]]*(pub(\([a-z:( )]+\))? )?(use |mod )|^[[:space:]]*//!|^[[:space:]]*$'\'' | sed -E '\''s/^[[:space:]]+//'\'' | sort'
+  # `{` だけの行は前の行につなげてから比べる。字下げを 4 桁外すと、100 桁ちょうどで折り返されていた
+  # 関数の `{` が rustfmt で前の行に上がる（classification の 1 関数で実測）。中身は変わらない。
+  local strip='grep -vE '\''^[[:space:]]*(pub(\([a-z:( )]+\))? )?(use |mod )|^[[:space:]]*//!|^[[:space:]]*$'\'' | sed -E '\''s/^[[:space:]]+//'\'' | awk '\''$0 == "{" && n > 0 { l[n] = l[n] " {"; next } { l[++n] = $0 } END { for (i = 1; i <= n; i++) print l[i] }'\'' | sort'
   local b a raw rest allow
   for i in "${!NAMES[@]}"; do
     name="${NAMES[$i]}"
