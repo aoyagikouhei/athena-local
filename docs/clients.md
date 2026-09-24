@@ -150,6 +150,13 @@ athena-local alone: before running any SQL it lists schemas through AWS Glue
 `UnknownOperationException` (whether STS would be needed later was not
 reached).
 
+For `EXPLAIN` and `SHOW FUNCTIONS`, dbt-athena returns the column-name row
+(`Query Plan`, or the `SHOW FUNCTIONS` header) as the first data row. Its
+cursor drops the first row of the first page only for statements other than
+`DDL`, `UTILITY` and `EXPLAIN`, while Athena puts the column names first for
+these two statements. athena-local returns the same rows, so dbt-athena sees
+the same result against real Athena (dbt-athena 1.11.1 source, 2026-09-25).
+
 Point it at athena-local with environment variables rather than
 `endpoint_url` in the profile. The profile's `endpoint_url` only reaches the
 client that runs queries; the adapter's other clients (`GetWorkGroup`, Glue,

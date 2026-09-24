@@ -61,6 +61,16 @@
 - 返ったもの: PyAthena は先頭行の値が列名と一致したときだけ読み飛ばす値ベースの判定で、文の種類は見ない（`result_set.py` の `_is_first_row_column_labels`）。awswrangler は S3 の結果ファイルを読む経路が主で、GetQueryResults の経路は未確認
 - 備考: ソースを読んだ観察
 
+### dbt-athena が EXPLAIN と SHOW FUNCTIONS の先頭行（列名行）をどう読むか（ソースの読み取り）
+- 日付: 2026-09-25 ／ issue: #118 ／ スクリプト: 無し
+- 相手: dbt-athena 1.11.1 のソース（`tools/e2e/python-clients` の venv に入っている `dbt/adapters/athena/connections.py`）。本物の Athena の挙動は既存の実測（query-results.md の #60、statements.md の #63・#80）による
+- 投げたもの: ソースの通読
+- 返ったもの:
+  - `_is_plain_text_result`（`connections.py:362-369`）は `StatementType` が `DDL` か `UTILITY`、または `SubstatementType` が `EXPLAIN` のとき true。`AthenaResultSet._load_page`（`connections.py:464-466`）は、これが false のときだけ 1 ページ目の先頭行を落とす（`page_rows[1:]`）。値は見ず、文の種類だけで決める
+  - 本物の Athena は EXPLAIN（`DML`／`EXPLAIN`）の 1 ページ目の先頭に列名行（`Query Plan`）を入れ、SHOW FUNCTIONS（`UTILITY`／`SHOW_FUNCTIONS`）も列名行つきで返す。athena-local も同じ
+  - したがって dbt-athena はこの 2 文で列名行を 1 行目のデータとして返す。本物の Athena でも同じになるので、athena-local との差ではない。ほかの `UTILITY`（SHOW TABLES など）と `DDL` は本物も athena-local も先頭行＝データなので、落とさない判定と合っている
+- 備考: ソースを読んだ観察で、dbt を実際に流してはいない。athena-local の側は変えない（本物と同じ返し方をしているため）
+
 ## Grafana athena-datasource
 
 ### Grafana athena-datasource と athena-local の実機検証
