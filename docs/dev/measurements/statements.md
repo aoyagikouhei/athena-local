@@ -184,6 +184,13 @@
   - `EXPLAIN ANALYZE` の SubstatementType は `EXPLAIN`、列は varchar(2147483647)
 - 備考: 無し
 
+### EXPLAIN の変種の `UpdateCount`（#92 の生データの読み直し）
+- 日付: 2026-09-24（読み直し。元の実測は 2026-09-23、#92） ／ issue: #169 ／ スクリプト: 無し（`$HOME/athena-explain-variants-measurements/run-20260923-132753/e1〜e8.results.json` と `probe-show-tables.results.json` を読んだ） ／ 生データ: 同左
+- 相手: 本物の Athena（#92 のラウンド）
+- 投げたもの: #92 の 8 変種（`EXPLAIN SELECT 1`、`(FORMAT JSON)`、`(TYPE IO)`、`EXPLAIN ANALYZE`、`(TYPE DISTRIBUTED)`、`(TYPE VALIDATE)`、`(FORMAT GRAPHVIZ)`、`EXPLAIN ANALYZE VERBOSE`）と対照の `SHOW TABLES`
+- 返ったもの: `GetQueryResults` の `UpdateCount` は 8 変種とも `null`（CLI の応答でキーはあり値が null）。対照の `SHOW TABLES` は `0`。#1（2026-09-15／16 の 4 ラウンド）・#17（2026-09-18）・#70／#76（2026-09-23）の `EXPLAIN SELECT 1` も `null`
+- 備考: `EXPLAIN` は StatementType が DML だが、`UpdateCount` は無し（`.txt` が application の群と同じ）。athena-local は DML 扱いで 0 にしていたのを #169 で省くようにした
+
 **食い違い: `.txt` の列名の見出し行（EXPLAIN）**
 
 - 2026-09-16（#1 の 4 回目、[result-files.md](result-files.md) の「`.txt` の中身と置かれ方（4 回目。これで揃った）」）: 「列名の行は入らない」。すべての文で `.txt` は `GetQueryResults` の行の連結とバイト一致とし、EXPLAIN は 393 バイト

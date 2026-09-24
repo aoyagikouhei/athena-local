@@ -358,9 +358,9 @@ fn split_explain_rows(query: &str, mut outcome: Outcome) -> Outcome {
 /// GetQueryResults の UpdateCount。本物は SELECT と SHOW でも 0 を返し、DDL では null を返す
 /// （2026-09-14 実測。SDK から見て null と省略は同じなので、DDL は省く）。DML と CTAS は Trino が返す
 /// 件数をそのまま載せる。DESCRIBE と SHOW CREATE TABLE は Hive のテーブル（と判定できないとき。`DESC` も）では
-/// null、Iceberg のテーブルでは 0（2026-09-24 実測。#160）。null になる文は `.txt` の Content-Type と
-/// `.metadata` の先頭 ID を決める `content_type::carries_execution_id` と同じ述語で選ぶ（本物でも
-/// UpdateCount の有無と Content-Type は一致している）。
+/// null、Iceberg のテーブルでは 0（2026-09-24 実測。#160）。EXPLAIN は 8 変種とも null（2026-09-16〜23 実測。#169）。
+/// null になる文は `.txt` を application で置く文と同じ述語 `content_type::plain_text_statement` で選ぶ
+/// （本物でも UpdateCount の有無と Content-Type は一致している）。
 fn update_count(query: &str, outcome: &Outcome, engine_ddl: Option<EngineDdl>) -> Option<i64> {
     if let Some(count) = outcome.update_count {
         return Some(count);
@@ -372,7 +372,7 @@ fn update_count(query: &str, outcome: &Outcome, engine_ddl: Option<EngineDdl>) -
         engine_ddl,
         Some(EngineDdl::ShowCreateTableIceberg | EngineDdl::DescribeIceberg)
     );
-    if crate::content_type::carries_execution_id(query) && !iceberg {
+    if crate::content_type::plain_text_statement(query) && !iceberg {
         return None;
     }
     Some(0)
@@ -418,6 +418,16 @@ mod tests {
             Some(0)
         );
         assert_eq!(update_count("SHOW CREATE TABLE t", &uncounted, None), None);
+        // EXPLAIN は DML 扱いだが、本物は 8 変種とも UpdateCount を返さない（2026-09-16〜23 実測。#169）。
+        assert_eq!(update_count("EXPLAIN SELECT 1", &uncounted, None), None);
+        assert_eq!(
+            update_count("EXPLAIN ANALYZE VERBOSE SELECT 1", &uncounted, None),
+            None
+        );
+        assert_eq!(
+            update_count("EXPLAIN (TYPE VALIDATE) SELECT 1", &uncounted, None),
+            None
+        );
         assert_eq!(
             update_count(
                 "SHOW CREATE TABLE t",
