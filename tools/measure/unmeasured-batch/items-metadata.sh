@@ -106,6 +106,15 @@ item_m5() {
     "CREATE TABLE $t_nn (n int NOT NULL, s string) LOCATION '${OUTPUT}tables-probe-113-m5-notnull/' TBLPROPERTIES ('table_type'='ICEBERG')" \
     "$TCAT_ICEBERG" "$TDB"
   local nn_rc=$?
+  # Hive 風の綴りに NOT NULL を書くと本物は Trino のパーサに落として `WITH` を求める
+  # （2026-09-24 の 1 回目: line 1:88: mismatched input 'LOCATION'. Expecting: 'COMMENT', 'WITH'）。
+  # そのパーサが受ける綴り（CTAS でない CREATE TABLE に WITH）も 1 本試し、両方の結果を残す。
+  if [ "$nn_rc" -ne 0 ]; then
+    run_stmt "$dir" m5-create-notnull-with \
+      "CREATE TABLE $t_nn (n int NOT NULL, s varchar) WITH (table_type = 'ICEBERG', location = '${OUTPUT}tables-probe-113-m5-notnull/', is_external = false)" \
+      "$TCAT_ICEBERG" "$TDB"
+    nn_rc=$?
+  fi
   if [ "$nn_rc" -eq 0 ]; then
     record_created TABLE "$t_nn" "$TCAT_ICEBERG" "$TDB"
     run_stmt "$dir" m5-select-notnull "SELECT * FROM $t_nn" "$TCAT_ICEBERG" "$TDB"
