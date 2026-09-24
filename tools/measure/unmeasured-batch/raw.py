@@ -198,14 +198,18 @@ def judge(actual_ok):
 
 
 def run_preflight(ctx):
+    """ListWorkGroups を 1 回呼ぶ。HTTP ステータスが 200 なら True、それ以外（エラー応答・
+    送信自体の例外）は False を返す。main() がこれを見て終了コードを決める。"""
     result = ctx.call(b"{}", PREFIX + "ListWorkGroups")
     ctx.save("preflight", result)
-    if result.get("status") == 200:
+    ok = result.get("status") == 200
+    if ok:
         groups = (parsed_body(result) or {}).get("WorkGroups") or []
         detail = "{} 件のワークグループ".format(len(groups))
     else:
         detail = "status={} __type={}".format(result.get("status", result.get("outcome")), error_fields(result)["__type"])
     ctx.emit("preflight", "preflight", result.get("status", result.get("outcome")), detail)
+    return ok
 
 
 # t2 トークンの正規化: 基準トークンと、前後空白・ダブルクォート・バックスラッシュ・大文字化の
@@ -343,7 +347,11 @@ def main():
         print("{0}\t{0}\tno_credentials\tbotocore の既定の探索で資格情報が見つからない".format(args.item))
         return 2
 
-    RUNNERS[args.item](Ctx(args, credentials))
+    result = RUNNERS[args.item](Ctx(args, credentials))
+    # preflight（ListWorkGroups）だけは、HTTP ステータスが 200 でなければ終了コード 1 にする
+    # （lib-raw.sh の raw_preflight がこれで本編を止める）。他の item の終了コードは今のまま 0。
+    if args.item == "preflight" and result is False:
+        return 1
     return 0
 
 

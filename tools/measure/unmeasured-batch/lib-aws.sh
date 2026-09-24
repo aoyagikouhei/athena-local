@@ -343,15 +343,16 @@ run_stmt() {
   [ "$state" = SUCCEEDED ]
 }
 
-# 同名のテーブル・ビューを壊さないよう、作る前に SHOW TABLES で確かめる。
-# 見つかれば 1（呼び出し側は作らずに skip する）、確認できなければ安全側に倒して 1。
-# 何も見つからなければ 0。
+# 同名のテーブル・ビューを壊さないよう、作る前に SHOW TABLES で確かめる。呼び出し側は
+# `if probe_prefix_exists ...; then skip_item ...; fi` の形（0 なら skip）で使う。
+# 見つかれば 0（呼び出し側は作らずに skip する）、SHOW TABLES 自体が失敗して確認できなければ
+# 安全側に倒して 0（同じく skip）。何も見つからなければ 1。
 probe_prefix_exists() {
   local item_dir=$1 catalog=$2 database=$3 prefix=$4
   local label="_probe_show_tables_${prefix}"
   if ! run_stmt "$item_dir" "$label" "SHOW TABLES LIKE '${prefix}%'" "$catalog" "$database" >/dev/null 2>&1; then
     echo "== $prefix: SHOW TABLES が失敗したので安全側に倒して skip 扱いにする" >&2
-    return 1
+    return 0
   fi
   local body="$item_dir/$label.body.bytes"
   [ -s "$body" ] && grep -qi "$prefix" "$body"

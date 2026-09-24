@@ -45,6 +45,32 @@ def count_ddl(run_dir):
     return creates, drops
 
 
+def count_cleanup_drops(run_dir):
+    """後始末の best_effort_drop が投げた DROP の本数（*.sql に残らないので別集計）。
+    real は drops.tsv（開始できたものだけ 1 行）、local は drop-count（best_effort_drop が
+    投げるたびに 1 行）を数える。"""
+    count = 0
+    for name in ("drops.tsv", "drop-count"):
+        path = os.path.join(run_dir, name)
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                count += sum(1 for line in f if line.strip())
+    return count
+
+
+def started_at(run_dir):
+    """run.sh が RUN_DIR を作った直後に書く started_at を読む。無ければ None
+    （report.py を started_at の無い古い RUN_DIR に対して走らせたとき）。"""
+    path = os.path.join(run_dir, "started_at")
+    if not os.path.exists(path):
+        return None
+    text = open(path, encoding="utf-8").read().strip()
+    try:
+        return datetime.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
 def cleanup_report(run_dir):
     """finish_cleanup（lib-aws.sh、TARGET=real のみ）が書く後始末の 1 行。無ければ空。"""
     path = os.path.join(run_dir, "cleanup-report.txt")
@@ -79,24 +105,32 @@ def main():
     expect_rows = [r for r in rows if r["kind"] == "expect"]
     skip_rows = [r for r in rows if r["kind"] == "skip"]
 
-    started = len(stmt_rows)
+    cleanup_drops = count_cleanup_drops(run_dir)
+    started = len(stmt_rows) + cleanup_drops
     succeeded = sum(1 for r in stmt_rows if r["state"] == "SUCCEEDED")
     failed = sum(1 for r in stmt_rows if r["state"] in ("FAILED", "CANCELLED", "TIMEOUT"))
     start_failed = sum(1 for r in stmt_rows if r["state"] == "START_FAILED")
     creates, drops = count_ddl(run_dir)
+    drops += cleanup_drops
 
-    now = datetime.datetime.now()
-    deadline = now + datetime.timedelta(minutes=90)
+    start_dt = started_at(run_dir)
+    if start_dt is not None:
+        deadline_dt = start_dt + datetime.timedelta(minutes=90)
+        started_text = start_dt.isoformat(timespec="seconds")
+        deadline_text = deadline_dt.isoformat(timespec="seconds")
+    else:
+        started_text = "不明"
+        deadline_text = "不明"
 
     lines = [
         "# issue #113 未実測バッチ: 実測結果の要約（実名はマスク済み）",
         "# TARGET: %s" % target,
-        "# 開始時刻: %s" % now.isoformat(timespec="seconds"),
-        "# 開始+90分（資格情報はこれより長く有効なものを使うこと）: %s" % deadline.isoformat(timespec="seconds"),
+        "# 開始時刻: %s" % started_text,
+        "# 開始+90分（資格情報はこれより長く有効なものを使うこと）: %s" % deadline_text,
         "# StartQueryExecution を呼んだ回数: %d"
-        " (SUCCEEDED=%d FAILED/CANCELLED/TIMEOUT=%d 開始自体が失敗=%d)"
-        % (started, succeeded, failed, start_failed),
-        "# DDL の内訳（各 .sql の先頭語から集計。目安）: CREATE=%d DROP=%d" % (creates, drops),
+        " (SUCCEEDED=%d FAILED/CANCELLED/TIMEOUT=%d 開始自体が失敗=%d 後始末のDROP=%d)"
+        % (started, succeeded, failed, start_failed, cleanup_drops),
+        "# DDL の内訳（各 .sql の先頭語 + 後始末の DROP から集計。目安）: CREATE=%d DROP=%d" % (creates, drops),
         "# skip した項目/文の数: %d" % len(skip_rows),
     ]
     for line in cleanup_report(run_dir):

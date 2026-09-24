@@ -81,6 +81,11 @@ PROBE_PREFIX="athena_local_probe_113"
 
 RUN_DIR=${RUN_DIR:-"${DEV_HOST_HOME:-$HOME}/athena-unmeasured-batch-measurements/run-$(date +%Y%m%d-%H%M%S)"}
 mkdir -p "$RUN_DIR"
+# RUN_DIR を作った直後（既にあれば書かない）に開始時刻を残す。report.py がここから
+# 「開始時刻」と「開始+90分」を出す（RUN_DIR 再開では最初の実行の時刻のまま変わらない）。
+if [ ! -f "$RUN_DIR/started_at" ]; then
+  date '+%Y-%m-%dT%H:%M:%S' >"$RUN_DIR/started_at"
+fi
 touch "$RUN_DIR/cleanup-hints.txt" "$RUN_DIR/created.tsv"
 SUMMARY="$RUN_DIR/summary.tsv"
 if [ ! -f "$SUMMARY" ]; then
@@ -168,15 +173,19 @@ except Exception: print("")' "$RUN_DIR/.preflight/preflight-workgroup2.json")
   fi
   TARGET_WG2_OUTPUT="$WG2_OUTPUT"
 
-  # 中断時の保険。created.tsv に残っているものへ DROP IF EXISTS を投げる（結果は待たない）。
+  # 中断時（正常終了時も含む。finish_cleanup の後始末で消しきれなかった分の再送）の保険。
+  # created.tsv に残っているものへ DROP IF EXISTS を投げる（結果は待たない）。投げた本数と
+  # 開始に失敗した本数を標準出力に出す。
   cleanup_real() {
     [ -s "$RUN_DIR/created.tsv" ] || return 0
     echo "== 中断時の後始末: created.tsv に残っているものへ DROP IF EXISTS を投げる" >&2
-    local kind name catalog database
+    local kind name catalog database total=0 started=0
     while IFS=$'\t' read -r kind name catalog database; do
       [ -n "${kind:-}" ] || continue
-      best_effort_drop "$kind" "$name" "$catalog" "$database"
+      total=$((total + 1))
+      best_effort_drop "$kind" "$name" "$catalog" "$database" && started=$((started + 1))
     done <"$RUN_DIR/created.tsv"
+    echo "中断時の後始末（再送）: DROP IF EXISTS ${total}本中 ${started}本を投げた（開始に失敗=$((total - started))本）"
   }
   trap cleanup_real EXIT
 fi
@@ -202,7 +211,11 @@ ALL_ITEMS="r1 r2 r3 r4 x1 x2 m1 m2 m3 m5 s1 s2 p1 t4c t1 t2 t3 t4 t5 t8 w1 e1 e2
 # 無ければ 65 分待ちを起こさない設計にする） ---
 
 if [ "$RETENTION_SELECTED" = 1 ]; then
-  reset_item_rows t6
+  # t6 の行は、段階 A を新しく流すとき（state.env が無いとき）だけ消す。RUN_DIR を
+  # 指定した再開（例: ONLY=t7 だけで段階 B を流し直す）では、前回の段階 A の行を残す。
+  if [ ! -s "$RETENTION_STATE" ]; then
+    reset_item_rows t6
+  fi
   reset_item_rows t7
   if [ "$WAIT_RETENTION" = 0 ]; then
     skip_item t6 phase-a "WAIT_RETENTION=0のため実行しない"

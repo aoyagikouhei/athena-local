@@ -29,12 +29,22 @@ item_t1() {
   run_stmt "$dir" t1-b "$sql" "$alt_case" "$TDB" - "$tok"
   local id_b
   id_b=$(query_execution_id_of "$dir/t1-b.start.json")
-  declare_expectation "$id" same_id_case_variant "$id_a" "$id_b" "Catalogの大文字小文字違い($TCAT_GENERIC vs $alt_case)"
+  if [ "$TARGET" = local ]; then
+    declare_expectation "$id" same_id_case_variant "$id_a" "$id_b" "Catalogの大文字小文字違い($TCAT_GENERIC vs $alt_case)"
+  else
+    write_summary_row "$id" case-variant stmt - - - - - - - - - - - \
+      "Catalogの大文字小文字違い($TCAT_GENERIC vs $alt_case): 元id=$id_a 変種id=$id_b 一致=$([ "$id_a" = "$id_b" ] && echo yes || echo no)"
+  fi
 
   run_stmt "$dir" t1-c "$sql" "athena_local_probe_113_no_such_catalog" "$TDB" - "$tok"
   local id_c
   id_c=$(query_execution_id_of "$dir/t1-c.start.json")
-  declare_expectation "$id" same_id_nonexistent_catalog "$id_a" "$id_c" "存在しないCatalog名"
+  if [ "$TARGET" = local ]; then
+    declare_expectation "$id" same_id_nonexistent_catalog "$id_a" "$id_c" "存在しないCatalog名"
+  else
+    write_summary_row "$id" nonexistent-catalog stmt - - - - - - - - - - - \
+      "存在しないCatalog名: 元id=$id_a 変種id=$id_c 一致=$([ "$id_a" = "$id_c" ] && echo yes || echo no)"
+  fi
 }
 
 # t5（#102）: 1 回目成功のあと、同じトークンで (a) OutputLocation だけ不正、
@@ -51,14 +61,24 @@ item_t5() {
   run_stmt "$dir" t5-bad-output "$sql" "$TCAT_GENERIC" "$TDB" - "$tok" "not-a-valid-s3-path"
   local outcome_output
   outcome_output=$(classify_start_error "$dir/t5-bad-output.start.err")
-  declare_expectation "$id" outputlocation_before_conflict validation_error "$outcome_output" \
-    "同じトークン+不正なOutputLocation: $(first_err_line "$dir/t5-bad-output.start.err")"
+  if [ "$TARGET" = local ]; then
+    declare_expectation "$id" outputlocation_before_conflict validation_error "$outcome_output" \
+      "同じトークン+不正なOutputLocation: $(first_err_line "$dir/t5-bad-output.start.err")"
+  else
+    write_summary_row "$id" outputlocation-before-conflict stmt - - - - - - - - - - - \
+      "分類=$outcome_output 同じトークン+不正なOutputLocation: $(first_err_line "$dir/t5-bad-output.start.err")"
+  fi
 
   run_stmt "$dir" t5-bad-syntax "SELEC 1" "$TCAT_GENERIC" "$TDB" - "$tok"
   local outcome_syntax
   outcome_syntax=$(classify_start_error "$dir/t5-bad-syntax.start.err")
-  declare_expectation "$id" syntax_before_conflict validation_error "$outcome_syntax" \
-    "同じトークン+構文エラー: $(first_err_line "$dir/t5-bad-syntax.start.err")"
+  if [ "$TARGET" = local ]; then
+    declare_expectation "$id" syntax_before_conflict validation_error "$outcome_syntax" \
+      "同じトークン+構文エラー: $(first_err_line "$dir/t5-bad-syntax.start.err")"
+  else
+    write_summary_row "$id" syntax-before-conflict stmt - - - - - - - - - - - \
+      "分類=$outcome_syntax 同じトークン+構文エラー: $(first_err_line "$dir/t5-bad-syntax.start.err")"
+  fi
 }
 
 # t4（生 HTTP。フェーズ 2）のうち、短いトークンが要らない組だけ aws CLI で測る:
@@ -75,7 +95,12 @@ item_t4c() {
   elif echo "$msg" | grep -qiE 'mismatched input|SYNTAX_ERROR|line [0-9]+:[0-9]+'; then
     classification=syntax
   fi
-  declare_expectation "$id" outputlocation_checked_before_syntax outputlocation "$classification" "$msg"
+  if [ "$TARGET" = local ]; then
+    declare_expectation "$id" outputlocation_checked_before_syntax outputlocation "$classification" "$msg"
+  else
+    write_summary_row "$id" outputlocation-checked-before-syntax stmt - - - - - - - - - - - \
+      "先に弾かれたのは=$classification: $msg"
+  fi
 }
 
 # t2・t3・t4（生 HTTP。raw.py）。lib-aws.sh の run_raw_item が summary.tsv への変換を担う。
@@ -95,8 +120,13 @@ item_t8() {
   run_stmt "$dir" t8-db-explicit "SELECT 1 AS t8_probe" "$TCAT_GENERIC" default "$WORKGROUP2" "$tok1"
   local outcome_db
   outcome_db=$(classify_start_error "$dir/t8-db-explicit.start.err")
-  declare_expectation "$id" database_omit_vs_default conflict "$outcome_db" \
-    "Database省略 vs 'default'明示: $(first_err_line "$dir/t8-db-explicit.start.err")"
+  if [ "$TARGET" = local ]; then
+    declare_expectation "$id" database_omit_vs_default conflict "$outcome_db" \
+      "Database省略 vs 'default'明示: $(first_err_line "$dir/t8-db-explicit.start.err")"
+  else
+    write_summary_row "$id" database-omit-vs-default stmt - - - - - - - - - - - \
+      "分類=$outcome_db Database省略 vs 'default'明示: $(first_err_line "$dir/t8-db-explicit.start.err")"
+  fi
 
   if [ -z "${TARGET_WG2_OUTPUT:-}" ]; then
     skip_item "$id" t8-output "WORKGROUP2 の OutputLocation が取れないので測れない"
@@ -109,6 +139,11 @@ item_t8() {
     "$TARGET_WG2_OUTPUT"
   local outcome_output
   outcome_output=$(classify_start_error "$dir/t8-output-explicit.start.err")
-  declare_expectation "$id" outputlocation_omit_vs_explicit conflict "$outcome_output" \
-    "OutputLocation省略 vs 明示: $(first_err_line "$dir/t8-output-explicit.start.err")"
+  if [ "$TARGET" = local ]; then
+    declare_expectation "$id" outputlocation_omit_vs_explicit conflict "$outcome_output" \
+      "OutputLocation省略 vs 明示: $(first_err_line "$dir/t8-output-explicit.start.err")"
+  else
+    write_summary_row "$id" outputlocation-omit-vs-explicit stmt - - - - - - - - - - - \
+      "分類=$outcome_output OutputLocation省略 vs 明示: $(first_err_line "$dir/t8-output-explicit.start.err")"
+  fi
 }

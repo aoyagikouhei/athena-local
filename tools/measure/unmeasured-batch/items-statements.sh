@@ -58,6 +58,10 @@ item_s2() {
   run_stmt "$dir" s2-hive-fixture \
     "CREATE EXTERNAL TABLE $hive_t (n int) PARTITIONED BY (p string) LOCATION '$hive_loc'" "$TCAT_HIVE" "$TDB"
   record_created TABLE "$hive_t" "$TCAT_HIVE" "$TDB"
+  # DROP PARTITION の前に ADD PARTITION でパーティションを足しておく（手本
+  # tools/measure/alter-variants.sh:763,770 と同じ順）。local はフィクスチャ自体が通らない。
+  run_stmt "$dir" s2-hive-add-partition \
+    "ALTER TABLE $hive_t ADD PARTITION (p = 'a') LOCATION '${hive_loc}p=a/'" "$TCAT_HIVE" "$TDB"
   run_stmt "$dir" s2-hive-drop-partition "ALTER TABLE $hive_t DROP PARTITION (p = 'a')" "$TCAT_HIVE" "$TDB"
   best_effort_drop TABLE "$hive_t" "$TCAT_HIVE" "$TDB"
   record_cleanup_hint "s2 hive: $hive_loc"
