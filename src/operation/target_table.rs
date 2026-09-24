@@ -15,21 +15,23 @@ pub(super) struct TargetTable {
     pub(super) table: String,
 }
 
-/// `target_statement` の種類ごとに、名前の前に来るキーワードの並び（`DROP TABLE` / `ALTER TABLE` /
-/// `SHOW CREATE TABLE` / `DESCRIBE`）。DESCRIBE だけ `TABLE` を挟まない（#160）。
-fn keywords(statement: TargetStatement) -> &'static [&'static str] {
+/// `target_statement` の種類ごとに、名前の前に来るキーワードの並びの候補（`DROP TABLE` / `ALTER TABLE` /
+/// `SHOW CREATE TABLE` / `DESCRIBE` / `SHOW COLUMNS FROM`・`IN`）。DESCRIBE だけ `TABLE` を挟まない（#160）。
+/// 候補が複数あるのは SHOW COLUMNS だけで、`FROM` でも `IN` でも同じ結果になる（#173）。
+fn keywords(statement: TargetStatement) -> &'static [&'static [&'static str]] {
     match statement {
-        TargetStatement::DropTable => &["DROP", "TABLE"],
+        TargetStatement::DropTable => &[&["DROP", "TABLE"]],
         TargetStatement::AlterTableAddColumns | TargetStatement::AlterTableReplaceColumns => {
-            &["ALTER", "TABLE"]
+            &[&["ALTER", "TABLE"]]
         }
-        TargetStatement::ShowCreateTable => &["SHOW", "CREATE", "TABLE"],
-        TargetStatement::Describe => &["DESCRIBE"],
+        TargetStatement::ShowCreateTable => &[&["SHOW", "CREATE", "TABLE"]],
+        TargetStatement::Describe => &[&["DESCRIBE"]],
+        TargetStatement::ShowColumns => &[&["SHOW", "COLUMNS", "FROM"], &["SHOW", "COLUMNS", "IN"]],
     }
 }
 
 /// `DROP TABLE [IF EXISTS] <名前>` / `ALTER TABLE [IF EXISTS] <名前> ADD COLUMNS ...` /
-/// `SHOW CREATE TABLE <名前>` / `DESCRIBE <名前>` を解析し、カタログ・スキーマに既定値を当てる。
+/// `SHOW CREATE TABLE <名前>` / `DESCRIBE <名前>` / `SHOW COLUMNS {FROM|IN} <名前>` を解析し、カタログ・スキーマに既定値を当てる。
 /// 名前の後ろ（`DESCRIBE t PARTITION (...)` の PARTITION 以降など）は読まない。修飾名にあればその値（引用符付きなら中身、無引用なら
 /// Trino の規則で小文字）を使い、無ければ `default_catalog` / `default_schema`（実行時の値。
 /// 別名解決前）を使う。カタログかスキーマが決まらなければ None（今までどおりに倒す）。
@@ -42,7 +44,9 @@ pub(super) fn parse_target_table(
     default_catalog: Option<&str>,
     default_schema: Option<&str>,
 ) -> Option<TargetTable> {
-    let name = table_name_start(query, keywords(statement))?;
+    let name = keywords(statement)
+        .iter()
+        .find_map(|keywords| table_name_start(query, keywords))?;
     let parts = parse_qualified_name(name)?;
 
     let (catalog, schema, table) = match <[String; 1]>::try_from(parts.clone()) {
@@ -66,7 +70,7 @@ pub(super) fn parse_target_table(
 }
 
 /// `<キーワードの並び>` と、あれば `IF EXISTS` を読み飛ばし、名前が始まる位置を返す。
-/// 先頭が `<キーワードの並び>` でなければ None。並びは `keywords` が返す。
+/// 先頭が `<キーワードの並び>` でなければ None。並びは `keywords` が返す候補の 1 つ。
 ///
 /// `catalog::skip_keyword` が先頭のトリビアを自分で読み飛ばすので、キーワードの手前では
 /// 読み飛ばさない。**最後の 1 回だけは残す**: `parse_qualified_name` はトリビアを読み飛ばさず、
@@ -395,6 +399,37 @@ mod tests {
                     Some("cat"),
                     Some("ns")
                 ),
+                expected,
+                "{query:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_target_table_は_show_columns_の_from_と_in_のどちらの後ろの名前も読む() {
+        // 本物は `SHOW COLUMNS IN t` も `FROM t` と同じ結果を返す（#173）。
+        for (query, expected) in [
+            ("SHOW COLUMNS FROM t", 既定付き("t")),
+            (
+                "SHOW COLUMNS IN ns2.t",
+                Some(TargetTable {
+                    catalog: "cat".to_string(),
+                    schema: "ns2".to_string(),
+                    table: "t".to_string(),
+                }),
+            ),
+            ("SHOW COLUMNS FROM /* c */ t", 既定付き("t")),
+            (
+                r#"SHOW COLUMNS FROM "s3tablescatalog/my-bucket".ns.t"#,
+                Some(TargetTable {
+                    catalog: "s3tablescatalog/my-bucket".to_string(),
+                    schema: "ns".to_string(),
+                    table: "t".to_string(),
+                }),
+            ),
+        ] {
+            assert_eq!(
+                parse_target_table(query, TargetStatement::ShowColumns, Some("cat"), Some("ns")),
                 expected,
                 "{query:?}"
             );

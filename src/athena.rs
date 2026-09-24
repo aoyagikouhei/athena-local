@@ -168,7 +168,7 @@ pub struct ResultSetMetadata {
     pub column_info: Vec<ColumnInfo>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 #[serde(rename_all = "PascalCase")]
 pub struct ColumnInfo {
     pub name: String,

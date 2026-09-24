@@ -569,11 +569,17 @@ async fn show_と_describe_の結果には列名行が入らない() {
         assert_eq!(rows.len(), 2, "{query}: データ 2 行だけ（列名行は無い）");
         assert_eq!(rows[0]["Data"][0]["VarCharValue"], "orders", "{query}");
         assert_eq!(rows[1]["Data"][0]["VarCharValue"], "users", "{query}");
-        // 列の情報は変わらず載る。
-        assert_eq!(
-            results["ResultSet"]["ResultSetMetadata"]["ColumnInfo"][0]["Name"], "table_name",
-            "{query}"
-        );
+        // 列の情報も載る。SHOW TABLES の列は本物では Trino によらず `tab_name`／string（Precision 0、
+        // CaseSensitive false。2026-09-23／24 実測。#173）。DESCRIBE はフェーズ 1 では Trino の列のまま。
+        let column = &results["ResultSet"]["ResultSetMetadata"]["ColumnInfo"][0];
+        if query == "DESCRIBE t" {
+            assert_eq!(column["Name"], "table_name", "{query}");
+        } else {
+            assert_eq!(column["Name"], "tab_name", "{query}");
+            assert_eq!(column["Type"], "string", "{query}");
+            assert_eq!(column["Precision"], 0, "{query}");
+            assert_eq!(column["CaseSensitive"], false, "{query}");
+        }
 
         // ページングも列名行を数えない。1 件目はデータの 1 行目。
         let (_, page) = harness

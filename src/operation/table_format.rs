@@ -21,6 +21,9 @@ pub(super) enum TargetStatement {
     /// `DESCRIBE`。Iceberg だけ本体・`.metadata` を binary/octet-stream で置き、UpdateCount を 0 にする
     /// （2026-09-24 実測。#160）。`DESC` は `substatement_type` が None なので対象にならない（未実測）。
     Describe,
+    /// `SHOW COLUMNS FROM`／`IN`。形式は結果ファイルの書き方ではなく行の形（Hive は列名を 20 桁に左詰め、
+    /// Iceberg は詰めない）に使う（2026-09-16／2026-09-24 実測。#173）。
+    ShowColumns,
 }
 
 /// 問い合わせで分かる、対象テーブルの Trino コネクタ。
@@ -53,7 +56,8 @@ pub(super) enum EngineDdl {
     DescribeIceberg,
 }
 
-/// この文が対象か。対象は DROP TABLE と、ALTER TABLE の ADD COLUMNS / REPLACE COLUMNS と、SHOW CREATE TABLE と DESCRIBE だけ
+/// この文が対象か。対象は DROP TABLE と、ALTER TABLE の ADD COLUMNS / REPLACE COLUMNS と、SHOW CREATE TABLE と DESCRIBE と
+/// SHOW COLUMNS だけ
 /// （`substatement_type` の判定をそのまま使い、判定を二重に持たない）。
 /// 修飾名でカタログを明示していても対象にする（Phase 2）。
 pub(super) fn target_statement(query: &str) -> Option<TargetStatement> {
@@ -63,16 +67,18 @@ pub(super) fn target_statement(query: &str) -> Option<TargetStatement> {
         Some("ALTER_TABLE_REPLACE_COLUMN") => Some(TargetStatement::AlterTableReplaceColumns),
         Some("SHOW_CREATE_TABLE") => Some(TargetStatement::ShowCreateTable),
         Some("DESCRIBE_TABLE") => Some(TargetStatement::Describe),
+        Some("SHOW_COLUMNS") => Some(TargetStatement::ShowColumns),
         _ => None,
     }
 }
 
 /// 形式の判定を GetQueryResults の UpdateCount にも使う文か。結果ファイルを書かない設定でも
 /// 問い合わせる根拠になる（#160）。DROP TABLE と ALTER TABLE は結果ファイルにしか効かない。
+/// SHOW COLUMNS は UpdateCount ではなく行の形（Hive は 20 桁詰め、Iceberg は詰めない）に使う（#173）。
 pub(super) fn needs_format_for_update_count(statement: TargetStatement) -> bool {
     matches!(
         statement,
-        TargetStatement::ShowCreateTable | TargetStatement::Describe
+        TargetStatement::ShowCreateTable | TargetStatement::Describe | TargetStatement::ShowColumns
     )
 }
 
@@ -143,6 +149,9 @@ pub(super) fn engine_ddl(statement: TargetStatement, format: TableFormat) -> Opt
         (TargetStatement::ShowCreateTable, TableFormat::Hive) => None,
         (TargetStatement::Describe, TableFormat::Iceberg) => Some(EngineDdl::DescribeIceberg),
         (TargetStatement::Describe, TableFormat::Hive) => None,
+        // 本物は Hive でも Iceberg でも `.txt` を binary で置き、UpdateCount は 0（2026-09-24 実測。#173）。
+        // どちらも SQL だけで決まる既定のままなので、書き方を上書きしない。
+        (TargetStatement::ShowColumns, _) => None,
     }
 }
 
@@ -287,6 +296,23 @@ mod tests {
             engine_ddl(TargetStatement::ShowCreateTable, TableFormat::Hive),
             None
         );
+    }
+
+    #[test]
+    fn show_columns_は対象にし_書き方は上書きせず_s3_が無効でも形式を問い合わせる() {
+        // 形式は行の形（Hive は 20 桁に左詰め、Iceberg は詰めない）に使う（#173）。
+        assert_eq!(
+            target_statement("SHOW COLUMNS FROM t"),
+            Some(TargetStatement::ShowColumns)
+        );
+        for format in [TableFormat::Hive, TableFormat::Iceberg] {
+            assert_eq!(
+                engine_ddl(TargetStatement::ShowColumns, format),
+                None,
+                "{format:?}"
+            );
+        }
+        assert!(needs_format_for_update_count(TargetStatement::ShowColumns));
     }
 
     #[tokio::test]

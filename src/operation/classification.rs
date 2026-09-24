@@ -87,12 +87,13 @@ pub(super) fn substatement_type(query: &str) -> Option<&'static str> {
 /// `ColumnInfo` と `.metadata` の両方に使う。`SHOW CREATE TABLE` は Hive／Iceberg とも
 /// `createtab_stmt`／`string`（2026-09-23／24 実測。#161）、`SHOW CREATE VIEW` は `create view`／`varchar`
 /// （2026-09-24 実測）。どちらも Precision・Scale は 0、CaseSensitive は false で、Trino の varchar の
-/// 見え方とは違う。ほかの `SHOW`／`DESCRIBE` も本物の列名は Trino と違うが、列数まで違う文があるので
-/// ここでは扱わない（未対応。#173）。
+/// 見え方とは違う。`SHOW TABLES` は `tab_name`／`string`（2026-09-23／24 実測。#173）。
+/// 列数か行の形が違う文（SHOW COLUMNS、DESCRIBE）は `utility_rows::reshape` が完了時に作り直す（#173）。
 pub(super) fn fixed_column(query: &str) -> Option<(&'static str, &'static str)> {
     match substatement_type(query)? {
         "SHOW_CREATE_TABLE" => Some(("createtab_stmt", "string")),
         "SHOW_CREATE_VIEW" => Some(("create view", "varchar")),
+        "SHOW_TABLES" => Some(("tab_name", "string")),
         _ => None,
     }
 }

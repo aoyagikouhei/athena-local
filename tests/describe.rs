@@ -137,3 +137,141 @@ async fn 結果_s3_が無効でも_describe_は形式を問い合わせ_iceberg_
     assert_eq!(update_count_of(&harness, &execution).await, 0);
     assert!(harness.s3_puts().is_empty());
 }
+
+/// `SHOW COLUMNS FROM t` を、形式の問い合わせが `connector_name` を返す偽 Trino で実行する。
+/// Trino の `SHOW COLUMNS` は `DESCRIBE` と同じ 4 列（`Column`／`Type`／`Extra`／`Comment`）を返す。
+async fn run_show_columns(connector_name: &str, s3: bool, response: Value) -> (Harness, Value) {
+    let mut builder = Harness::builder(response.clone())
+        .route(
+            &probe_sql("default_catalog", "default_schema", "t"),
+            probe_response(connector_name),
+        )
+        .route("SHOW COLUMNS FROM t", response);
+    if s3 {
+        builder = builder.results_s3();
+    }
+    let harness = builder.start().await;
+    let execution = harness
+        .run_query(json!({
+            "QueryString": "SHOW COLUMNS FROM t",
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+        }))
+        .await;
+    assert_eq!(execution["QueryExecution"]["Status"]["State"], "SUCCEEDED");
+    assert_eq!(
+        harness.trino_sqls(),
+        [
+            probe_sql("default_catalog", "default_schema", "t"),
+            "SHOW COLUMNS FROM t".to_string()
+        ]
+    );
+    (harness, execution)
+}
+
+/// GetQueryResults の各行の値（1 行 1 値であることも確かめる）と、応答全体。
+async fn show_columns_results(harness: &Harness, execution: &Value) -> (Vec<String>, Value) {
+    let (status, results) = harness
+        .call(
+            "GetQueryResults",
+            json!({ "QueryExecutionId": execution_id(execution) }),
+        )
+        .await;
+    assert_eq!(status, 200, "{results}");
+    let values = results["ResultSet"]["Rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            let data = row["Data"].as_array().unwrap();
+            assert_eq!(data.len(), 1, "1 行 1 値: {row}");
+            data[0]["VarCharValue"].as_str().unwrap().to_string()
+        })
+        .collect();
+    (values, results)
+}
+
+/// 本物の SHOW COLUMNS の列は `field`／string の 1 列（Precision・Scale 0、CaseSensitive false。
+/// 2026-09-16／2026-09-24 実測。#173）。
+fn assert_field_column(results: &Value) {
+    let columns = results["ResultSet"]["ResultSetMetadata"]["ColumnInfo"]
+        .as_array()
+        .unwrap();
+    assert_eq!(columns.len(), 1, "{results}");
+    assert_eq!(columns[0]["Name"], "field");
+    assert_eq!(columns[0]["Label"], "field");
+    assert_eq!(columns[0]["Type"], "string");
+    assert_eq!(columns[0]["Precision"], 0);
+    assert_eq!(columns[0]["Scale"], 0);
+    assert_eq!(columns[0]["CaseSensitive"], false);
+}
+
+#[tokio::test]
+async fn show_columns_は_hive_なら_field_の_1_列で列名を_20_桁に左詰めする() {
+    let (harness, execution) = run_show_columns("hive", true, describe_response()).await;
+    let id = execution_id(&execution);
+    let (values, results) = show_columns_results(&harness, &execution).await;
+
+    // 4 列の応答の `Column` だけを使い、20 桁に満たない名前は右を空白で埋める（2026-09-16 実測）。
+    let padded = format!("n{}", " ".repeat(19));
+    assert_eq!(values, std::slice::from_ref(&padded));
+    assert_field_column(&results);
+    assert_eq!(results["UpdateCount"], 0);
+
+    let puts = harness.s3_puts();
+    assert_eq!(puts.len(), 2, "{puts:?}");
+    assert_eq!(puts[0].key, format!("athena/{id}.txt"));
+    assert_eq!(puts[0].content_type.as_deref(), Some("binary/octet-stream"));
+    assert_eq!(String::from_utf8(puts[0].body.clone()).unwrap(), padded);
+}
+
+#[tokio::test]
+async fn show_columns_は_iceberg_なら列名を詰めない() {
+    let (harness, execution) = run_show_columns("iceberg", true, describe_response()).await;
+    let (values, results) = show_columns_results(&harness, &execution).await;
+
+    // Iceberg のテーブルは詰めない（2026-09-24 実測。#173）。
+    assert_eq!(values, ["n"]);
+    assert_field_column(&results);
+    assert_eq!(results["UpdateCount"], 0);
+
+    let puts = harness.s3_puts();
+    assert_eq!(puts.len(), 2, "{puts:?}");
+    assert_eq!(puts[0].content_type.as_deref(), Some("binary/octet-stream"));
+    assert_eq!(puts[0].body, b"n");
+}
+
+/// 行の形に形式が要るので、結果ファイルを書かない none でも SHOW COLUMNS は形式を問い合わせる。
+#[tokio::test]
+async fn 結果_s3_が無効でも_show_columns_は形式を問い合わせ_iceberg_なら詰めない() {
+    let (harness, execution) = run_show_columns("iceberg", false, describe_response()).await;
+    let (values, _) = show_columns_results(&harness, &execution).await;
+    assert_eq!(values, ["n"]);
+    assert!(harness.s3_puts().is_empty());
+}
+
+#[tokio::test]
+async fn show_columns_は_20_文字以上の列名を詰めずに_txt_では行を改行でつなぐ() {
+    // 20 桁ちょうど・それを超える名前はそのまま（2026-09-16 実測。#173）。
+    let twenty = "abcdefghijklmnopqrst";
+    let twenty_one = "abcdefghijklmnopqrstu";
+    let mut response = describe_response();
+    response["data"] = json!([
+        ["n", "integer", "", ""],
+        [twenty, "varchar", "", ""],
+        [twenty_one, "varchar", "", ""]
+    ]);
+    let (harness, execution) = run_show_columns("hive", true, response).await;
+    let (values, _) = show_columns_results(&harness, &execution).await;
+
+    let expected = [
+        format!("n{}", " ".repeat(19)),
+        twenty.to_string(),
+        twenty_one.to_string(),
+    ];
+    assert_eq!(values, expected);
+    let puts = harness.s3_puts();
+    assert_eq!(
+        String::from_utf8(puts[0].body.clone()).unwrap(),
+        expected.join("\n")
+    );
+}

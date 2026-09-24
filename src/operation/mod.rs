@@ -6,6 +6,7 @@ mod query_execution;
 mod result_output;
 mod table_format;
 mod target_table;
+mod utility_rows;
 mod validation;
 mod work_group;
 

@@ -269,9 +269,9 @@ async fn run(
     // 結果 CSV の S3 書き込みが無効（ResultsMode::None）なら、result_output::write_result が判定結果を
     // 丸ごと捨てるので問い合わせない（Trino へのフル往復が無駄になるだけのレビュー指摘）。
     // ただし判定を GetQueryResults の UpdateCount にも使う文（`table_format::needs_format_for_update_count`）
-    // は S3 が無効でも問い合わせる（#160）。
+    // は S3 が無効でも問い合わせる（#160）。形式は SHOW COLUMNS の行の形にも使う（`utility_rows::reshape`。#173）。
     let statement = table_format::target_statement(&execution.query);
-    let engine_ddl = if matches!(config.results, ResultsMode::None)
+    let format = if matches!(config.results, ResultsMode::None)
         && !statement.is_some_and(table_format::needs_format_for_update_count)
     {
         None
@@ -294,13 +294,15 @@ async fn run(
                         cancel,
                     )
                     .await
-                    .and_then(|format| table_format::engine_ddl(statement, format))
                 }
                 None => None,
             },
             None => None,
         }
     };
+    let engine_ddl = statement
+        .zip(format)
+        .and_then(|(statement, format)| table_format::engine_ddl(statement, format));
 
     // 分類も本体と同じカタログ・スキーマで問い合わせ、関数の解決先を揃える。
     let mut bound = Vec::with_capacity(execution.execution_parameters.len());
@@ -322,6 +324,7 @@ async fn run(
         result => result,
     }?;
     let outcome = split_explain_rows(&execution.query, outcome);
+    let outcome = super::utility_rows::reshape(&execution.query, outcome, format);
     Ok((outcome, engine_ddl))
 }
 

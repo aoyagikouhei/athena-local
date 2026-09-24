@@ -151,22 +151,22 @@ async fn show_は_txt_の隣に_txt_metadata_を置く() {
     // SHOW TABLES の `.metadata` は本体と同じ binary/octet-stream（2026-09-23 実測）。
     assert_eq!(puts[1].content_type.as_deref(), Some("binary/octet-stream"));
 
-    // 列 `table_name varchar`。message = 6 + 12 + 12 + 9 + 6 + 2 + 2 + 2 = 51 = 0x33。
-    // Precision の ff を含むので、非 UTF-8 の body が偽 S3 を通る証明にもなる。
+    // 列は Trino の `table_name varchar` ではなく本物と同じ `tab_name string`（2026-09-23／24 実測。#173）。
+    // string は Precision・Scale・CaseSensitive（7／8／10）を出さない（src/metadata.rs の `optional_fields`）。
+    // message = 6 + 10 + 10 + 8 + 2 = 36 = 0x24。
     assert_eq!(
         hex_of(&puts[1].body),
         hex(&format!(
             "{}
-             2233
+             2224
                0a04 68697665
-               220a 7461626c655f6e616d65
-               2a0a 7461626c655f6e616d65
-               3207 76617263686172
-               38ffffffff07 4000 4803 5001",
+               2208 7461625f6e616d65
+               2a08 7461625f6e616d65
+               3206 737472696e67
+               4803",
             engine_id_field()
         ))
     );
-    assert!(puts[1].body.contains(&0xff), "{:?}", puts[1].body);
 }
 
 #[tokio::test]
