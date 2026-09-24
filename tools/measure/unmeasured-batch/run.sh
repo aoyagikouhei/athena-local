@@ -221,19 +221,19 @@ source "$SCRIPT_DIR/items-retention.sh"
 
 ALL_ITEMS="r1 r2 r3 r4 x1 x2 m1 m2 m3 m5 s1 s2 p1 t4c t1 t2 t3 t4 t5 t8 w1 e1 e2"
 
-# --- フェーズ 2 の差し込み口: 保持期限の段階 A（ここ。本編より前。ONLY に t6/t7 が
-# 無ければ 65 分待ちを起こさない設計にする） ---
+# --- フェーズ 2 の差し込み口: 保持期限の段階 A（ここ。本編より前）。段階 A は ONLY に t6 が
+# あるときだけ、段階 B（下）は t7 があるときだけ動かす。`ONLY=t6` で段階 A だけ流して終了し、
+# 65 分以上あとに `RUN_DIR=<同じ run> ONLY=t7` で段階 B だけ流せば、端末を 65 分占有しない
+# （#147）。`ONLY=t6,t7` は従来どおり A → 締切まで待つ → B。 ---
 
-if [ "$RETENTION_SELECTED" = 1 ]; then
+if want_item t6; then
   # t6 の行は、段階 A を新しく流すとき（state.env が無いとき）だけ消す。RUN_DIR を
-  # 指定した再開（例: ONLY=t7 だけで段階 B を流し直す）では、前回の段階 A の行を残す。
+  # 指定した再開では、前回の段階 A の行を残す（段階 A は state.env があれば投げ直さない）。
   if [ ! -s "$RETENTION_STATE" ]; then
     reset_item_rows t6
   fi
-  reset_item_rows t7
   if [ "$WAIT_RETENTION" = 0 ]; then
     skip_item t6 phase-a "WAIT_RETENTION=0のため実行しない"
-    skip_item t7 phase-b "WAIT_RETENTION=0のため実行しない"
   else
     retention_phase_a
   fi
@@ -248,10 +248,16 @@ for id in $ALL_ITEMS; do
   "item_$id" "$id" || echo "== $id: 0 以外を返しました（続ける）"
 done
 
-# --- フェーズ 2 の差し込み口: 保持期限の段階 B（ここ。本編の後・report.py の前） ---
+# --- フェーズ 2 の差し込み口: 保持期限の段階 B（ここ。本編の後・report.py の前）。
+# state.env が無ければ（段階 A を流していない・RUN_DIR が違う）skip 行だけで待たない。 ---
 
-if [ "$RETENTION_SELECTED" = 1 ] && [ "$WAIT_RETENTION" != 0 ]; then
-  retention_phase_b
+if want_item t7; then
+  reset_item_rows t7
+  if [ "$WAIT_RETENTION" = 0 ]; then
+    skip_item t7 phase-b "WAIT_RETENTION=0のため実行しない"
+  else
+    retention_phase_b
+  fi
 fi
 
 if [ "$TARGET" = real ]; then
