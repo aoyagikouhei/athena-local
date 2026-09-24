@@ -62,7 +62,8 @@ pub fn validation_errors(violations: &[String]) -> String {
 /// 本物の InvalidRequestException は、より細かい理由を AthenaErrorCode に載せる。
 ///
 /// 本文は `{"__type","AthenaErrorCode","ErrorCode","Message"}` の 4 キー（2026-09-17
-/// 実測。`ErrorCode` は `AthenaErrorCode` と同じ値で別に付く）。
+/// 実測。`ErrorCode` は `AthenaErrorCode` と同じ値で別に付く。構文エラーの `MALFORMED_QUERY`
+/// でも同じ形。2026-09-24 実測）。
 pub fn invalid_request_with_code(message: impl Into<String>, athena_error_code: &str) -> Response {
     let code = "InvalidRequestException";
     error_body(
