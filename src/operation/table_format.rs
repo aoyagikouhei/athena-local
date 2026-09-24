@@ -1,7 +1,8 @@
-//! DROP TABLE と ALTER TABLE ... ADD COLUMNS と SHOW CREATE TABLE の結果ファイルを、対象テーブルの形式
-//! （Trino のコネクタ）に応じて書き分ける。
+//! DROP TABLE と ALTER TABLE ... ADD COLUMNS と SHOW CREATE TABLE と DESCRIBE の結果ファイル（と
+//! SHOW CREATE TABLE / DESCRIBE の UpdateCount）を、対象テーブルの形式（Trino のコネクタ）に応じて書き分ける。
 //! Phase 3b は ALTER TABLE ... ADD COLUMNS × Hive を対象に足す（2026-09-21 実測）。
 //! #151 は SHOW CREATE TABLE × Iceberg を対象に足す（2026-09-24 実測）。
+//! #160 は DESCRIBE × Iceberg を対象に足す（2026-09-24 実測。SHOW CREATE TABLE と同じ割れ方）。
 
 use crate::statement::quote_literal;
 use crate::trino::{Cancel, Outcome, Trino};
@@ -17,6 +18,9 @@ pub(super) enum TargetStatement {
     /// `SHOW CREATE TABLE`。Iceberg だけ本体・`.metadata` を binary/octet-stream で置く
     /// （2026-09-24 実測。#151）。
     ShowCreateTable,
+    /// `DESCRIBE`。Iceberg だけ本体・`.metadata` を binary/octet-stream で置き、UpdateCount を 0 にする
+    /// （2026-09-24 実測。#160）。`DESC` は `substatement_type` が None なので対象にならない（未実測）。
+    Describe,
 }
 
 /// 問い合わせで分かる、対象テーブルの Trino コネクタ。
@@ -44,9 +48,12 @@ pub(super) enum EngineDdl {
     /// （field 1）はエンジン（Trino）のクエリ ID にする（本物の `.metadata` は不透明で先頭 ID を
     /// 観測できないため、EXPLAIN に倣う。2026-09-24 実測。#151）。
     ShowCreateTableIceberg,
+    /// DESCRIBE × Iceberg。SHOW CREATE TABLE × Iceberg と同じ扱い（本体・`.metadata` とも binary/octet-stream、
+    /// 先頭はエンジン ID、UpdateCount は 0。2026-09-24 実測。#160）。
+    DescribeIceberg,
 }
 
-/// この文が対象か。対象は DROP TABLE と、ALTER TABLE の ADD COLUMNS / REPLACE COLUMNS と、SHOW CREATE TABLE だけ
+/// この文が対象か。対象は DROP TABLE と、ALTER TABLE の ADD COLUMNS / REPLACE COLUMNS と、SHOW CREATE TABLE と DESCRIBE だけ
 /// （`substatement_type` の判定をそのまま使い、判定を二重に持たない）。
 /// 修飾名でカタログを明示していても対象にする（Phase 2）。
 pub(super) fn target_statement(query: &str) -> Option<TargetStatement> {
@@ -55,6 +62,7 @@ pub(super) fn target_statement(query: &str) -> Option<TargetStatement> {
         Some("ALTER_TABLE_ADD_COLUMN") => Some(TargetStatement::AlterTableAddColumns),
         Some("ALTER_TABLE_REPLACE_COLUMN") => Some(TargetStatement::AlterTableReplaceColumns),
         Some("SHOW_CREATE_TABLE") => Some(TargetStatement::ShowCreateTable),
+        Some("DESCRIBE_TABLE") => Some(TargetStatement::Describe),
         _ => None,
     }
 }
@@ -62,7 +70,10 @@ pub(super) fn target_statement(query: &str) -> Option<TargetStatement> {
 /// 形式の判定を GetQueryResults の UpdateCount にも使う文か。結果ファイルを書かない設定でも
 /// 問い合わせる根拠になる（#160）。DROP TABLE と ALTER TABLE は結果ファイルにしか効かない。
 pub(super) fn needs_format_for_update_count(statement: TargetStatement) -> bool {
-    matches!(statement, TargetStatement::ShowCreateTable)
+    matches!(
+        statement,
+        TargetStatement::ShowCreateTable | TargetStatement::Describe
+    )
 }
 
 /// テーブルの形式と存在を Trino に 1 回の問い合わせで確かめる。失敗・非対応の形式・
@@ -130,6 +141,8 @@ pub(super) fn engine_ddl(statement: TargetStatement, format: TableFormat) -> Opt
             Some(EngineDdl::ShowCreateTableIceberg)
         }
         (TargetStatement::ShowCreateTable, TableFormat::Hive) => None,
+        (TargetStatement::Describe, TableFormat::Iceberg) => Some(EngineDdl::DescribeIceberg),
+        (TargetStatement::Describe, TableFormat::Hive) => None,
     }
 }
 

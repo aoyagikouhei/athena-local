@@ -11,6 +11,16 @@ later name the date they were measured on.
 
 ### Changed
 
+- `GetQueryResults` leaves `UpdateCount` out for `DESCRIBE` and
+  `SHOW CREATE TABLE` on a Hive table and returns `0` on an Iceberg table, as
+  real Athena does (measured 2026-09-24); the format probe for these two
+  statements now also runs with `ATHENA_LOCAL_RESULTS=none`
+  ([docs](docs/api.md#supported-api),
+  [docs](docs/ddl.md#ddl-that-depends-on-the-target-tables-format)).
+- `DESCRIBE` on an Iceberg table writes its `.txt` and `.metadata` as
+  `binary/octet-stream` with the engine's query id at the head of the
+  `.metadata`, as real Athena does (measured 2026-09-24)
+  ([docs](docs/ddl.md#ddl-that-depends-on-the-target-tables-format)).
 - `SHOW CREATE VIEW` writes its `.txt` and `.metadata` as `binary/octet-stream`
   with the engine's query id at the head of the `.metadata`, and reports
   `SubstatementType` `SHOW_CREATE_VIEW`, as real Athena does (measured

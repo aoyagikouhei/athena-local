@@ -63,7 +63,11 @@ Behaviour that matches real Athena:
   `UpdateCount`, and list a `rows` (`bigint`) column in `ColumnInfo`. DDL without a
   count returns neither rows nor columns. Measured on Hive-format and Iceberg tables.
 - `SELECT` and `SHOW` return `UpdateCount` `0`; DDL leaves it out (Athena sends
-  `null`, which SDKs read the same way).
+  `null`, which SDKs read the same way). `DESCRIBE` and `SHOW CREATE TABLE`
+  follow the target table's format: on a Hive table (or when the format cannot
+  be determined) they leave `UpdateCount` out, on an Iceberg table they return
+  `0` (measured 2026-09-24; see
+  [DDL that depends on the target table's format](ddl.md#ddl-that-depends-on-the-target-tables-format)).
 - Every statement that has columns gets a companion `.metadata` file next to its
   result file with `ATHENA_LOCAL_RESULTS=s3`, the protobuf sidecar Athena JDBC
   3.x reads by default. See [Result files](result-files.md).

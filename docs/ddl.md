@@ -19,6 +19,12 @@ Iceberg table in the same round, each created both without and with a CTAS):
 | `ALTER TABLE ... REPLACE COLUMNS` | Iceberg | Athena itself fails the query | — | — |
 | `SHOW CREATE TABLE` | Hive | the DDL text | `application/octet-stream` | plain protobuf with the `QueryExecutionId` at its head |
 | `SHOW CREATE TABLE` | Iceberg | the DDL text (here, Trino's `SHOW CREATE TABLE` output) | `binary/octet-stream` | Athena writes an opaque blob (see [Caveats](caveats.md#result-files-and-metadata)); athena-local writes plain protobuf with the engine's query id at its head |
+| `DESCRIBE` | Hive | the column list | `application/octet-stream` | plain protobuf with the `QueryExecutionId` at its head |
+| `DESCRIBE` | Iceberg | the column list (here, Trino's `DESCRIBE` output) | `binary/octet-stream` | Athena writes an opaque blob; athena-local writes plain protobuf with the engine's query id at its head (measured 2026-09-24) |
+
+`SHOW CREATE TABLE` and `DESCRIBE` also split their `UpdateCount` by format:
+a Hive table leaves it out, an Iceberg table returns `0` (measured 2026-09-24;
+see [Supported API](api.md#supported-api)).
 
 The 41-byte and 38-byte companions carry no `ColumnInfo` at all, which is
 outside what a `.metadata` file is otherwise for. Athena JDBC 3.8.1 reads them
@@ -46,9 +52,11 @@ were measured on 2026-09-21 on whichever table format Athena accepts them on
 six, only `DROP COLUMN` and `RENAME TO` can be run through athena-local; the
 rest are rejected at the syntax check, so their rows describe Athena alone.
 
-Only these four statements trigger the format probe below, and only with
+Only these five statements trigger the format probe below; no other statement
+sends it. `DROP TABLE` and `ALTER TABLE` send it only with
 `ATHENA_LOCAL_RESULTS=s3` (with `none` there is no result file for it to
-change); no other statement sends it. For a matching statement, athena-local
+change), while `SHOW CREATE TABLE` and `DESCRIBE` send it with `none` too,
+because their `UpdateCount` depends on the answer. For a matching statement, athena-local
 sends the format probe as a single query, asking which connector backs the
 target's catalog and whether the target exists:
 
@@ -80,10 +88,14 @@ athena-local falls back to ordinary column-less DDL (empty file, no
   `ALTER TABLE ... ADD COLUMNS`, Trino itself errors out on a missing target
   before athena-local would reach this fallback.)
 
-`SHOW CREATE TABLE` never falls back to an empty file: in these cases it gets
-the Hive row (`application/octet-stream`, the `QueryExecutionId` at the head of
-its `.metadata`), which differs from Athena when the target is an Iceberg
-table.
+`SHOW CREATE TABLE` and `DESCRIBE` never fall back to an empty file: in these
+cases they get the Hive row (`application/octet-stream`, the `QueryExecutionId`
+at the head of the `.metadata`, no `UpdateCount`), which differs from Athena
+when the target is an Iceberg table. `DESC`, `DESCRIBE EXTENDED` and
+`DESCRIBE FORMATTED` are not recognised as `DESCRIBE` here and always get the
+Hive row (how Athena treats them on an Iceberg table has not been measured),
+and a view in an Iceberg catalog is detected as an Iceberg table (Athena's
+`DESCRIBE` on a view has not been measured either).
 
 For `DROP TABLE`, that last fallback happens to match what real Athena does
 for `DROP TABLE IF EXISTS` on a missing table too (measured 2026-09-21). See

@@ -114,7 +114,8 @@
 - 形式と存在の確認は `system.jdbc.tables` の 1 クエリにまとめる（往復 1 回、カタログ名を識別子として SQL に埋めずに済む、対象が存在しない `DROP TABLE IF EXISTS` で本物と食い違わない）。（#39、2026-09-20、ユーザー確認済み）
 - 修飾名のカタログも見る（1/2/3 パート、引用符の有無、`IF EXISTS`、コメント。カタログかスキーマが決まらなければ判定しない）。修飾名から取ったカタログにも別名を当て、引用符の無い名前は Trino の規則どおり小文字にする。問い合わせの SQL のリテラルとヘッダは同じ別名解決後のカタログ名を使う。（#39、2026-09-20、ユーザーの判断）
 - カタログ未指定・問い合わせの失敗・未知の `connector_name` は、すべて今までどおりの扱いに倒す（判定しない）。（#39、2026-09-20）
-- S3 への書き込みが無効なら形式を問い合わせない。取り消し済みなら問い合わせない。対象の文のときだけ問い合わせる。（#39、2026-09-20）
+- S3 への書き込みが無効なら形式を問い合わせない。取り消し済みなら問い合わせない。対象の文のときだけ問い合わせる。（#39、2026-09-20）→ `SHOW CREATE TABLE` と `DESCRIBE` は判定を `GetQueryResults` の `UpdateCount` にも使うので、S3 が無効でも問い合わせる（`table_format::needs_format_for_update_count`）。`DROP TABLE`／`ALTER TABLE` は今までどおり。（#160、2026-09-24、ユーザー確認済み）
+- `UpdateCount` は `GetQueryResults` で決め直さず、完了時に `operation::execution::update_count` が文の種類・Trino の件数・形式の判定から決めて `Store::finish` に渡し、`Execution.update_count` に持つ（形式の判定は実行時にしか取れない。EXPLAIN の行分けと同じ「完了時に決めて finish に渡す」形）。null にする文は `content_type::carries_execution_id`（`DESCRIBE`／`DESC`／`SHOW CREATE TABLE`）と同じ述語で選び、判定を増やさない（本物でも `UpdateCount` の有無と Content-Type は一致する）。`DESCRIBE` × Iceberg は `EngineDdl::DescribeIceberg` として `ShowCreateTableIceberg` と同じ腕に並べる。（#160、2026-09-24）
 - `DROP TABLE` × Iceberg の本体（改行 1 つ）と `ALTER` × Hive の本体（0 バイト）は条件をまとめずバリアントで分ける。`ADD COLUMNS` と `REPLACE COLUMNS` は Hive で同じ 38 バイトの `.metadata` を共有する（`(id, None, None)` で書く）。（#39、2026-09-20、#43、2026-09-21）
 - 形式の問い合わせを `SHOW CREATE TABLE` にも使い（Iceberg なら本体・`.metadata` とも binary、先頭はエンジン ID）、`EngineDdl` に上書きの向きが逆（application ではなく binary）の腕 `ShowCreateTableIceberg` を足した。`EngineDdl` の改名はしない（挙動を変えない大きな差分になるため。doc で「形式で書き方を上書きする文」と補う）。上書きの Content-Type・先頭 ID は `EngineDdl` のメソッドにせず `write_result` の `match` で腕ごとに分ける。（#151、2026-09-24）
 - 限界として、Athena は同じ `AwsDataCatalog` に両形式を混在させるが Trino は別カタログなので、本物と一致するのは利用者の Trino のカタログ構成と形式が揃っている場合だけ。これを利用者向けの文書に書く。（#39、2026-09-20）

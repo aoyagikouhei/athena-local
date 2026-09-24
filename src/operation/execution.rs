@@ -357,7 +357,7 @@ fn split_explain_rows(query: &str, mut outcome: Outcome) -> Outcome {
 
 /// GetQueryResults の UpdateCount。本物は SELECT と SHOW でも 0 を返し、DDL では null を返す
 /// （2026-09-14 実測。SDK から見て null と省略は同じなので、DDL は省く）。DML と CTAS は Trino が返す
-/// 件数をそのまま載せる。DESCRIBE と SHOW CREATE TABLE は Hive のテーブル（と判定できないとき）では
+/// 件数をそのまま載せる。DESCRIBE と SHOW CREATE TABLE は Hive のテーブル（と判定できないとき。`DESC` も）では
 /// null、Iceberg のテーブルでは 0（2026-09-24 実測。#160）。null になる文は `.txt` の Content-Type と
 /// `.metadata` の先頭 ID を決める `content_type::carries_execution_id` と同じ述語で選ぶ（本物でも
 /// UpdateCount の有無と Content-Type は一致している）。
@@ -368,7 +368,10 @@ fn update_count(query: &str, outcome: &Outcome, engine_ddl: Option<EngineDdl>) -
     if super::classification::statement_type(query) == "DDL" {
         return None;
     }
-    let iceberg = matches!(engine_ddl, Some(EngineDdl::ShowCreateTableIceberg));
+    let iceberg = matches!(
+        engine_ddl,
+        Some(EngineDdl::ShowCreateTableIceberg | EngineDdl::DescribeIceberg)
+    );
     if crate::content_type::carries_execution_id(query) && !iceberg {
         return None;
     }
@@ -404,11 +407,16 @@ mod tests {
         assert_eq!(update_count("DROP TABLE t", &uncounted, None), None);
     }
 
-    /// 2026-09-24 実測（#160）: DESCRIBE と Hive の SHOW CREATE TABLE は null、Iceberg の SHOW CREATE TABLE は 0。
+    /// 2026-09-24 実測（#160）: Hive の DESCRIBE と SHOW CREATE TABLE は null、Iceberg なら 0。
     #[test]
     fn update_count_は_describe_と_hive_の_show_create_table_で省き_iceberg_なら_0() {
         let uncounted = Outcome::default();
         assert_eq!(update_count("DESCRIBE t", &uncounted, None), None);
+        assert_eq!(update_count("DESC t", &uncounted, None), None);
+        assert_eq!(
+            update_count("DESCRIBE t", &uncounted, Some(EngineDdl::DescribeIceberg)),
+            Some(0)
+        );
         assert_eq!(update_count("SHOW CREATE TABLE t", &uncounted, None), None);
         assert_eq!(
             update_count(

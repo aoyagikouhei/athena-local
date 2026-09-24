@@ -506,6 +506,26 @@
 - 2026-09-18（#17、[statements.md](statements.md) の「先頭コメント付きの文ごとの見え方」）: CREATE DATABASE／DROP DATABASE とも `UpdateCount` を省く
 - 採用: 判断の記録は無い（#1 のノートにこの食い違いの説明は無い）。
 
+### UTILITY 文の `UpdateCount` と結果ファイルはテーブルの形式で割れる（DESCRIBE・SHOW COLUMNS・SHOW TBLPROPERTIES・SHOW CREATE TABLE × Hive／Iceberg）
+- 日付: 2026-09-24 ／ issue: #160 ／ スクリプト: `tools/measure/unmeasured-batch/run.sh`（項目 `u1`。本体は `tools/measure/unmeasured-batch/items-update-count.sh`） ／ 生データ: `$HOME/athena-unmeasured-batch-measurements/run-20260924-095149/u1/`
+- 相手: 本物の Athena（engine version 3、workgroup `primary`、Catalog `AwsDataCatalog`、Database `<DB>`）
+- 投げたもの: 同じラウンドに Hive の外部テーブル（`CREATE EXTERNAL TABLE <DB>.<t> (n int) LOCATION '<OUTPUT>tables-probe-160-u1-hive-ext/'`）と Iceberg の素の CREATE（`CREATE TABLE <DB>.<t> (n int) LOCATION '<OUTPUT>tables-probe-160-u1-ice-plain/' TBLPROPERTIES ('table_type'='ICEBERG')`）を作り、両方に `DESCRIBE`・`SHOW COLUMNS FROM`・`SHOW TBLPROPERTIES`・`SHOW CREATE TABLE` を投げた（r5 と同じ作り方と後始末）
+- 返ったもの（16 文すべて SUCCEEDED。`GetQueryResults` の `UpdateCount` は CLI の応答でキーはあり `null`）:
+
+  | 文 | 対象 | SubstatementType | 本体 | `.metadata` | Content-Type（本体 / `.metadata`） | `UpdateCount` |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | DESCRIBE | Hive 外部テーブル | DESCRIBE_TABLE | `<id>.txt` 62B | 152B の素の protobuf（先頭 `0a 24` + QueryExecutionId） | application / application | 無し（null） |
+  | DESCRIBE | Iceberg | DESCRIBE_TABLE | `<id>.txt` 117B | **568B の base64 の不透明な形式**（先頭 `AR4A…`） | **binary / binary** | **0** |
+  | SHOW COLUMNS | Hive 外部テーブル | SHOW_COLUMNS | 20B | 312B の不透明な形式 | binary / binary | 0 |
+  | SHOW COLUMNS | Iceberg | SHOW_COLUMNS | 1B | 312B の不透明な形式 | binary / binary | 0 |
+  | SHOW TBLPROPERTIES | Hive 外部テーブル | SHOW_TABLE_PROPERTIES | 46B | 460B の不透明な形式 | binary / binary | 0 |
+  | SHOW TBLPROPERTIES | Iceberg | SHOW_TABLE_PROPERTIES | 22B | 440B の不透明な形式 | binary / binary | 0 |
+  | SHOW CREATE TABLE（対照） | Hive 外部テーブル | SHOW_CREATE_TABLE | 447B | 88B の素の protobuf | application / application | 無し（null） |
+  | SHOW CREATE TABLE（対照） | Iceberg | SHOW_CREATE_TABLE | 233B | 332B の不透明な形式 | binary / binary | 0 |
+
+- 採用: **`DESCRIBE` も `SHOW CREATE TABLE` と同じくテーブルの形式で割れる**（Hive は null・application・素の protobuf、Iceberg は 0・binary・不透明）。`SHOW COLUMNS`／`SHOW TBLPROPERTIES` は形式によらず 0・binary。「`UpdateCount` が無い ＝ application ＝ 素の protobuf」の相関はこの 16 文でも崩れない。athena-local は #160 で `DESCRIBE` にも形式の問い合わせを使い、`UpdateCount` を完了時に決めるようにした
+- 備考: `DESC`、`DESCRIBE EXTENDED`／`FORMATTED`、`DESCRIBE t PARTITION (...)`／列指定、ビューへの `DESCRIBE` は測っていない（[../unmeasured.md](../unmeasured.md)）
+
 ## 値の表記
 
 `GetQueryResults` と `.csv` の本体に出る値の文字列。
