@@ -347,10 +347,14 @@ run_stmt() {
 # `if probe_prefix_exists ...; then skip_item ...; fi` の形（0 なら skip）で使う。
 # 見つかれば 0（呼び出し側は作らずに skip する）、SHOW TABLES 自体が失敗して確認できなければ
 # 安全側に倒して 0（同じく skip）。何も見つからなければ 1。
+# パターン付き（`SHOW TABLES LIKE '...%'`）は使わない。Athena の SHOW TABLES のワイルドカードは
+# `*`／`|` で `%` はリテラルになり、`LIKE` 句の受理も本物で未実測。失敗すると安全側の判定で
+# フィクスチャを使う 9 項目が全部 skip になるので、過去のスクリプト（explain-variants.sh など）と
+# 同じ素の SHOW TABLES を投げて、結果本体を接頭辞で grep する。
 probe_prefix_exists() {
   local item_dir=$1 catalog=$2 database=$3 prefix=$4
   local label="_probe_show_tables_${prefix}"
-  if ! run_stmt "$item_dir" "$label" "SHOW TABLES LIKE '${prefix}%'" "$catalog" "$database" >/dev/null 2>&1; then
+  if ! run_stmt "$item_dir" "$label" "SHOW TABLES" "$catalog" "$database" >/dev/null 2>&1; then
     echo "== $prefix: SHOW TABLES が失敗したので安全側に倒して skip 扱いにする" >&2
     return 0
   fi

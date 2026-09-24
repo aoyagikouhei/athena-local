@@ -43,7 +43,7 @@
 ## エラー応答（[measurements/errors.md](measurements/errors.md)）
 
 - [ ] `QUEUED` のクエリへの `GetQueryResults` の文言（`RUNNING` のときの `Query has not yet finished. Current state: RUNNING` だけ実測。athena-local は `Current state: QUEUED` を返す。#102）
-- [ ] 構文エラー（`MALFORMED_QUERY`）など、冪等性の衝突とトークンの検証以外の `AthenaErrorCode` 付きエラーの本文に `ErrorCode` キーが付くか（#3。`ErrorCode` 付きの形を確かめたのはこの 2 つと、#83 の `GetQueryResults` の検証エラー、#87 の `ExecutionParameters` の要素が `null` のケース（[measurements/errors.md](measurements/errors.md) の「#84 で未実測だった型違いなどの組み合わせ」に追記済み）。ただし後者は `StartQueryExecution` の構文チェックの経路そのものを狙って測ったものではない。構文エラーの経路は #113 のバッチで測る）
+- [ ] 構文エラー（`MALFORMED_QUERY`）など、冪等性の衝突とトークンの検証以外の `AthenaErrorCode` 付きエラーの本文に `ErrorCode` キーが付くか（#3。`ErrorCode` 付きの形を確かめたのはこの 2 つと、#83 の `GetQueryResults` の検証エラー、#87 の `ExecutionParameters` の要素が `null` のケース（[measurements/errors.md](measurements/errors.md) の「#84 で未実測だった型違いなどの組み合わせ」に追記済み）。ただし後者は `StartQueryExecution` の構文チェックの経路そのものを狙って測ったものではない。構文エラーの経路は #113 のバッチ（生 HTTP）で測る。本物での実行は #147）
 
 ## 実クライアントでの疎通（[measurements/clients.md](measurements/clients.md)）
 
@@ -51,7 +51,7 @@
 
 ## `ExecutionParameters`（値そのものを本物で測った記録はまだ無い。分類にからむ記録は [measurements/statements.md](measurements/statements.md) にある）
 
-- [ ] 空白入りの括弧で始まるクエリ（`( SELECT 1 )`）を本物がどう分類するか。括弧の直後にスペースが無い `(SELECT 1)` は #76 の生データの読み直しで `StatementType: DML`／`SubstatementType: SELECT` と確認済み（#113、[measurements/statements.md](measurements/statements.md)）。athena-local は式として通す（CHANGELOG の Unreleased / Fixed の項目。レビューで見つけた）。空白入りの `( SELECT 1 )` は #113 のバッチで測る
+- [ ] 空白入りの括弧で始まるクエリ（`( SELECT 1 )`）を本物がどう分類するか。括弧の直後にスペースが無い `(SELECT 1)` は #76 の生データの読み直しで `StatementType: DML`／`SubstatementType: SELECT` と確認済み（#113、[measurements/statements.md](measurements/statements.md)）。athena-local は式として通す（CHANGELOG の Unreleased / Fixed の項目。レビューで見つけた）。空白入りの `( SELECT 1 )` は #113 のバッチで測る（本物での実行は #146）
 
 ## Trino（[measurements/trino.md](measurements/trino.md)）
 

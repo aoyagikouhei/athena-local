@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# issue #113: 未実測 28 件（既に答えがある 5 件は除く）のうち、フェーズ 1 の対象（生 HTTP・
-# 保持期限を除く 19 項目）を 1 本のバッチで測る。.claude/issue-notes/113.md の「## 計画」節が仕様の正。
+# issue #113: 未実測 28 件（既に答えがある 5 件は除く）を本物の Athena に投げるバッチ。
+# #113 ではバッチを作って TARGET=local でドライランするところまで。本物での実行は、SQL / API の
+# 項目（aws CLI で投げるもの）を #146、生 HTTP（raw.py）と保持期限（t6/t7）を #147 で、ONLY で
+# 項目群ごとに段階的に流す（1 件の失敗が他を道連れにしないため）。
 #
 # 使い方（tools/dev.sh 経由。ホストで直接叩かない）:
 #   tools/dev.sh env TARGET=local WAIT_RETENTION=0 bash tools/measure/unmeasured-batch/run.sh

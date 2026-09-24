@@ -108,7 +108,7 @@
 - 相手: 本物の Athena（#76 の生データ）
 - 投げたもの: `(SELECT 1)`（括弧の直後にスペース無し）
 - 返ったもの: `g10-parenthesized.execution.json` で `StatementType: DML`／`SubstatementType: SELECT`。括弧で始まっても通常の `SELECT` と同じに分類される
-- 備考: `docs/dev/unmeasured.md` の「`ExecutionParameters`」節にあった「括弧で始まるクエリを本物がどう分類するか」を、#113 でこの生データを読み直して埋めた。前後にスペースを挟んだ `( SELECT 1 )` はこの生データには無く、#113 のバッチで別途測る。
+- 備考: `docs/dev/unmeasured.md` の「`ExecutionParameters`」節にあった「括弧で始まるクエリを本物がどう分類するか」を、#113 でこの生データを読み直して埋めた。前後にスペースを挟んだ `( SELECT 1 )` はこの生データには無く、#113 のバッチで別途測る（本物での実行は #146）。
 
 ### SHOW FUNCTIONS の結果ファイル（#76 の生データの読み直し）
 - 日付: 2026-09-23（生データ `run-20260923-065415`） ／ issue: #80（実測は #76） ／ スクリプト: 無し（#76 のラウンドの生データ） ／ 生データ: `~/athena-content-type-measurements/run-20260923-065415/h1-show-functions.*`
