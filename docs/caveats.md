@@ -309,7 +309,8 @@ Known differences between athena-local and real Athena, grouped by topic.
   is `IDEMPOTENT_PARAMETER_MISMATCH`; whether real Athena does the same has
   not been measured. The token → id mapping is kept in memory until the
   execution it points at is dropped (`ATHENA_LOCAL_RETENTION_SECONDS`), and
-  real Athena's token lifetime beyond 60 seconds has not been measured.
+  real Athena's token lifetime beyond 67 minutes (2026-09-24) has not
+  been measured.
   **Raw HTTP / curl clients must supply their own token** — the AWS CLI and
   SDKs add one automatically, but a request built by hand needs to set
   `ClientRequestToken` itself (measured).
@@ -318,7 +319,8 @@ Known differences between athena-local and real Athena, grouped by topic.
   `ATHENA_LOCAL_RETENTION_SECONDS` (one hour by default) and then dropped,
   together with the `ClientRequestToken` that points at it; queued and running
   queries are never dropped. Real Athena's retention period has not been
-  measured beyond 60 seconds, so one hour is athena-local's own number. Once a
+  measured beyond 67 minutes (2026-09-24), so one hour is
+  athena-local's own number. Once a
   query is dropped, `GetQueryExecution`, `GetQueryResults` and
   `StopQueryExecution` treat its id like an unknown one and fail with
   `QUERY_EXECUTION_NOT_FOUND`; what real Athena returns for an expired id has

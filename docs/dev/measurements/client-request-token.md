@@ -190,5 +190,19 @@
 - 返ったもの:
   - 1 本目: SUCCEEDED（`SubmissionDateTime` 2026-09-24T02:47:03.208Z、`CompletionDateTime` 02:47:03.546Z）。`StatementType` `DML`、`SubstatementType` `SELECT`。`<id>.csv` 15B・`<id>.csv.metadata` 87B
   - 再送: 1 本目と同じ `QueryExecutionId`。その `GetQueryExecution` は 1 本目と同じ内容（`SubmissionDateTime`・`CompletionDateTime`・`Statistics` とも同じ）で、新しい実行は作られていない
-  - 段階 A の終了時刻（再送の後）は 02:47:16 UTC ごろ（`state.env` の締切 03:52:16 UTC ＝ 終了 + 65 分から逆算）。再送は 1 本目の完了から十数秒以内
-- 備考: 段階 A は段階 B（65 分以上あとの再送・`GetQueryExecution`・`StopQueryExecution`）の対照。直後の再送が同じ ID になることは 1 回目（2026-09-17、60 秒後まで）と同じ。段階 B は #147 の 2 回目で測る（`RUN_DIR=<同じ run> ONLY=t7`）
+  - 再送の `t6-immediate-reuse.start.json` の mtime は 11:47:12 JST（02:47:12 UTC）で、1 本目の完了から約 9 秒後。段階 A の終了時刻は 02:47:16 UTC（`state.env` の締切 03:52:16 UTC ＝ 終了 + 65 分、`state.env` の mtime 11:47:16 JST）
+- 備考: 段階 A は段階 B（65 分以上あとの再送・`GetQueryExecution`・`StopQueryExecution`）の対照。直後の再送が同じ ID になることは 1 回目（2026-09-17、60 秒後まで）と同じ。段階 B は下の節（#147 の 2 回目）
+
+### 保持期限: 65 分後の再送・GetQueryExecution・StopQueryExecution（段階 B）
+- 日付: 2026-09-24 ／ issue: #147（バッチは #113） ／ スクリプト: `tools/measure/unmeasured-batch/run.sh`（項目 `t7`、`RUN_DIR=<段階 A の run> ONLY=t7`。本体は `tools/measure/unmeasured-batch/items-retention.sh` の `retention_phase_b`） ／ 生データ: `$HOME/athena-unmeasured-batch-measurements/run-20260924-024654/retention/`（`t7-reuse-after-wait.*`・`t7-get.json`・`t7-stop.json`・`state.env`）
+- 相手: 本物の Athena（AWS CLI。engine version 3、workgroup `primary`、Catalog `AwsDataCatalog`、Database `<DB>`、OutputLocation `<OUTPUT>`）
+- 投げたもの: 段階 A（上の節）の `state.env` にある同じトークン（UUID 形式の 36 文字）・同じ `SELECT 1 AS t6_probe`・同じ引数で、締切（段階 A の終了 + 65 分 = 03:52:16 UTC）を過ぎてから次の 3 つを順に
+  1. `StartQueryExecution` の再送（`t7-reuse-after-wait`）
+  2. 段階 A の ID への `GetQueryExecution`（`t7-get.json`）
+  3. 同じ ID への `StopQueryExecution`（`t7-stop.json`）
+- いつ投げたか（ファイルの mtime。端末の時計は `started_at` の中身 02:46:54 UTC と mtime 11:46:54 JST が一致することで確かめた）: 再送の `t7-reuse-after-wait.start.err` が 12:54:21 JST（03:54:21 UTC）、`start.json` が 12:54:22 JST、`t7-get.json` が 12:54:29 JST、`t7-stop.json` が 12:54:29 JST。段階 A の 1 本目の `CompletionDateTime` 02:47:03.546Z から再送まで **約 67 分 18 秒**
+- 返ったもの:
+  - 再送: **段階 A と同じ `QueryExecutionId`**。続く `GetQueryExecution`（`t7-reuse-after-wait.execution.json`）は SUCCEEDED で、`SubmissionDateTime` 02:47:03.208Z・`CompletionDateTime` 02:47:03.546Z・`TotalExecutionTimeInMillis` 338 は段階 A と同じ（新しい実行は作られていない）。結果ファイルの一覧（`t7-reuse-after-wait.ls.txt`）も段階 A の `<id>.csv` 15B・`<id>.csv.metadata` 87B（どちらも 02:47:04 の時刻）だけ
+  - `GetQueryExecution`: 成功（`t7-get.err` は空）。`QueryExecution` 直下のキーは `EngineVersion`、`Query`、`QueryExecutionContext`、`QueryExecutionId`、`ResultConfiguration`、`ResultReuseConfiguration`、`StatementType`、`Statistics`、`Status`、`SubstatementType`、`WorkGroup`。State は `SUCCEEDED`
+  - `StopQueryExecution`（終端状態の ID）: 成功（`t7-stop.err` は空、終了コード 0 で summary は「成功」）。`t7-stop.json` は 0 バイト（AWS CLI は空の応答では何も出力しないので、ワイヤ上の本文が `{}` だったかはこの保存物からは分からない）
+- 備考: 本物のトークンの窓と実行情報の保持は 65 分（実際は約 67 分）より長い。正確な期限はこの測定では分からない。期限切れのトークン・ID の挙動（新しい ID になるか、`QUERY_EXECUTION_NOT_FOUND` か、`StopQueryExecution` が 400 か）は、期限切れの状態を作れなかったので測れていない。依頼時の要約では経過を「約 72 分」としていたが、上の mtime から約 67 分に直した（2026-09-24、フェーズ 2 の転記）

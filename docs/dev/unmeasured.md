@@ -14,8 +14,8 @@
 
 ## ClientRequestToken と保持期限（[measurements/client-request-token.md](measurements/client-request-token.md)）
 
-- [ ] トークン対応表と実行情報の本物の保持期間（60 秒を超えることまでは実測。既定の 1 時間は athena-local 独自の値）。#147（2026-09-24）の 1 回目で段階 A（完了直後に同じトークンで再送すると同じ ID）を確認した。65 分後の段階 B は #147 の 2 回目で測る
-- [ ] 期限切れのトークンを再送すると本物で新しい ID になるか、期限切れの ID の `GetQueryExecution` が `QUERY_EXECUTION_NOT_FOUND` か、`StopQueryExecution` が 400 か（#147 の 2 回目、段階 B で測る）
+- [ ] トークン対応表と実行情報の本物の正確な保持期間（67 分を超えることまでは実測。#147（2026-09-24）: 完了直後の再送も、完了から約 67 分後の再送も同じ ID で、その時点の `GetQueryExecution` は SUCCEEDED のまま見つかり、`StopQueryExecution` も成功した。既定の 1 時間は athena-local 独自の値で、本物より短い）
+- [ ] 期限切れのトークンを再送すると本物で新しい ID になるか、期限切れの ID の `GetQueryExecution` が `QUERY_EXECUTION_NOT_FOUND` か、`StopQueryExecution` が 400 か（#147 は完了から約 67 分後に投げたが期限切れにならず、測れなかった）
 - [ ] 出力先を強制しない（`EnforceWorkGroupConfiguration: false`）ワークグループで、`OutputLocation` の「省略」と「既定と同じ値の明示」を本物が別物として扱うか。#146（2026-09-24）は強制するワークグループでしか測れず、そこでは同じ `QueryExecutionId` が返った（`Database` の省略と `default` の明示は衝突）
 
 ## ワークグループ（[measurements/work-groups.md](measurements/work-groups.md)）

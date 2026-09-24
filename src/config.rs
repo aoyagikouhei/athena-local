@@ -6,7 +6,8 @@ use reqwest::Url;
 
 use crate::results;
 
-/// 終端状態の実行情報を持っておく既定の長さ（1 時間）。本物の Athena の保持期間は未実測なので athena-local の都合で決めた値。
+/// 終端状態の実行情報を持っておく既定の長さ（1 時間）。本物の Athena の保持期間は 67 分を超えることまで実測
+/// （2026-09-24。#147）。本物の正確な期限は未測定で、1 時間は athena-local の都合で決めた値。
 pub const DEFAULT_RETENTION: Duration = Duration::from_secs(3600);
 
 /// 結果ファイルの PUT を諦めるまでの時間（30 秒）。応答しない S3 でクエリが RUNNING のまま止まらないようにする。
