@@ -12,9 +12,18 @@
 #                   `<列名 %-20s>\t<Hive の型 %-20s>\t<コメント>`（コメントが空なら空白 20 個、空でなければ詰めずタブの手前まで）。
 #                   パーティション付きは通常列（パーティション列も含む）の後に見出し 4 行とパーティション列。UpdateCount 無し。
 #   DESCRIBE Iceberg（パーティション無し）: 同じ 3 列で、詰め無しの 6 行。UpdateCount 0。
+#   DESCRIBE Iceberg（パーティション付き）: 上の 6 行の間に列の行（`name\t<Iceberg の型>\t<コメント>`、詰め無し）、
+#                   末尾にパーティションごとの `field_name\tfield_transform\tcolumn_name`（`s\tidentity\ts`、`n_bucket\tbucket[4]\tn`、
+#                   `ts_day\tday\tts`、`ts_year\tyear\tts`、`d2_month\tmonth\td2`、`ts2_hour\thour\tts2`、`s_trunc\ttruncate[3]\ts`）。
+#                   Iceberg の型は `int`／`string`／`timestamp`／`decimal(10, 2)`／`array<string>`／`struct<a: int>`／`float`／`binary`／
+#                   `map<string, int>`（`double`／`boolean`／`date`／`bigint` はそのまま）。UpdateCount 0。
+#   DESC          : DESCRIBE と同じ行（SubstatementType は足場では見ない）。
+#   SHOW SCHEMAS  : `database_name`／string／0／false の 1 列。行は素のスキーマ名。UpdateCount 0。
+#   ビューへの DESCRIBE／SHOW COLUMNS: `column`／`type`（varchar／0／false）の 2 列。行は `name\t<Trino の型>`（詰め無し）、
+#                   UpdateCount 0、`.txt` は binary/octet-stream、GetQueryExecution の SubstatementType は `DESC_VIEW`。
 #   `.txt` はどれも GetQueryResults の値を `\n` で連結したもの（末尾改行なし）。
 #
-# #173 の変更前のビルドで流すと、E1〜E6 は FAIL、回帰の R1・R2 は PASS になるのが正しい。
+# #173 の変更前のビルドで流すと、E1〜E11 は FAIL、回帰の R1・R2 は PASS になるのが正しい。
 #
 # 前提: tools/dev.sh 経由で toolbox の中で動かす（`aws` は使わず、S3 は toolbox の mc で minio:9000 を直接見る）。
 # 環境はルートの compose.yml の trino / minio / minio-init。開始時に使うサービスだけ down -v → up -d で作り直す。
@@ -61,6 +70,10 @@ T_PART="t173_part"   # Hive (n integer, p varchar) partitioned_by p
 T_CMT="t173_cmt"     # Hive (n integer COMMENT 'a<TAB>b', m integer)
 T_WIDE="t173_wide"   # Hive 列名 19・20・21 文字の varchar 3 列
 T_ICE="t173_ice"     # Iceberg (n integer)
+T_ICEP="t173_icep"   # Iceberg 7 列、partitioning = s, bucket(n, 4), day(ts)
+T_ICET="t173_icet"   # Iceberg 11 列、partitioning = year(ts), month(d2), hour(ts2), truncate(s, 3)
+T_VIEW="t173_view"   # Hive のビュー SELECT 1 AS n, 'a' AS s。E1（SHOW TABLES）の行に混ざらないよう別スキーマに置く
+VIEW_SCHEMA="t173v"
 TAB=$'\t'
 
 summary() {
@@ -126,6 +139,26 @@ hive_partition_heading_rows() {
   printf '\t \t '
 }
 
+# Iceberg の DESCRIBE の先頭 2 行（各行の末尾に \n を付けて出す）。
+iceberg_heading_rows() {
+  printf '# Table schema:\t\t\n'
+  printf '# col_name\tdata_type\tcomment\n'
+}
+
+# Iceberg の DESCRIBE の列の行とパーティション行の間の 3 行。
+iceberg_partition_heading_rows() {
+  printf '\t\t\n'
+  printf '# Partition spec:\t\t\n'
+  printf '# field_name\tfield_transform\tcolumn_name\n'
+}
+
+# E7 の 21 文字の列名（`c21_` の後ろを a で埋める。Iceberg は 20 桁で詰めないことの確認用）。
+ice_wide_name() {
+  local s="c21_"
+  while [ "${#s}" -lt 21 ]; do s="${s}a"; done
+  printf '%s' "$s"
+}
+
 # 行（改行なし）を標準入力から 1 行ずつ受け、\n 連結（末尾改行なし）してファイルに書く。
 join_rows() {
   local out="$1" first=1 line
@@ -137,10 +170,11 @@ join_rows() {
 }
 
 build_expectations() {
-  local c19 c20 c21
+  local c19 c20 c21 c21_ice
   c19=$(name_of_len 19)
   c20=$(name_of_len 20)
   c21=$(name_of_len 21)
+  c21_ice=$(ice_wide_name)
 
   # E1: SHOW TABLES（素の名前。Trino の SHOW TABLES は名前順）
   printf '%s\n' "$T_CMT" "$T_PART" "$T_WIDE" | join_rows "$EXPECT_DIR/E1.txt"
@@ -183,13 +217,35 @@ build_expectations() {
   printf '%-20s\n' n p | join_rows "$EXPECT_DIR/E6-hive.txt"
   printf '%s\n' n | join_rows "$EXPECT_DIR/E6-iceberg.txt"
 
+  # E7: Iceberg のパーティション付き（identity・bucket・day）の DESCRIBE（詰め無しの 15 行、278 バイト）
+  {
+    iceberg_heading_rows
+    printf '%s\t%s\t%s\n' n int abc s string "" ts timestamp "" d "decimal(10, 2)" "" \
+      arr "array<string>" "" st "struct<a: int>" "" "$c21_ice" bigint ""
+    iceberg_partition_heading_rows
+    printf '%s\t%s\t%s\n' s identity s n_bucket "bucket[4]" n ts_day day ts
+  } | join_rows "$EXPECT_DIR/E7.txt"
+
+  # E8: Iceberg の変換 4 種（year・month・hour・truncate）と型の綴り（20 行、343 バイト）
+  {
+    iceberg_heading_rows
+    printf '%s\t%s\t%s\n' n int "" s string "" ts timestamp "" d2 date "" ts2 timestamp "" \
+      t_double double "" t_float float "" t_boolean boolean "" t_binary binary "" \
+      t_map "map<string, int>" "" big bigint ""
+    iceberg_partition_heading_rows
+    printf '%s\t%s\t%s\n' ts_year year ts d2_month month d2 ts2_hour hour ts2 s_trunc "truncate[3]" s
+  } | join_rows "$EXPECT_DIR/E8.txt"
+
+  # E11: ビューへの DESCRIBE／SHOW COLUMNS（詰め無しの 2 行、22 バイト。型は Trino の綴り）
+  printf '%s\t%s\n' n integer s "varchar(1)" | join_rows "$EXPECT_DIR/E11.txt"
+
   # R1: SELECT 1 AS n（列名行あり）
   printf '%s\n' n 1 | join_rows "$EXPECT_DIR/R1.rows"
   printf '"n"\n"1"\n' >"$EXPECT_DIR/R1.csv"
 
   # 規則から出したバイト数が、実測で分かっている値と合うか（期待値の組み立て自体の検算）
   local f want got ok=1
-  for f in E2:291 E3:106 E5:117 E6-hive:41 E6-iceberg:1; do
+  for f in E2:291 E3:106 E5:117 E6-hive:41 E6-iceberg:1 E7:278 E8:343 E11:22; do
     want="${f#*:}"
     got=$(wc -c <"$EXPECT_DIR/${f%%:*}.txt")
     if [ "$got" != "$want" ]; then
@@ -329,17 +385,63 @@ check_csv() {
   fi
 }
 
+# 直前に record した結果に、追加の確かめの失敗を重ねる。
+amend_last() {
+  local status="$1" detail="$2" last=$((${#RESULT_STATUS[@]} - 1))
+  [ "$status" = "FAIL" ] && RESULT_STATUS[last]=FAIL
+  RESULT_DETAIL[last]="${RESULT_DETAIL[last]} $detail"
+}
+
+# E10: SHOW SCHEMAS の行にスキーマ名が素のまま含まれるか。
+check_rows_contain() {
+  local no="$1" want="$2" results="$EVIDENCE_DIR/$1.results.json"
+  [ -f "$results" ] || return
+  if jq -e --arg w "$want" '[.ResultSet.Rows[] | .Data[0].VarCharValue] | index($w) != null' "$results" >/dev/null 2>&1; then
+    amend_last PASS "行に $want あり"
+  else
+    amend_last FAIL "行に $want が無い($(jq -c '[.ResultSet.Rows[] | .Data[0].VarCharValue]' "$results" 2>/dev/null | cut -c1-200))"
+  fi
+}
+
+# E11: 完了後の GetQueryExecution の SubstatementType と、`.txt` の Content-Type。
+check_view_extras() {
+  local no="$1" id exec_json sub stat_json ct
+  id=$(jq -r '.QueryExecutionId // empty' "$EVIDENCE_DIR/$no.start.json" 2>/dev/null)
+  [ -n "$id" ] || return
+  exec_json="$EVIDENCE_DIR/$no.get-execution.json"
+  athena_call GetQueryExecution "$(jq -n --arg id "$id" '{QueryExecutionId: $id}')" >"$exec_json"
+  sub=$(jq -r '.QueryExecution.SubstatementType // "無し"' "$exec_json")
+  if [ "$sub" = "DESC_VIEW" ]; then
+    amend_last PASS "SubstatementType=DESC_VIEW"
+  else
+    amend_last FAIL "SubstatementType=$sub(期待 DESC_VIEW)"
+  fi
+  stat_json=$(mc_stat "${PREFIX}/${id}.txt")
+  ct=$(echo "$stat_json" | jq -r '.metadata["Content-Type"] // "無し"')
+  if [ "$ct" = "binary/octet-stream" ]; then
+    amend_last PASS "Content-Type=$ct"
+  else
+    amend_last FAIL "Content-Type=$ct(期待 binary/octet-stream)"
+  fi
+}
+
 setup_tables() {
-  local c19 c20 c21
+  local c19 c20 c21 c21_ice
+  c21_ice=$(ice_wide_name)
   c19=$(name_of_len 19)
   c20=$(name_of_len 20)
   c21=$(name_of_len 21)
   trino_exec "CREATE SCHEMA hive.${SCHEMA}" hive default &&
     trino_exec "CREATE SCHEMA iceberg.${SCHEMA}" iceberg default &&
+    trino_exec "CREATE SCHEMA memory.${SCHEMA}" memory default &&
+    trino_exec "CREATE SCHEMA hive.${VIEW_SCHEMA}" hive default &&
     trino_exec "CREATE TABLE hive.${SCHEMA}.${T_PART} (n integer, p varchar) WITH (partitioned_by = ARRAY['p'])" hive "$SCHEMA" &&
     trino_exec "CREATE TABLE hive.${SCHEMA}.${T_CMT} (n integer COMMENT 'a${TAB}b', m integer)" hive "$SCHEMA" &&
     trino_exec "CREATE TABLE hive.${SCHEMA}.${T_WIDE} (${c19} varchar, ${c20} varchar, ${c21} varchar)" hive "$SCHEMA" &&
-    trino_exec "CREATE TABLE iceberg.${SCHEMA}.${T_ICE} (n integer)" iceberg "$SCHEMA"
+    trino_exec "CREATE TABLE iceberg.${SCHEMA}.${T_ICE} (n integer)" iceberg "$SCHEMA" &&
+    trino_exec "CREATE TABLE iceberg.${SCHEMA}.${T_ICEP} (n integer COMMENT 'abc', s varchar, ts timestamp(6), d decimal(10,2), arr array(varchar), st row(\"a\" integer), ${c21_ice} bigint) WITH (partitioning = ARRAY['s', 'bucket(n, 4)', 'day(ts)'])" iceberg "$SCHEMA" &&
+    trino_exec "CREATE TABLE iceberg.${SCHEMA}.${T_ICET} (n integer, s varchar, ts timestamp(6), d2 date, ts2 timestamp(6), t_double double, t_float real, t_boolean boolean, t_binary varbinary, t_map map(varchar, integer), big bigint) WITH (partitioning = ARRAY['year(ts)', 'month(d2)', 'hour(ts2)', 'truncate(s, 3)'])" iceberg "$SCHEMA" &&
+    trino_exec "CREATE VIEW hive.${VIEW_SCHEMA}.${T_VIEW} AS SELECT 1 AS n, 'a' AS s" hive "$VIEW_SCHEMA"
 }
 
 main() {
@@ -378,7 +480,7 @@ main() {
     record "セットアップ" FAIL "Trino でスキーマかテーブルが作れなかった"
     return 1
   fi
-  record "セットアップ" PASS "hive.${SCHEMA}.{${T_PART},${T_CMT},${T_WIDE}}、iceberg.${SCHEMA}.${T_ICE}"
+  record "セットアップ" PASS "hive.${SCHEMA}.{${T_PART},${T_CMT},${T_WIDE}}、hive.${VIEW_SCHEMA}.${T_VIEW}、iceberg.${SCHEMA}.{${T_ICE},${T_ICEP},${T_ICET}}、memory.${SCHEMA}"
 
   if ! build_athena_local; then
     record "cargo build" FAIL "ビルドが失敗した（$BUILD_LOG）"
@@ -414,6 +516,26 @@ main() {
     "field|$STR" "$EXPECT_DIR/E6-hive.txt" 0 "$EXPECT_DIR/E6-hive.txt"
   check_case E6c "SHOW_COLUMNS_FROM_iceberg" "SHOW COLUMNS FROM ${T_ICE}" iceberg "$SCHEMA" \
     "field|$STR" "$EXPECT_DIR/E6-iceberg.txt" 0 "$EXPECT_DIR/E6-iceberg.txt"
+
+  check_case E7 "DESCRIBE_iceberg_パーティション付き" "DESCRIBE ${T_ICEP}" iceberg "$SCHEMA" \
+    "$DESC_COLS" "$EXPECT_DIR/E7.txt" 0 "$EXPECT_DIR/E7.txt"
+  check_case E8 "DESCRIBE_iceberg_変換4種" "DESCRIBE ${T_ICET}" iceberg "$SCHEMA" \
+    "$DESC_COLS" "$EXPECT_DIR/E8.txt" 0 "$EXPECT_DIR/E8.txt"
+  check_case E9 "DESC_hive_パーティション付き" "DESC ${T_PART}" hive "$SCHEMA" \
+    "$DESC_COLS" "$EXPECT_DIR/E2.txt" absent "$EXPECT_DIR/E2.txt"
+  # compose の Trino（482）の hive／iceberg はファイルのメタストアで、作ったスキーマが SHOW SCHEMAS にも
+  # information_schema.schemata にも出ない（2026-09-24 に athena173 の Trino で確認）。作ったスキーマが出る memory で見る。
+  check_case E10 "SHOW_SCHEMAS" "SHOW SCHEMAS" memory "$SCHEMA" \
+    "database_name|$STR" "" 0 ""
+  check_rows_contain E10 "$SCHEMA"
+
+  local VIEW_COLS="column|varchar|0|false,type|varchar|0|false"
+  check_case E11a "DESCRIBE_ビュー" "DESCRIBE ${T_VIEW}" hive "$VIEW_SCHEMA" \
+    "$VIEW_COLS" "$EXPECT_DIR/E11.txt" 0 "$EXPECT_DIR/E11.txt"
+  check_view_extras E11a
+  check_case E11b "SHOW_COLUMNS_ビュー" "SHOW COLUMNS FROM ${T_VIEW}" hive "$VIEW_SCHEMA" \
+    "$VIEW_COLS" "$EXPECT_DIR/E11.txt" 0 "$EXPECT_DIR/E11.txt"
+  check_view_extras E11b
 
   # 回帰: SELECT は列名行ありのまま、SHOW CREATE TABLE は #161 の固定列のまま（行の中身は Trino の DDL なので見ない）
   check_csv R1 "SELECT_1_AS_n" "SELECT 1 AS n" hive "$SCHEMA" \
