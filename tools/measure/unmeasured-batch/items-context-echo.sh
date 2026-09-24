@@ -7,8 +7,9 @@
 # AwsDataCatalog 以外のカタログ）は未実測。SELECT 1 と SHOW TABLES だけで、DDL も書き込みも無い。
 # 本物への呼び出しは StartQueryExecution 10 本 + ListDataCatalogs 1 本 + 追加カタログ 1 本ずつ（最大 3）。
 #
-# athena-local は送られた値をそのまま返す（src/operation/query_execution.rs）ので、local の
-# 期待値は「送ったまま」。省略した項目は athena-local が既定を当てて返すので期待値を置かず記録だけ。
+# athena-local は Catalog を小文字にして返し、Database は送ったまま返す（#157 で本物に合わせた。
+# src/operation/query_execution.rs）ので、local の期待値もその形。省略した項目は athena-local が
+# 既定を当てて返す（本物はキー無し。#167）ので期待値を置かず記録だけ。
 
 # execution.json の QueryExecutionContext を "Catalog=<値|(absent)> Database=<値|(absent)>" の形にする。
 context_of() {
@@ -54,20 +55,21 @@ item_c1() {
   db_mixed=$(swapcase "$TDB")
 
   # 対照（t1 の再現）と、Catalog だけ変えた 3 通り。
-  echo_case c1-control "$sql" "$TCAT_GENERIC" "$TDB" "Catalog=$TCAT_GENERIC Database=$TDB"
-  echo_case c1-cat-upper "$sql" "$cat_upper" "$TDB" "Catalog=$cat_upper Database=$TDB"
-  echo_case c1-cat-mixed "$sql" "$cat_mixed" "$TDB" "Catalog=$cat_mixed Database=$TDB"
+  local cat_lower="${TCAT_GENERIC,,}"
+  echo_case c1-control "$sql" "$TCAT_GENERIC" "$TDB" "Catalog=$cat_lower Database=$TDB"
+  echo_case c1-cat-upper "$sql" "$cat_upper" "$TDB" "Catalog=$cat_lower Database=$TDB"
+  echo_case c1-cat-mixed "$sql" "$cat_mixed" "$TDB" "Catalog=$cat_lower Database=$TDB"
   echo_case c1-cat-omit "$sql" - "$TDB"
   # Database だけ変えた 3 通り。
-  echo_case c1-db-upper "$sql" "$TCAT_GENERIC" "$db_upper" "Catalog=$TCAT_GENERIC Database=$db_upper"
-  echo_case c1-db-mixed "$sql" "$TCAT_GENERIC" "$db_mixed" "Catalog=$TCAT_GENERIC Database=$db_mixed"
+  echo_case c1-db-upper "$sql" "$TCAT_GENERIC" "$db_upper" "Catalog=$cat_lower Database=$db_upper"
+  echo_case c1-db-mixed "$sql" "$TCAT_GENERIC" "$db_mixed" "Catalog=$cat_lower Database=$db_mixed"
   echo_case c1-db-omit "$sql" "$TCAT_GENERIC" -
   # 実在しない Catalog（混在ケース。新しいトークンなので #146 の t1-c と違い衝突にはならない）。
   echo_case c1-cat-nonexistent "$sql" "Athena_Local_Probe_157_No_Such_Catalog" "$TDB" \
-    "Catalog=Athena_Local_Probe_157_No_Such_Catalog Database=$TDB"
+    "Catalog=athena_local_probe_157_no_such_catalog Database=$TDB"
   # 名前の解決が大文字小文字を区別するか（SHOW TABLES は Database を実際に引く）。
-  echo_case c1-resolve-cat-upper "SHOW TABLES" "$cat_upper" "$TDB" "Catalog=$cat_upper Database=$TDB"
-  echo_case c1-resolve-db-upper "SHOW TABLES" "$TCAT_GENERIC" "$db_upper" "Catalog=$TCAT_GENERIC Database=$db_upper"
+  echo_case c1-resolve-cat-upper "SHOW TABLES" "$cat_upper" "$TDB" "Catalog=$cat_lower Database=$TDB"
+  echo_case c1-resolve-db-upper "SHOW TABLES" "$TCAT_GENERIC" "$db_upper" "Catalog=$cat_lower Database=$db_upper"
 
   # AwsDataCatalog 以外のカタログ。EXTRA_CATALOGS（カンマ区切り）があればそれを、real では
   # ListDataCatalogs で見つかったものも（AwsDataCatalog を除き最大 3 つ）。
@@ -97,6 +99,6 @@ print(", ".join("%s(%s)" % (c["CatalogName"], c.get("Type", "?")) for c in json.
   local n=0 extra
   for extra in "${extras[@]}"; do
     n=$((n + 1))
-    echo_case "c1-extra-$n" "$sql" "$extra" "$TDB" "Catalog=$extra Database=$TDB"
+    echo_case "c1-extra-$n" "$sql" "$extra" "$TDB" "Catalog=${extra,,} Database=$TDB"
   done
 }
