@@ -361,6 +361,156 @@ fn substatement_type_は大文字小文字を無視し多バイト文字と短�
     }
 }
 
+/// 本物は、キーワードの直後に空白なしで記号・引用符・`*` が続く形を、空白ありの形と同じに分類した
+/// （StatementType・SubstatementType・置き場所・Content-Type・`.metadata` がすべて一致。2026-09-25 実測。
+/// #200。`tools/measure/keyword-boundary.sh`）。引用符付きの名前を取る DESCRIBE・DESC・SHOW CREATE TABLE・
+/// ALTER TABLE・DROP TABLE・OPTIMIZE は、本物が空白の有無によらず開始時に弾く（#204）。athena-local は
+/// Trino が受けるので実行し、空白ありの形と同じ値を返す（後ろの 8 件）。
+const TIGHT_AND_SPACED: &[(&str, &str, &str, Option<&str>)] = &[
+    ("SELECT(1)", "SELECT (1)", "DML", Some("SELECT")),
+    ("SELECT'a'", "SELECT 'a'", "DML", Some("SELECT")),
+    (
+        "SELECT*FROM (VALUES 1)",
+        "SELECT * FROM (VALUES 1)",
+        "DML",
+        Some("SELECT"),
+    ),
+    (
+        "SELECT\"x\" FROM (VALUES 1) AS t(x)",
+        "SELECT \"x\" FROM (VALUES 1) AS t(x)",
+        "DML",
+        Some("SELECT"),
+    ),
+    (
+        "WITH\"w\" AS (SELECT 1 AS x) SELECT x FROM \"w\"",
+        "WITH \"w\" AS (SELECT 1 AS x) SELECT x FROM \"w\"",
+        "DML",
+        Some("SELECT"),
+    ),
+    ("VALUES(1)", "VALUES (1)", "DML", Some("SELECT")),
+    (
+        "EXPLAIN(TYPE IO) SELECT 1",
+        "EXPLAIN (TYPE IO) SELECT 1",
+        "DML",
+        Some("EXPLAIN"),
+    ),
+    (
+        "EXPLAIN(SELECT 1)",
+        "EXPLAIN (SELECT 1)",
+        "DML",
+        Some("EXPLAIN"),
+    ),
+    (
+        "CREATE TABLE\"c1\" AS SELECT 1 AS x",
+        "CREATE TABLE \"c1\" AS SELECT 1 AS x",
+        "DDL",
+        Some("CREATE_TABLE_AS_SELECT"),
+    ),
+    (
+        "CREATE VIEW\"v1\" AS SELECT 1 AS x",
+        "CREATE VIEW \"v1\" AS SELECT 1 AS x",
+        "DDL",
+        Some("CREATE_VIEW"),
+    ),
+    (
+        "SHOW CREATE VIEW\"v1\"",
+        "SHOW CREATE VIEW \"v1\"",
+        "UTILITY",
+        Some("SHOW_CREATE_VIEW"),
+    ),
+    (
+        "DROP VIEW\"v1\"",
+        "DROP VIEW \"v1\"",
+        "DDL",
+        Some("DROP_VIEW"),
+    ),
+    // ここから下は本物が空白の有無によらず開始時に弾く形と、実測していない組み合わせ（`(` の中・引用符の直後の AS）。
+    ("(SELECT(1))", "(SELECT (1))", "DML", Some("SELECT")),
+    (
+        "CREATE TABLE\"t\"AS SELECT 1",
+        "CREATE TABLE \"t\" AS SELECT 1",
+        "DDL",
+        Some("CREATE_TABLE_AS_SELECT"),
+    ),
+    (
+        "DESCRIBE\"t\"",
+        "DESCRIBE \"t\"",
+        "UTILITY",
+        Some("DESCRIBE_TABLE"),
+    ),
+    ("DESC\"t\"", "DESC \"t\"", "UTILITY", Some("DESCRIBE_TABLE")),
+    (
+        "SHOW CREATE TABLE\"t\"",
+        "SHOW CREATE TABLE \"t\"",
+        "UTILITY",
+        Some("SHOW_CREATE_TABLE"),
+    ),
+    (
+        "ALTER TABLE\"t\" ADD COLUMNS (m int)",
+        "ALTER TABLE \"t\" ADD COLUMNS (m int)",
+        "DDL",
+        Some("ALTER_TABLE_ADD_COLUMN"),
+    ),
+    (
+        "DROP TABLE\"t\"",
+        "DROP TABLE \"t\"",
+        "DDL",
+        Some("DROP_TABLE"),
+    ),
+    (
+        "OPTIMIZE\"t\" REWRITE DATA USING BIN_PACK",
+        "OPTIMIZE \"t\" REWRITE DATA USING BIN_PACK",
+        "DDL",
+        Some("CREATE_TABLE_AS_SELECT"),
+    ),
+];
+
+#[test]
+fn キーワードの直後に空白が無い形は空白ありの形と同じに分類する() {
+    use crate::content_type::{carries_execution_id, of, plain_text_statement};
+    use crate::results::ResultFile;
+    // Content-Type・EXPLAIN か（行分割と UpdateCount）・`.metadata` の ID（`metadata_query_id`）も同じ述語で決まる。
+    let content = |query| {
+        (
+            of(ResultFile::of(query), query),
+            plain_text_statement(query),
+            carries_execution_id(query),
+        )
+    };
+    // 実測の値そのもの（本物の a3・a7。どちらも application で、EXPLAIN は行を分ける）。
+    assert_eq!(
+        content("SELECT*FROM (VALUES 1)"),
+        (crate::content_type::APPLICATION, false, false)
+    );
+    assert_eq!(
+        content("EXPLAIN(TYPE IO) SELECT 1"),
+        (crate::content_type::APPLICATION, true, false)
+    );
+    for &(tight, spaced, statement, substatement) in TIGHT_AND_SPACED {
+        assert_eq!(content(tight), content(spaced), "{tight:?}");
+        assert_eq!(
+            (statement_type(tight), substatement_type(tight)),
+            (statement, substatement),
+            "{tight:?}"
+        );
+        assert_eq!(
+            (
+                statement_type(tight),
+                substatement_type(tight),
+                fixed_column(tight),
+                ResultFile::of(tight)
+            ),
+            (
+                statement_type(spaced),
+                substatement_type(spaced),
+                fixed_column(spaced),
+                ResultFile::of(spaced)
+            ),
+            "{tight:?}"
+        );
+    }
+}
+
 /// #195 の固定表 (1)。
 /// 期待値は着手前のコード（76e66f8 + P1a）に `195-verify/golden.sh` を流した出力を写した。推測で書いていない。
 #[test]
@@ -427,9 +577,20 @@ fn 分類は_crate_の_api_に寄せる前と同じ結果を返す() {
             Some("ALTER_TABLE_ADD_COLUMN"),
             None,
         ),
-        ("ALTER TABLE\"t\" ADD COLUMNS (m int)", "DDL", None, None),
-        ("SHOW CREATE TABLE\"t\"", "UTILITY", None, None),
-        ("DESC\"t\"", "UTILITY", None, None),
+        // q4〜q6 は #200 で空白ありの形と同じ値に揃えた（本物は空白の有無によらず開始時に弾く。#204）。
+        (
+            "ALTER TABLE\"t\" ADD COLUMNS (m int)",
+            "DDL",
+            Some("ALTER_TABLE_ADD_COLUMN"),
+            None,
+        ),
+        (
+            "SHOW CREATE TABLE\"t\"",
+            "UTILITY",
+            Some("SHOW_CREATE_TABLE"),
+            Some(("createtab_stmt", "string")),
+        ),
+        ("DESC\"t\"", "UTILITY", Some("DESCRIBE_TABLE"), None),
         ("DESCRIBE \"t", "UTILITY", Some("DESCRIBE_TABLE"), None),
         ("SELECT 1 AS \"a b\"", "DML", Some("SELECT"), None),
         (
@@ -484,11 +645,12 @@ fn 分類は_crate_の_api_に寄せる前と同じ結果を返す() {
             Some(("createtab_stmt", "string")),
         ),
         ("\n\tSELECT 1", "DML", Some("SELECT"), None),
-        ("SELECT(1)", "UTILITY", None, None),
-        ("SELECT'a'", "UTILITY", None, None),
-        ("SELECT*FROM t", "UTILITY", None, None),
-        ("EXPLAIN(TYPE IO) SELECT 1", "UTILITY", None, None),
-        ("DESCRIBE(t)", "UTILITY", None, None),
+        // w5〜w9 は #200 で空白ありの形と同じ値に揃えた（2026-09-25 実測）。
+        ("SELECT(1)", "DML", Some("SELECT"), None),
+        ("SELECT'a'", "DML", Some("SELECT"), None),
+        ("SELECT*FROM t", "DML", Some("SELECT"), None),
+        ("EXPLAIN(TYPE IO) SELECT 1", "DML", Some("EXPLAIN"), None),
+        ("DESCRIBE(t)", "UTILITY", Some("DESCRIBE_TABLE"), None),
         ("SELECT\x0B1", "UTILITY", None, None),
         ("SELECT\x0C1", "UTILITY", None, None),
         ("SELECT\u{3000}1", "UTILITY", None, None),
@@ -518,7 +680,9 @@ fn 分類は_crate_の_api_に寄せる前と同じ結果を返す() {
             Some("SHOW_FUNCTIONS"),
             None,
         ),
-        ("(SHOW FUNCTIONS)", "UTILITY", None, None),
+        // #200 で `)` が別の語になり、`( SHOW FUNCTIONS )` と同じ値になった（Trino は括弧付きの SHOW を
+        // 構文エラーにするので観測できない。2026-09-25 手元で確認）。
+        ("(SHOW FUNCTIONS)", "UTILITY", Some("SHOW_FUNCTIONS"), None),
         ("(ALTER TABLE t ADD COLUMN c int)", "DDL", None, None),
         // p11〜p15・p17 は #199 で本物に揃えて CREATE_TABLE_AS_SELECT にした（2026-09-25 実測）。
         (

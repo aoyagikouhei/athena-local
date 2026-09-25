@@ -79,7 +79,8 @@ impl ResultFile {
     }
 }
 
-/// 語の並びから先頭の `(` を取り除き、`(` だけの語（`( SELECT` のように直後に空白や改行があるとき）は落とす。
+/// 語の並びから先頭の `(` を取り除き、`(` だけの語（`( SELECT`・`(SELECT` の `(`。#200 から `athena_sql::words` は
+/// `(` と識別子の文字の間でも語を切る）は落とす。
 /// 先頭語の判定（`ResultFile::of` と `operation/classification.rs` の `words`）が共有する（#64・#146）。
 pub(crate) fn strip_open_parens(words: &[String]) -> impl Iterator<Item = &str> {
     words
@@ -90,8 +91,9 @@ pub(crate) fn strip_open_parens(words: &[String]) -> impl Iterator<Item = &str> 
 
 /// `CREATE [OR REPLACE] TABLE ... AS [(...] SELECT | WITH | VALUES | TABLE`。words は大文字にした単語の並び。
 /// 本物は `AS` の後ろの括弧の有無・`AS(` と続けた形・`VALUES`・`TABLE` のどれも CTAS にする
-/// （2026-09-25 実測。#199）。語ごとに先頭の `(` を外し、`AS(` は `AS` と残りに分けてから見るので、
-/// 先頭の `(` を剥がした語の並び（`classification`）と剥がしていない並び（`ResultFile::of`）で同じ答えになる。
+/// （2026-09-25 実測。#199）。`AS(` は `athena_sql::words` が `AS` と `(` に分け（#200）、語ごとに先頭の `(` を外して
+/// `(` だけの語は落とすので、先頭の `(` を剥がした語の並び（`classification`）と剥がしていない並び（`ResultFile::of`）で
+/// 同じ答えになる。
 pub(crate) fn is_create_table_as(words: &[String]) -> bool {
     let rest = match words.get(1).map(String::as_str) {
         Some("OR") => &words[words.len().min(3)..],
@@ -101,15 +103,7 @@ pub(crate) fn is_create_table_as(words: &[String]) -> bool {
         return false;
     }
 
-    let tokens: Vec<&str> = rest
-        .iter()
-        .flat_map(|word| match word.strip_prefix("AS(") {
-            Some(after) => ["AS", after],
-            None => [word.as_str(), ""],
-        })
-        .map(|word| word.trim_start_matches('('))
-        .filter(|word| !word.is_empty())
-        .collect();
+    let tokens: Vec<&str> = strip_open_parens(rest).collect();
     tokens.windows(2).any(|pair| {
         pair[0] == "AS"
             && ["SELECT", "WITH", "VALUES", "TABLE"]

@@ -1,6 +1,6 @@
 //! 受け取った SQL を先頭から読み進める Cursor（キーワード・リテラル・識別子・記号の読み取り。修飾名は `name.rs`）。
 
-use crate::trivia::{skip_leading_trivia, skip_quoted, skip_trivia};
+use crate::trivia::{is_identifier_byte, skip_leading_trivia, skip_quoted, skip_trivia};
 
 /// 受け取った SQL の上を先頭から読み進める位置。読む系のメソッドは、先頭の空白とコメントを読み飛ばし、
 /// 一致したときだけ位置を進め、後ろのトリビアは消費しない（呼び出し元が次の読み取りで読み飛ばす）。
@@ -39,7 +39,11 @@ impl<'a> Cursor<'a> {
         if !head.eq_ignore_ascii_case(keyword) {
             return false;
         }
-        if rest[keyword.len()..].starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_') {
+        if rest
+            .as_bytes()
+            .get(keyword.len())
+            .is_some_and(|&byte| is_identifier_byte(byte))
+        {
             return false;
         }
         self.pos = start + keyword.len();
@@ -69,7 +73,8 @@ impl<'a> Cursor<'a> {
         let end = if rest.starts_with('"') {
             skip_quoted(bytes, start)
         } else if rest.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') {
-            rest.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            rest.bytes()
+                .position(|byte| !is_identifier_byte(byte))
                 .map_or(self.sql.len(), |len| start + len)
         } else {
             return false;

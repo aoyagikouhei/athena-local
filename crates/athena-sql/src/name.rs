@@ -1,7 +1,7 @@
 //! 修飾名の読み取りと引用符の取り外し。
 
 use crate::cursor::Cursor;
-use crate::trivia::{skip_quoted, skip_trivia};
+use crate::trivia::{is_identifier_byte, skip_quoted, skip_trivia};
 
 /// 修飾名 1 つ。`text`／`start`／`end` は名前の中のトリビアも含む元の SQL での範囲。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,10 +43,9 @@ impl<'a> Cursor<'a> {
     /// （先頭が名前の文字でない、ドットの後ろに名前が無い）None を返し、位置を進めない。最後の名前部分の後ろのトリビアは消費しない。
     ///
     /// `operation/classification.rs` の ALTER TABLE の判定、`operation/completion.rs` の DESCRIBE の対象の範囲、
-    /// `operation/target_table.rs` の対象テーブルの解析が使う。`words()` はドットの前後に空白や
-    /// コメントを挟んだ修飾名（`cat . ns . t`）を複数の語に数えるため、テーブル名の終わりの位置を
-    /// ここで確かめてから、その後ろの語だけを見て判定する（引用符付き識別子の中の空白は #52 から
-    /// `words()` も 1 語として読むが、修飾名の分割は残る）。
+    /// `operation/target_table.rs` の対象テーブルの解析が使う。`words()` は修飾名（`cat.ns.t`、
+    /// `cat . ns . t`）をドットで複数の語に分けるため（#200 から空白が無くても分ける）、テーブル名の終わりの
+    /// 位置をここで確かめてから、その後ろの語だけを見て判定する（引用符付き識別子は `words()` も 1 語として読む）。
     ///
     /// 範囲を読む側（ALTER TABLE・DESCRIBE）と値を取り出す側（対象テーブル）は同じこの実装を使う。
     /// 字句処理は増やさず、`skip_quoted`・`skip_trivia` と同じ判定（引用符・コメント・空白）を使い回す。
@@ -83,7 +82,7 @@ fn read_name_part(sql: &str, start: usize) -> Option<NamePart<'_>> {
         skip_quoted(bytes, start)
     } else {
         let mut i = start;
-        while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+        while i < bytes.len() && is_identifier_byte(bytes[i]) {
             i += 1;
         }
         i
