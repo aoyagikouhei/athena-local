@@ -404,7 +404,10 @@ Known differences between athena-local and real Athena, grouped by topic.
   bounded by the queries that finished within the period: a 240-second run of
   back-to-back 2 MiB results at a retention of 1 s grew by only 18 MiB after
   warm-up, while the same load at 3600 s kept growing (measured 2026-09-23 with
-  `tools/e2e/retention/verify.sh`). Dropping a query
+  `tools/e2e/retention/verify.sh`). Over an hour of back-to-back 0.1 MiB results
+  (about 35,000 queries), the resident memory at a retention of 1 s stayed
+  between 11 and 12 MiB throughout, while the same load at 3600 s reached
+  3.1 GiB (measured 2026-09-25). Dropping a query
   does not touch its result files: with `ATHENA_LOCAL_RESULTS=s3`, the
   `<id>.csv` and `<id>.csv.metadata` stay in the output location after
   `GetQueryExecution` has started failing with `QUERY_EXECUTION_NOT_FOUND`
