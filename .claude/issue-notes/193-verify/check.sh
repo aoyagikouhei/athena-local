@@ -133,14 +133,14 @@ if [ "$EXPECT_CRATE" = 1 ]; then
     if ! cargo fmt --check >"$WORK/fmt-crate.log" 2>&1 && grep -q 'crates/athena-sql/src/lib.rs' "$WORK/fmt-crate.log"; then
       ok "4c cargo fmt --check は crate の整形崩れで落ちる"
     else
-      ng "4c cargo fmt --check が crate の整形崩れを見ていない"
+      ng "4c cargo fmt --check が crate の整形崩れを見ていない"; tail -5 "$WORK/fmt-crate.log"
     fi
     restore_lib
     printf 'pub fn probe() -> i32 { return 1; }\n' >>"$lib"
     if ! cargo clippy --all-targets --locked -- -D warnings >"$WORK/clippy-crate.log" 2>&1 && grep -q 'needless_return' "$WORK/clippy-crate.log"; then
       ok "4d cargo clippy は crate の警告で落ちる"
     else
-      ng "4d cargo clippy が crate の警告を見ていない"
+      ng "4d cargo clippy が crate の警告を見ていない"; tail -5 "$WORK/clippy-crate.log"
     fi
     restore_lib
     trap cleanup EXIT

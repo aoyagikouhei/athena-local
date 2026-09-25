@@ -6,7 +6,14 @@ description = "Local stand-in for the AWS Athena API that executes SQL on Trino"
 repository = "https://github.com/aoyagikouhei/athena-local"
 publish = false
 
+# この manifest が workspace のルートも兼ねる。内部 crate（crates/）を default-members にも入れて、
+# 引数なしの cargo fmt / clippy / test が crate にも効くようにする（#193。規則は docs/dev/decisions.md）。
+[workspace]
+members = ["crates/athena-sql"]
+default-members = [".", "crates/athena-sql"]
+
 [dependencies]
+athena-sql = { path = "crates/athena-sql" }
 axum = "0.8.9"
 # TLS は入れない（ローカルの Trino は素の HTTP。必要なら features に "rustls" を足す）。
 reqwest = { version = "0.13.5", default-features = false, features = ["json"] }
