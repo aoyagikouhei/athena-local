@@ -16,7 +16,7 @@
 - [ ] CTAS の 4 部以上の修飾名（`a.b.c.d`）と、引用符付きの部分が 3 部目までに無い `CREATE TABLE IF NOT EXISTS` の 4 部以上（3 つ目の `.` の文言）。athena-local は今までどおり実行する（#212 で CTAS でない `CREATE TABLE` の 4 部以上は測って弾くようにしたが、この 2 つは測っていない。引用符付きの部分が 3 部目までにある IF NOT EXISTS は 3 部と同じ規則で弾く。2026-09-25）
 - [ ] `SHOW TABLES IN` の 3 部以上で、2 つ目の `.` の直後が `LIKE` やバッククォートの名前の形（`SHOW TABLES IN a.b.like`・``SHOW TABLES IN a.b.`c` ``）。#212 で直後が無引用の名前なら `mismatched input '.'`、引用符付きなら `extraneous input '.'` と測った。athena-local は `"` で始まらない形をすべて `mismatched input '.'` にする（2026-09-25）
 
-- [ ] 実在しない QueryExecutionContext の Catalog で、`INSERT`・`ALTER TABLE`・CTAS でない `CREATE TABLE`・`SHOW PARTITIONS`・`CREATE VIEW`・`MSCK REPAIR TABLE` などが本物でどうなるか。#214 で測ったのは SELECT・EXPLAIN・CTAS（失敗）とメタデータの文（既定のカタログで成功）だけで、INSERT は前の CTAS の失敗で表が無く測れなかった。athena-local はこれらを差し替えずに送る（2026-09-25）
+- [ ] 実在しない QueryExecutionContext の Catalog で、`INSERT`・`ALTER TABLE`・CTAS でない `CREATE TABLE`・`SHOW PARTITIONS`・`CREATE VIEW`・`MSCK REPAIR TABLE` などが本物でどうなるか。#214 で測ったのは SELECT・EXPLAIN・CTAS（失敗）とメタデータの文（既定のカタログで成功）だけで、INSERT は前の CTAS の失敗で表が無く測れなかった。athena-local はこれらを差し替えずに送る（2026-09-25。追跡: #217）
 
 ## GetQueryResults（[measurements/query-results.md](measurements/query-results.md)）
 
