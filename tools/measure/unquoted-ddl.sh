@@ -27,7 +27,11 @@
 # query_id_of・succeeded・cleanup・write_summary_txt。
 #
 # 雛形からの変更点:
-#   - ROUND の切り替えは無い（依頼どおり全項目を 1 ラウンドで測る）。name_form・
+#   - ROUND（既定 1）でラウンドを切り替える。ROUND=1 は元の全項目（A・B・B' 群、
+#     場所の無い CREATE TABLE の C 群、S3 Tables）をそのまま測り、挙動は変えていない。
+#     ROUND=2 は preflight・DB 確認・実在する表の準備/後始末は共通のまま、
+#     E 群（CREATE TABLE の型名）・F 群（LIKE と Trino の型の中身）・G 群
+#     （Trino 形の文言の綴り）だけを測る（#208 ラウンド 2）。name_form・
 #     four_part_form・fetch_all_table_names（引用符付きの名前の形の生成・S3 の読み出し）は
 #     持ち込んでいない。この実測は「開始時に弾かれたか」「開始できたら最終状態と理由」だけを
 #     見れば足りる。
@@ -56,7 +60,10 @@
 #
 # 使い方:
 #   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db bash tools/measure/unquoted-ddl.sh
-#   S3 Tables も測るとき（C20 だけに効く。両方揃ったときだけ）:
+#   ラウンド 2（CREATE TABLE の型名・LIKE・ALTER TABLE の Trino 形の文言の綴りだけを測る）:
+#   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=2 \
+#     bash tools/measure/unquoted-ddl.sh
+#   S3 Tables も測るとき（C20 だけに効く。両方揃ったときだけ。ROUND=1 のみ）:
 #   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db \
 #     S3TABLES_CATALOG=s3tablescatalog/your-bucket S3TABLES_NS=your_ns \
 #     bash tools/measure/unquoted-ddl.sh
@@ -67,6 +74,10 @@
 #   DB        データベース名。実在するものを指定する。
 #
 # 任意の環境変数:
+#   ROUND            既定 1。1 は元の全項目（A・B・B' 群、場所の無い CREATE TABLE の
+#                    C 群、S3 Tables）。2 は E 群（CREATE TABLE の型名）・F 群（LIKE と
+#                    Trino の型の中身）・G 群（Trino 形の文言の綴り）だけ（preflight・
+#                    DB 確認・実在する表の準備/後始末は共通で両方の値で走る）。
 #   CATALOG          既定 AwsDataCatalog
 #   REGION           既定 ap-northeast-1
 #   OUT_DIR          既定 ${DEV_HOST_HOME:-$HOME}/athena-unquoted-ddl-measurements
@@ -95,14 +106,24 @@
 #     自体は作らない（後始末の対象にもならない）。B10 だけ実在する表 <接頭辞>_real に対して
 #     ADD COLUMN を投げるが、ADD COLUMN 自体は失敗する見込み（表そのものは消さずに残し、
 #     最後の後始末でまとめて消す）。
+#   - ROUND=2: E 群（e1〜e25、CREATE TABLE の型名）・F 群（f1〜f16、LIKE と Trino の型の
+#     中身）は場所の指定が無い CREATE TABLE のため、C 群と同様に大半は開始時に弾かれる
+#     見込みだが、想定に反して受理されて表ができた場合は、その場で無引用 + IF EXISTS の
+#     DROP TABLE を投げて消す（run_create_then_drop をそのまま流用。結果は確かめる。
+#     SUCCEEDED にならなければ trap がもう一度ベストエフォートで投げる）。F1・F3・F4・F5 は
+#     実在する表 <接頭辞>_real を LIKE の対象にする（準備できていれば）。G 群
+#     （g1〜g7、Trino 形の文言の綴り）は ALTER TABLE のみで、実在しない名前
+#     （<接頭辞>_nope）にだけ投げるため表は作らない。
 #
 # 課金について: ALTER TABLE・DROP TABLE はメタデータだけを見る／書く文で、実データの
-# スキャンは無い。CREATE TABLE（実在する表の準備・C3・C20・C21・C22・C23、いずれも 0〜1 行）も
-# スキャンや書き込みは軽微。Athena の最小課金 × クエリ数の見込み。
+# スキャンは無い。CREATE TABLE（実在する表の準備・C3・C20・C21・C22・C23、E・F 群、
+# いずれも 0〜1 行）もスキャンや書き込みは軽微。Athena の最小課金 × クエリ数の見込み。
 #
 # 本物への呼び出し回数の見込み（内訳。実際の回数は下で更新される。GetQueryExecution は
 # poll_until_terminal のポーリング + 終端後の 1 回で、開始できた項目の数 × 数回のオーダー。
 # メタデータだけの操作なのでどれも数秒で終わる見込み）:
+#
+# == ROUND=1（元の全項目。挙動・見込みとも変えていない） ==
 #
 #   [StartQueryExecution]
 #   preflight（SELECT 1 + SHOW TABLES）2
@@ -133,6 +154,25 @@
 #   開始時に弾かれた（START_FAILED）項目があっても追加の呼び出しはしない
 #   （AthenaErrorCode・Message は同じ標準エラーからそのまま抜くため）。
 #
+# == ROUND=2（E・F・G 群のみ。preflight・DB 確認・実在する表の準備/後始末は共通） ==
+#
+#   [StartQueryExecution]
+#   preflight（SELECT 1 + SHOW TABLES）2
+#   + 実在する表の準備 1・後始末 1
+#   + E 群（CREATE TABLE の型名、e1〜e25）25
+#   + F 群（LIKE と Trino の型の中身、f1〜f16）16
+#   + G 群（Trino 形の文言の綴り、g1〜g7）7
+#   = 52。E・F 群は場所を指定しない CREATE TABLE なので大半は開始時に弾かれる見込みだが、
+#   想定に反して受理された項目があれば、その場で DROP する後始末が 1 本ずつ増える
+#   （run_create_then_drop を流用）。G 群は ALTER TABLE のみで表を作らないため後始末は無い。
+#   DB が実在しなければ ROUND=1 と同様に SHOW DATABASES で候補一覧を残してその場で止まる。
+#
+#   [GetQueryExecution]
+#   実際に開始できた項目だけ終端状態までポーリングし、終端後にもう 1 回まとめて取得する。
+#   preflight・DB 確認・実在する表の準備/後始末の 4 項目に加え、受理された E・F 群と
+#   その後始末、開始できた G 群の項目が乗る見込み。件数は受理され方次第で変わる
+#   （4〜52 項目程度 × 2〜4 回）。
+#
 # 実行ごとに $OUT_DIR/run-<日時>/ を作り、その中だけに書く。前の回の結果と混ざらない。
 #
 # 項目ごとに次を保存する（取れたものだけ）。
@@ -156,6 +196,14 @@ set -uo pipefail
 
 : "${OUTPUT:?OUTPUT に s3://bucket/prefix/ を設定してください}"
 : "${DB:?DB にデータベース名を設定してください}"
+ROUND=${ROUND:-1}
+case "$ROUND" in
+  1 | 2) ;;
+  *)
+    echo "ROUND には 1 か 2 を指定してください（既定 1）" >&2
+    exit 1
+    ;;
+esac
 CATALOG=${CATALOG:-AwsDataCatalog}
 REGION=${REGION:-ap-northeast-1}
 # toolbox（tools/dev.sh）ではホストのホーム（DEV_HOST_HOME）。#129
@@ -611,7 +659,7 @@ if ! run probe-show-tables "SHOW TABLES"; then
   exit 1
 fi
 
-# --- 実在する表のセットアップ（B10・C15 の対照に使う） -----------------------------
+# --- 実在する表のセットアップ（B10・C15、ROUND=2 の F1・F3・F4・F5 の対照に使う） --------
 # WITH (format='PARQUET') は本物で external_location が要るかもしれないため、
 # quoted-names.sh の d0-setup-hive と同じ「WITH 句を付けない CTAS」の形にした。
 
@@ -619,7 +667,7 @@ REAL_SETUP_ATTEMPTED=1
 if run setup-real "CREATE TABLE $DB.$REAL AS SELECT 1 AS n, 'x' AS s, 10 AS x"; then
   REAL_SETUP_OK=1
 else
-  echo "== setup-real: 実在する表が作れませんでした。B10 は未測定にし、C15 は実在しない名前を対象にします。"
+  echo "== setup-real: 実在する表が作れませんでした。B10・ROUND=2 の F1・F3・F4・F5 は実在しない名前を対象にします。"
 fi
 
 if [ "$REAL_SETUP_OK" = 1 ]; then
@@ -627,6 +675,21 @@ if [ "$REAL_SETUP_OK" = 1 ]; then
 else
   LIKE_TARGET="$NOPE"
 fi
+
+# ROUND=2 の F 群（LIKE と Trino の型の中身）で使う、実在する表を指す 1/2/3 部の名前。
+# 準備できていなければ、同じ部数の実在しない名前にフォールバックする（依頼どおり）。
+if [ "$REAL_SETUP_OK" = 1 ]; then
+  LIKE_REAL_1PART="$REAL"
+  LIKE_REAL_2PART="$DB.$REAL"
+  LIKE_REAL_3PART="awsdatacatalog.$DB.$REAL"
+else
+  LIKE_REAL_1PART="$NOPE"
+  LIKE_REAL_2PART="$DB.$NOPE"
+  LIKE_REAL_3PART="awsdatacatalog.$DB.$NOPE"
+fi
+
+# ROUND=1 だけ、元の A・B・B'・C 群（S3 Tables 含む）を投げる。ROUND=2 は後段の E・F・G 群。
+if [ "$ROUND" = 1 ]; then
 
 # --- A 群（ALTER TABLE IF EXISTS。続く操作と位置の規則） ----------------------------
 
@@ -734,6 +797,75 @@ run_create_then_drop c21 "CREATE TABLE $(new_name c21) (n int) LOCATION '$LOC_C2
 run_create_then_drop c22 "CREATE TABLE $(new_name c22) (n string)" "$(new_name c22)"
 run_create_then_drop c23 "CREATE TABLE $(new_name c23) (n array<int>)" "$(new_name c23)"
 
+fi # ROUND=1
+
+# ROUND=2 だけ、E・F・G 群を投げる（#208 ラウンド 2）。
+if [ "$ROUND" = 2 ]; then
+
+# --- E 群（CREATE TABLE の型名。No location になるか、構文の文言になるか） ----------------
+# 場所を指定しないので、C 群と同様に大半は開始時に弾かれる見込み。型名の書き方によって
+# 弾かれ方（No location か、構文エラーの文言か）が変わるかどうかを見る。
+
+run_create_then_drop e1  "CREATE TABLE $(new_name e1) (n bigint)" "$(new_name e1)"
+run_create_then_drop e2  "CREATE TABLE $(new_name e2) (n tinyint)" "$(new_name e2)"
+run_create_then_drop e3  "CREATE TABLE $(new_name e3) (n smallint)" "$(new_name e3)"
+run_create_then_drop e4  "CREATE TABLE $(new_name e4) (n real)" "$(new_name e4)"
+run_create_then_drop e5  "CREATE TABLE $(new_name e5) (n float)" "$(new_name e5)"
+run_create_then_drop e6  "CREATE TABLE $(new_name e6) (n char(3))" "$(new_name e6)"
+run_create_then_drop e7  "CREATE TABLE $(new_name e7) (n varbinary)" "$(new_name e7)"
+run_create_then_drop e8  "CREATE TABLE $(new_name e8) (n binary)" "$(new_name e8)"
+run_create_then_drop e9  "CREATE TABLE $(new_name e9) (n uuid)" "$(new_name e9)"
+run_create_then_drop e10 "CREATE TABLE $(new_name e10) (n json)" "$(new_name e10)"
+run_create_then_drop e11 "CREATE TABLE $(new_name e11) (n ipaddress)" "$(new_name e11)"
+run_create_then_drop e12 "CREATE TABLE $(new_name e12) (n foo)" "$(new_name e12)"
+run_create_then_drop e13 "CREATE TABLE $(new_name e13) (n timestamp)" "$(new_name e13)"
+run_create_then_drop e14 "CREATE TABLE $(new_name e14) (n time)" "$(new_name e14)"
+run_create_then_drop e15 "CREATE TABLE $(new_name e15) (n time(3))" "$(new_name e15)"
+run_create_then_drop e16 "CREATE TABLE $(new_name e16) (n timestamp(3) with time zone)" "$(new_name e16)"
+run_create_then_drop e17 "CREATE TABLE $(new_name e17) (n double precision)" "$(new_name e17)"
+run_create_then_drop e18 "CREATE TABLE $(new_name e18) (n decimal)" "$(new_name e18)"
+run_create_then_drop e19 "CREATE TABLE $(new_name e19) (n struct<a:int,b:string>)" "$(new_name e19)"
+run_create_then_drop e20 "CREATE TABLE $(new_name e20) (n map<string,int>)" "$(new_name e20)"
+run_create_then_drop e21 "CREATE TABLE $(new_name e21) (n array<array<int>>)" "$(new_name e21)"
+run_create_then_drop e22 "CREATE TABLE $(new_name e22) (n INT)" "$(new_name e22)"
+run_create_then_drop e23 "CREATE TABLE $(new_name e23) (n varchar(10, 2))" "$(new_name e23)"
+run_create_then_drop e24 "CREATE TABLE $(new_name e24) (n interval day to second)" "$(new_name e24)"
+run_create_then_drop e25 "CREATE TABLE $(new_name e25) (n int, m bigint, s string)" "$(new_name e25)"
+
+# --- F 群（LIKE と Trino の型の中身） ----------------------------------------------
+# f1・f3・f4・f5 は実在する表（準備できていれば LIKE_REAL_*PART、できていなければ
+# 同じ部数の実在しない名前）を LIKE の対象にする。
+
+run_create_then_drop f1  "CREATE TABLE $(new_name f1) (LIKE $LIKE_REAL_1PART)" "$(new_name f1)"
+run_create_then_drop f2  "CREATE TABLE $(new_name f2) (LIKE $NOPE)" "$(new_name f2)"
+run_create_then_drop f3  "CREATE TABLE $(new_name f3) (LIKE $LIKE_REAL_2PART INCLUDING PROPERTIES)" "$(new_name f3)"
+run_create_then_drop f4  "CREATE TABLE $(new_name f4) (LIKE $LIKE_REAL_3PART)" "$(new_name f4)"
+run_create_then_drop f5  "CREATE TABLE $(new_name f5) (n int, LIKE $LIKE_REAL_2PART)" "$(new_name f5)"
+run_create_then_drop f6  "CREATE TABLE $(new_name f6) (n row(a int, b varchar))" "$(new_name f6)"
+run_create_then_drop f7  "CREATE TABLE $(new_name f7) (n array(row(a int)))" "$(new_name f7)"
+run_create_then_drop f8  "CREATE TABLE $(new_name f8) (n map(varchar, array(int)))" "$(new_name f8)"
+run_create_then_drop f9  "CREATE TABLE $(new_name f9) (n ROW(a int))" "$(new_name f9)"
+run_create_then_drop f10 "CREATE TABLE $(new_name f10) (n row( a int))" "$(new_name f10)"
+run_create_then_drop f11 "CREATE TABLE $(new_name f11) (m int, n row(a int))" "$(new_name f11)"
+run_create_then_drop f12 "CREATE TABLE $(new_name f12) (n int NOT NULL, m int)" "$(new_name f12)"
+run_create_then_drop f13 "CREATE TABLE $(new_name f13) (n int) COMMENT 'x' WITH (format = 'PARQUET')" "$(new_name f13)"
+run_create_then_drop f14 "CREATE TABLE IF NOT EXISTS $(new_name f14) (n int) WITH (format = 'PARQUET')" "$(new_name f14)"
+run_create_then_drop f15 "CREATE TABLE $DB.$(new_name f15) (n int) WITH (format = 'PARQUET')" "$(new_name f15)"
+# 改行を挟む形。a15 と同じく、$'...' は変数展開しないので断片にして隣接させて連結する。
+run_create_then_drop f16 "CREATE TABLE $(new_name f16) (n int)"$'\n'"WITH (format = 'PARQUET')" "$(new_name f16)"
+
+# --- G 群（Trino 形の文言の綴り。表は作らないので run のみ） -------------------------
+
+run g1 "alter table $NOPE alter column m set data type bigint"
+run g2 "alter table if exists $NOPE alter column m set data type bigint"
+run g3 "ALTER TABLE $DB.$NOPE ALTER COLUMN m SET DATA TYPE bigint"
+run g4 "ALTER TABLE $NOPE RENAME  COLUMN a TO b"
+run g5 "alter table $NOPE rename column a to b"
+run g6 "alter table $NOPE drop column if exists m"
+run g7 "/* c */ ALTER TABLE $NOPE SET PROPERTIES x = 1"
+
+fi # ROUND=2
+
 # --- 後始末（実在する表） ----------------------------------------------------------
 
 if [ "$REAL_SETUP_OK" = 1 ]; then
@@ -751,41 +883,75 @@ fi
 # --- summary ---------------------------------------------------------------------
 
 ALL_LABELS="preflight-select1 probe-show-tables setup-real"
-for l in a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11 a12 a13 a14 a15 a16 a17 a18 a19; do
-  ALL_LABELS="$ALL_LABELS $l"
-done
-for l in b1 b2 b3 b4 b5 b6 b7 b8 b9 b10 b11 b12 b13 b14 b15 b16 b17 b18 b19; do
-  ALL_LABELS="$ALL_LABELS $l"
-done
-for l in c1 c2 c3 c4 c5 c6 c7 c8 c9 c10 c11 c12 c13 c14 c15 c16 c17 c18 c19; do
-  ALL_LABELS="$ALL_LABELS $l $l-cleanup"
-done
-ALL_LABELS="$ALL_LABELS c20 c20-cleanup c21 c21-cleanup c22 c22-cleanup c23 c23-cleanup"
+if [ "$ROUND" = 1 ]; then
+  for l in a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11 a12 a13 a14 a15 a16 a17 a18 a19; do
+    ALL_LABELS="$ALL_LABELS $l"
+  done
+  for l in b1 b2 b3 b4 b5 b6 b7 b8 b9 b10 b11 b12 b13 b14 b15 b16 b17 b18 b19; do
+    ALL_LABELS="$ALL_LABELS $l"
+  done
+  for l in c1 c2 c3 c4 c5 c6 c7 c8 c9 c10 c11 c12 c13 c14 c15 c16 c17 c18 c19; do
+    ALL_LABELS="$ALL_LABELS $l $l-cleanup"
+  done
+  ALL_LABELS="$ALL_LABELS c20 c20-cleanup c21 c21-cleanup c22 c22-cleanup c23 c23-cleanup"
+else
+  for l in e1 e2 e3 e4 e5 e6 e7 e8 e9 e10 e11 e12 e13 e14 e15 e16 e17 e18 e19 e20 e21 e22 e23 e24 e25; do
+    ALL_LABELS="$ALL_LABELS $l $l-cleanup"
+  done
+  for l in f1 f2 f3 f4 f5 f6 f7 f8 f9 f10 f11 f12 f13 f14 f15 f16; do
+    ALL_LABELS="$ALL_LABELS $l $l-cleanup"
+  done
+  for l in g1 g2 g3 g4 g5 g6 g7; do
+    ALL_LABELS="$ALL_LABELS $l"
+  done
+fi
 ALL_LABELS="$ALL_LABELS z-drop-real"
 
 write_summary_txt() {
   local txt="$RUN_DIR/summary.txt"
   {
-    echo "# issue #208: 無引用の DDL 3 種（ALTER TABLE IF EXISTS、ALTER TABLE ... ADD COLUMN"
-    echo "#             単数、場所の無い CREATE TABLE）が StartQueryExecution の時点で弾かれる"
-    echo "#             文言の規則と、Trino にだけある他の ALTER・CREATE の範囲を実測"
-    echo "# 実行日時: $(date -Iseconds)"
-    echo "# StartQueryExecution の見込み本数: 68（S3TABLES_* 無し）／70（あり）"
-    echo "#   （preflight 2 + 実在する表の準備/後始末 2 + A 群 19 + B 群 12 + B' 群 7 +"
-    echo "#   C1〜C19 19 + C3 の後始末 1 + C21・C22・C23 とその後始末 6、S3TABLES_* が"
-    echo "#   揃っていれば C20 とその後始末の 2 が乗る）。"
-    echo "#   このスクリプトの実測値: $(wc -l < "$START_CALL_FILE" | tr -d ' ') 回"
-    echo "#   （開始時に弾かれた項目があっても追加の呼び出しはしない）。"
-    echo "#   想定に反して開始時に弾かれなかった項目があれば後始末が 1 本増え、逆に"
-    echo "#   C3・C20・C21・C22・C23 が想定に反して開始時に弾かれれば後始末は skip になり減る。"
-    echo "# DDL: 実在する表 <PROBE>_real を 1 つ作って消す。C3・C21・C22・C23（と S3TABLES_* が"
-    echo "#   揃えば C20）は受けて作られる見込みで、その場で DROP して消す。それ以外の C 群は"
-    echo "#   開始時に弾かれる見込みだが、想定外に成功したら同じ仕組みで消す。ALTER・DROP は"
-    echo "#   実在しない名前（<PROBE>_nope）にだけ投げる。"
-    echo "# 課金: スキャンの無いクエリだけ（ALTER・DROP はメタデータのみ、CREATE は 0〜1 行）。"
-    echo "# 注意: これは実測した本物の Athena の挙動であり、将来の Athena の変更で変わりうる。"
-    echo "#   実測値は既定とは限らない（本物の Athena の挙動が変わっていれば、ここに書いた"
-    echo "#   見込みと食い違うことがある）。"
+    if [ "$ROUND" = 1 ]; then
+      echo "# issue #208 ラウンド 1: 無引用の DDL 3 種（ALTER TABLE IF EXISTS、"
+      echo "#             ALTER TABLE ... ADD COLUMN 単数、場所の無い CREATE TABLE）が"
+      echo "#             StartQueryExecution の時点で弾かれる文言の規則と、Trino にだけある"
+      echo "#             他の ALTER・CREATE の範囲を実測"
+      echo "# 実行日時: $(date -Iseconds)"
+      echo "# StartQueryExecution の見込み本数: 68（S3TABLES_* 無し）／70（あり）"
+      echo "#   （preflight 2 + 実在する表の準備/後始末 2 + A 群 19 + B 群 12 + B' 群 7 +"
+      echo "#   C1〜C19 19 + C3 の後始末 1 + C21・C22・C23 とその後始末 6、S3TABLES_* が"
+      echo "#   揃っていれば C20 とその後始末の 2 が乗る）。"
+      echo "#   このスクリプトの実測値: $(wc -l < "$START_CALL_FILE" | tr -d ' ') 回"
+      echo "#   （開始時に弾かれた項目があっても追加の呼び出しはしない）。"
+      echo "#   想定に反して開始時に弾かれなかった項目があれば後始末が 1 本増え、逆に"
+      echo "#   C3・C20・C21・C22・C23 が想定に反して開始時に弾かれれば後始末は skip になり減る。"
+      echo "# DDL: 実在する表 <PROBE>_real を 1 つ作って消す。C3・C21・C22・C23（と S3TABLES_* が"
+      echo "#   揃えば C20）は受けて作られる見込みで、その場で DROP して消す。それ以外の C 群は"
+      echo "#   開始時に弾かれる見込みだが、想定外に成功したら同じ仕組みで消す。ALTER・DROP は"
+      echo "#   実在しない名前（<PROBE>_nope）にだけ投げる。"
+      echo "# 課金: スキャンの無いクエリだけ（ALTER・DROP はメタデータのみ、CREATE は 0〜1 行）。"
+      echo "# 注意: これは実測した本物の Athena の挙動であり、将来の Athena の変更で変わりうる。"
+      echo "#   実測値は既定とは限らない（本物の Athena の挙動が変わっていれば、ここに書いた"
+      echo "#   見込みと食い違うことがある）。"
+    else
+      echo "# issue #208 ラウンド 2: CREATE TABLE の型名・LIKE と Trino の型の中身、"
+      echo "#             ALTER TABLE の Trino 形の文言の綴りが StartQueryExecution の時点で"
+      echo "#             どう扱われるか（No location になるか、構文の文言になるか）を実測"
+      echo "# 実行日時: $(date -Iseconds)"
+      echo "# StartQueryExecution の見込み本数: 52"
+      echo "#   （preflight 2 + 実在する表の準備/後始末 2 + E 群 25 + F 群 16 + G 群 7）。"
+      echo "#   このスクリプトの実測値: $(wc -l < "$START_CALL_FILE" | tr -d ' ') 回"
+      echo "#   （開始時に弾かれた項目があっても追加の呼び出しはしない）。"
+      echo "#   想定に反して受理された E・F 群の項目があれば、その場で DROP する後始末が"
+      echo "#   1 本ずつ増える。G 群は ALTER TABLE のみで表を作らないため後始末は無い。"
+      echo "# DDL: 実在する表 <PROBE>_real を 1 つ作って消す（F1・F3・F4・F5 の LIKE 対象）。"
+      echo "#   E・F 群は場所を指定しない CREATE TABLE で、大半は開始時に弾かれる見込みだが、"
+      echo "#   受理されて表ができた場合はその場で DROP して消す（run_create_then_drop を流用）。"
+      echo "#   G 群は ALTER TABLE のみで、実在しない名前（<PROBE>_nope）にだけ投げる。"
+      echo "# 課金: スキャンの無いクエリだけ（ALTER はメタデータのみ、CREATE は 0〜1 行）。"
+      echo "# 注意: これは実測した本物の Athena の挙動であり、将来の Athena の変更で変わりうる。"
+      echo "#   実測値は既定とは限らない（本物の Athena の挙動が変わっていれば、ここに書いた"
+      echo "#   見込みと食い違うことがある）。"
+    fi
     echo
     if [ -n "${PENDING_DROPS_REPORT:-}" ]; then
       echo "## 要対応・確かめ"
