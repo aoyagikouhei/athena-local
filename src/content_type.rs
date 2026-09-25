@@ -85,9 +85,12 @@ pub(crate) fn carries_execution_id(query: &str) -> bool {
 /// 終わる文。実測した形は `SELECT 1`、`SELECT 1, 2`、`SELECT 'a'`、`SELECT 1.5`、`SELECT 1 AS i`、
 /// `SELECT true`、`SELECT 1, 'a'`、`SELECT 23807 AS fresh`（#70）、`SELECT 1 AS i, 2 AS j`、`select 1`、
 /// `SELECT -1`、`SELECT 1.5E0`、`SELECT 1 AS "x"`、`SELECT 1 i`（#76）と、先頭・キーワードの間・末尾に
-/// コメントを置いたもの。一般化は「別名・符号・指数の組み合わせ」「小文字の `e` と符号つきの指数」
+/// コメントを置いたもの。リテラルは括弧で包んでもよく（`SELECT (1)`、`SELECT ((1))`、`SELECT (1) AS x`、
+/// `SELECT ('a')`、`SELECT (-1)`、`SELECT (/* c */ 1)` など）、`-` と数の間に空白があってもよい（`SELECT - 1`）
+/// （2026-09-25 実測。#205）。括弧の外の符号（`-(1)`、`- (1)`）と `+1` は本物も式として application にする。
+/// 一般化は「別名・符号・指数・括弧の組み合わせ」「3 重以上の括弧」「小文字の `e` と符号つきの指数」「`-` と数の間のコメント」
 /// 「キーワードの大文字小文字」だけ。測って application だった形（`LIMIT`、`DATE '...'` のような
-/// 型付きリテラル、式、`ARRAY[1]`、`(SELECT 1)`、`VALUES 1`）と測っていない形は false にして
+/// 型付きリテラル、式、`ARRAY[1]`、`(SELECT 1)`、`VALUES 1`、`(1, 2)`、`(NULL)`）と測っていない形は false にして
 /// application に落とす（本物が binary にする形を取りこぼす向きにだけ外れる）。
 fn is_literal_only_select(query: &str) -> bool {
     let mut cursor = Cursor::new(query);
@@ -95,7 +98,12 @@ fn is_literal_only_select(query: &str) -> bool {
         return false;
     }
     loop {
-        if !cursor.literal() {
+        // リテラルを包む括弧は何重でもよく、閉じる数が開く数と同じときだけ受理する。
+        let mut open = 0;
+        while cursor.punct(b'(') {
+            open += 1;
+        }
+        if !cursor.literal() || !(0..open).all(|_| cursor.punct(b')')) {
             return false;
         }
         let has_as = cursor.keyword("AS");
@@ -147,6 +155,27 @@ mod tests {
             "SELECT/* c */1,'a''b'",
             "SELECT FALSE, 'it''s'",
             "SELECT -1.5, 1e0, 1E+1, 2.5e-1 AS \"a\"\"b\", 3 c",
+            // 括弧で包んだリテラルと、符号と数字の間に空白のある数（2026-09-25 実測。#205）。
+            "SELECT (1)",
+            "SELECT ((1))",
+            "SELECT (1), 2",
+            "SELECT 1, (2)",
+            "SELECT (1) AS x",
+            "SELECT (1) x",
+            "SELECT (1) AS \"x\"",
+            "SELECT ('a')",
+            "SELECT (-1)",
+            "SELECT (1.5)",
+            "SELECT (1.5E0)",
+            "SELECT (true)",
+            "SELECT ( 1 )",
+            "SELECT (/* c */ 1)",
+            "SELECT ('a') AS s, (2) AS t",
+            "SELECT - 1",
+            // 一般化: 括弧の中の符号の空白、空白なしの括弧、`-` と数字の間のコメント。
+            "SELECT (- 1)",
+            "SELECT(('a''b'))AS s",
+            "SELECT -/* c */1",
         ] {
             assert_eq!(csv(query), BINARY, "{query:?}");
         }
@@ -178,7 +207,21 @@ mod tests {
             "SELECT 1E",
             "SELECT 1E+",
             "SELECT -",
-            "SELECT - 1",
+            "SELECT - -1",
+            // 括弧が式・行・NULL・CAST を包むもの、符号が括弧の外にあるもの、`+` の付いた数（2026-09-25 実測。#205）。
+            "SELECT -(1)",
+            "SELECT - (1)",
+            "SELECT -(-1)",
+            "SELECT +1",
+            "SELECT (1 + 1)",
+            "SELECT (1) + 1",
+            "SELECT (1, 2)",
+            "SELECT (NULL)",
+            "SELECT (CAST(1 AS BIGINT))",
+            // 括弧の数が合わないもの（Trino が構文エラーにするので判定の結果は捨てられるが、binary にはしない）。
+            "SELECT ((1)",
+            "SELECT (1))",
+            "SELECT (1 AS x)",
             "SELECT 1 AS",
             "SELECT 1 AS 'x'",
             "SELECT trueish",
@@ -281,8 +324,9 @@ mod tests {
             ("DESCRIBE\r\nt", APPLICATION, true, true),
             ("SHOW  CREATE   TABLE t", APPLICATION, true, true),
             ("\n\tSELECT 1", BINARY, false, false),
-            // w5・w6・w8 は #200 で空白ありの形と同じ値に揃えた（2026-09-25 実測。w5 の本物は binary で #205）。
-            ("SELECT(1)", APPLICATION, false, false),
+            // w5・w6・w8 は #200 で空白ありの形と同じ値に揃えた（2026-09-25 実測）。
+            // w5 は #205 で括弧付きのリテラルを受理して本物と同じ binary にした。
+            ("SELECT(1)", BINARY, false, false),
             ("SELECT'a'", BINARY, false, false),
             ("EXPLAIN(TYPE IO) SELECT 1", APPLICATION, true, false),
             ("SELECT\x0B1", BINARY, false, false),

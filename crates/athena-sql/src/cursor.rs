@@ -50,7 +50,7 @@ impl<'a> Cursor<'a> {
         true
     }
 
-    /// リテラルを 1 つ読む（`-` を付けてもよい数、`'...'`、TRUE／FALSE）。文字列は `skip_quoted` で読む
+    /// リテラルを 1 つ読む（`-` を付けてもよい数（`-` と数の間に空白・コメントがあってもよい）、`'...'`、TRUE／FALSE）。文字列は `skip_quoted` で読む
     /// （`'a''b'` も 1 つ。中の `--` はコメントではない）。閉じていない `'...` は末尾まで読んで受理する
     /// （その文は構文チェックが 400 にして実行を作らないので、判定の結果は捨てられる）。
     /// TRUE／FALSE は `keyword` で読み、キーワードの境界の規則を 2 本目にしない。
@@ -105,8 +105,9 @@ fn literal_end(sql: &str, start: usize) -> Option<usize> {
     match bytes.get(start)? {
         b'\'' => Some(skip_quoted(bytes, start)),
         b'0'..=b'9' => number_end(sql, start),
-        // `-` は数に直接続くときだけ（`SELECT -1` 実測。`- 1` は測っていない）。
-        b'-' => number_end(sql, start + 1),
+        // `-` と数の間の空白・コメントは読み飛ばす（`SELECT -1`・`SELECT - 1` とも binary。2026-09-25 実測。#205）。
+        // Trino の文法の数値リテラルは `MINUS? INTEGER_VALUE` で、`-` を別のトークンとして読むのと同じ。
+        b'-' => number_end(sql, skip_trivia(bytes, start + 1)),
         _ => None,
     }
 }
@@ -211,6 +212,10 @@ mod tests {
             ("1E+1", ""),
             ("2.5e-1", ""),
             ("-1", ""),
+            // `-` と数の間の空白・コメントは読み飛ばす（`SELECT - 1` 実測。#205）。
+            ("- 1", ""),
+            ("-/* c */1", ""),
+            ("-\n1 x", " x"),
             ("'a''b'", ""),
             ("TRUE", ""),
             ("false", ""),
@@ -221,10 +226,12 @@ mod tests {
             assert!(cursor.literal(), "{sql}");
             assert_eq!(cursor.rest(), rest, "{sql}");
         }
-        // `.` や `E` の後に数字が無い、`-` と数の間に空白がある、数の直後に識別子の文字や `.` が続く、
-        // TRUE／FALSE の後ろに識別子の文字が続く、リテラルでない語。どれも位置を進めない。
+        // `.` や `E` の後に数字が無い、`-` の後ろが数でない（`-(1)`・`- -1` は本物が式として扱う）、
+        // 数の直後に識別子の文字や `.` が続く、TRUE／FALSE の後ろに識別子の文字が続く、リテラルでない語。
+        // どれも位置を進めない。
         for sql in [
-            "1.", "1E", "1E+", "-", "- 1", "1.5.2", "1E0x", "trueish", "NULL",
+            "1.", "1E", "1E+", "-", "- ", "-(1)", "- -1", "-'a'", "1.5.2", "1E0x", "trueish",
+            "NULL",
         ] {
             let mut cursor = Cursor::new(sql);
             assert!(!cursor.literal(), "{sql}");

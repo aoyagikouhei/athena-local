@@ -257,7 +257,7 @@ Content-Type と `.metadata` を含む置き場所は本項が主で、[result-f
   | `SHOW CREATE VIEW"v1"` ／ 空白あり | 同 | UTILITY／SHOW_CREATE_VIEW | `.txt` | binary | binary 312B（不透明な形式） | 2 |
   | `DROP VIEW"v1"` ／ 空白あり | 同 | DDL／DROP_VIEW | `.txt` 0B | binary | 無し | |
 
-- 備考: 空白の有無で全項目が一致した（決め手）。athena-local はこの実測を受けて `athena_sql::words` の語の境目を識別子の文字と ASCII の記号の境目にも広げ、空白の無い形を空白ありの形と同じに分類するようにした（2c7a329）。`SELECT (1)`（括弧付きリテラル）が本物で binary・athena-local が application になる差は語の境界と無関係な既存の差で、[#205](https://github.com/aoyagikouhei/athena-local/issues/205) に起票（[docs/result-files.md](../../result-files.md) に既知の差として記載）。
+- 備考: 空白の有無で全項目が一致した（決め手）。athena-local はこの実測を受けて `athena_sql::words` の語の境目を識別子の文字と ASCII の記号の境目にも広げ、空白の無い形を空白ありの形と同じに分類するようにした（2c7a329）。`SELECT (1)`（括弧付きリテラル）が本物で binary・athena-local が application になる差は語の境界と無関係な既存の差で、[#205](https://github.com/aoyagikouhei/athena-local/issues/205) に起票し、#205 で測り直して揃えた（[result-files.md](result-files.md) の「括弧付きのリテラルと符号の後ろの空白の Content-Type」）。
 
 ### 引用符付きの名前は空白の有無によらず開始時に弾かれる（DESCRIBE・DESC・SHOW CREATE TABLE・ALTER TABLE ... ADD COLUMNS・DROP TABLE・OPTIMIZE）
 - 日付: 2026-09-25（同じラウンド、run-20260925-055931） ／ issue: #200 ／ スクリプト: `tools/measure/keyword-boundary.sh` ／ 生データ: `$HOME/athena-keyword-boundary-measurements/run-20260925-055931`
