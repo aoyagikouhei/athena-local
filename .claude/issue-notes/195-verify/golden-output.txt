@@ -1,0 +1,101 @@
+"   "	"UTILITY"	None	None	Text	"binary/octet-stream"	false	false	None	None	None
+""	"UTILITY"	None	None	Text	"binary/octet-stream"	false	false	None	None	None
+"( SHOW FUNCTIONS )"	"UTILITY"	Some("SHOW_FUNCTIONS")	None	Text	"binary/octet-stream"	false	false	None	None	None
+"(( SELECT 1))"	"DML"	Some("SELECT")	None	Csv	"application/octet-stream"	false	false	None	None	None
+"((SELECT 1))"	"DML"	Some("SELECT")	None	Csv	"application/octet-stream"	false	false	None	None	None
+"(ALTER TABLE t ADD COLUMN c int)"	"DDL"	None	None	Text	"binary/octet-stream"	false	false	None	None	None
+"(DESCRIBE t)"	"UTILITY"	Some("DESCRIBE_TABLE")	None	Text	"binary/octet-stream"	false	false	Some(Describe)	None	None
+"(EXPLAIN SELECT 1)"	"DML"	Some("EXPLAIN")	None	Text	"binary/octet-stream"	false	false	None	None	None
+"(SELECT 1)"	"DML"	Some("SELECT")	None	Csv	"application/octet-stream"	false	false	None	None	None
+"(SHOW FUNCTIONS)"	"UTILITY"	None	None	Text	"binary/octet-stream"	false	false	None	None	None
+"(VALUES 1)"	"DML"	Some("SELECT")	None	Csv	"application/octet-stream"	false	false	None	None	None
+"(WITH x AS (SELECT 1) SELECT * FROM x)"	"DML"	Some("SELECT")	None	Csv	"application/octet-stream"	false	false	None	None	None
+"-- only"	"UTILITY"	None	None	Text	"binary/octet-stream"	false	false	None	None	None
+"-- あ\nDESCRIBE t"	"UTILITY"	Some("DESCRIBE_TABLE")	None	Text	"application/octet-stream"	true	true	Some(Describe)	Some(("dc", "ds", "t"))	Some("t")
+"--c\r\nSELECT 1"	"DML"	Some("SELECT")	None	Csv	"binary/octet-stream"	false	false	None	None	None
+"/* a */ /* b */ DESCRIBE t"	"UTILITY"	Some("DESCRIBE_TABLE")	None	Text	"application/octet-stream"	true	true	Some(Describe)	Some(("dc", "ds", "t"))	Some("t")
+"/* c */SELECT 1"	"DML"	Some("SELECT")	None	Csv	"binary/octet-stream"	false	false	None	None	None
+"/* c DESCRIBE t"	"UTILITY"	None	None	Text	"binary/octet-stream"	false	false	None	None	None
+"/* only */"	"UTILITY"	None	None	Text	"binary/octet-stream"	false	false	None	None	None
+"/* unclosed"	"UTILITY"	None	None	Text	"binary/octet-stream"	false	false	None	None	None
+"ALTER TABLE .t ADD COLUMN c int"	"DDL"	Some("ALTER_TABLE_ADD_COLUMN")	None	Text	"binary/octet-stream"	false	false	Some(AlterTableAddColumns)	None	None
+"ALTER TABLE \"a\".\"b\".\"c\" ADD COLUMN c int"	"DDL"	Some("ALTER_TABLE_ADD_COLUMN")	None	Text	"binary/octet-stream"	false	false	Some(AlterTableAddColumns)	Some(("a", "b", "c"))	None
+"ALTER TABLE cat. .t ADD COLUMN c int"	"DDL"	Some("ALTER_TABLE_ADD_COLUMN")	None	Text	"binary/octet-stream"	false	false	Some(AlterTableAddColumns)	None	None
+"ALTER TABLE cat. ADD COLUMN c int"	"DDL"	None	None	Text	"binary/octet-stream"	false	false	None	None	None
+"ALTER TABLE cat..t ADD COLUMN c int"	"DDL"	Some("ALTER_TABLE_ADD_COLUMN")	None	Text	"binary/octet-stream"	false	false	Some(AlterTableAddColumns)	None	None
+"ALTER TABLE t /* c */ ADD /* d */ COLUMN c int"	"DDL"	Some("ALTER_TABLE_ADD_COLUMN")	None	Text	"binary/octet-stream"	false	false	Some(AlterTableAddColumns)	Some(("dc", "ds", "t"))	None
+"ALTER TABLE t ADD COLUMN c int;"	"DDL"	Some("ALTER_TABLE_ADD_COLUMN")	None	Text	"binary/octet-stream"	false	false	Some(AlterTableAddColumns)	Some(("dc", "ds", "t"))	None
+"ALTER TABLE t ADD COLUMN(c int)"	"DDL"	Some("ALTER_TABLE_ADD_COLUMN")	None	Text	"binary/octet-stream"	false	false	Some(AlterTableAddColumns)	Some(("dc", "ds", "t"))	None
+"ALTER TABLE\"t\" ADD COLUMNS (m int)"	"DDL"	None	None	Text	"binary/octet-stream"	false	false	None	None	None
+"CREATE OR REPLACE TABLE t AS (VALUES 1)"	"DDL"	Some("CREATE_TABLE")	None	Table	"application/octet-stream"	false	false	None	None	None
+"CREATE TABLE \"t\" AS SELECT 1"	"DDL"	Some("CREATE_TABLE_AS_SELECT")	None	Table	"application/octet-stream"	false	false	None	None	None
+"CREATE TABLE t AS ( SELECT 1)"	"DDL"	Some("CREATE_TABLE_AS_SELECT")	None	Table	"application/octet-stream"	false	false	None	None	None
+"CREATE TABLE t AS ( VALUES 1)"	"DDL"	Some("CREATE_TABLE")	None	Table	"application/octet-stream"	false	false	None	None	None
+"CREATE TABLE t AS ((VALUES 1))"	"DDL"	Some("CREATE_TABLE")	None	Table	"application/octet-stream"	false	false	None	None	None
+"CREATE TABLE t AS (TABLE x)"	"DDL"	Some("CREATE_TABLE")	None	Table	"application/octet-stream"	false	false	None	None	None
+"CREATE TABLE t AS (VALUES 1)"	"DDL"	Some("CREATE_TABLE")	None	Table	"application/octet-stream"	false	false	None	None	None
+"CREATE TABLE t AS (WITH x AS (SELECT 1) SELECT * FROM x)"	"DDL"	Some("CREATE_TABLE_AS_SELECT")	None	Table	"application/octet-stream"	false	false	None	None	None
+"CREATE TABLE t AS -- c\n(SELECT 1)"	"DDL"	Some("CREATE_TABLE_AS_SELECT")	None	Table	"application/octet-stream"	false	false	None	None	None
+"CREATE TABLE t AS SELECT 1;"	"DDL"	Some("CREATE_TABLE_AS_SELECT")	None	Table	"application/octet-stream"	false	false	None	None	None
+"CREATE TABLE t AS(SELECT 1)"	"DDL"	Some("CREATE_TABLE")	None	Text	"binary/octet-stream"	false	false	None	None	None
+"Create Or Replace Table c As (Select 1)"	"DDL"	Some("CREATE_TABLE_AS_SELECT")	None	Table	"application/octet-stream"	false	false	None	None	None
+"DESC/* c */t"	"UTILITY"	Some("DESCRIBE_TABLE")	None	Text	"application/octet-stream"	true	true	Some(Describe)	Some(("dc", "ds", "t"))	Some("t")
+"DESCRIBE -- c\n t"	"UTILITY"	Some("DESCRIBE_TABLE")	None	Text	"application/octet-stream"	true	true	Some(Describe)	Some(("dc", "ds", "t"))	Some("t")
+"DESCRIBE .t"	"UTILITY"	Some("DESCRIBE_TABLE")	None	Text	"application/octet-stream"	true	true	Some(Describe)	None	Some(".t")
+"DESCRIBE IF EXISTS t"	"UTILITY"	Some("DESCRIBE_TABLE")	None	Text	"application/octet-stream"	true	true	Some(Describe)	Some(("dc", "ds", "t"))	Some("IF")
+"DESCRIBE \"\""	"UTILITY"	Some("DESCRIBE_TABLE")	None	Text	"application/octet-stream"	true	true	Some(Describe)	Some(("dc", "ds", ""))	Some("\"\"")
+"DESCRIBE \"a\"\"b\".t"	"UTILITY"	Some("DESCRIBE_TABLE")	None	Text	"application/octet-stream"	true	true	Some(Describe)	Some(("dc", "a\"b", "t"))	Some("\"a\"\"b\".t")
+"DESCRIBE \"my t\""	"UTILITY"	Some("DESCRIBE_TABLE")	None	Text	"application/octet-stream"	true	true	Some(Describe)	Some(("dc", "ds", "my t"))	Some("\"my t\"")
+"DESCRIBE \"t"	"UTILITY"	Some("DESCRIBE_TABLE")	None	Text	"application/octet-stream"	true	true	Some(Describe)	Some(("dc", "ds", "\"t"))	Some("\"t")
+"DESCRIBE cat /* c */ . ns -- d\n . t"	"UTILITY"	Some("DESCRIBE_TABLE")	None	Text	"application/octet-stream"	true	true	Some(Describe)	Some(("cat", "ns", "t"))	Some("cat /* c */ . ns -- d\n . t")
+"DESCRIBE cat."	"UTILITY"	Some("DESCRIBE_TABLE")	None	Text	"application/octet-stream"	true	true	Some(Describe)	None	Some("cat.")
+"DESCRIBE cat..t"	"UTILITY"	Some("DESCRIBE_TABLE")	None	Text	"application/octet-stream"	true	true	Some(Describe)	None	Some("cat..t")
+"DESCRIBE t ;"	"UTILITY"	Some("DESCRIBE_TABLE")	None	Text	"application/octet-stream"	true	true	Some(Describe)	Some(("dc", "ds", "t"))	Some("t")
+"DESCRIBE t PARTITION (p = 1)"	"UTILITY"	Some("DESCRIBE_TABLE")	None	Text	"application/octet-stream"	true	true	Some(Describe)	Some(("dc", "ds", "t"))	Some("t")
+"DESCRIBE t;"	"UTILITY"	Some("DESCRIBE_TABLE")	None	Text	"application/octet-stream"	true	true	Some(Describe)	Some(("dc", "ds", "t"))	Some("t")
+"DESCRIBE 日本"	"UTILITY"	Some("DESCRIBE_TABLE")	None	Text	"application/octet-stream"	true	true	Some(Describe)	None	Some("")
+"DESCRIBE"	"UTILITY"	Some("DESCRIBE_TABLE")	None	Text	"application/octet-stream"	true	true	Some(Describe)	None	Some("")
+"DESCRIBE(t)"	"UTILITY"	None	None	Text	"binary/octet-stream"	false	false	None	None	Some("")
+"DESCRIBE\r\nt"	"UTILITY"	Some("DESCRIBE_TABLE")	None	Text	"application/octet-stream"	true	true	Some(Describe)	Some(("dc", "ds", "t"))	Some("t")
+"DESC\"t\""	"UTILITY"	None	None	Text	"binary/octet-stream"	false	false	None	None	Some("\"t\"")
+"DROP TABLE \"s3tablescatalog/b\" . ns . t"	"DDL"	Some("DROP_TABLE")	None	Text	"binary/octet-stream"	false	false	Some(DropTable)	Some(("s3tablescatalog/b", "ns", "t"))	None
+"DROP TABLE cat..t"	"DDL"	Some("DROP_TABLE")	None	Text	"binary/octet-stream"	false	false	Some(DropTable)	None	None
+"DROP TABLE 日本"	"DDL"	Some("DROP_TABLE")	None	Text	"binary/octet-stream"	false	false	Some(DropTable)	None	None
+"Describe T"	"UTILITY"	Some("DESCRIBE_TABLE")	None	Text	"application/octet-stream"	true	true	Some(Describe)	Some(("dc", "ds", "t"))	Some("T")
+"EXPLAIN /* c */ SELECT 1"	"DML"	Some("EXPLAIN")	None	Text	"application/octet-stream"	true	false	None	None	None
+"EXPLAIN SELECT 1;"	"DML"	Some("EXPLAIN")	None	Text	"application/octet-stream"	true	false	None	None	None
+"EXPLAIN(TYPE IO) SELECT 1"	"UTILITY"	None	None	Text	"binary/octet-stream"	false	false	None	None	None
+"SELECT '--' AS \"/*\""	"DML"	Some("SELECT")	None	Csv	"binary/octet-stream"	false	false	None	None	None
+"SELECT '日本語'"	"DML"	Some("SELECT")	None	Csv	"binary/octet-stream"	false	false	None	None	None
+"SELECT 1 /* c"	"DML"	Some("SELECT")	None	Csv	"binary/octet-stream"	false	false	None	None	None
+"SELECT 1 AS \"a b\""	"DML"	Some("SELECT")	None	Csv	"binary/octet-stream"	false	false	None	None	None
+"SELECT 1 AS 日本"	"DML"	Some("SELECT")	None	Csv	"application/octet-stream"	false	false	None	None	None
+"SELECT 1"	"DML"	Some("SELECT")	None	Csv	"binary/octet-stream"	false	false	None	None	None
+"SELECT 1;"	"DML"	Some("SELECT")	None	Csv	"application/octet-stream"	false	false	None	None	None
+"SELECT'a'"	"UTILITY"	None	None	Text	"binary/octet-stream"	false	false	None	None	None
+"SELECT(1)"	"UTILITY"	None	None	Text	"binary/octet-stream"	false	false	None	None	None
+"SELECT*FROM t"	"UTILITY"	None	None	Text	"binary/octet-stream"	false	false	None	None	None
+"SELECT--c\n1"	"DML"	Some("SELECT")	None	Csv	"binary/octet-stream"	false	false	None	None	None
+"SELECT/* c */1"	"DML"	Some("SELECT")	None	Csv	"binary/octet-stream"	false	false	None	None	None
+"SELECT\t1"	"DML"	Some("SELECT")	None	Csv	"binary/octet-stream"	false	false	None	None	None
+"SELECT\u{3000}1"	"UTILITY"	None	None	Text	"binary/octet-stream"	false	false	None	None	None
+"SELECT\u{a0}1"	"UTILITY"	None	None	Text	"binary/octet-stream"	false	false	None	None	None
+"SELECT\u{b}1"	"UTILITY"	None	None	Text	"binary/octet-stream"	false	false	None	None	None
+"SELECT\u{c}1"	"UTILITY"	None	None	Text	"binary/octet-stream"	false	false	None	None	None
+"SHOW  CREATE   TABLE t"	"UTILITY"	Some("SHOW_CREATE_TABLE")	Some(("createtab_stmt", "string"))	Text	"application/octet-stream"	true	true	Some(ShowCreateTable)	Some(("dc", "ds", "t"))	None
+"SHOW -- c\nCREATE /* d */ TABLE t"	"UTILITY"	Some("SHOW_CREATE_TABLE")	Some(("createtab_stmt", "string"))	Text	"application/octet-stream"	true	true	Some(ShowCreateTable)	Some(("dc", "ds", "t"))	None
+"SHOW COLUMNS FROM t"	"UTILITY"	Some("SHOW_COLUMNS")	None	Text	"binary/octet-stream"	false	false	Some(ShowColumns)	Some(("dc", "ds", "t"))	None
+"SHOW CREATE SCHEMA s"	"UTILITY"	None	None	Text	"binary/octet-stream"	false	false	None	None	None
+"SHOW CREATE TABLE t;"	"UTILITY"	Some("SHOW_CREATE_TABLE")	Some(("createtab_stmt", "string"))	Text	"application/octet-stream"	true	true	Some(ShowCreateTable)	Some(("dc", "ds", "t"))	None
+"SHOW CREATE TABLE\"t\""	"UTILITY"	None	None	Text	"binary/octet-stream"	false	false	None	None	None
+"SHOW CREATE VIEW v"	"UTILITY"	Some("SHOW_CREATE_VIEW")	Some(("create view", "varchar"))	Text	"binary/octet-stream"	false	false	None	None	None
+"SHOW SCHEMAS"	"UTILITY"	Some("SHOW_DATABASES")	Some(("database_name", "string"))	Text	"binary/octet-stream"	false	false	None	None	None
+"SHOW TABLES"	"UTILITY"	Some("SHOW_TABLES")	Some(("tab_name", "string"))	Text	"binary/octet-stream"	false	false	None	None	None
+"SHOW create VIEW v"	"UTILITY"	Some("SHOW_CREATE_VIEW")	Some(("create view", "varchar"))	Text	"binary/octet-stream"	false	false	None	None	None
+"Show Create Table T"	"UTILITY"	Some("SHOW_CREATE_TABLE")	Some(("createtab_stmt", "string"))	Text	"application/octet-stream"	true	true	Some(ShowCreateTable)	Some(("dc", "ds", "t"))	None
+"\n\tSELECT 1"	"DML"	Some("SELECT")	None	Csv	"binary/octet-stream"	false	false	None	None	None
+"alter TABLE t add Column c int"	"DDL"	Some("ALTER_TABLE_ADD_COLUMN")	None	Text	"binary/octet-stream"	false	false	Some(AlterTableAddColumns)	Some(("dc", "ds", "t"))	None
+"eXpLaIn SELECT 1"	"DML"	Some("EXPLAIN")	None	Text	"application/octet-stream"	true	false	None	None	None
+"sElEcT 1"	"DML"	Some("SELECT")	None	Csv	"binary/octet-stream"	false	false	None	None	None
+"show functions"	"UTILITY"	Some("SHOW_FUNCTIONS")	None	Csv	"application/octet-stream"	false	false	None	None	None
+"日本語"	"UTILITY"	None	None	Text	"binary/octet-stream"	false	false	None	None	None

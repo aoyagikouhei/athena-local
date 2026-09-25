@@ -428,3 +428,137 @@ fn insert_はテーブルの形式でも更新件数でも_拡張子なしの_id
         assert_eq!(ResultFile::of(query), ResultFile::Manifest, "{query:?}");
     }
 }
+
+/// #195 の固定表 (2)。
+/// 期待値は着手前のコード（76e66f8 + P1a）に `195-verify/golden.sh` を流した出力を写した。推測で書いていない。
+#[test]
+fn 結果ファイルの種類は_crate_の_api_に寄せる前と同じ() {
+    let cases: &[(&str, ResultFile)] = &[
+        // コメント（c1・c2・c3・c4・c5・c6・c7・c8・c9・c10・c11・c12・c13・c14・c15）
+        ("/* c */SELECT 1", ResultFile::Csv),
+        ("SELECT/* c */1", ResultFile::Csv),
+        ("SELECT--c\n1", ResultFile::Csv),
+        ("--c\r\nSELECT 1", ResultFile::Csv),
+        ("/* a */ /* b */ DESCRIBE t", ResultFile::Text),
+        ("DESCRIBE -- c\n t", ResultFile::Text),
+        ("DESC/* c */t", ResultFile::Text),
+        ("SHOW -- c\nCREATE /* d */ TABLE t", ResultFile::Text),
+        ("CREATE TABLE t AS -- c\n(SELECT 1)", ResultFile::Table),
+        ("EXPLAIN /* c */ SELECT 1", ResultFile::Text),
+        ("/* c DESCRIBE t", ResultFile::Text),
+        ("SELECT 1 /* c", ResultFile::Csv),
+        ("SELECT '--' AS \"/*\"", ResultFile::Csv),
+        ("DESCRIBE cat /* c */ . ns -- d\n . t", ResultFile::Text),
+        (
+            "ALTER TABLE t /* c */ ADD /* d */ COLUMN c int",
+            ResultFile::Text,
+        ),
+        // 引用符付き識別子（q1・q2・q3・q4・q5・q6・q7・q8・q9・q10・q11）
+        ("DESCRIBE \"my t\"", ResultFile::Text),
+        ("DESCRIBE \"a\"\"b\".t", ResultFile::Text),
+        (
+            "ALTER TABLE \"a\".\"b\".\"c\" ADD COLUMN c int",
+            ResultFile::Text,
+        ),
+        ("ALTER TABLE\"t\" ADD COLUMNS (m int)", ResultFile::Text),
+        ("SHOW CREATE TABLE\"t\"", ResultFile::Text),
+        ("DESC\"t\"", ResultFile::Text),
+        ("DESCRIBE \"t", ResultFile::Text),
+        ("SELECT 1 AS \"a b\"", ResultFile::Csv),
+        ("CREATE TABLE \"t\" AS SELECT 1", ResultFile::Table),
+        (
+            "DROP TABLE \"s3tablescatalog/b\" . ns . t",
+            ResultFile::Text,
+        ),
+        ("DESCRIBE \"\"", ResultFile::Text),
+        // 大文字小文字（k1・k2・k3・k4・k5・k6・k7・k8）
+        ("sElEcT 1", ResultFile::Csv),
+        ("Describe T", ResultFile::Text),
+        ("Show Create Table T", ResultFile::Text),
+        ("eXpLaIn SELECT 1", ResultFile::Text),
+        ("Create Or Replace Table c As (Select 1)", ResultFile::Table),
+        ("alter TABLE t add Column c int", ResultFile::Text),
+        ("show functions", ResultFile::Csv),
+        ("SHOW create VIEW v", ResultFile::Text),
+        // 空白（w1・w2・w3・w4・w5・w6・w7・w8・w9・w10・w11・w12・w13・w14）
+        ("SELECT\t1", ResultFile::Csv),
+        ("DESCRIBE\r\nt", ResultFile::Text),
+        ("SHOW  CREATE   TABLE t", ResultFile::Text),
+        ("\n\tSELECT 1", ResultFile::Csv),
+        ("SELECT(1)", ResultFile::Text),
+        ("SELECT'a'", ResultFile::Text),
+        ("SELECT*FROM t", ResultFile::Text),
+        ("EXPLAIN(TYPE IO) SELECT 1", ResultFile::Text),
+        ("DESCRIBE(t)", ResultFile::Text),
+        ("SELECT\x0B1", ResultFile::Text),
+        ("SELECT\x0C1", ResultFile::Text),
+        ("SELECT\u{3000}1", ResultFile::Text),
+        ("SELECT\u{00A0}1", ResultFile::Text),
+        ("ALTER TABLE t ADD COLUMN(c int)", ResultFile::Text),
+        // `(` の変種（p1・p2・p3・p4・p5・p6・p7・p8・p9・p10・p11・p12・p13・p14・p15・p16・p17・p18）
+        ("(SELECT 1)", ResultFile::Csv),
+        ("((SELECT 1))", ResultFile::Csv),
+        ("(( SELECT 1))", ResultFile::Csv),
+        ("(VALUES 1)", ResultFile::Csv),
+        ("(WITH x AS (SELECT 1) SELECT * FROM x)", ResultFile::Csv),
+        ("(EXPLAIN SELECT 1)", ResultFile::Text),
+        ("(DESCRIBE t)", ResultFile::Text),
+        ("( SHOW FUNCTIONS )", ResultFile::Text),
+        ("(SHOW FUNCTIONS)", ResultFile::Text),
+        ("(ALTER TABLE t ADD COLUMN c int)", ResultFile::Text),
+        ("CREATE TABLE t AS (VALUES 1)", ResultFile::Table),
+        ("CREATE TABLE t AS ( VALUES 1)", ResultFile::Table),
+        ("CREATE TABLE t AS ((VALUES 1))", ResultFile::Table),
+        ("CREATE TABLE t AS (TABLE x)", ResultFile::Table),
+        ("CREATE OR REPLACE TABLE t AS (VALUES 1)", ResultFile::Table),
+        ("CREATE TABLE t AS ( SELECT 1)", ResultFile::Table),
+        ("CREATE TABLE t AS(SELECT 1)", ResultFile::Text),
+        (
+            "CREATE TABLE t AS (WITH x AS (SELECT 1) SELECT * FROM x)",
+            ResultFile::Table,
+        ),
+        // 修飾名の空の部分（n1・n2・n3・n4・n5・n6・n7・n8・n9・n10・n11）
+        ("DESCRIBE IF EXISTS t", ResultFile::Text),
+        ("ALTER TABLE .t ADD COLUMN c int", ResultFile::Text),
+        ("ALTER TABLE cat..t ADD COLUMN c int", ResultFile::Text),
+        ("ALTER TABLE cat. .t ADD COLUMN c int", ResultFile::Text),
+        ("ALTER TABLE cat. ADD COLUMN c int", ResultFile::Text),
+        ("DESCRIBE cat..t", ResultFile::Text),
+        ("DESCRIBE .t", ResultFile::Text),
+        ("DESCRIBE cat.", ResultFile::Text),
+        ("DESCRIBE", ResultFile::Text),
+        ("DROP TABLE cat..t", ResultFile::Text),
+        ("DESCRIBE t PARTITION (p = 1)", ResultFile::Text),
+        // 空・トリビアだけ・多バイト（e1・e2・e3・e4・e5・e6・e7・e8・e9・e10・e11）
+        ("", ResultFile::Text),
+        ("   ", ResultFile::Text),
+        ("-- only", ResultFile::Text),
+        ("/* only */", ResultFile::Text),
+        ("/* unclosed", ResultFile::Text),
+        ("日本語", ResultFile::Text),
+        ("SELECT '日本語'", ResultFile::Csv),
+        ("DESCRIBE 日本", ResultFile::Text),
+        ("DROP TABLE 日本", ResultFile::Text),
+        ("-- あ\nDESCRIBE t", ResultFile::Text),
+        ("SELECT 1 AS 日本", ResultFile::Csv),
+        // `;` 付き（s1・s2・s3・s4・s5・s6・s7）
+        ("SELECT 1;", ResultFile::Csv),
+        ("DESCRIBE t;", ResultFile::Text),
+        ("SHOW CREATE TABLE t;", ResultFile::Text),
+        ("EXPLAIN SELECT 1;", ResultFile::Text),
+        ("CREATE TABLE t AS SELECT 1;", ResultFile::Table),
+        ("DESCRIBE t ;", ResultFile::Text),
+        ("ALTER TABLE t ADD COLUMN c int;", ResultFile::Text),
+        // SHOW（h1・h2・h3・h4・h5）
+        ("SHOW CREATE VIEW v", ResultFile::Text),
+        ("SHOW CREATE SCHEMA s", ResultFile::Text),
+        ("SHOW TABLES", ResultFile::Text),
+        ("SHOW SCHEMAS", ResultFile::Text),
+        ("SHOW COLUMNS FROM t", ResultFile::Text),
+        // 対照（x1）
+        ("SELECT 1", ResultFile::Csv),
+    ];
+    for &(query, expected) in cases {
+        assert_eq!(ResultFile::of(query), expected, "{query:?}");
+    }
+}

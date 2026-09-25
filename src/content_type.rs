@@ -5,7 +5,7 @@
 //! 判定をここに分けて置く。`.metadata` は本体と同じ値（36 項目すべて一致。例外は 140 MB の
 //! マルチパート本体だけで、athena-local は単一の PUT しかしない）。
 
-use athena_sql::{skip_keyword, skip_leading_trivia, skip_quoted, words};
+use athena_sql::{Cursor, words_iter};
 
 use crate::results::ResultFile;
 
@@ -57,7 +57,10 @@ fn text_content_type(query: &str) -> &'static str {
 /// 無し、SELECT は 0。#160、#169）ので、`operation/completion.rs` の `update_count` も同じ述語で選ぶ。
 /// Iceberg のテーブルへの DESCRIBE / SHOW CREATE TABLE だけは本物が binary・0 で、形式の問い合わせの後に上書きする。
 pub(crate) fn plain_text_statement(query: &str) -> bool {
-    carries_execution_id(query) || words(query).first().is_some_and(|word| word == "EXPLAIN")
+    carries_execution_id(query)
+        || words_iter(query)
+            .next()
+            .is_some_and(|word| word.upper == "EXPLAIN")
 }
 
 /// 本物が `.metadata` を素の protobuf で置き、先頭（field 1）に QueryExecutionId を載せる文:
@@ -67,9 +70,9 @@ pub(crate) fn plain_text_statement(query: &str) -> bool {
 /// `SHOW CREATE` は 3 語目が `TABLE` のときだけで、`SHOW CREATE VIEW` は本物が不透明な `.metadata` を
 /// binary で置く（2026-09-24 実測。#146・#151）ので入れない。`SHOW CREATE SCHEMA` などほかの
 /// `SHOW CREATE ...` は Athena の構文に無く未実測で、`.txt` の既定（binary）に落ちる。
-/// 語は `athena_sql::words` で読むので、先頭やキーワードの間のコメントは語にならない。
+/// 語は `athena_sql::words_iter` で先頭の 3 語だけ読むので、先頭やキーワードの間のコメントは語にならない。
 pub(crate) fn carries_execution_id(query: &str) -> bool {
-    let words = words(query);
+    let words: Vec<String> = words_iter(query).take(3).map(|word| word.upper).collect();
     let word = |index: usize| words.get(index).map(String::as_str).unwrap_or_default();
     matches!(
         (word(0), word(1), word(2)),
@@ -87,85 +90,23 @@ pub(crate) fn carries_execution_id(query: &str) -> bool {
 /// 型付きリテラル、式、`ARRAY[1]`、`(SELECT 1)`、`VALUES 1`）と測っていない形は false にして
 /// application に落とす（本物が binary にする形を取りこぼす向きにだけ外れる）。
 fn is_literal_only_select(query: &str) -> bool {
-    let Some(mut rest) = skip_keyword(query, "SELECT") else {
+    let mut cursor = Cursor::new(query);
+    if !cursor.keyword("SELECT") {
         return false;
-    };
+    }
     loop {
-        let Some(after_literal) = skip_literal(skip_leading_trivia(rest)) else {
+        if !cursor.literal() {
             return false;
-        };
-        rest = skip_leading_trivia(after_literal);
-        let after_as = skip_keyword(rest, "AS");
-        match skip_identifier(skip_leading_trivia(after_as.unwrap_or(rest))) {
-            Some(after_alias) => rest = skip_leading_trivia(after_alias),
-            // `AS` の後ろに識別子が無ければ受理しない。`AS` が無ければ別名は任意。
-            None if after_as.is_some() => return false,
-            None => {}
         }
-        match rest.strip_prefix(',') {
-            Some(next) => rest = next,
-            None => return rest.is_empty(),
+        let has_as = cursor.keyword("AS");
+        // `AS` の後ろに識別子が無ければ受理しない。`AS` が無ければ別名は任意。
+        if !cursor.identifier() && has_as {
+            return false;
+        }
+        if !cursor.punct(b',') {
+            return cursor.at_end();
         }
     }
-}
-
-/// リテラルを 1 つ読み飛ばした残り。文字列は `skip_quoted` で読む（`'a''b'` も 1 つ。中の `--` は
-/// コメントではない）。閉じていない `'...` は末尾まで読んで受理するが、その文は構文チェック
-/// （`Trino::syntax_error`）が先に弾くのでここには届かない。
-fn skip_literal(input: &str) -> Option<&str> {
-    match input.as_bytes().first()? {
-        b'\'' => Some(&input[skip_quoted(input.as_bytes(), 0)..]),
-        b'0'..=b'9' => skip_number(input),
-        // `-` は数に直接続くときだけ（`SELECT -1` 実測。`- 1` は測っていない）。
-        b'-' => skip_number(&input[1..]),
-        _ => skip_keyword(input, "TRUE").or_else(|| skip_keyword(input, "FALSE")),
-    }
-}
-
-/// `1`、`1.5`、`1.5E0`（`e` でもよく、指数に符号を付けてもよい）。直後に識別子の文字や `.` が
-/// 続くもの（`1.5.2`、`1E0x`）と、`.` や `E` の後に数字が無いもの（`1.`、`1E`）は数のリテラルとして
-/// 読まない。
-fn skip_number(input: &str) -> Option<&str> {
-    let digits = |s: &str| s.len() - s.trim_start_matches(|c: char| c.is_ascii_digit()).len();
-    let mut end = digits(input);
-    if end == 0 {
-        return None;
-    }
-    if let Some(fraction) = input[end..].strip_prefix('.') {
-        let count = digits(fraction);
-        if count == 0 {
-            return None;
-        }
-        end += 1 + count;
-    }
-    if let Some(exponent) = input[end..].strip_prefix(['E', 'e']) {
-        let unsigned = exponent.strip_prefix(['+', '-']).unwrap_or(exponent);
-        let count = digits(unsigned);
-        if count == 0 {
-            return None;
-        }
-        end += 1 + (exponent.len() - unsigned.len()) + count;
-    }
-    let rest = &input[end..];
-    if rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '.') {
-        return None;
-    }
-    Some(rest)
-}
-
-/// 識別子を 1 つ読み飛ばした残り。無引用（英字か `_` で始まり、英数字と `_` が続く）か、
-/// `"..."`（`""` の重ねも 1 つ。閉じていなければ末尾まで。`skip_literal` の `'...'` と同じ扱い）。
-fn skip_identifier(input: &str) -> Option<&str> {
-    if input.starts_with('"') {
-        return Some(&input[skip_quoted(input.as_bytes(), 0)..]);
-    }
-    if !input.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') {
-        return None;
-    }
-    let end = input
-        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-        .unwrap_or(input.len());
-    Some(&input[end..])
 }
 
 #[cfg(test)]
@@ -228,7 +169,7 @@ mod tests {
             "SELECT id, name FROM users",
             "(SELECT 1)",
             // 本物は binary（2026-09-23 実測）だが、Trino が末尾の `;` を構文エラーにするので
-            // athena-local では構文チェックで FAILED になり、ここには届かない。判定は変えない。
+            // athena-local では構文チェックが 400 にして実行を作らず、判定の結果は捨てられる。判定は変えない。
             "SELECT 1;",
             // 途中で終わる・数の形が崩れているもの。パーサの拒否の分岐を 1 つずつ踏む。
             "SELECT",
@@ -301,5 +242,88 @@ mod tests {
             of(ResultFile::Table, "CREATE TABLE t AS SELECT 1"),
             APPLICATION
         );
+    }
+
+    /// #195 の固定表 (3)（入力表から 51 件）。
+    /// 期待値は着手前のコード（76e66f8 + P1a）に `195-verify/golden.sh` を流した出力を写した。推測で書いていない。
+    #[test]
+    fn content_type_は_crate_の_api_に寄せる前と同じ値を返す() {
+        let cases: &[(&str, &str, bool, bool)] = &[
+            // コメント（c1・c3・c4・c5・c7・c8・c9・c10・c11・c12・c13）
+            ("/* c */SELECT 1", BINARY, false, false),
+            ("SELECT--c\n1", BINARY, false, false),
+            ("--c\r\nSELECT 1", BINARY, false, false),
+            ("/* a */ /* b */ DESCRIBE t", APPLICATION, true, true),
+            ("DESC/* c */t", APPLICATION, true, true),
+            ("SHOW -- c\nCREATE /* d */ TABLE t", APPLICATION, true, true),
+            (
+                "CREATE TABLE t AS -- c\n(SELECT 1)",
+                APPLICATION,
+                false,
+                false,
+            ),
+            ("EXPLAIN /* c */ SELECT 1", APPLICATION, true, false),
+            ("/* c DESCRIBE t", BINARY, false, false),
+            ("SELECT 1 /* c", BINARY, false, false),
+            ("SELECT '--' AS \"/*\"", BINARY, false, false),
+            // 引用符付き識別子（q5・q8）
+            ("SHOW CREATE TABLE\"t\"", BINARY, false, false),
+            ("SELECT 1 AS \"a b\"", BINARY, false, false),
+            // 大文字小文字（k1・k2・k3・k4・k7）
+            ("sElEcT 1", BINARY, false, false),
+            ("Describe T", APPLICATION, true, true),
+            ("Show Create Table T", APPLICATION, true, true),
+            ("eXpLaIn SELECT 1", APPLICATION, true, false),
+            ("show functions", APPLICATION, false, false),
+            // 空白（w1・w2・w3・w4・w5・w6・w8・w10・w12・w13）
+            ("SELECT\t1", BINARY, false, false),
+            ("DESCRIBE\r\nt", APPLICATION, true, true),
+            ("SHOW  CREATE   TABLE t", APPLICATION, true, true),
+            ("\n\tSELECT 1", BINARY, false, false),
+            ("SELECT(1)", BINARY, false, false),
+            ("SELECT'a'", BINARY, false, false),
+            ("EXPLAIN(TYPE IO) SELECT 1", BINARY, false, false),
+            ("SELECT\x0B1", BINARY, false, false),
+            ("SELECT\u{3000}1", BINARY, false, false),
+            ("SELECT\u{00A0}1", BINARY, false, false),
+            // `(` の変種（p1・p4・p6・p7・p8・p9・p11・p17）
+            ("(SELECT 1)", APPLICATION, false, false),
+            ("(VALUES 1)", APPLICATION, false, false),
+            ("(EXPLAIN SELECT 1)", BINARY, false, false),
+            ("(DESCRIBE t)", BINARY, false, false),
+            ("( SHOW FUNCTIONS )", BINARY, false, false),
+            ("(SHOW FUNCTIONS)", BINARY, false, false),
+            ("CREATE TABLE t AS (VALUES 1)", APPLICATION, false, false),
+            ("CREATE TABLE t AS(SELECT 1)", BINARY, false, false),
+            // 空・トリビアだけ・多バイト（e1・e3・e5・e6・e7・e10・e11）
+            ("", BINARY, false, false),
+            ("-- only", BINARY, false, false),
+            ("/* unclosed", BINARY, false, false),
+            ("日本語", BINARY, false, false),
+            ("SELECT '日本語'", BINARY, false, false),
+            ("-- あ\nDESCRIBE t", APPLICATION, true, true),
+            ("SELECT 1 AS 日本", APPLICATION, false, false),
+            // `;` 付き（s1・s2・s3・s4・s5）
+            ("SELECT 1;", APPLICATION, false, false),
+            ("DESCRIBE t;", APPLICATION, true, true),
+            ("SHOW CREATE TABLE t;", APPLICATION, true, true),
+            ("EXPLAIN SELECT 1;", APPLICATION, true, false),
+            ("CREATE TABLE t AS SELECT 1;", APPLICATION, false, false),
+            // SHOW（h1・h3・h5）
+            ("SHOW CREATE VIEW v", BINARY, false, false),
+            ("SHOW TABLES", BINARY, false, false),
+            ("SHOW COLUMNS FROM t", BINARY, false, false),
+        ];
+        for &(query, content_type, plain, carries) in cases {
+            assert_eq!(
+                (
+                    of(ResultFile::of(query), query),
+                    plain_text_statement(query),
+                    carries_execution_id(query)
+                ),
+                (content_type, plain, carries),
+                "{query:?}"
+            );
+        }
     }
 }

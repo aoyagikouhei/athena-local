@@ -347,7 +347,7 @@ fn substatement_type_は大文字小文字を無視し多バイト文字と短�
             "AlTeR TaBlE t sEt TbLpRoPeRtIeS ('a' = 'b')",
             Some("ALTER_TABLE_PROPERTIES"),
         ),
-        // 多バイト文字の引用符付きテーブル名を `skip_qualified_name` で読み飛ばしてから、
+        // 多バイト文字の引用符付きテーブル名を `Cursor::qualified_name` で読み飛ばしてから、
         // その後ろのキーワードで判定する。
         (
             r#"ALTER TABLE "日本語" ADD COLUMNS (c int)"#,
@@ -358,5 +358,309 @@ fn substatement_type_は大文字小文字を無視し多バイト文字と短�
         ("ALTER TABLE", None),
     ] {
         assert_eq!(substatement_type(query), expected, "{query:?}");
+    }
+}
+
+/// #195 の固定表 (1)。
+/// 期待値は着手前のコード（76e66f8 + P1a）に `195-verify/golden.sh` を流した出力を写した。推測で書いていない。
+#[test]
+fn 分類は_crate_の_api_に寄せる前と同じ結果を返す() {
+    type Case = (
+        &'static str,
+        &'static str,
+        Option<&'static str>,
+        Option<(&'static str, &'static str)>,
+    );
+    let cases: &[Case] = &[
+        // コメント（c1・c2・c3・c4・c5・c6・c7・c8・c9・c10・c11・c12・c13・c14・c15）
+        ("/* c */SELECT 1", "DML", Some("SELECT"), None),
+        ("SELECT/* c */1", "DML", Some("SELECT"), None),
+        ("SELECT--c\n1", "DML", Some("SELECT"), None),
+        ("--c\r\nSELECT 1", "DML", Some("SELECT"), None),
+        (
+            "/* a */ /* b */ DESCRIBE t",
+            "UTILITY",
+            Some("DESCRIBE_TABLE"),
+            None,
+        ),
+        ("DESCRIBE -- c\n t", "UTILITY", Some("DESCRIBE_TABLE"), None),
+        ("DESC/* c */t", "UTILITY", Some("DESCRIBE_TABLE"), None),
+        (
+            "SHOW -- c\nCREATE /* d */ TABLE t",
+            "UTILITY",
+            Some("SHOW_CREATE_TABLE"),
+            Some(("createtab_stmt", "string")),
+        ),
+        (
+            "CREATE TABLE t AS -- c\n(SELECT 1)",
+            "DDL",
+            Some("CREATE_TABLE_AS_SELECT"),
+            None,
+        ),
+        ("EXPLAIN /* c */ SELECT 1", "DML", Some("EXPLAIN"), None),
+        ("/* c DESCRIBE t", "UTILITY", None, None),
+        ("SELECT 1 /* c", "DML", Some("SELECT"), None),
+        ("SELECT '--' AS \"/*\"", "DML", Some("SELECT"), None),
+        (
+            "DESCRIBE cat /* c */ . ns -- d\n . t",
+            "UTILITY",
+            Some("DESCRIBE_TABLE"),
+            None,
+        ),
+        (
+            "ALTER TABLE t /* c */ ADD /* d */ COLUMN c int",
+            "DDL",
+            Some("ALTER_TABLE_ADD_COLUMN"),
+            None,
+        ),
+        // 引用符付き識別子（q1・q2・q3・q4・q5・q6・q7・q8・q9・q10・q11）
+        ("DESCRIBE \"my t\"", "UTILITY", Some("DESCRIBE_TABLE"), None),
+        (
+            "DESCRIBE \"a\"\"b\".t",
+            "UTILITY",
+            Some("DESCRIBE_TABLE"),
+            None,
+        ),
+        (
+            "ALTER TABLE \"a\".\"b\".\"c\" ADD COLUMN c int",
+            "DDL",
+            Some("ALTER_TABLE_ADD_COLUMN"),
+            None,
+        ),
+        ("ALTER TABLE\"t\" ADD COLUMNS (m int)", "DDL", None, None),
+        ("SHOW CREATE TABLE\"t\"", "UTILITY", None, None),
+        ("DESC\"t\"", "UTILITY", None, None),
+        ("DESCRIBE \"t", "UTILITY", Some("DESCRIBE_TABLE"), None),
+        ("SELECT 1 AS \"a b\"", "DML", Some("SELECT"), None),
+        (
+            "CREATE TABLE \"t\" AS SELECT 1",
+            "DDL",
+            Some("CREATE_TABLE_AS_SELECT"),
+            None,
+        ),
+        (
+            "DROP TABLE \"s3tablescatalog/b\" . ns . t",
+            "DDL",
+            Some("DROP_TABLE"),
+            None,
+        ),
+        ("DESCRIBE \"\"", "UTILITY", Some("DESCRIBE_TABLE"), None),
+        // 大文字小文字（k1・k2・k3・k4・k5・k6・k7・k8）
+        ("sElEcT 1", "DML", Some("SELECT"), None),
+        ("Describe T", "UTILITY", Some("DESCRIBE_TABLE"), None),
+        (
+            "Show Create Table T",
+            "UTILITY",
+            Some("SHOW_CREATE_TABLE"),
+            Some(("createtab_stmt", "string")),
+        ),
+        ("eXpLaIn SELECT 1", "DML", Some("EXPLAIN"), None),
+        (
+            "Create Or Replace Table c As (Select 1)",
+            "DDL",
+            Some("CREATE_TABLE_AS_SELECT"),
+            None,
+        ),
+        (
+            "alter TABLE t add Column c int",
+            "DDL",
+            Some("ALTER_TABLE_ADD_COLUMN"),
+            None,
+        ),
+        ("show functions", "UTILITY", Some("SHOW_FUNCTIONS"), None),
+        (
+            "SHOW create VIEW v",
+            "UTILITY",
+            Some("SHOW_CREATE_VIEW"),
+            Some(("create view", "varchar")),
+        ),
+        // 空白（w1・w2・w3・w4・w5・w6・w7・w8・w9・w10・w11・w12・w13・w14）
+        ("SELECT\t1", "DML", Some("SELECT"), None),
+        ("DESCRIBE\r\nt", "UTILITY", Some("DESCRIBE_TABLE"), None),
+        (
+            "SHOW  CREATE   TABLE t",
+            "UTILITY",
+            Some("SHOW_CREATE_TABLE"),
+            Some(("createtab_stmt", "string")),
+        ),
+        ("\n\tSELECT 1", "DML", Some("SELECT"), None),
+        ("SELECT(1)", "UTILITY", None, None),
+        ("SELECT'a'", "UTILITY", None, None),
+        ("SELECT*FROM t", "UTILITY", None, None),
+        ("EXPLAIN(TYPE IO) SELECT 1", "UTILITY", None, None),
+        ("DESCRIBE(t)", "UTILITY", None, None),
+        ("SELECT\x0B1", "UTILITY", None, None),
+        ("SELECT\x0C1", "UTILITY", None, None),
+        ("SELECT\u{3000}1", "UTILITY", None, None),
+        ("SELECT\u{00A0}1", "UTILITY", None, None),
+        (
+            "ALTER TABLE t ADD COLUMN(c int)",
+            "DDL",
+            Some("ALTER_TABLE_ADD_COLUMN"),
+            None,
+        ),
+        // `(` の変種（p1・p2・p3・p4・p5・p6・p7・p8・p9・p10・p11・p12・p13・p14・p15・p16・p17・p18）
+        ("(SELECT 1)", "DML", Some("SELECT"), None),
+        ("((SELECT 1))", "DML", Some("SELECT"), None),
+        ("(( SELECT 1))", "DML", Some("SELECT"), None),
+        ("(VALUES 1)", "DML", Some("SELECT"), None),
+        (
+            "(WITH x AS (SELECT 1) SELECT * FROM x)",
+            "DML",
+            Some("SELECT"),
+            None,
+        ),
+        ("(EXPLAIN SELECT 1)", "DML", Some("EXPLAIN"), None),
+        ("(DESCRIBE t)", "UTILITY", Some("DESCRIBE_TABLE"), None),
+        (
+            "( SHOW FUNCTIONS )",
+            "UTILITY",
+            Some("SHOW_FUNCTIONS"),
+            None,
+        ),
+        ("(SHOW FUNCTIONS)", "UTILITY", None, None),
+        ("(ALTER TABLE t ADD COLUMN c int)", "DDL", None, None),
+        (
+            "CREATE TABLE t AS (VALUES 1)",
+            "DDL",
+            Some("CREATE_TABLE"),
+            None,
+        ),
+        (
+            "CREATE TABLE t AS ( VALUES 1)",
+            "DDL",
+            Some("CREATE_TABLE"),
+            None,
+        ),
+        (
+            "CREATE TABLE t AS ((VALUES 1))",
+            "DDL",
+            Some("CREATE_TABLE"),
+            None,
+        ),
+        (
+            "CREATE TABLE t AS (TABLE x)",
+            "DDL",
+            Some("CREATE_TABLE"),
+            None,
+        ),
+        (
+            "CREATE OR REPLACE TABLE t AS (VALUES 1)",
+            "DDL",
+            Some("CREATE_TABLE"),
+            None,
+        ),
+        (
+            "CREATE TABLE t AS ( SELECT 1)",
+            "DDL",
+            Some("CREATE_TABLE_AS_SELECT"),
+            None,
+        ),
+        (
+            "CREATE TABLE t AS(SELECT 1)",
+            "DDL",
+            Some("CREATE_TABLE"),
+            None,
+        ),
+        (
+            "CREATE TABLE t AS (WITH x AS (SELECT 1) SELECT * FROM x)",
+            "DDL",
+            Some("CREATE_TABLE_AS_SELECT"),
+            None,
+        ),
+        // 修飾名の空の部分（n1・n2・n3・n4・n5・n6・n7・n8・n9・n10・n11）
+        (
+            "DESCRIBE IF EXISTS t",
+            "UTILITY",
+            Some("DESCRIBE_TABLE"),
+            None,
+        ),
+        // #195 の P3 で None にした（観測できない差。設計判断 2）
+        ("ALTER TABLE .t ADD COLUMN c int", "DDL", None, None),
+        // #195 の P3 で None にした（観測できない差。設計判断 2）
+        ("ALTER TABLE cat..t ADD COLUMN c int", "DDL", None, None),
+        // #195 の P3 で None にした（観測できない差。設計判断 2）
+        ("ALTER TABLE cat. .t ADD COLUMN c int", "DDL", None, None),
+        ("ALTER TABLE cat. ADD COLUMN c int", "DDL", None, None),
+        ("DESCRIBE cat..t", "UTILITY", Some("DESCRIBE_TABLE"), None),
+        ("DESCRIBE .t", "UTILITY", Some("DESCRIBE_TABLE"), None),
+        ("DESCRIBE cat.", "UTILITY", Some("DESCRIBE_TABLE"), None),
+        ("DESCRIBE", "UTILITY", Some("DESCRIBE_TABLE"), None),
+        ("DROP TABLE cat..t", "DDL", Some("DROP_TABLE"), None),
+        (
+            "DESCRIBE t PARTITION (p = 1)",
+            "UTILITY",
+            Some("DESCRIBE_TABLE"),
+            None,
+        ),
+        // 空・トリビアだけ・多バイト（e1・e2・e3・e4・e5・e6・e7・e8・e9・e10・e11）
+        ("", "UTILITY", None, None),
+        ("   ", "UTILITY", None, None),
+        ("-- only", "UTILITY", None, None),
+        ("/* only */", "UTILITY", None, None),
+        ("/* unclosed", "UTILITY", None, None),
+        ("日本語", "UTILITY", None, None),
+        ("SELECT '日本語'", "DML", Some("SELECT"), None),
+        ("DESCRIBE 日本", "UTILITY", Some("DESCRIBE_TABLE"), None),
+        ("DROP TABLE 日本", "DDL", Some("DROP_TABLE"), None),
+        ("-- あ\nDESCRIBE t", "UTILITY", Some("DESCRIBE_TABLE"), None),
+        ("SELECT 1 AS 日本", "DML", Some("SELECT"), None),
+        // `;` 付き（s1・s2・s3・s4・s5・s6・s7）
+        ("SELECT 1;", "DML", Some("SELECT"), None),
+        ("DESCRIBE t;", "UTILITY", Some("DESCRIBE_TABLE"), None),
+        (
+            "SHOW CREATE TABLE t;",
+            "UTILITY",
+            Some("SHOW_CREATE_TABLE"),
+            Some(("createtab_stmt", "string")),
+        ),
+        ("EXPLAIN SELECT 1;", "DML", Some("EXPLAIN"), None),
+        (
+            "CREATE TABLE t AS SELECT 1;",
+            "DDL",
+            Some("CREATE_TABLE_AS_SELECT"),
+            None,
+        ),
+        ("DESCRIBE t ;", "UTILITY", Some("DESCRIBE_TABLE"), None),
+        (
+            "ALTER TABLE t ADD COLUMN c int;",
+            "DDL",
+            Some("ALTER_TABLE_ADD_COLUMN"),
+            None,
+        ),
+        // SHOW（h1・h2・h3・h4・h5）
+        (
+            "SHOW CREATE VIEW v",
+            "UTILITY",
+            Some("SHOW_CREATE_VIEW"),
+            Some(("create view", "varchar")),
+        ),
+        ("SHOW CREATE SCHEMA s", "UTILITY", None, None),
+        (
+            "SHOW TABLES",
+            "UTILITY",
+            Some("SHOW_TABLES"),
+            Some(("tab_name", "string")),
+        ),
+        (
+            "SHOW SCHEMAS",
+            "UTILITY",
+            Some("SHOW_DATABASES"),
+            Some(("database_name", "string")),
+        ),
+        ("SHOW COLUMNS FROM t", "UTILITY", Some("SHOW_COLUMNS"), None),
+        // 対照（x1）
+        ("SELECT 1", "DML", Some("SELECT"), None),
+    ];
+    for &(query, statement, substatement, fixed) in cases {
+        assert_eq!(
+            (
+                statement_type(query),
+                substatement_type(query),
+                fixed_column(query)
+            ),
+            (statement, substatement, fixed),
+            "{query:?}"
+        );
     }
 }

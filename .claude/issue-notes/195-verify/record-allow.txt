@@ -1,0 +1,7 @@
+/// ここで確かめてから、その後ろの語だけを見て判定する（引用符付き識別子の中の空白は #52 から
+/// こちらは中身を見ずに位置だけを進める（用途が違うので無理に共通化しない。issue #44）。
+// 揃っていることをここで固定する（issue #39 レビュー指摘）。
+//! 今あるのは #194 で athena-local の `src/catalog.rs` から中身を変えずに移した字句処理の道具で、
+/// `operation/target_table.rs` が DROP TABLE の修飾名の引用符付き識別子を読むのにも再利用する（issue #39 Phase 2）。
+/// `operation/target_table.rs` が DROP TABLE の修飾名を読むのにも再利用する（issue #39 Phase 2）。
+/// DESCRIBE は `TABLE` を挟まない（#160）。コメントは `skip_leading_trivia` が読み飛ばす。
