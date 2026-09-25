@@ -31,6 +31,7 @@ CI（`.github/workflows/ci.yml`）の中身とリリース（`v*` タグで `doc
 - `handler.rs` — `POST /` の 1 本だけ。`X-Amz-Target: AmazonAthena.<Operation>` で振り分ける。SigV4 は検証しない。
 - `operation/` — 6 つのオペレーションの本体（`execution.rs`・`query_execution.rs`・`work_group.rs`）と、実行の前後の処理（`format_probe.rs`・`completion.rs`・`result_output.rs`・`utility_rows.rs` など）、文の種類の判定（`classification.rs`）、`MaxResults`／`NextToken` の検証（`validation.rs`）。`mod.rs` は `mod` 宣言と再エクスポートだけ。
 - `store.rs`（実行状態をメモリの `HashMap` で持つ）、`trino.rs`（Trino クライアント）、`convert/`（Trino の値と型 → Athena の `ResultSet`）、`catalog.rs`（`TRINO_CATALOG_MAP` の別名と SQL の字句処理）、`metadata.rs`（`.metadata` の protobuf）、`results.rs`（結果ファイルの名前と CSV）、`content_type.rs`、`failure.rs`（Trino のエラー → `AthenaError`）、`request.rs`／`response.rs`（awsJson1.1 の本文とエラーの形）、`athena.rs`（リクエスト／レスポンスの型）、`config.rs`。
+- `crates/athena-sql` — SQL の字句処理と文の認識を置く内部 crate（workspace の member。`publish = false`、版は追わない。規則は decisions.md の「SQL の内部 crate（athena-sql）」）。ルートの `Cargo.toml` が workspace を兼ね、`default-members` で上のコマンドが crate にも効く。
 
 壊すと事故になる不変条件:
 
@@ -71,7 +72,7 @@ CI（`.github/workflows/ci.yml`）の中身とリリース（`v*` タグで `doc
 ## 開発上の約束
 
 - **本物の Athena に合わせることが目的**。文言、エラーコード、型の見え方、ファイル名などは本番 Athena で実測した値に合わせ、コメントに「2026-09-14 実測」のように書いてある。実測していない振る舞いは推測で埋めない。項目を省く（例: `substatement_type` が `None`）か、`docs/caveats.md` に「not measured」と書いて `docs/dev/unmeasured.md` に載せる。測ったら `docs/dev/measurements/` に記録し、unmeasured から消す。
-- **SQL の本文は書き換えない。** 必要なら全体を包む（`EXECUTE IMMEDIATE`）か、別のクエリを投げる（構文チェックの `PREPARE`、パラメータ分類の `SELECT (<値>)`）。Athena と Trino の書き方の違い（小数リテラルの型、DDL、`OPTIMIZE` / `VACUUM`）は変換せず、`docs/caveats.md` に回避策を書く。例外は `TRINO_CATALOG_MAP` の別名を引用符付きの修飾名に当てる置換（`catalog.rs`）だけで、この置換の条件は広げない（理由と回避策は decisions.md・`docs/configuration.md`・`docs/caveats.md`）。
+- **SQL の本文は書き換えない**（理由は decisions.md の「SQL の字句処理と文の分類」）。必要なら全体を包む（`EXECUTE IMMEDIATE`）か、別のクエリを投げる（構文チェックの `PREPARE`、パラメータ分類の `SELECT (<値>)`）。Athena と Trino の書き方の違い（小数リテラルの型、DDL、`OPTIMIZE` / `VACUUM`）は変換せず、`docs/caveats.md` に回避策を書く。例外は `TRINO_CATALOG_MAP` の別名を引用符付きの修飾名に当てる置換（`catalog.rs`）だけで、この置換の条件は広げない（理由と回避策は decisions.md・`docs/configuration.md`・`docs/caveats.md`）。
 - 挙動を変えたら `docs/`（対応オペレーションは `api.md`、Athena との差分は `caveats.md`、結果ファイルは `result-files.md` など）と CHANGELOGS.md の `[Unreleased]` も更新する。CHANGELOG は 1 項目 1〜2 行の箇条書きで、挙動の説明は書かずに docs の節へリンクする。CHANGELOG のバージョンは Docker Hub のイメージタグと一致させ、README の compose 例のタグも合わせる。
 - コメント、テスト名（日本語の文）、エラーメッセージ、コミットメッセージ（「〜する」で終わる一行）、PR の本文は日本語。README・`docs/*.md`・CHANGELOG は英語、`docs/dev/` は日本語。
 - **ユーザーへの返答は常に日本語で書く。** 途中の状況報告、質問、最終報告、コマンドの説明もすべて日本語。英語は README・`docs/*.md`・CHANGELOG の本文とコード中の識別子だけ。

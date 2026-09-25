@@ -2,6 +2,11 @@
 
 athena-local の内部の詳しい地図。CLAUDE.md にはモジュールの 1 行の地図と不変条件だけを置き、ここに関数・判定の細部と由来（実測日・issue 番号）を書く（#190）。コードを変えて記述が古くなったら、ここを直す。
 
+## crate の構成
+
+- ルートの `Cargo.toml` は athena-local（lib と bin）の package で、workspace のルートを兼ねる。`default-members` に内部 crate も入れているので、`cargo fmt`／`clippy`／`test` は引数なしで両方に効く（#193）。
+- `crates/athena-sql` — SQL の字句処理と文の頭・句の認識を置く内部 crate（`publish = false`、依存なし）。athena-local からパスで依存する。#193 の時点では中身が無く、字句処理は #194 で `catalog.rs` から移す（段階は親 #192）。規則は [decisions.md](decisions.md) の「SQL の内部 crate（athena-sql）」。
+
 ## リクエストの流れ
 
 1. `handler::dispatch` — `POST /` の 1 本だけ。`X-Amz-Target: AmazonAthena.<Operation>` でオペレーションを振り分ける（前置き必須。ヘッダ無し・未対応名は本物と同じ `{"__type":"UnknownOperationException"}` だけの 400。2026-09-23 実測）。SigV4 は検証しない。

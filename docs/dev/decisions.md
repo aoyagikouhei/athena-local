@@ -56,8 +56,21 @@
 - tools/measure も toolbox で動かす。awscli v2 は版付きの zip（2.37.0）で固定する。理由: toolbox のタグは Dockerfile の sha256 だけなので、版を固定しないと再ビルドで中身が変わる。（#129、2026-09-23）
 - AWS の資格情報は設定されているときだけ dev に渡す（compose の値無しキー）。理由: `${VAR:-}` だと空文字が渡る。（#129、2026-09-23）
 
+## SQL の内部 crate（athena-sql）
+
+SQL の字句解析と文の認識を `crates/athena-sql` に集める計画（親 #192。段階は #193 → #194 → #195）の規則。
+
+- ルートの `Cargo.toml` は athena-local の package のまま workspace を兼ね、`members = ["crates/athena-sql"]` と `default-members = [".", "crates/athena-sql"]` を置く。理由: 引数なしの `cargo fmt --check`・`cargo clippy --all-targets`・`cargo test` が crate にも効き、CI・toolbox・e2e の足場・release スキルのコマンドと `target/release/athena-local` のパスを 1 つも変えずに済む（`-p`・`--workspace` を使う箇所は無い）。`src/` を `crates/` の下へ移す仮想 workspace は、移動だけの大きな差分になるので採らない。（#193、2026-09-25）
+- crate は完全なパーサを目標にせず、字句解析（トークンと、元の SQL でのバイト範囲）と、athena-local が必要とする文の頭・句の認識だけを持つ。理由: Athena の DML は Trino の文法、DDL は Hive の文法で、両方を完全に書くと本体より大きくなる。（#192、2026-09-25）
+- crate は SQL が正しいかどうかを判定しない。読めなければ何もしない（受け取ったまま Trino に渡し、分類は不明にする）。正しさは今までどおり Trino と、実測した Athena の挙動で決まる。理由: crate が Athena より厳しいと通るはずの SQL を弾き、緩いと本物で落ちる SQL を通す。（#192、2026-09-25）
+- トークンと認識した句は、元の SQL での位置（バイト範囲）を必ず持つ。書き換えるときも読んで出力し直さず、範囲の差し替えだけにする。理由: 変えていない部分が 1 文字も変わらず、Trino のエラーの位置も受け取った SQL に戻せる（別名置換が名前を空白で埋めて桁を揃えているのと同じ要請。`catalog.rs` の `replacement`）。（#192、2026-09-25）
+- 既存の汎用 SQL パーサ（sqlparser-rs など）は使わない。理由: 方言（Trino・Hive）の細部が合わず、出力し直すと書式が変わり、上流の更新で分類が静かに変わる。（#192、2026-09-25）
+- crate は `publish = false` で公開せず、外部の依存も持たない。athena-local 本体も `publish = false` で、配布は Docker Hub のイメージだけ。（#192、2026-09-25）
+- crate の版は `0.1.0` のまま追わず、workspace から継承（`version.workspace = true`）もしない。CHANGELOG の節と Docker のイメージのタグは athena-local の版だけで、crate の中の変更は athena-local の挙動が変わったときだけ athena-local の CHANGELOG に書く（変わらなければ書かない。上の「挙動が変わらない変更」の規則）。理由: crate は公開せずイメージの中にしか入らないので、利用者に見える版は athena-local だけ。release スキルは `Cargo.lock` の差分が athena-local の version の 1 行だけであることを確かめ、ほかに及べば止まる（`.claude/skills/release/SKILL.md`）。継承すると版上げのたびに crate の項も動く。（#193、2026-09-25）
+
 ## SQL の字句処理と文の分類
 
+- 「SQL の本文は書き換えない」（CLAUDE.md の開発上の約束）の理由は 4 つ。(1) 手元で通って本物で落ちる SQL を作らない: 書き換えや方言の変換を入れると、Athena で落ちる SQL が手元で通る。手元の Trino が新しいことで既に起きている差は `docs/caveats.md` の SQL dialect の項に書いている。(2) エラーの位置: Trino のエラーの `line N:M` が受け取った SQL をそのまま指す。構文チェックの前置きは改行で区切って行番号を 1 つ戻すだけにし（`trino.rs` の `unshift_line`）、別名置換は空白で埋めて桁を揃える。(3) SQL の解釈を持たない: 何をどう書き換えるかを決めるには SQL を正しく読む必要があるが、athena-local はその解釈を持たない。正しさは Trino と実測した Athena が決める。(4) `Query` を受け取ったまま返す: 利用者が送った SQL と `GetQueryExecution` の `Query` が一致し（`docs/parameters.md` で約束している）、`StatementType` もそこから決まる。書き換えた SQL は実行の中のローカル変数にだけ置き、`Store` には保存しない。（#193、2026-09-25。理由をまとめて書いたのは初めて）
 - SQL の本文を書き換えない約束の唯一の例外として、`TRINO_CATALOG_MAP` の別名を引用符付きの修飾名に当てる置換（`catalog.rs`）を入れた。理由: Trino には `/` を含むカタログ名を作れず、S3 Tables の修飾名はほかに Trino へ通す方法が無い。汎用ツールとして入れ、条件は広げない。引用符の無い名前や大文字小文字の違う名前は、Trino 側のカタログ名を合わせる回避策（`docs/configuration.md`・`docs/caveats.md`）で受ける。（2026-09-15。理由を CLAUDE.md から移した。#190）
 - SQL の字句走査の道具（`skip_leading_trivia`、`skip_quoted`、`comment_end`、`skip_keyword` など）は `src/catalog.rs` に集める。新しいモジュール（`lexer.rs`）は作らない。理由: 字句処理が 2 ファイルに散る。区切りは全部 ASCII なので UTF-8 の境界は壊れない。（#17、2026-09-18、#49、2026-09-22）
 - `skip_keyword` は `catalog.rs` に 1 つだけ置く（内部で `skip_leading_trivia` を呼ぶ版）。同名の別定義は作らない。ラッパーを残して呼び出し元を変えずに済ませる案は、前例になるので採らない。（#49、2026-09-22。#44 の「2 版を統合しない」を変更）
