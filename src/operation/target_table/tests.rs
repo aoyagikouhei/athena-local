@@ -330,10 +330,10 @@ fn parse_target_table_は_show_columns_の_from_と_in_のどちらの後ろの�
 
 #[test]
 fn parse_qualified_name_と_catalog_skip_qualified_name_は同じ書き方を受け付ける() {
-    // 名前を「取り出す」parse_qualified_name（ここ）と「読み飛ばす」
-    // athena_sql::skip_qualified_name（classification.rs の ALTER TABLE 判定が使う）は
-    // 用途が違うので実装は別だが、受け付ける書き方（引用符・ドット・空白・コメント）は
-    // 揃っていることをここで固定する（issue #39 レビュー指摘）。
+    // 名前を「取り出す」parse_qualified_name（ここ）と、範囲を読む
+    // athena_sql::Cursor::qualified_name（classification.rs の ALTER TABLE 判定が使う）は
+    // #195 で 1 つの実装になった。受け付ける書き方（引用符・ドット・空白・コメント）が
+    // 揃っていることを引き続きここで固定する（issue #39 レビュー指摘）。
     for input in [
         "t",
         "cat.ns.t",
@@ -345,8 +345,10 @@ fn parse_qualified_name_と_catalog_skip_qualified_name_は同じ書き方を受
         let parts = parse_qualified_name(input).expect("parse_qualified_name");
         assert!(!parts.is_empty(), "{input:?}");
         assert_eq!(
-            athena_sql::skip_qualified_name(input, 0),
-            input.len(),
+            athena_sql::Cursor::new(input)
+                .qualified_name()
+                .map(|n| n.end),
+            Some(input.len()),
             "{input:?}"
         );
     }
@@ -610,26 +612,12 @@ fn parse_target_table_は_crate_の_api_に寄せる前と同じ対象を返す(
         ),
         // `(` の変種（p7）
         ("(DESCRIBE t)", TargetStatement::Describe, None),
-        // 修飾名の空の部分（n1・n2・n3・n4・n6・n7・n8・n9・n10・n11）
+        // 修飾名の空の部分（n1・n6・n7・n8・n9・n10・n11。n2〜n4 は #195 の P3 で `target_statement` が None になり
+        // この表の対象から外れた。観測できない差。設計判断 2。固定表 (1) が None を固定する）
         (
             "DESCRIBE IF EXISTS t",
             TargetStatement::Describe,
             Some(("dc", "ds", "t")),
-        ),
-        (
-            "ALTER TABLE .t ADD COLUMN c int",
-            TargetStatement::AlterTableAddColumns,
-            None,
-        ),
-        (
-            "ALTER TABLE cat..t ADD COLUMN c int",
-            TargetStatement::AlterTableAddColumns,
-            None,
-        ),
-        (
-            "ALTER TABLE cat. .t ADD COLUMN c int",
-            TargetStatement::AlterTableAddColumns,
-            None,
         ),
         ("DESCRIBE cat..t", TargetStatement::Describe, None),
         ("DESCRIBE .t", TargetStatement::Describe, None),

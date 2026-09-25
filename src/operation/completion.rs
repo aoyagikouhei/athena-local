@@ -34,11 +34,11 @@ pub(super) async fn iceberg_partition_specs(
 
 /// DESCRIBE の対象の名前の、元の SQL での範囲。`iceberg_partition_specs` が Trino に投げる名前。
 pub(super) fn describe_target_name(query: &str) -> Option<&str> {
-    let after = athena_sql::skip_keyword(query, "DESCRIBE")
-        .or_else(|| athena_sql::skip_keyword(query, "DESC"))?;
-    let start = after.len() - athena_sql::skip_leading_trivia(after).len();
-    let end = athena_sql::skip_qualified_name(after, start);
-    Some(&after[start..end])
+    let mut cursor = athena_sql::Cursor::new(query);
+    if !(cursor.keyword("DESCRIBE") || cursor.keyword("DESC")) {
+        return None;
+    }
+    Some(cursor.qualified_name()?.text)
 }
 
 /// EXPLAIN の結果を本物と同じくプランの行ごとに分ける。Trino は `Query Plan` 列の 1 行に改行入りの

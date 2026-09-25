@@ -6,8 +6,8 @@ use crate::trivia::skip_trivia;
 /// 一致したときだけ位置を進め、後ろのトリビアは消費しない（呼び出し元が次の読み取りで読み飛ばす）。
 #[derive(Debug)]
 pub struct Cursor<'a> {
-    sql: &'a str,
-    pos: usize,
+    pub(crate) sql: &'a str,
+    pub(crate) pos: usize,
 }
 
 impl<'a> Cursor<'a> {

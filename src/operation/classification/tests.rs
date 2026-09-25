@@ -575,27 +575,12 @@ fn 分類は_crate_の_api_に寄せる前と同じ結果を返す() {
             Some("DESCRIBE_TABLE"),
             None,
         ),
-        // #195 の P3 で None に変える（観測できない差。設計判断 2）
-        (
-            "ALTER TABLE .t ADD COLUMN c int",
-            "DDL",
-            Some("ALTER_TABLE_ADD_COLUMN"),
-            None,
-        ),
-        // #195 の P3 で None に変える（観測できない差。設計判断 2）
-        (
-            "ALTER TABLE cat..t ADD COLUMN c int",
-            "DDL",
-            Some("ALTER_TABLE_ADD_COLUMN"),
-            None,
-        ),
-        // #195 の P3 で None に変える（観測できない差。設計判断 2）
-        (
-            "ALTER TABLE cat. .t ADD COLUMN c int",
-            "DDL",
-            Some("ALTER_TABLE_ADD_COLUMN"),
-            None,
-        ),
+        // #195 の P3 で None にした（観測できない差。設計判断 2）
+        ("ALTER TABLE .t ADD COLUMN c int", "DDL", None, None),
+        // #195 の P3 で None にした（観測できない差。設計判断 2）
+        ("ALTER TABLE cat..t ADD COLUMN c int", "DDL", None, None),
+        // #195 の P3 で None にした（観測できない差。設計判断 2）
+        ("ALTER TABLE cat. .t ADD COLUMN c int", "DDL", None, None),
         ("ALTER TABLE cat. ADD COLUMN c int", "DDL", None, None),
         ("DESCRIBE cat..t", "UTILITY", Some("DESCRIBE_TABLE"), None),
         ("DESCRIBE .t", "UTILITY", Some("DESCRIBE_TABLE"), None),
