@@ -91,12 +91,12 @@ tls-proxy など他のコンテナからは届かず、JDBC の検証には使�
 | 1 | `DROP TABLE`（Iceberg） | `<id>.txt` が 1 バイト（改行 1 つ）、Content-Type `application/octet-stream`、`.metadata` が 41 バイト |
 | 2 | `DROP TABLE`（Hive） | `<id>.txt` が 0 バイト、Content-Type `binary/octet-stream`、`.metadata` 無し |
 | 3 | `DROP TABLE IF EXISTS`（存在しない・Iceberg） | `<id>.txt` が 0 バイト、`.metadata` 無し（Phase 2 で対象テーブルの存在確認が入って初めて通る想定） |
-| 4 | `CREATE TABLE`（Iceberg、素の CREATE） | 回帰確認。0 バイト・`.metadata` 無しのまま |
+| 4 | 場所の無い `CREATE TABLE`（Iceberg、素の CREATE） | `StartQueryExecution` が本物と同じ文言（`No location was specified for table. An S3 location must be specified`）で開始時に弾き、`QueryExecutionId` を作らない。Trino には構文確認しか届かない（#208） |
 | 5 | `SELECT 1 AS n` | 回帰確認。`<id>.csv` が置かれる |
-| 6前 | `ALTER TABLE ... ADD COLUMNS`（Athena の綴り） | Trino の構文エラーで `StartQueryExecution` が弾く |
-| 6 | `ALTER TABLE ... ADD COLUMN`（Hive） | `<id>.txt` が 0 バイト、Content-Type `application/octet-stream`、`.metadata` が 38 バイト |
-| 7 | `ALTER TABLE ... ADD COLUMN`（Iceberg） | `<id>.txt` が 0 バイト、`.metadata` 無し |
-| 8 | `ALTER TABLE ... SET PROPERTIES`（Iceberg） | 対象外の ALTER が巻き込まれていないこと。`<id>.txt` が 0 バイト、`.metadata` 無し |
+| 6前 | `ALTER TABLE ... ADD COLUMNS`（Athena の綴り） | Trino の構文エラーで `StartQueryExecution` が弾く（#208 前と同じ） |
+| 6 | `ALTER TABLE ... ADD COLUMN`（Hive、単数形） | `StartQueryExecution` が本物と同じ文言（`no viable alternative at input '...'`）で開始時に弾き、`QueryExecutionId` を作らない。Trino には構文確認しか届かない（#208） |
+| 7 | `ALTER TABLE ... ADD COLUMN`（Iceberg、単数形） | ケース 6 と同じ（対象の形式によらず文言は同じ。#208） |
+| 8 | `ALTER TABLE ... SET PROPERTIES`（Iceberg） | `StartQueryExecution` が本物と同じ文言で開始時に弾き、`QueryExecutionId` を作らない（Trino だけにある綴り。#208） |
 | 9 | `MERGE INTO ... USING (VALUES ...)`（Iceberg。issue #56） | `<id>.csv` は置かれず、`<id>.csv.metadata` の field 2 が `MERGE`、field 3 が 2、以降が本物の Athena の `rows bigint` 列とバイト単位で同じ（Trino 482 で 2026-09-22 実測） |
 | 10 | `UPDATE ... SET s = 'z' WHERE n = 1`（Iceberg。issue #111） | ケース 9 と同じ形で、field 2 が `UPDATE`、field 3 が 1（結果の詳細に `.metadata` のバイト数も出す） |
 | 11 | `DELETE FROM ... WHERE n = 2`（Iceberg。issue #111） | ケース 9 と同じ形で、field 2 が `DELETE`、field 3 が 1 |

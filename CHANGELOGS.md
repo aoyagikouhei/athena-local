@@ -18,6 +18,12 @@ later name the date they were measured on.
   back for a plain `CREATE TABLE`, `ALTER TABLE ... ADD COLUMN`, views and
   `CREATE` / `DROP SCHEMA`, as on real Athena (measured 2026-09-26)
   ([docs](docs/caveats.md#sql-dialect)).
+- Unquoted `ALTER TABLE IF EXISTS ...`, singular `ADD COLUMN` and six other
+  Trino-only `ALTER TABLE` spellings are rejected at `StartQueryExecution` with
+  real Athena's message ([docs](docs/caveats.md#alter-table-and-format-dependent-ddl)).
+- A CTAS-less, unquoted `CREATE TABLE` whose column list Trino's grammar
+  accepts is rejected at `StartQueryExecution` with real Athena's message
+  ([docs](docs/caveats.md#plain-create-table)).
 
 - `GetQueryResults` returns `SHOW CREATE TABLE` and `SHOW CREATE VIEW` one row
   per line, as real Athena does (measured 2026-09-16 and 2026-09-24), instead

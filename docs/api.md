@@ -131,7 +131,20 @@ Behaviour that matches real Athena:
   `SHOW TABLES IN`), with `InvalidRequestException` /
   `AthenaErrorCode` `MALFORMED_QUERY` and real Athena's own message, the same
   way real Athena does; no `QueryExecutionId` is created for either check.
-  See [Caveats](caveats.md#sql-dialect) for exactly which forms and the
+  Next, an unquoted `ALTER TABLE` gets the same treatment for forms Trino
+  accepts but Athena's grammar does not (`IF EXISTS`, the singular
+  `ADD COLUMN`, `RENAME COLUMN`, `SET PROPERTIES`, `SET AUTHORIZATION`,
+  `EXECUTE`, `ALTER COLUMN`, `DROP COLUMN IF EXISTS`); a plain
+  `DROP COLUMN` without `IF EXISTS` is not rejected here and reaches Trino
+  as before. Last, a CTAS-less, unquoted `CREATE TABLE` whose column list
+  Trino's grammar accepts (a Hive-style column list, with or without `WITH
+  (...)`, `NOT NULL`, a nested `row` / `array` / `map` type, or `LIKE`) is
+  rejected the same way, with `No location was specified for table. An S3
+  location must be specified` when nothing else follows the column list, or
+  Athena's `no viable alternative` message at the first token its grammar
+  cannot read. See [Caveats](caveats.md#sql-dialect),
+  [Caveats](caveats.md#alter-table-and-format-dependent-ddl) and
+  [Caveats](caveats.md#plain-create-table) for exactly which forms and the
   message rules.
 - `StatementType` and `SubstatementType` follow Athena: `SELECT` / `WITH` /
   `VALUES` / `TABLE` are `DML` / `SELECT`, `EXPLAIN` is `DML` / `EXPLAIN`, `SHOW TABLES` is

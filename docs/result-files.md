@@ -49,7 +49,7 @@ DDL, the other `SHOW` statements, `DESCRIBE` and `EXPLAIN` write `<id>.txt` the 
   2026-09-16). Because the plan is split into rows with one newline appended
   (see [Supported API](api.md#supported-api)), the file is the header line, the plan text as Trino returns it
   and a final `\n`: 393 bytes for `EXPLAIN SELECT 1` on Athena.
-- A statement that returns no rows writes an empty file, `CREATE TABLE` for
+- A statement that returns no rows writes an empty file, `CREATE SCHEMA` for
   example.
 - Columns are joined with a tab. `DESCRIBE` / `DESC` and `SHOW COLUMNS`
   have a single value per row, built the way Athena builds it, so the file is
@@ -196,9 +196,10 @@ the metadata straight
 from S3 instead of calling `GetQueryResults`, and versions before 3.5.1 fail
 with `NoSuchKey` when a DDL statement has no metadata file. athena-local writes
 no companion file for most column-less DDL either, so those statements still
-fail on versions before 3.5.1: against athena-local, `CREATE TABLE` raised
-`NoSuchKey` on 3.4.0 and 3.5.0 with the default `ResultFetcher` (the statement
-itself had run), while with `ResultFetcher=S3` no version fetched the metadata
+fail on versions before 3.5.1: against athena-local, `CREATE TABLE` (a form
+athena-local now rejects up front, see
+[Caveats](caveats.md#plain-create-table)) raised `NoSuchKey` on 3.4.0 and
+3.5.0 with the default `ResultFetcher` (the statement itself had run), while with `ResultFetcher=S3` no version fetched the metadata
 of a DDL or `SHOW` and nothing failed (measured 2026-09-23). 3.8.1 logs the
 missing file (a 404) at INFO level and carries on (measured 2026-09-17). The
 `SHOW` statements, whose companion file athena-local does write, ran without

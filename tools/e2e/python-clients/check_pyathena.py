@@ -80,15 +80,20 @@ def regression():
         # 空ファイル（0 バイト）を置く Hive の DROP TABLE で「例外なし・0 行」を判定する。
         iceberg_drop = "PASS" if cursor_class is None else "INFO"
         hive = f"hive.default.t111_{'pc' if cursor_class is None else 'pd'}h_{RUN}"
+        # 列も型も揃えた表を作る書き方を、素の CREATE TABLE から CTAS に替えた（#208 のフェーズ 2 から、
+        # 無引用の場所の無い CREATE TABLE は athena-local が開始時に弾くため）。CTAS は Trino の
+        # 更新件数（rows）を返すので、続く INSERT・CTAS と同じ read_expect（PandasCursor は INFO）にする。
         steps = [
-            ("PASS", "CREATE TABLE", f"CREATE TABLE {table} (n int, s varchar)"),
+            (read_expect, "CREATE TABLE",
+             f"CREATE TABLE {table} AS SELECT CAST(NULL AS integer) AS n, CAST(NULL AS varchar) AS s WHERE false"),
             (read_expect, "INSERT", f"INSERT INTO {table} VALUES (1, 'a')"),
             ("PASS", "SHOW TABLES", "SHOW TABLES IN iceberg.default"),
             ("PASS", "DESCRIBE", f"DESCRIBE {table}"),
             (read_expect, "CTAS", f"CREATE TABLE {table}_ctas AS SELECT * FROM {table}"),
             (iceberg_drop, "DROP TABLE(Iceberg)", f"DROP TABLE {table}"),
             (iceberg_drop, "DROP TABLE(Iceberg の CTAS 先)", f"DROP TABLE IF EXISTS {table}_ctas"),
-            ("PASS", "CREATE TABLE(Hive)", f"CREATE TABLE {hive} (n int)"),
+            (read_expect, "CREATE TABLE(Hive)",
+             f"CREATE TABLE {hive} AS SELECT CAST(NULL AS integer) AS n WHERE false"),
             ("PASS", "DROP TABLE(Hive、0 行)", f"DROP TABLE {hive}"),
         ]
         note = "1 バイトの <id>.txt（本物と同じ形、docs/result-files.md:57-60）で pandas の EmptyDataError。athena-local のずれではない"

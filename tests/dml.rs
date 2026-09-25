@@ -43,16 +43,15 @@ async fn dml_は行を返さず_update_count_を返す() {
 
 #[tokio::test]
 async fn ddl_は_statement_type_が_ddl_になり_件数の無い_ddl_は_update_count_を省く() {
-    // Trino は CTAS に件数を付け、ただの CREATE TABLE には付けない。
+    // Trino は CTAS に件数を付け、列も行も無い DDL には付けない（列も行も無い DDL の代表は
+    // `CREATE SCHEMA`。#208 のフェーズ 2 から、無引用の場所の無い `CREATE TABLE` は開始時に
+    // 弾かれ Trino に届かなくなるため）。
     let harness = Harness::builder(json!({
         "columns": [{ "name": "rows", "type": "bigint" }],
         "updateType": "CREATE TABLE",
         "updateCount": 0
     }))
-    .route(
-        "CREATE TABLE t (i int)",
-        json!({ "columns": [], "updateType": "CREATE TABLE" }),
-    )
+    .route("CREATE SCHEMA s", json!({ "columns": [] }))
     .start()
     .await;
 
@@ -60,7 +59,7 @@ async fn ddl_は_statement_type_が_ddl_になり_件数の無い_ddl_は_update
         .run_query(json!({ "QueryString": "CREATE TABLE t AS SELECT 1" }))
         .await;
     let create = harness
-        .run_query(json!({ "QueryString": "CREATE TABLE t (i int)" }))
+        .run_query(json!({ "QueryString": "CREATE SCHEMA s" }))
         .await;
     assert_eq!(ctas["QueryExecution"]["StatementType"], "DDL");
     assert_eq!(create["QueryExecution"]["StatementType"], "DDL");
@@ -248,10 +247,9 @@ async fn 先頭のコメントを読み飛ばして_statement_type_と_update_co
         "columns": [{ "name": "id", "type": "integer" }],
         "data": [[1]]
     }))
-    .route(
-        "-- c\nCREATE TABLE t (i int)",
-        json!({ "columns": [], "updateType": "CREATE TABLE" }),
-    )
+    // 列も行も無い DDL の代表として `CREATE SCHEMA`（#208 のフェーズ 2 から、無引用の場所の無い
+    // `CREATE TABLE` は開始時に弾かれ Trino に届かなくなるため）。
+    .route("-- c\nCREATE SCHEMA s", json!({ "columns": [] }))
     .start()
     .await;
 
@@ -261,7 +259,7 @@ async fn 先頭のコメントを読み飛ばして_statement_type_と_update_co
     assert_eq!(select["QueryExecution"]["StatementType"], "DML");
 
     let create = harness
-        .run_query(json!({ "QueryString": "-- c\nCREATE TABLE t (i int)" }))
+        .run_query(json!({ "QueryString": "-- c\nCREATE SCHEMA s" }))
         .await;
     assert_eq!(create["QueryExecution"]["StatementType"], "DDL");
 

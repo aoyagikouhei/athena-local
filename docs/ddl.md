@@ -45,16 +45,15 @@ metadata` and carries on) and a `SELECT` for regression (verified against
 athena-local on 2026-09-21 with
 `tools/measure/jdbc-metadata.sh`).
 
-Write `ADD COLUMN` (singular) to reach the `ADD COLUMNS` row from
-athena-local: Trino's grammar rejects Athena's `ADD COLUMNS` at the syntax
-check. That singular spelling is only a way to drive athena-local, not SQL
-that also runs unchanged on real Athena: Athena's own grammar rejects
-`ADD COLUMN` (singular) at `StartQueryExecution` too (see
-[Caveats](caveats.md#alter-table-and-format-dependent-ddl)). `REPLACE COLUMNS`
+The `ADD COLUMNS` row cannot be reached through athena-local: Trino's grammar
+rejects Athena's plural `ADD COLUMNS` at the syntax check, and athena-local
+rejects Trino's singular `ADD COLUMN` at `StartQueryExecution`, as real Athena
+does (see [Caveats](caveats.md#alter-table-and-format-dependent-ddl)). The row
+is listed because it is what real Athena does when the statement runs there. `REPLACE COLUMNS`
 has no Trino spelling at all, so that row cannot be
-reached through athena-local; it is listed because the classification and the
+reached through athena-local either; it is listed because the classification and the
 format probe follow Athena for it. See [Caveats](caveats.md#alter-table-and-format-dependent-ddl) for every spelling
-Trino rejects.
+Trino rejects, and every unquoted `ALTER TABLE` form athena-local now rejects up front.
 
 Every other `ALTER TABLE` form that gets a `SubstatementType` (`SET
 TBLPROPERTIES`, `DROP COLUMN`, `SET LOCATION`, `ADD PARTITION`,
@@ -91,8 +90,10 @@ The catalog, schema and table name come from a qualified name in the SQL when
 `DROP TABLE`, `ALTER TABLE ... ADD COLUMNS`, `SHOW CREATE TABLE`, `DESCRIBE`
 or `SHOW COLUMNS FROM` / `IN` gives one (`t`, `ns.t` or
 `cat.ns.t`, with a leading `IF EXISTS` skipped for `DROP TABLE`;
-`ALTER TABLE IF EXISTS ...` gets no `SubstatementType` and runs as ordinary
-column-less DDL without the probe). Because `StartQueryExecution` rejects a
+`ALTER TABLE IF EXISTS ...` is rejected at `StartQueryExecution` before this
+analysis, as real Athena does (see
+[Caveats](caveats.md#alter-table-and-format-dependent-ddl))). Because
+`StartQueryExecution` rejects a
 double-quoted part in the name of any of these statements up front, before
 this analysis runs (see [Caveats](caveats.md#sql-dialect)), the name it sees
 in practice is unquoted; a handful of quoted forms Caveats lists as

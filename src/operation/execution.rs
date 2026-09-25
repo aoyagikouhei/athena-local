@@ -26,6 +26,7 @@ use super::format_probe;
 use super::quoted_names;
 use super::result_output;
 use super::table_format::{self, FormatOverride};
+use super::unquoted_ddl;
 
 /// OutputLocation も既定も無いときの本物の文言（2026-09-14 実測。"for  your" の空白 2 つも本物のまま）。
 const NO_OUTPUT_LOCATION: &str = "No output location provided. You did not provide an output location for  your query results. Either specify an S3 bucket location or enable Athena managed query results in your workgroup settings.";
@@ -98,12 +99,16 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
     if let Check::Reject(response) = check {
         return *response;
     }
-    // Trino は受けるが本物は開始時に弾く、引用符付きの名前を取る DDL 系の文（2026-09-25 実測。#204）。
+    // Trino は受けるが本物は開始時に弾く、引用符付きの名前を取る DDL 系の文（2026-09-25 実測。#204）と、
+    // 無引用の ALTER TABLE の文（IF EXISTS・ADD COLUMN 単数・Trino だけにある形。2026-09-26 実測。#208）。
     // 本物も Trino が構文エラーにする形では Trino の文言を返したので、構文チェックの後に見る。
+    // 引用符付きの名前の文言を先に試す（quoted_names が None を返すのは無引用のときと ALTER TABLE IF
+    // EXISTS のときだけで、後者は unquoted_ddl が引き取る）。
     if !matches!(check, Check::Run)
         && let Some(message) = quoted_names::rejection(&request.query_string, |catalog| {
             app.config.catalog_map.contains_key(catalog)
         })
+        .or_else(|| unquoted_ddl::rejection(&request.query_string))
     {
         return invalid_request_with_code(message, "MALFORMED_QUERY");
     }

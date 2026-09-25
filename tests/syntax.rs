@@ -194,3 +194,100 @@ async fn 引用符付きの名前でも構文エラーなら_trino_の文言を�
         "line 1:21: mismatched input 'COLUMNS'. Expecting: '.', 'ADD'"
     );
 }
+
+/// 本物は無引用の `ALTER TABLE IF EXISTS ...` と単数形の `ADD COLUMN` も、Trino が構文として受ける形でも
+/// 開始時に弾く（2026-09-26 実測。#208）。文言は quoted_names と同じ出口（`unquoted_ddl::rejection`）から返す。
+#[tokio::test]
+async fn 無引用の_alter_table_も本物の文言で開始時に弾き_実行を作らない() {
+    let harness = Harness::builder(select_response()).start().await;
+
+    for (query, message) in [
+        (
+            "ALTER TABLE IF EXISTS t RENAME TO u",
+            "line 1:16: no viable alternative at input 'ALTER TABLE IF EXISTS'",
+        ),
+        (
+            "ALTER TABLE t ADD COLUMN m int",
+            "line 1:19: no viable alternative at input 'ALTER TABLE t ADD COLUMN'",
+        ),
+    ] {
+        let (code, error) = harness
+            .call("StartQueryExecution", json!({ "QueryString": query }))
+            .await;
+
+        assert_eq!(code, 400, "{query}: {error}");
+        assert_eq!(error["__type"], "InvalidRequestException", "{query}");
+        assert_eq!(error["AthenaErrorCode"], "MALFORMED_QUERY", "{query}");
+        assert_eq!(error["Message"], message, "{query}");
+        assert_eq!(harness.syntax_checks().last(), Some(&query.to_string()));
+        assert!(
+            harness.trino_requests().is_empty(),
+            "{query}: 実行は作らない"
+        );
+    }
+}
+
+/// `quoted_names::rejection` の文言が無引用の ALTER TABLE の文言より先に決まる
+/// （`execution.rs` の `or_else` の順序。#204 が先、#208 は quoted_names が None のときだけ）。
+/// 引用符付きの名前は quoted_names が先に決めるので unquoted_ddl は呼ばれても None を返す。
+/// 4 部以上の無引用の名前は、名前の解析だけで両方が別の文言を返しうる実例
+/// （quoted_names は 3 つ目の `.` で、unquoted_ddl は ADD COLUMN の位置で。本物も名前を先に読む）。
+#[tokio::test]
+async fn quoted_names_の文言が無引用の_alter_table_の文言より先に決まる() {
+    let harness = Harness::builder(select_response()).start().await;
+
+    for (query, message) in [
+        (
+            r#"ALTER TABLE "t" ADD COLUMN m int"#,
+            r#"line 1:13: no viable alternative at input 'ALTER TABLE "t"'"#.to_string(),
+        ),
+        (
+            "ALTER TABLE a.b.c.d ADD COLUMN m int",
+            "line 1:18: no viable alternative at input 'ALTER TABLE a.b.c.'".to_string(),
+        ),
+    ] {
+        let (code, error) = harness
+            .call("StartQueryExecution", json!({ "QueryString": query }))
+            .await;
+
+        assert_eq!(code, 400, "{query}: {error}");
+        assert_eq!(error["Message"], message, "{query}");
+        assert!(
+            harness.trino_requests().is_empty(),
+            "{query}: 実行は作らない"
+        );
+    }
+}
+
+/// 本物は CTAS でない無引用の `CREATE TABLE` も、Trino が構文として受ける形でも開始時に弾く
+/// （2026-09-26 実測。#208 のフェーズ 2）。文言は ALTER TABLE と同じ出口（`unquoted_ddl::rejection` から
+/// `create_table::rejection`）から返す。
+#[tokio::test]
+async fn 場所の無い_create_table_も本物の文言で開始時に弾き_実行を作らない() {
+    let harness = Harness::builder(select_response()).start().await;
+
+    for (query, message) in [
+        (
+            "CREATE TABLE t (n int)",
+            "No location was specified for table. An S3 location must be specified",
+        ),
+        (
+            "CREATE TABLE t (n int) WITH (format = 'PARQUET')",
+            "line 1:29: no viable alternative at input 'CREATE TABLE t (n int) WITH ('",
+        ),
+    ] {
+        let (code, error) = harness
+            .call("StartQueryExecution", json!({ "QueryString": query }))
+            .await;
+
+        assert_eq!(code, 400, "{query}: {error}");
+        assert_eq!(error["__type"], "InvalidRequestException", "{query}");
+        assert_eq!(error["AthenaErrorCode"], "MALFORMED_QUERY", "{query}");
+        assert_eq!(error["Message"], message, "{query}");
+        assert_eq!(harness.syntax_checks().last(), Some(&query.to_string()));
+        assert!(
+            harness.trino_requests().is_empty(),
+            "{query}: 実行は作らない"
+        );
+    }
+}
