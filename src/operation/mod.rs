@@ -6,6 +6,7 @@ mod execution;
 mod format_probe;
 mod iceberg_partitions;
 mod query_execution;
+mod quoted_names;
 mod result_output;
 mod table_format;
 mod target_table;

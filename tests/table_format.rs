@@ -158,43 +158,39 @@ async fn 修飾名でカタログを指す文も形式を問い合わせて判�
     assert_eq!(puts[1].body.len(), 41);
 }
 
+/// 本物は S3 Tables のカタログ名（引用符付き）を取る DROP TABLE を開始時に弾く。文言は一般の引用符付きの名前と
+/// 同じ `mismatched input`（2026-09-25 実測。#204）。形式の問い合わせにも進まない。
 #[tokio::test]
-async fn 引用符付きのカタログ名にも別名を当てて問い合わせる() {
+async fn drop_table_は_s3_tables_の引用符付きのカタログ名を本物と同じく開始時に弾く() {
     const S3_TABLES: &str = "s3tablescatalog/my-bucket";
     let harness = Harness::builder(drop_table_response())
         .catalog_map(&[(S3_TABLES, "iceberg_catalog")])
-        .route(
-            &probe_sql("iceberg_catalog", "ns", "t"),
-            probe_response("iceberg"),
-        )
         .results_s3()
         .start()
         .await;
 
     let query = format!("DROP TABLE \"{S3_TABLES}\".ns.t");
-    let execution = harness
-        .run_query(json!({
-            "QueryString": query,
-            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
-        }))
+    let (code, error) = harness
+        .call(
+            "StartQueryExecution",
+            json!({
+                "QueryString": query,
+                "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+            }),
+        )
         .await;
-    let id = execution_id(&execution);
 
-    assert_eq!(execution["QueryExecution"]["Status"]["State"], "SUCCEEDED");
-    // 問い合わせは、修飾名から取り出したカタログに別名を当てた（Trino 側の）名前で送る。
-    // 本体は catalog.rs の alias_qualified_names が別名で書き換えたもの（既存の振る舞い）。
-    // パディングは catalog::replacement が決める（元の引用符付き識別子 27 文字 -
-    // 別名を引用符で包んだ "iceberg_catalog" 17 文字 = 空白 10 個。他のテストと同じく完全一致で見る）。
-    let sqls = harness.trino_sqls();
-    assert_eq!(sqls[0], probe_sql("iceberg_catalog", "ns", "t"));
-    assert_eq!(sqls[1], "DROP TABLE \"iceberg_catalog\"          .ns.t");
-
-    let puts = harness.s3_puts();
-    assert_eq!(puts.len(), 2, "{puts:?}");
-    assert_eq!(puts[0].key, format!("athena/{id}.txt"));
-    assert_eq!(puts[0].body, vec![0x0a]);
-    assert_eq!(puts[1].key, format!("athena/{id}.txt.metadata"));
-    assert_eq!(puts[1].body.len(), 41);
+    assert_eq!(code, 400, "{error}");
+    assert_eq!(error["AthenaErrorCode"], "MALFORMED_QUERY");
+    let message = error["Message"].as_str().unwrap();
+    assert!(
+        message.starts_with(&format!(
+            "line 1:12: mismatched input '\"{S3_TABLES}\"' expecting {{'SELECT', "
+        )),
+        "{message}"
+    );
+    assert!(harness.trino_sqls().is_empty());
+    assert!(harness.s3_puts().is_empty());
 }
 
 #[tokio::test]
