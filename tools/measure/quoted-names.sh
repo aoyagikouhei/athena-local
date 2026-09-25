@@ -46,6 +46,21 @@
 #     上の D〜P 群・S3 Tables 群（1 ラウンド目と同じ項目。変えていない）を流し、
 #     ROUND=2 は下の「ROUND=2 の項目」の U1〜U7 群だけを流す。preflight・準備の
 #     Hive テーブル（d0-setup-hive）・後始末（z-drop-hive）は両ラウンド共通。
+#   - 【3 ラウンド目】issue #207。ROUND=3 は下の「ROUND=3 の項目」の V1〜V7 群だけを
+#     流す。preflight・準備・後始末は 1・2 ラウンド目と共通。V7 の診断のために、
+#     QueryExecutionContext を 1 文だけ差し替える仕組み（run_in_ctx）を足した。
+#     summary の伏せ字に、アカウント ID（12 桁の数字）と S3 Tables のバケット名
+#     （S3TABLES_CATALOG の `/` より後ろ）を足し、「失敗した項目の理由」の節にも
+#     伏せ字をかけるようにした（ラウンド 2 の summary.txt で、この節からアカウント ID と
+#     S3 Tables の実名が漏れていたため。1・2 ラウンド目にも効く）。
+#   - 【4 ラウンド目】issue #207 の続き。ROUND=4 は下の「ROUND=4 の項目」の W1〜W5 群
+#     だけを流す。preflight・準備・後始末は共通。3 ラウンド目（run-20260925-104713）で、
+#     DESCRIBE・SHOW COLUMNS は開始前に Glue で対象の存在を確かめ、実在しなければ
+#     （無引用でも）Entity Not Found（INVALID_INPUT）、実在すれば構文の文言になり、
+#     4 部の DESCRIBE・SHOW COLUMNS は `Invalid table name <引用符を外した名前>` になると
+#     分かったので、存在の確認が何を対象に解決しているかと、4 部の文言の細部を測る。
+#     W1 の大文字の名前を伏せるため、伏せ字に DB 名・対象テーブル名・接頭辞の大文字形
+#     （<DB_UPPER>・<TT_UPPER>・<PROBE_UPPER>）を足した（どのラウンドにも効く）。
 #
 # ROUND=2 の項目（1 ラウンド目 `run-20260925-075408` の結果を踏まえた 2 ラウンド目）:
 #   U1  3 部の名前で途中・末尾だけ引用符付き（n12 = awsdatacatalog."db".t、
@@ -69,12 +84,86 @@
 #       本物では失敗するはずだが、万一成功したら直後に無引用 IF EXISTS の DROP を
 #       run で投げて後始末する）を、引用符付き・無引用の対で。
 #
+# ROUND=3 の項目（issue #207。#204 で実測した形の外側にある、まだ測っていない形）:
+#   名前の表記: <DB> は DB、<TT> は準備のテーブル athena_local_probe_204、<TT>_nope は
+#   実在しない名前、<TT>_nope3 は CREATE TABLE 用の実在しない名前（U7 と同じ）、
+#   "日本" は実在しない非 ASCII の名前。非 ASCII は u5-jp と同じく $'\xe6\x97\xa5...'
+#   のバイト列で組み、UTF-8 のままワイヤに乗せる。
+#   V1  3 部の ALTER で途中が引用符付き（n12 = awsdatacatalog."<DB>".<TT>_nope、
+#       n15 = awsdatacatalog."<DB>"."<TT>_nope"）に、U2 と同じ RENAME TO と
+#       DROP COLUMN の 2 操作。すべて実在しない名前に対して。4 本。
+#   V2  4 部の修飾名 awsdatacatalog.<DB>.<X>.n の、無引用の対照（p0）と、引用符を
+#       1 部目（p1）・2 部目（p2）・3 部目（p3）・4 部目（p4）のどれか 1 つだけに付けた
+#       4 形。<X> は DESCRIBE と SHOW COLUMNS FROM では実在する <TT>、DROP TABLE と
+#       ALTER TABLE ... RENAME TO <TT>_nope2 では <TT>_nope。4 文 × 5 形 = 20 本。
+#   V3  SHOW TABLES IN の 2 部（awsdatacatalog.<DB> の対照と引用符の 3 形）4 本と、
+#       CTAS でない CREATE TABLE <name> (n int)（非 EXTERNAL の Hive）の 2 部以上
+#       （<DB>.<TT>_nope3 の対照と、n4・n5・n6・n12・n13 の 5 形）6 本と、
+#       CREATE TABLE IF NOT EXISTS の引用符付き・無引用の対 2 本。CREATE TABLE は
+#       U7 と同じく、想定外に成功したら直後に無引用 IF EXISTS の DROP で消す。
+#   V4  実在しない ASCII の名前を引用符付きで（DESCRIBE の n1・n5・n6、無引用の対照
+#       n0、SHOW COLUMNS FROM の n1）。5 本。
+#   V5  実在しない非 ASCII の名前 "日本" を DESCRIBE 以外の文に（DESCRIBE の対照、
+#       DESC、DESCRIBE <DB>."日本"、SHOW COLUMNS FROM、DROP TABLE、
+#       ALTER TABLE ... RENAME TO <TT>_nope2、SHOW CREATE TABLE、SHOW TABLES IN、
+#       CREATE TABLE（想定外に成功したら DROP TABLE IF EXISTS `日本` で消す））。9 本。
+#       preflight の SHOW TABLES に「日本」が実在すれば、DROP・ALTER を実在の表に
+#       投げてしまうので、V5 群をまるごと未測定にする。
+#   V6  実在する非 ASCII の名前（PROBE_DDL=1 のときだけ）。
+#       CREATE TABLE <DB>."<TT>_日本" AS SELECT 1 AS n を試し、開始時に弾かれるか
+#       失敗したら、残りを「未測定（非 ASCII のテーブルを作れなかった）」にする。
+#       成功したら DESCRIBE "<TT>_日本"・DESCRIBE <DB>."<TT>_日本"・
+#       SHOW COLUMNS FROM "<TT>_日本"・DESCRIBE `<TT>_日本`（対照）を測り、最後に
+#       DROP TABLE IF EXISTS <DB>.`<TT>_日本` で消して、SHOW TABLES で消えたことを
+#       確かめる（消えなければ summary の冒頭で手動削除を案内する）。開始できて
+#       FAILED になったときも、念のため同じ DROP と SHOW TABLES を投げる。
+#   V7  S3 Tables（S3TABLES_* が揃うときだけ。U3 を下敷きに）。はじめに診断として、
+#       QueryExecutionContext の Catalog を S3TABLES_CATALOG にして（Database は
+#       付けない）SHOW DATABASES と SHOW TABLES IN <ns> を投げ、行を GetQueryResults で
+#       取って生データ（v7-diag-*.rows.txt。実名を含む）にだけ保存する。summary には
+#       件数と、S3TABLES_NS／S3TABLES_TABLE がその一覧に含まれるか（完全一致・大小無視）
+#       だけを出す。続けて U3 と同じ 10 本（対照 SELECT・DESCRIBE・DESC・
+#       SHOW COLUMNS FROM・SHOW CREATE TABLE・存在しない表への DESCRIBE/DROP TABLE/
+#       ALTER TABLE の RENAME TO と DROP COLUMN・名前空間まで引用符付きの DESCRIBE）。
+#       対照 SELECT が失敗しても項目は流し、summary に「対照 SELECT 失敗」と出す。
+#
+# ROUND=4 の項目（issue #207 の続き。3 ラウンド目 `run-20260925-104713` を踏まえる）:
+#   名前の表記は ROUND=3 と同じ。<NODB> は実在しない DB 名 athena_local_probe_204_nodb、
+#   <TT>_v は W4 で作るビュー athena_local_probe_204_v。
+#   W1  存在の確認が何を対象に解決するか。次の 8 形を DESCRIBE と SHOW COLUMNS FROM の
+#       両方に（16 本）: <NODB>.<TT>（スキーマが実在しない）、"<NODB>".<TT>、
+#       awsdatacatalog.<DB>.<TT>（3 部・実在）、awsdatacatalog.<DB>.<TT>_nope（3 部・
+#       実在しない）、nocatalog_204.<DB>.<TT>（カタログが実在しない）、1 部の <TT> を
+#       QueryExecutionContext の Database を <NODB> にして（Catalog は既定）、大文字の
+#       無引用 <TT の大文字>（実在）、2 部 <DB の大文字>.<TT の大文字>。
+#   W2  4 部の名前の文言の細部（DESCRIBE）: AwsDataCatalog.<DB>.<TT>.N（無引用の部分の
+#       大文字小文字）、awsdatacatalog."<DB>"."a""b".n（引用符の中の ""）、
+#       awsdatacatalog.<DB>."x.y".n（引用符の中の .）、5 部 awsdatacatalog.<DB>.<TT>.n.m、
+#       DESC awsdatacatalog.<DB>.<TT>.n、SHOW COLUMNS IN awsdatacatalog.<DB>.<TT>.n の
+#       6 本と、S3TABLES_* があるときだけ DESCRIBE "<S3TABLES_CATALOG>".<ns>.<t>.n。
+#   W3  4 部・5 部の DROP・ALTER（実在しない名前に）: DROP TABLE IF EXISTS
+#       awsdatacatalog.<DB>.<TT>_nope.n、DROP TABLE awsdatacatalog.<DB>.<TT>_nope.n.m、
+#       ALTER TABLE awsdatacatalog.<DB>.<TT>_nope.n.m RENAME TO <TT>_nope2。3 本。
+#   W4  ビュー（PROBE_DDL=1 のときだけ）。CREATE VIEW <DB>.<TT>_v AS SELECT 1 AS n を
+#       作り、DESCRIBE <TT>_v・DESCRIBE "<TT>_v"・SHOW COLUMNS FROM <TT>_v・
+#       SHOW COLUMNS FROM "<TT>_v" を測って、DROP VIEW IF EXISTS <DB>.<TT>_v で消し、
+#       SHOW TABLES と SHOW VIEWS で消えたことを確かめる（消えなければ summary の冒頭で
+#       手動削除を案内する）。開始時に弾かれたら残りを未測定にし、開始できて FAILED に
+#       なったときも念のため同じ DROP VIEW と確かめを投げる。
+#   W5  存在の確認と引用符の順序: 実在しない DESCRIBE "<TT>_nope" を 2 回（Request ID が
+#       毎回違うことの確認）、実在しない 2 部の無引用 DESCRIBE <DB>.<TT>_nope と
+#       SHOW COLUMNS FROM <DB>.<TT>_nope。4 本。
+#
 # 使い方:
 #   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db bash tools/measure/quoted-names.sh
 #   2 ラウンド目:
 #   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=2 bash tools/measure/quoted-names.sh
-#   S3 Tables も測るとき（どちらのラウンドでも指定できる）:
-#   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=2 \
+#   3 ラウンド目（issue #207）:
+#   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=3 bash tools/measure/quoted-names.sh
+#   4 ラウンド目（issue #207 の続き）:
+#   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=4 bash tools/measure/quoted-names.sh
+#   S3 Tables も測るとき（どのラウンドでも指定できる）:
+#   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=3 \
 #     S3TABLES_CATALOG=s3tablescatalog/your-bucket S3TABLES_NS=your_ns S3TABLES_TABLE=your_table \
 #     bash tools/measure/quoted-names.sh
 #   （資格情報はホストのシェルで AWS_ACCESS_KEY_ID などを export してから。または ~/.aws/credentials）
@@ -96,12 +185,14 @@
 #                    DROP で消す。0 にすると SHOW TABLES の 1 件目（実在のテーブル）を
 #                    対象にする（名前は小文字。実名は summary に出さない）。
 #   ROUND            既定 1。1 は D〜P 群・S3 Tables 群（1 ラウンド目）、2 は
-#                    U1〜U7 群（2 ラウンド目）だけを流す。
+#                    U1〜U7 群（2 ラウンド目）、3 は V1〜V7 群（3 ラウンド目、
+#                    issue #207）、4 は W1〜W5 群（4 ラウンド目、issue #207 の続き）
+#                    だけを流す。
 #   S3TABLES_CATALOG S3 Tables のカタログ名（例 s3tablescatalog/my-bucket）。
 #   S3TABLES_NS      S3 Tables の名前空間。
 #   S3TABLES_TABLE   S3 Tables のテーブル名。
 #                    この 3 つが揃ったときだけ S3 Tables 群（ROUND=1 の S3T・
-#                    ROUND=2 の U3）を測る。1 つでも欠けていれば
+#                    ROUND=2 の U3・ROUND=3 の V7・ROUND=4 の w2-s3t）を測る。1 つでも欠けていれば
 #                    「未測定（S3TABLES_* 未設定）」として summary に残す。
 #
 # ** このスクリプトが本物に対して行う破壊的な操作 **
@@ -116,13 +207,33 @@
 #   CREATE TABLE（非 EXTERNAL の Hive。本物では失敗するはず）を引用符付き・無引用の
 #   両方で投げる。想定外に成功したら、その場で無引用 IF EXISTS の DROP を投げて消す
 #   （trap にも同じ DROP を保険として持つ）。
+#   ROUND=3 では、準備のテーブルのほかに次の DDL がありうる。
+#     - V3 群の CREATE TABLE（<DB>.<TT>_nope3 を 8 通りの書き方で。非 EXTERNAL の
+#       Hive で本物では失敗するはず）。想定外に成功したら、その場で無引用 IF EXISTS の
+#       DROP TABLE IF EXISTS <TT>_nope3 を投げて消す（trap にも保険）。
+#     - V5 群の CREATE TABLE "日本" (n int)。想定外に成功したら、その場で
+#       DROP TABLE IF EXISTS `日本` を投げて消す（trap にも保険）。
+#     - V6 群（PROBE_DDL=1 のときだけ）の CTAS CREATE TABLE <DB>."<TT>_日本" AS
+#       SELECT 1 AS n。作れたら（または開始できて FAILED になったら）
+#       DROP TABLE IF EXISTS <DB>.`<TT>_日本` で消し、SHOW TABLES で消えたことを
+#       確かめる（trap にも同じ DROP を保険として持つ）。準備の CTAS と同じく、
+#       S3 の OUTPUT 配下に書かれたデータファイルは DROP では消えない。
+#     DROP・ALTER は、これらの後始末を除いて実在しない名前にだけ投げる。ROUND=3 では
+#     PROBE_DDL=0 でも接頭辞 athena_local_probe_204 のテーブルが無いことを確かめる。
+#   ROUND=4 では、準備のテーブルのほかに W4 群（PROBE_DDL=1 のときだけ）のビューが
+#   ある。CREATE VIEW <DB>.<TT>_v AS SELECT 1 AS n で作り、DROP VIEW IF EXISTS
+#   <DB>.<TT>_v で消して、SHOW TABLES と SHOW VIEWS で消えたことを確かめる（trap にも
+#   同じ DROP VIEW を保険として持つ）。ビューはデータファイルを書かない。DROP・ALTER は
+#   これを除いて実在しない名前にだけ投げる。<NODB> への DESCRIBE・SHOW COLUMNS は
+#   読むだけで、DB は作らない。
 #
 # 課金について: スキャンの無いクエリだけ。DESCRIBE・DESC・SHOW CREATE TABLE・
 # SHOW COLUMNS・MSCK REPAIR TABLE・ALTER TABLE・DROP TABLE・SHOW TABLES・
-# DROP DATABASE はどれもメタデータだけを見る／書く文で、実データのスキャンは無い。
-# 準備の CTAS（PROBE_DDL=1 のときだけ）・U3 の SELECT（S3 Tables、LIMIT 1）・
-# U7 の CREATE TABLE（0 行）も、スキャンや書き込みは軽微。Athena の最小課金 ×
-# クエリ数の見込み。
+# SHOW DATABASES・SHOW VIEWS・DROP DATABASE・CREATE VIEW・DROP VIEW はどれもメタデータ
+# だけを見る／書く文で、実データの
+# スキャンは無い。準備の CTAS（PROBE_DDL=1 のときだけ）・V6 の CTAS（1 行）・
+# U3／V7 の SELECT（S3 Tables、LIMIT 1）・U7／V3／V5 の CREATE TABLE（0 行）も、
+# スキャンや書き込みは軽微。Athena の最小課金 × クエリ数の見込み。
 #
 # 本物への呼び出し回数の見込み（StartQueryExecution のみ。GetQueryExecution・
 # GetQueryResults・S3 への呼び出しは含めない。課金には影響しない）:
@@ -151,7 +262,33 @@
 #   + U7 群（3 対 6。CREATE TABLE の対照が想定外に成功すれば後始末が最大 2 本増える）6
 #   = 45（S3TABLES_* 無し）／55（S3TABLES_* あり）。
 #
-#   どちらのラウンドも、開始時に弾かれた（START_FAILED）項目があっても追加の呼び出しは
+#   [ROUND=3]
+#   preflight 1 + セットアップ 1・後始末 1
+#   + V1 群（2 形 × 2 操作）4
+#   + V2 群（4 文 × 5 形）20
+#   + V3 群（SHOW TABLES IN 4 + CREATE TABLE 6 + IF NOT EXISTS 2）12
+#   + V4 群（実在しない ASCII の名前）5
+#   + V5 群（実在しない "日本"）9
+#   + V6 群（PROBE_DDL=1 のときだけ）CTAS 1。作れたら + 測定 4 + DROP 1 +
+#     SHOW TABLES 1 で 7（開始できて FAILED なら DROP と SHOW TABLES が乗って 3）
+#   + V7 群（S3TABLES_* が揃うときだけ）診断 2 + U3 と同じ 10 で 12
+#   = 54（S3TABLES_* 無し・CTAS が開始時に弾かれた）／60（S3TABLES_* 無し・CTAS 成功）
+#     ／66・72（それぞれ S3TABLES_* あり）。PROBE_DDL=0 なら V6 の 1 本が減る。
+#   V3・V5 の CREATE TABLE が想定外に成功すれば、後始末が最大 9 本増える。
+#
+#   [ROUND=4]
+#   preflight 1 + セットアップ 1・後始末 1
+#   + W1 群（8 形 × DESCRIBE/SHOW COLUMNS）16
+#   + W2 群（4 部の文言の細部）6。S3TABLES_* が揃えば + 1
+#   + W3 群（4 部・5 部の DROP・ALTER）3
+#   + W4 群（PROBE_DDL=1 のときだけ）CREATE VIEW 1。作れたら + 測定 4 + DROP VIEW 1 +
+#     SHOW TABLES 1 + SHOW VIEWS 1 で 8（開始できて FAILED なら確かめまで乗って 4）
+#   + W5 群（存在の確認と引用符の順序）4
+#   = 33（S3TABLES_* 無し・CREATE VIEW が開始時に弾かれた）／40（S3TABLES_* 無し・
+#     CREATE VIEW 成功）／34・41（それぞれ S3TABLES_* あり）。PROBE_DDL=0 なら
+#     W4 の 1 本とセットアップ・後始末の 2 本が減って 30（S3TABLES_* ありで 31）。
+#
+#   どのラウンドも、開始時に弾かれた（START_FAILED）項目があっても追加の呼び出しは
 #   しない（AthenaErrorCode・Message は同じ標準エラーからそのまま抜くため）。
 #
 # 実行ごとに $OUT_DIR/run-<日時>/ を作り、その中だけに書く。前の回の結果と混ざらない。
@@ -168,6 +305,9 @@
 #   <label>.execution.json GetQueryExecution の生の応答（開始できた項目だけ）
 #   <label>.execution.err  GetQueryExecution の標準エラー
 #   <label>.reason.txt     StateChangeReason と AthenaError（**実名を含みうる。貼る前に確認**）
+#   <label>.rows.txt       ROUND=3 の V7 の診断（v7-diag-*）と V6 の確かめ（v6-verify）、
+#                          ROUND=4 の W4 の確かめ（w4-verify-*）で
+#                          GetQueryResults から取った 1 列目の全行（**実名そのもの**）
 #
 # summary の決め手になる列は state・statement_type/substatement_type・
 # start_message/start_athena_error_code（開始時に弾かれた項目）・
@@ -191,11 +331,25 @@ ROUND=${ROUND:-1}
 S3TABLES_CATALOG=${S3TABLES_CATALOG:-}
 S3TABLES_NS=${S3TABLES_NS:-}
 S3TABLES_TABLE=${S3TABLES_TABLE:-}
+# S3TABLES_CATALOG が s3tablescatalog/<バケット> の形なら、そのバケット名（伏せ字用）。
+S3TABLES_BUCKET=""
+case "$S3TABLES_CATALOG" in
+  */*) S3TABLES_BUCKET=${S3TABLES_CATALOG#*/} ;;
+esac
 
 PROBE_PREFIX=athena_local_probe_204
 TABLE_HIVE=$PROBE_PREFIX
 NOPE=${PROBE_PREFIX}_nope
 NOPE2=${PROBE_PREFIX}_nope2
+NOPE3=${PROBE_PREFIX}_nope3
+# 非 ASCII の名前（ROUND=3 の V5・V6 群）。u5-jp と同じくバイト列で組み、UTF-8 のまま
+# 送る。JP は「日本」、TABLE_JP は V6 で作る「athena_local_probe_204_日本」。
+JP=$'\xe6\x97\xa5\xe6\x9c\xac'
+TABLE_JP=${PROBE_PREFIX}_$JP
+# ROUND=4 の名前。NODB は実在しない DB 名（W1。読むだけで作らない）、VIEW_NAME は
+# W4 で作って消すビュー。
+NODB=${PROBE_PREFIX}_nodb
+VIEW_NAME=${PROBE_PREFIX}_v
 
 D_FORMS="n0 n1 n2 n3 n4 n5 n6 n7 n8 n9 n10 n11"
 E_FORMS="n0 n1 n4 n5 n6 n10"
@@ -214,40 +368,68 @@ START_CALL_FILE="$RUN_DIR/.start-calls"
 : > "$START_CALL_FILE"
 # PROBE_DDL=1 のセットアップに着手したかどうか。trap での後始末に使う。
 DDL_ATTEMPTED=0
-# ROUND=2 の U7 群で CREATE TABLE の対照（無引用・引用符付きのどちらか）が想定外に
-# 成功したかどうか。trap での後始末に使う（本編の u7-*-cleanup で消せなかったときの保険）。
-U7_CREATED=0
+# ROUND=2 の U7 群・ROUND=3 の V3 群で、<TT>_nope3 への CREATE TABLE が想定外に
+# 成功したかどうか。trap での後始末に使う（本編の *-cleanup で消せなかったときの保険）。
+NOPE3_CREATED=0
+# ROUND=3 の V5 群で CREATE TABLE "日本" が想定外に成功したかどうか（同上）。
+JP_CREATED=0
+# ROUND=3 の V6 群の CTAS で <TT>_日本 ができた（かもしれない）かどうか。
+# v6-verify の SHOW TABLES で消えたと確かめられたら 0 に戻す。
+V6_CREATED=0
+# ROUND=4 の W4 群の CREATE VIEW で <TT>_v ができた（かもしれない）かどうか。
+# w4-verify-* の SHOW TABLES と SHOW VIEWS で消えたと確かめられたら 0 に戻す。
+W4_CREATED=0
+
+# StartQueryExecution に渡す QueryExecutionContext。ふだんは CATALOG・DB で、
+# run_in_ctx で 1 文だけ差し替える（ROUND=3 の V7 の診断）。
+QE_CONTEXT="Catalog=$CATALOG,Database=$DB"
+
+# trap の後始末で 1 文だけ投げる（結果は確かめない）。
+cleanup_drop() {
+  aws athena start-query-execution --region "$REGION" \
+    --query-string "$1" \
+    --query-execution-context "Catalog=$CATALOG,Database=$DB" \
+    --result-configuration "OutputLocation=$OUTPUT" >/dev/null 2>&1 || true
+}
 
 # 中間ファイル（.tmp-*）は、途中で止めても残らないよう trap で消す。セットアップに
 # 着手していたら、ベストエフォートで「無引用 + IF EXISTS」の後始末も投げる
-# （本編の z-drop-hive・u7-*-cleanup で消せなかったときの保険。cleanup 自体は結果を
-# 確かめない）。
+# （本編の z-drop-hive・*-cleanup・v6-drop で消せなかったときの保険。cleanup 自体は
+# 結果を確かめない）。
 cleanup() {
   rm -f "$RUN_DIR"/.tmp-*
   if [ "$DDL_ATTEMPTED" = 1 ]; then
-    aws athena start-query-execution --region "$REGION" \
-      --query-string "DROP TABLE IF EXISTS $TABLE_HIVE" \
-      --query-execution-context "Catalog=$CATALOG,Database=$DB" \
-      --result-configuration "OutputLocation=$OUTPUT" >/dev/null 2>&1 || true
+    cleanup_drop "DROP TABLE IF EXISTS $TABLE_HIVE"
   fi
-  if [ "$U7_CREATED" = 1 ]; then
-    aws athena start-query-execution --region "$REGION" \
-      --query-string "DROP TABLE IF EXISTS ${NOPE}3" \
-      --query-execution-context "Catalog=$CATALOG,Database=$DB" \
-      --result-configuration "OutputLocation=$OUTPUT" >/dev/null 2>&1 || true
+  if [ "$NOPE3_CREATED" = 1 ]; then
+    cleanup_drop "DROP TABLE IF EXISTS $NOPE3"
+  fi
+  if [ "$JP_CREATED" = 1 ]; then
+    cleanup_drop "DROP TABLE IF EXISTS \`$JP\`"
+  fi
+  if [ "$V6_CREATED" = 1 ]; then
+    cleanup_drop "DROP TABLE IF EXISTS $DB.\`$TABLE_JP\`"
+  fi
+  if [ "$W4_CREATED" = 1 ]; then
+    cleanup_drop "DROP VIEW IF EXISTS $DB.$VIEW_NAME"
   fi
 }
 trap cleanup EXIT
 
-# 実名（DB 名・出力先・バケット名）を置換して隠す。
+# 実名（DB 名・出力先・バケット名・アカウント ID）を置換して隠す。
+# アカウント ID は、前後が数字でない 12 桁の数字として伏せる（ラウンド 2 の
+# SCHEMA_NOT_FOUND の文言 `catalog:<アカウント ID>:...` に出ていた）。
+# DB 名の大文字形（ROUND=4 の W1 で投げる）は <DB_UPPER> にする。伏せ字の置き換え先は
+# 大文字なので、小文字の DB 名が置き換え先の中に当たらないよう、大文字形を先に置き換える。
 OUTPUT_BUCKET=${OUTPUT#s3://}
 OUTPUT_BUCKET=${OUTPUT_BUCKET%%/*}
 redact() {
   local s=$1
+  s=${s//${DB^^}/<DB_UPPER>}
   s=${s//$DB/<DB>}
   s=${s//$OUTPUT/<OUTPUT>}
   s=${s//$OUTPUT_BUCKET/<BUCKET>}
-  printf '%s' "$s"
+  printf '%s' "$s" | sed -E 's/(^|[^0-9])[0-9]{12}([^0-9]|$)/\1<ACCOUNT_ID>\2/g'
 }
 
 # 標準入力から、対象テーブル名（TARGET_TABLE）・接頭辞 athena_local_probe_204・
@@ -256,12 +438,21 @@ redact() {
 mask_names() {
   local s
   s=$(cat)
+  # 大文字形（ROUND=4 の W1）を先に置き換える（redact と同じ理由）。
+  if [ -n "${TARGET_TABLE:-}" ]; then
+    s=${s//${TARGET_TABLE^^}/<TT_UPPER>}
+  fi
+  s=${s//${PROBE_PREFIX^^}/<PROBE_UPPER>}
   if [ -n "${TARGET_TABLE:-}" ]; then
     s=${s//$TARGET_TABLE/<TT>}
   fi
   s=${s//$PROBE_PREFIX/<PROBE>}
   if [ -n "$S3TABLES_CATALOG" ]; then
     s=${s//$S3TABLES_CATALOG/<S3TABLES_CATALOG>}
+    # カタログ名の `/` より後ろ（S3 Tables のバケット名）が単独で出ても伏せる。
+    if [ -n "$S3TABLES_BUCKET" ]; then
+      s=${s//$S3TABLES_BUCKET/<S3TABLES_BUCKET>}
+    fi
   fi
   if [ -n "$S3TABLES_NS" ]; then
     s=${s//$S3TABLES_NS/<S3TABLES_NS>}
@@ -459,7 +650,7 @@ start_query_retry() {
     echo "$label" >> "$START_CALL_FILE"
     id=$(aws athena start-query-execution --region "$REGION" \
       --query-string "$sql" \
-      --query-execution-context "Catalog=$CATALOG,Database=$DB" \
+      --query-execution-context "$QE_CONTEXT" \
       --result-configuration "OutputLocation=$OUTPUT" \
       --query QueryExecutionId --output text 2> "$RUN_DIR/$label.start.err")
     if [ -n "${id:-}" ]; then
@@ -506,6 +697,7 @@ skip() {
 #   n12 catalog 無引用・db 引用符付き・table 無引用   awsdatacatalog."db".t
 #   n13 catalog 無引用・db 無引用・table 引用符付き   awsdatacatalog.db."t"
 #   n14 catalog だけ引用符付き（小文字）・残り無引用  "awsdatacatalog".db.t
+#   n15 catalog 無引用・db と table 引用符付き        awsdatacatalog."db"."t"（ラウンド 3 の V1）
 name_form() {
   local idx=$1 base=$2 upper
   upper=$(printf '%s' "$base" | tr '[:lower:]' '[:upper:]')
@@ -525,6 +717,25 @@ name_form() {
     n12) printf 'awsdatacatalog."%s".%s' "$DB" "$base" ;;
     n13) printf 'awsdatacatalog.%s."%s"' "$DB" "$base" ;;
     n14) printf '"awsdatacatalog".%s.%s' "$DB" "$base" ;;
+    n15) printf 'awsdatacatalog."%s"."%s"' "$DB" "$base" ;;
+    *) printf '%s' "$base" ;;
+  esac
+}
+
+# 4 部の修飾名 awsdatacatalog.<db>.<base>.n の形を返す（ラウンド 3 の V2 群）。
+#   p0 無引用（対照）          awsdatacatalog.db.t.n
+#   p1 1 部目だけ引用符付き    "awsdatacatalog".db.t.n
+#   p2 2 部目だけ引用符付き    awsdatacatalog."db".t.n
+#   p3 3 部目だけ引用符付き    awsdatacatalog.db."t".n
+#   p4 4 部目だけ引用符付き    awsdatacatalog.db.t."n"
+four_part_form() {
+  local idx=$1 base=$2
+  case "$idx" in
+    p0) printf 'awsdatacatalog.%s.%s.n' "$DB" "$base" ;;
+    p1) printf '"awsdatacatalog".%s.%s.n' "$DB" "$base" ;;
+    p2) printf 'awsdatacatalog."%s".%s.n' "$DB" "$base" ;;
+    p3) printf 'awsdatacatalog.%s."%s".n' "$DB" "$base" ;;
+    p4) printf 'awsdatacatalog.%s.%s."n"' "$DB" "$base" ;;
     *) printf '%s' "$base" ;;
   esac
 }
@@ -572,6 +783,56 @@ run() {
   emit_row "$label" "$state" "$stype" "$sub" "$start_msg" "$start_code" \
     "$err_cat" "$err_type" "$err_msg" "$reason_line" "$(sanitize "$note")"
   [ "$state" = SUCCEEDED ]
+}
+
+# QueryExecutionContext を $1 に差し替えて run を 1 回呼ぶ（ROUND=3 の V7 の診断）。
+# 差し替えた context は <label>.context.txt に残す（伏せ字は summary 側でかける）。
+run_in_ctx() {
+  local ctx=$1 label=$2 saved=$QE_CONTEXT rc
+  shift
+  printf '%s\n' "$ctx" > "$RUN_DIR/$label.context.txt"
+  QE_CONTEXT=$ctx
+  run "$@"
+  rc=$?
+  QE_CONTEXT=$saved
+  return "$rc"
+}
+
+# <label>.execution.json から QueryExecutionId を返す（無ければ空）。
+query_id_of() {
+  python3 -c 'import json, sys
+try:
+    print(json.load(open(sys.argv[1]))["QueryExecution"]["QueryExecutionId"])
+except Exception:
+    print("")' "$RUN_DIR/$1.execution.json" 2>/dev/null
+}
+
+# <label>.reason.txt が SUCCEEDED を示していれば真。
+succeeded() {
+  grep -qs "^State: SUCCEEDED" "$RUN_DIR/$1.reason.txt"
+}
+
+# CREATE TABLE を投げ、想定外に成功したら直後に後始末の DROP を <label>-cleanup として
+# 投げる（U7 と同じ扱い）。$4 は trap の保険に使うフラグの変数名で、成功したら 1 に、
+# 後始末が SUCCEEDED なら 0 に戻す。CREATE TABLE が失敗したら後始末は未測定の行だけ残す。
+run_create_guarded() {
+  local label=$1 sql=$2 cleanup_sql=$3 flag=$4
+  if run "$label" "$sql"; then
+    printf -v "$flag" '%s' 1
+    run "$label-cleanup" "$cleanup_sql"
+    if succeeded "$label-cleanup"; then
+      printf -v "$flag" '%s' 0
+    fi
+  else
+    skip "$label-cleanup" "CREATE TABLE が失敗したため後始末不要"
+  fi
+}
+
+# summary に、測定ではない確かめの結果を 1 行残す（state は INFO）。
+info_row() {
+  local label=$1 note=$2
+  echo "== $label: $note"
+  emit_row "$label" "INFO" - - - - - - - - "$(sanitize "$note")"
 }
 
 # --- preflight ---------------------------------------------------------------
@@ -632,7 +893,9 @@ if [ -z "$SHOW_TABLES_ID" ]; then
 fi
 fetch_all_table_names "$SHOW_TABLES_ID" "$RUN_DIR/tables.txt"
 
-if [ "$PROBE_DDL" = 1 ] && grep -qi "$PROBE_PREFIX" "$RUN_DIR/tables.txt"; then
+# ROUND=3 は PROBE_DDL=0 でも CREATE TABLE（V3）と後始末の DROP を <TT>_nope3 に投げる
+# ので、同じく確かめる。接頭辞の部分一致なので、V6 の <TT>_日本 の残りもここで止まる。
+if { [ "$PROBE_DDL" = 1 ] || [ "$ROUND" = 3 ]; } && grep -qi "$PROBE_PREFIX" "$RUN_DIR/tables.txt"; then
   echo
   echo "このデータベースに ${PROBE_PREFIX}* という名前のテーブルが既にあります。"
   echo "上書き・削除してしまうので、何も作らずに止まります。一覧: $RUN_DIR/tables.txt"
@@ -892,26 +1155,371 @@ run "u7-dropdb-q" "DROP DATABASE IF EXISTS \"${NOPE}_db\""
 run "u7-dropdb-u" "DROP DATABASE IF EXISTS ${NOPE}_db"
 
 if run "u7-createtable-q" "CREATE TABLE \"${NOPE}3\" (n int)"; then
-  U7_CREATED=1
+  NOPE3_CREATED=1
   run "u7-createtable-q-cleanup" "DROP TABLE IF EXISTS ${NOPE}3"
   if [ -s "$RUN_DIR/u7-createtable-q-cleanup.reason.txt" ] && grep -q "^State: SUCCEEDED" "$RUN_DIR/u7-createtable-q-cleanup.reason.txt"; then
-    U7_CREATED=0
+    NOPE3_CREATED=0
   fi
 else
   skip "u7-createtable-q-cleanup" "CREATE TABLE が失敗したため後始末不要"
 fi
 
 if run "u7-createtable-u" "CREATE TABLE ${NOPE}3 (n int)"; then
-  U7_CREATED=1
+  NOPE3_CREATED=1
   run "u7-createtable-u-cleanup" "DROP TABLE IF EXISTS ${NOPE}3"
   if [ -s "$RUN_DIR/u7-createtable-u-cleanup.reason.txt" ] && grep -q "^State: SUCCEEDED" "$RUN_DIR/u7-createtable-u-cleanup.reason.txt"; then
-    U7_CREATED=0
+    NOPE3_CREATED=0
   fi
 else
   skip "u7-createtable-u-cleanup" "CREATE TABLE が失敗したため後始末不要"
 fi
 
 fi # ROUND=2
+
+# ROUND=3 の V6・V7 群の確かめの結果（summary の冒頭と INFO 行に出す）。
+V6_STATUS=""
+V7_SELECT_OK=""
+
+if [ "$ROUND" = 3 ]; then
+
+# --- V1 群（3 部の ALTER で途中が引用符付き。実在しない名前に） --------------------
+# n12 = awsdatacatalog."<db>".<nope>、n15 = awsdatacatalog."<db>"."<nope>"
+
+V1_FORMS="n12 n15"
+for n in $V1_FORMS; do
+  run "v1-$n-rename"  "ALTER TABLE $(name_form "$n" "$NOPE") RENAME TO $NOPE2"
+  run "v1-$n-dropcol" "ALTER TABLE $(name_form "$n" "$NOPE") DROP COLUMN m"
+done
+
+# --- V2 群（4 部の修飾名） -----------------------------------------------------------
+# DESCRIBE・SHOW COLUMNS FROM は実在する <TT>、DROP TABLE・ALTER TABLE は <TT>_nope に。
+
+V2_FORMS="p0 p1 p2 p3 p4"
+if [ -n "$TARGET_TABLE" ]; then
+  for p in $V2_FORMS; do
+    run "v2-desc-$p" "DESCRIBE $(four_part_form "$p" "$TARGET_TABLE")"
+  done
+  for p in $V2_FORMS; do
+    run "v2-showcol-$p" "SHOW COLUMNS FROM $(four_part_form "$p" "$TARGET_TABLE")"
+  done
+else
+  for p in $V2_FORMS; do
+    skip "v2-desc-$p" "対象テーブルが無いため未測定"
+    skip "v2-showcol-$p" "対象テーブルが無いため未測定"
+  done
+fi
+for p in $V2_FORMS; do
+  run "v2-drop-$p" "DROP TABLE $(four_part_form "$p" "$NOPE")"
+done
+for p in $V2_FORMS; do
+  run "v2-rename-$p" "ALTER TABLE $(four_part_form "$p" "$NOPE") RENAME TO $NOPE2"
+done
+
+# --- V3 群（SHOW TABLES IN と CTAS でない CREATE TABLE の 2 部以上） ----------------
+
+run "v3-showtables-u"  "SHOW TABLES IN awsdatacatalog.$DB"
+run "v3-showtables-qq" "SHOW TABLES IN \"awsdatacatalog\".\"$DB\""
+run "v3-showtables-uq" "SHOW TABLES IN awsdatacatalog.\"$DB\""
+run "v3-showtables-qu" "SHOW TABLES IN \"awsdatacatalog\".$DB"
+
+# n3 = <db>.<nope3>（対照）、n4 = "<db>"."<nope3>"、n5 = <db>."<nope3>"、
+# n6 = "<db>".<nope3>、n12 = awsdatacatalog."<db>".<nope3>、n13 = awsdatacatalog.<db>."<nope3>"
+V3_CREATE_FORMS="n3 n4 n5 n6 n12 n13"
+for n in $V3_CREATE_FORMS; do
+  run_create_guarded "v3-create-$n" "CREATE TABLE $(name_form "$n" "$NOPE3") (n int)" \
+    "DROP TABLE IF EXISTS $NOPE3" NOPE3_CREATED
+done
+run_create_guarded "v3-create-ifq" "CREATE TABLE IF NOT EXISTS \"$NOPE3\" (n int)" \
+  "DROP TABLE IF EXISTS $NOPE3" NOPE3_CREATED
+run_create_guarded "v3-create-ifu" "CREATE TABLE IF NOT EXISTS $NOPE3 (n int)" \
+  "DROP TABLE IF EXISTS $NOPE3" NOPE3_CREATED
+
+# --- V4 群（実在しない ASCII の名前を引用符付きで） ---------------------------------
+
+run "v4-desc-n1"    "DESCRIBE $(name_form n1 "$NOPE")"
+run "v4-desc-n5"    "DESCRIBE $(name_form n5 "$NOPE")"
+run "v4-desc-n6"    "DESCRIBE $(name_form n6 "$NOPE")"
+run "v4-desc-n0"    "DESCRIBE $(name_form n0 "$NOPE")"
+run "v4-showcol-n1" "SHOW COLUMNS FROM $(name_form n1 "$NOPE")"
+
+# --- V5 群（実在しない非 ASCII の名前 "日本" を DESCRIBE 以外の文に） -----------------
+# 「日本」が実在すると DROP・ALTER を実在の表に投げてしまうので、preflight の
+# SHOW TABLES の一覧（tables.txt）にあれば群ごと未測定にする。
+
+V5_LABELS="v5-desc v5-descd v5-desc-db v5-showcol v5-drop v5-rename v5-showc v5-showtables v5-create v5-create-cleanup"
+if grep -Fxq "$JP" "$RUN_DIR/tables.txt"; then
+  for label in $V5_LABELS; do
+    skip "$label" "未測定（<DB> に同名の非 ASCII のテーブルが実在する）"
+  done
+else
+  run "v5-desc"       "DESCRIBE \"$JP\""
+  run "v5-descd"      "DESC \"$JP\""
+  run "v5-desc-db"    "DESCRIBE $DB.\"$JP\""
+  run "v5-showcol"    "SHOW COLUMNS FROM \"$JP\""
+  run "v5-drop"       "DROP TABLE \"$JP\""
+  run "v5-rename"     "ALTER TABLE \"$JP\" RENAME TO $NOPE2"
+  run "v5-showc"      "SHOW CREATE TABLE \"$JP\""
+  run "v5-showtables" "SHOW TABLES IN \"$JP\""
+  run_create_guarded "v5-create" "CREATE TABLE \"$JP\" (n int)" \
+    "DROP TABLE IF EXISTS \`$JP\`" JP_CREATED
+fi
+
+# --- V6 群（実在する非 ASCII の名前。PROBE_DDL=1 のときだけ） -----------------------
+# <TT>_日本 を CTAS で作って測り、バッククォートの DROP で消し、SHOW TABLES で確かめる。
+
+V6_MEASURE_LABELS="v6-desc-n1 v6-desc-n5 v6-showcol-n1 v6-desc-n10"
+if [ "$PROBE_DDL" != 1 ]; then
+  for label in v6-ctas $V6_MEASURE_LABELS v6-drop v6-verify; do
+    skip "$label" "未測定（PROBE_DDL=0 では非 ASCII のテーブルを作らない）"
+  done
+else
+  # 開始できたかどうかが分かるまでは、できたものとして trap の保険を掛けておく。
+  V6_CREATED=1
+  if run "v6-ctas" "CREATE TABLE $(name_form n5 "$TABLE_JP") AS SELECT 1 AS n"; then
+    run "v6-desc-n1"    "DESCRIBE $(name_form n1 "$TABLE_JP")"
+    run "v6-desc-n5"    "DESCRIBE $(name_form n5 "$TABLE_JP")"
+    run "v6-showcol-n1" "SHOW COLUMNS FROM $(name_form n1 "$TABLE_JP")"
+    run "v6-desc-n10"   "DESCRIBE $(name_form n10 "$TABLE_JP")"
+  else
+    for label in $V6_MEASURE_LABELS; do
+      skip "$label" "未測定（非 ASCII のテーブルを作れなかった）"
+    done
+  fi
+
+  if [ ! -s "$RUN_DIR/v6-ctas.execution.json" ]; then
+    # 開始時に弾かれた（StartQueryExecution が ID を返さなかった）ので、何もできていない。
+    V6_CREATED=0
+    V6_STATUS="CTAS が開始時に弾かれたので作られていない"
+    skip "v6-drop" "CTAS が開始時に弾かれたため後始末不要"
+    skip "v6-verify" "CTAS が開始時に弾かれたため後始末不要"
+  else
+    # 作れた（または開始できて FAILED になった）ので、念のため消して確かめる。
+    run "v6-drop" "DROP TABLE IF EXISTS $DB.\`$TABLE_JP\`"
+    if run "v6-verify" "SHOW TABLES"; then
+      fetch_all_table_names "$(query_id_of v6-verify)" "$RUN_DIR/v6-verify.rows.txt"
+      v6_left=$(grep -Fxc "$TABLE_JP" "$RUN_DIR/v6-verify.rows.txt")
+      # 準備のテーブル <TT> 本体（このあと z-drop-hive で消す）を除いた、接頭辞付きの残り。
+      v6_others=$(grep -i "$PROBE_PREFIX" "$RUN_DIR/v6-verify.rows.txt" | grep -Fxv "$TABLE_HIVE" | grep -Fxvc "$TABLE_JP")
+      if [ "$v6_left" = 0 ] && [ "$v6_others" = 0 ]; then
+        V6_CREATED=0
+        V6_STATUS="消えた（SHOW TABLES に <TT>_日本 も、<TT> 本体以外の <TT> 接頭辞の表も無い）"
+      else
+        V6_STATUS="残っている（<TT>_日本 ${v6_left} 件、<TT> 本体以外の <TT> 接頭辞の表 ${v6_others} 件）"
+      fi
+    else
+      V6_STATUS="SHOW TABLES が通らず、消えたか確かめられなかった"
+    fi
+    info_row "v6-verify-check" "$V6_STATUS"
+  fi
+fi
+
+# --- V7 群（S3 Tables。任意。環境変数が 3 つとも揃ったときだけ） -------------------
+
+V7_LABELS="v7-select v7-desc v7-descd v7-showcol v7-showc v7-desc-nope v7-drop-nope v7-alt-rename-nope v7-alt-dropcol-nope v7-desc-allq"
+if [ -n "$S3TABLES_CATALOG" ] && [ -n "$S3TABLES_NS" ] && [ -n "$S3TABLES_TABLE" ]; then
+  # 診断: Catalog を S3 Tables のカタログにして（Database は付けない）、名前空間と
+  # テーブルの一覧を取る。一覧そのもの（実名）は <label>.rows.txt にだけ置く。
+  S3T_CTX="Catalog=$S3TABLES_CATALOG"
+  # $1 = ラベル、$2 = 一覧に含まれるか確かめる名前、$3 = summary に出す名前の表記
+  v7_list_check() {
+    local label=$1 want=$2 shown=$3 rows count exact ci
+    rows="$RUN_DIR/$label.rows.txt"
+    fetch_all_table_names "$(query_id_of "$label")" "$rows"
+    count=$(grep -c . "$rows")
+    exact=no
+    ci=no
+    grep -Fxq -- "$want" "$rows" && exact=yes
+    grep -Fxqi -- "$want" "$rows" && ci=yes
+    info_row "$label-check" "行数=$count、$shown を含む: 完全一致=$exact、大小無視=$ci"
+  }
+  if run_in_ctx "$S3T_CTX" "v7-diag-databases" "SHOW DATABASES"; then
+    v7_list_check "v7-diag-databases" "$S3TABLES_NS" "S3TABLES_NS"
+  else
+    info_row "v7-diag-databases-check" "SHOW DATABASES が通らず、名前空間の一覧を取れなかった"
+  fi
+  if run_in_ctx "$S3T_CTX" "v7-diag-tables" "SHOW TABLES IN $S3TABLES_NS"; then
+    v7_list_check "v7-diag-tables" "$S3TABLES_TABLE" "S3TABLES_TABLE"
+  else
+    info_row "v7-diag-tables-check" "SHOW TABLES IN <S3TABLES_NS> が通らず、テーブルの一覧を取れなかった"
+  fi
+
+  # <s3>     = "<S3TABLES_CATALOG>".<ns>.<table>（実在する表）
+  # <s3nope> = "<S3TABLES_CATALOG>".<ns>.nope_204（実在しない表）
+  S3_NAME="\"$S3TABLES_CATALOG\".$S3TABLES_NS.$S3TABLES_TABLE"
+  S3_NOPE_NAME="\"$S3TABLES_CATALOG\".$S3TABLES_NS.nope_204"
+  if run "v7-select" "SELECT * FROM $S3_NAME LIMIT 1"; then
+    V7_SELECT_OK=yes
+    info_row "v7-select-check" "対照 SELECT 成功"
+  else
+    V7_SELECT_OK=no
+    info_row "v7-select-check" "対照 SELECT 失敗（以降の項目はそのまま流した）"
+  fi
+  run "v7-desc"             "DESCRIBE $S3_NAME"
+  run "v7-descd"            "DESC $S3_NAME"
+  run "v7-showcol"          "SHOW COLUMNS FROM $S3_NAME"
+  run "v7-showc"            "SHOW CREATE TABLE $S3_NAME"
+  run "v7-desc-nope"        "DESCRIBE $S3_NOPE_NAME"
+  run "v7-drop-nope"        "DROP TABLE $S3_NOPE_NAME"
+  run "v7-alt-rename-nope"  "ALTER TABLE $S3_NOPE_NAME RENAME TO nope_204b"
+  run "v7-alt-dropcol-nope" "ALTER TABLE $S3_NOPE_NAME DROP COLUMN m"
+  run "v7-desc-allq"        "DESCRIBE \"$S3TABLES_CATALOG\".\"$S3TABLES_NS\".\"$S3TABLES_TABLE\""
+else
+  for label in v7-diag-databases v7-diag-tables $V7_LABELS; do
+    skip "$label" "未測定（S3TABLES_* 未設定）"
+  done
+fi
+
+fi # ROUND=3
+
+# ROUND=4 の W4 群の確かめの結果（summary の冒頭と INFO 行に出す）。
+W4_STATUS=""
+
+if [ "$ROUND" = 4 ]; then
+
+# --- W1 群（存在の確認が何を対象に解決するか。DESCRIBE と SHOW COLUMNS FROM） ------
+# 形の名前（ラベルの末尾）:
+#   nodb     <NODB>.<TT>                 スキーマが実在しない
+#   nodbq    "<NODB>".<TT>               同上・DB だけ引用符付き
+#   n7       awsdatacatalog.<DB>.<TT>    3 部・実在
+#   n7nope   awsdatacatalog.<DB>.<TT>_nope  3 部・実在しない
+#   nocat    nocatalog_204.<DB>.<TT>     カタログが実在しない
+#   ctxnodb  <TT>（QueryExecutionContext の Database を <NODB> にする。Catalog は既定）
+#   upper    <TT の大文字>               大文字の無引用（実在）
+#   upper2   <DB の大文字>.<TT の大文字>  2 部・大文字の無引用
+
+W1_FORMS="nodb nodbq n7 n7nope nocat ctxnodb upper upper2"
+W1_STMTS="desc showcol"
+# $1 = 文の略号（desc / showcol）→ 文の頭
+w1_head() {
+  case "$1" in
+    desc) printf 'DESCRIBE' ;;
+    showcol) printf 'SHOW COLUMNS FROM' ;;
+  esac
+}
+# $1 = 形の名前 → 名前（ctxnodb は 1 部の <TT>。context は呼ぶ側で差し替える）
+w1_name() {
+  case "$1" in
+    nodb) printf '%s.%s' "$NODB" "$TARGET_TABLE" ;;
+    nodbq) printf '"%s".%s' "$NODB" "$TARGET_TABLE" ;;
+    n7) name_form n7 "$TARGET_TABLE" ;;
+    n7nope) name_form n7 "$NOPE" ;;
+    nocat) printf 'nocatalog_204.%s.%s' "$DB" "$TARGET_TABLE" ;;
+    ctxnodb) printf '%s' "$TARGET_TABLE" ;;
+    upper) printf '%s' "${TARGET_TABLE^^}" ;;
+    upper2) printf '%s.%s' "${DB^^}" "${TARGET_TABLE^^}" ;;
+  esac
+}
+for st in $W1_STMTS; do
+  for f in $W1_FORMS; do
+    label="w1-$st-$f"
+    if [ "$f" != n7nope ] && [ -z "$TARGET_TABLE" ]; then
+      skip "$label" "対象テーブルが無いため未測定"
+      continue
+    fi
+    if [ "$f" = ctxnodb ]; then
+      run_in_ctx "Catalog=$CATALOG,Database=$NODB" "$label" "$(w1_head "$st") $(w1_name "$f")"
+    else
+      run "$label" "$(w1_head "$st") $(w1_name "$f")"
+    fi
+  done
+done
+
+# --- W2 群（4 部の名前の文言の細部。DESCRIBE ほか） ---------------------------------
+
+if [ -n "$TARGET_TABLE" ]; then
+  run "w2-mixedcase" "DESCRIBE AwsDataCatalog.$DB.$TARGET_TABLE.N"
+else
+  skip "w2-mixedcase" "対象テーブルが無いため未測定"
+fi
+run "w2-dq-escape" "DESCRIBE awsdatacatalog.\"$DB\".\"a\"\"b\".n"
+run "w2-dq-dot"    "DESCRIBE awsdatacatalog.$DB.\"x.y\".n"
+if [ -n "$TARGET_TABLE" ]; then
+  run "w2-5part"      "DESCRIBE awsdatacatalog.$DB.$TARGET_TABLE.n.m"
+  run "w2-desc-short" "DESC awsdatacatalog.$DB.$TARGET_TABLE.n"
+  run "w2-showcol-in" "SHOW COLUMNS IN awsdatacatalog.$DB.$TARGET_TABLE.n"
+else
+  for label in w2-5part w2-desc-short w2-showcol-in; do
+    skip "$label" "対象テーブルが無いため未測定"
+  done
+fi
+if [ -n "$S3TABLES_CATALOG" ] && [ -n "$S3TABLES_NS" ] && [ -n "$S3TABLES_TABLE" ]; then
+  run "w2-s3t" "DESCRIBE \"$S3TABLES_CATALOG\".$S3TABLES_NS.$S3TABLES_TABLE.n"
+else
+  skip "w2-s3t" "未測定（S3TABLES_* 未設定）"
+fi
+
+# --- W3 群（4 部・5 部の DROP・ALTER。実在しない名前に） -----------------------------
+
+run "w3-dropif-4part"  "DROP TABLE IF EXISTS awsdatacatalog.$DB.$NOPE.n"
+run "w3-drop-5part"    "DROP TABLE awsdatacatalog.$DB.$NOPE.n.m"
+run "w3-rename-5part"  "ALTER TABLE awsdatacatalog.$DB.$NOPE.n.m RENAME TO $NOPE2"
+
+# --- W4 群（ビュー。PROBE_DDL=1 のときだけ） -----------------------------------------
+# <TT>_v を CREATE VIEW で作って測り、DROP VIEW IF EXISTS で消し、SHOW TABLES と
+# SHOW VIEWS で消えたことを確かめる。
+
+W4_MEASURE_LABELS="w4-desc-u w4-desc-q w4-showcol-u w4-showcol-q"
+if [ "$PROBE_DDL" != 1 ]; then
+  for label in w4-createview $W4_MEASURE_LABELS w4-dropview w4-verify-tables w4-verify-views; do
+    skip "$label" "未測定（PROBE_DDL=0 ではビューを作らない）"
+  done
+else
+  # 開始できたかどうかが分かるまでは、できたものとして trap の保険を掛けておく。
+  W4_CREATED=1
+  if run "w4-createview" "CREATE VIEW $DB.$VIEW_NAME AS SELECT 1 AS n"; then
+    run "w4-desc-u"    "DESCRIBE $VIEW_NAME"
+    run "w4-desc-q"    "DESCRIBE \"$VIEW_NAME\""
+    run "w4-showcol-u" "SHOW COLUMNS FROM $VIEW_NAME"
+    run "w4-showcol-q" "SHOW COLUMNS FROM \"$VIEW_NAME\""
+  else
+    for label in $W4_MEASURE_LABELS; do
+      skip "$label" "未測定（ビューを作れなかった）"
+    done
+  fi
+
+  if [ ! -s "$RUN_DIR/w4-createview.execution.json" ]; then
+    # 開始時に弾かれた（StartQueryExecution が ID を返さなかった）ので、何もできていない。
+    W4_CREATED=0
+    W4_STATUS="CREATE VIEW が開始時に弾かれたので作られていない"
+    for label in w4-dropview w4-verify-tables w4-verify-views; do
+      skip "$label" "CREATE VIEW が開始時に弾かれたため後始末不要"
+    done
+  else
+    # 作れた（または開始できて FAILED になった）ので、念のため消して確かめる。
+    run "w4-dropview" "DROP VIEW IF EXISTS $DB.$VIEW_NAME"
+    # 一覧に <TT>_v が何件あるか。一覧が取れなければ "?"。
+    w4_count_in() {
+      local label=$1 sql=$2
+      if run "$label" "$sql" >&2; then
+        fetch_all_table_names "$(query_id_of "$label")" "$RUN_DIR/$label.rows.txt"
+        grep -Fxc "$VIEW_NAME" "$RUN_DIR/$label.rows.txt"
+      else
+        echo "?"
+      fi
+    }
+    w4_left_tables=$(w4_count_in "w4-verify-tables" "SHOW TABLES")
+    w4_left_views=$(w4_count_in "w4-verify-views" "SHOW VIEWS")
+    w4_counts="SHOW TABLES に ${w4_left_tables} 件、SHOW VIEWS に ${w4_left_views} 件"
+    if [ "$w4_left_tables" = 0 ] && [ "$w4_left_views" = 0 ]; then
+      W4_CREATED=0
+      W4_STATUS="消えた（<TT>_v は $w4_counts）"
+    elif [ "$w4_left_tables" = "?" ] || [ "$w4_left_views" = "?" ]; then
+      W4_STATUS="確かめられなかった（一覧が取れなかった。<TT>_v は $w4_counts）"
+    else
+      W4_STATUS="残っている（<TT>_v は $w4_counts）"
+    fi
+    info_row "w4-verify-check" "$W4_STATUS"
+  fi
+fi
+
+# --- W5 群（存在の確認と引用符の順序） -----------------------------------------------
+
+run "w5-desc-n1-a"  "DESCRIBE \"$NOPE\""
+run "w5-desc-n1-b"  "DESCRIBE \"$NOPE\""
+run "w5-desc-n3"    "DESCRIBE $DB.$NOPE"
+run "w5-showcol-n3" "SHOW COLUMNS FROM $DB.$NOPE"
+
+fi # ROUND=4
 
 # --- 後始末（PROBE_DDL=1 のときだけ） ---------------------------------------------
 
@@ -956,6 +1564,28 @@ elif [ "$ROUND" = 2 ]; then
   ALL_LABELS="$ALL_LABELS u6-extended-q u6-formatted-q u6-extended-u"
   ALL_LABELS="$ALL_LABELS u7-showtables-q u7-showtables-u u7-dropdb-q u7-dropdb-u"
   ALL_LABELS="$ALL_LABELS u7-createtable-q u7-createtable-q-cleanup u7-createtable-u u7-createtable-u-cleanup"
+elif [ "$ROUND" = 3 ]; then
+  for n in $V1_FORMS; do ALL_LABELS="$ALL_LABELS v1-$n-rename v1-$n-dropcol"; done
+  for p in $V2_FORMS; do ALL_LABELS="$ALL_LABELS v2-desc-$p"; done
+  for p in $V2_FORMS; do ALL_LABELS="$ALL_LABELS v2-showcol-$p"; done
+  for p in $V2_FORMS; do ALL_LABELS="$ALL_LABELS v2-drop-$p"; done
+  for p in $V2_FORMS; do ALL_LABELS="$ALL_LABELS v2-rename-$p"; done
+  ALL_LABELS="$ALL_LABELS v3-showtables-u v3-showtables-qq v3-showtables-uq v3-showtables-qu"
+  for n in $V3_CREATE_FORMS ifq ifu; do
+    ALL_LABELS="$ALL_LABELS v3-create-$n v3-create-$n-cleanup"
+  done
+  ALL_LABELS="$ALL_LABELS v4-desc-n1 v4-desc-n5 v4-desc-n6 v4-desc-n0 v4-showcol-n1"
+  ALL_LABELS="$ALL_LABELS $V5_LABELS"
+  ALL_LABELS="$ALL_LABELS v6-ctas $V6_MEASURE_LABELS v6-drop v6-verify"
+  ALL_LABELS="$ALL_LABELS v7-diag-databases v7-diag-tables $V7_LABELS"
+elif [ "$ROUND" = 4 ]; then
+  for st in $W1_STMTS; do
+    for f in $W1_FORMS; do ALL_LABELS="$ALL_LABELS w1-$st-$f"; done
+  done
+  ALL_LABELS="$ALL_LABELS w2-mixedcase w2-dq-escape w2-dq-dot w2-5part w2-desc-short w2-showcol-in w2-s3t"
+  ALL_LABELS="$ALL_LABELS w3-dropif-4part w3-drop-5part w3-rename-5part"
+  ALL_LABELS="$ALL_LABELS w4-createview $W4_MEASURE_LABELS w4-dropview w4-verify-tables w4-verify-views"
+  ALL_LABELS="$ALL_LABELS w5-desc-n1-a w5-desc-n1-b w5-desc-n3 w5-showcol-n3"
 fi
 ALL_LABELS="$ALL_LABELS z-drop-hive"
 
@@ -964,12 +1594,33 @@ write_summary_txt() {
   {
     echo "# issue #204: 引用符付きの名前を取る文が StartQueryExecution の時点でどの形なら"
     echo "#             弾かれ、どの形なら通るか（境界の規則）と、弾かれた文言の規則を実測"
+    if [ "$ROUND" = 3 ]; then
+      echo "# 3 ラウンド目は issue #207（#204 で測っていない形の実測）"
+    elif [ "$ROUND" = 4 ]; then
+      echo "# 4 ラウンド目は issue #207 の続き（存在の確認の対象の解決と 4 部の名前の文言の細部）"
+    fi
     echo "# 実行日時: $(date -Iseconds)"
-    echo "# ROUND: $ROUND（1 = D〜P 群・S3 Tables 群、2 = U1〜U7 群）"
+    echo "# ROUND: $ROUND（1 = D〜P 群・S3 Tables 群、2 = U1〜U7 群、3 = V1〜V7 群、4 = W1〜W5 群）"
     if [ "$ROUND" = 1 ]; then
       echo "# StartQueryExecution の見込み本数: 68（preflight 1 + セットアップ/後始末 2 +"
       echo "#   D 12 + E 6 + C 12 + L 7 + X 8 + A 10 + M 2 + P 8）。"
       echo "#   S3TABLES_* が揃っていれば +4 で 72。"
+    elif [ "$ROUND" = 3 ]; then
+      echo "# StartQueryExecution の見込み本数: 54（S3TABLES_* 無し・V6 の CTAS が開始時に"
+      echo "#   弾かれた）／60（S3TABLES_* 無し・CTAS 成功）／66・72（それぞれ S3TABLES_* あり）"
+      echo "#   （preflight 1 + セットアップ/後始末 2 + V1 4 + V2 20 + V3 12 + V4 5 + V5 9 +"
+      echo "#   V6 1〜7（PROBE_DDL=1 のときだけ）、S3TABLES_* が揃っていれば V7 の 12 が乗る）。"
+      echo "#   V3・V5 の CREATE TABLE が想定外に成功すれば後始末が最大 9 本増える。"
+      echo "#   v7-diag-* は QueryExecutionContext の Catalog を <S3TABLES_CATALOG> にして"
+      echo "#   （Database 無し）投げた。一覧の実名は <label>.rows.txt にだけある。"
+    elif [ "$ROUND" = 4 ]; then
+      echo "# StartQueryExecution の見込み本数: 33（S3TABLES_* 無し・CREATE VIEW が開始時に"
+      echo "#   弾かれた）／40（S3TABLES_* 無し・CREATE VIEW 成功）／34・41（それぞれ S3TABLES_* あり）"
+      echo "#   （preflight 1 + セットアップ/後始末 2 + W1 16 + W2 6 + W3 3 + W4 1〜8"
+      echo "#   （PROBE_DDL=1 のときだけ）+ W5 4、S3TABLES_* が揃っていれば w2-s3t の 1 が乗る）。"
+      echo "#   PROBE_DDL=0 なら 30（S3TABLES_* ありで 31）。"
+      echo "#   w1-*-ctxnodb は QueryExecutionContext の Database を <NODB>（= <TT>_nodb）にして"
+      echo "#   投げた。大文字の名前は <DB_UPPER>・<TT_UPPER> と伏せる。"
     else
       echo "# StartQueryExecution の見込み本数: 45（S3TABLES_* 無し）／55（あり）"
       echo "#   （preflight 1 + セットアップ/後始末 2 + U1 10 + U2 10 + U4 10 + U5 3 +"
@@ -980,12 +1631,67 @@ write_summary_txt() {
     echo "#   （このラウンドの実測値: $(wc -l < "$START_CALL_FILE" | tr -d ' ') 回）。"
     echo "# DDL は準備の Hive テーブル athena_local_probe_204 を 1 つ作って消すだけ"
     echo "#   (PROBE_DDL=1)。DROP・ALTER は実在しない名前 (..._nope) にだけ投げる。"
+    if [ "$ROUND" = 3 ]; then
+      echo "#   ROUND=3 はほかに、V6 の CTAS（<TT>_日本、PROBE_DDL=1 のときだけ）と、その"
+      echo "#   後始末の DROP TABLE IF EXISTS <DB>.\`<TT>_日本\`、V3・V5 の CREATE TABLE が"
+      echo "#   想定外に成功したときの後始末の DROP がありうる。"
+    elif [ "$ROUND" = 4 ]; then
+      echo "#   ROUND=4 はほかに、W4 のビュー（CREATE VIEW <DB>.<TT>_v、PROBE_DDL=1 のときだけ）"
+      echo "#   と、その後始末の DROP VIEW IF EXISTS <DB>.<TT>_v がある。"
+    fi
     echo "# 課金: スキャンの無いクエリだけ（メタデータの参照・書き換えのみ）。"
     echo "# 注意: これは実測した本物の Athena の挙動であり、将来の Athena の変更で変わりうる。"
     echo
+    if [ "$ROUND" = 3 ]; then
+      echo "## 要対応・確かめ（ROUND=3）"
+      if [ "$PROBE_DDL" = 1 ]; then
+        echo "- V6 の <TT>_日本: ${V6_STATUS:-(V6 まで進まなかった)}"
+      else
+        echo "- V6 の <TT>_日本: PROBE_DDL=0 のため作っていない"
+      fi
+      if [ "$V6_CREATED" = 1 ]; then
+        echo "- **手で消してください**: <TT>_日本 が残っているか、消えたか確かめられなかった。"
+        echo "  終了時に trap がもう一度 DROP を投げるが、結果は確かめない。SHOW TABLES で確かめ、"
+        echo "  残っていれば DROP TABLE IF EXISTS <DB>.\`<TT>_日本\` を投げる。"
+      fi
+      if [ "$NOPE3_CREATED" = 1 ]; then
+        echo "- **手で消してください**: V3 の CREATE TABLE が成功し、後始末の DROP が SUCCEEDED に"
+        echo "  ならなかった。SHOW TABLES で確かめ、残っていれば DROP TABLE IF EXISTS <TT>_nope3 を投げる。"
+      fi
+      if [ "$JP_CREATED" = 1 ]; then
+        echo "- **手で消してください**: V5 の CREATE TABLE \"日本\" が成功し、後始末の DROP が"
+        echo "  SUCCEEDED にならなかった。残っていれば DROP TABLE IF EXISTS \`日本\` を投げる。"
+      fi
+      case "$V7_SELECT_OK" in
+        yes) echo "- V7 の対照 SELECT: 成功" ;;
+        no) echo "- V7 の対照 SELECT: **失敗**（以降の V7 の項目はそのまま流した。v7-diag-*-check を参照）" ;;
+        *) echo "- V7: 未測定（S3TABLES_* 未設定）" ;;
+      esac
+      echo
+    fi
+    if [ "$ROUND" = 4 ]; then
+      echo "## 要対応・確かめ（ROUND=4）"
+      if [ "$PROBE_DDL" = 1 ]; then
+        echo "- W4 のビュー <TT>_v: ${W4_STATUS:-(W4 まで進まなかった)}"
+      else
+        echo "- W4 のビュー <TT>_v: PROBE_DDL=0 のため作っていない"
+      fi
+      if [ "$W4_CREATED" = 1 ]; then
+        echo "- **手で消してください**: <TT>_v が残っているか、消えたか確かめられなかった。"
+        echo "  終了時に trap がもう一度 DROP VIEW を投げるが、結果は確かめない。SHOW VIEWS で"
+        echo "  確かめ、残っていれば DROP VIEW IF EXISTS <DB>.<TT>_v を投げる。"
+      fi
+      echo
+    fi
     echo "## 投げた文（DB 名・テーブル名は伏せる。実名は各 <label>.sql を参照）"
     for label in $ALL_LABELS; do
-      [ -s "$RUN_DIR/$label.sql" ] && echo "- $label: $(sanitize "$(hide "$(cat "$RUN_DIR/$label.sql")")")"
+      if [ -s "$RUN_DIR/$label.sql" ]; then
+        if [ -s "$RUN_DIR/$label.context.txt" ]; then
+          echo "- $label: $(sanitize "$(hide "$(cat "$RUN_DIR/$label.sql")")")（QueryExecutionContext: $(sanitize "$(hide "$(cat "$RUN_DIR/$label.context.txt")")")）"
+        else
+          echo "- $label: $(sanitize "$(hide "$(cat "$RUN_DIR/$label.sql")")")"
+        fi
+      fi
     done
     echo
     echo "## 項目ごとの結果"
@@ -1013,11 +1719,12 @@ PYEOF
       fi
     done
     echo
-    echo "## 失敗した項目の理由（実名を含みうるので貼る前に確認すること）"
+    echo "## 失敗した項目の理由（実名は伏せる。伏せ漏れが無いか貼る前に確認すること）"
     for label in $ALL_LABELS; do
       if [ -s "$RUN_DIR/$label.reason.txt" ] && ! grep -q "^State: SUCCEEDED" "$RUN_DIR/$label.reason.txt"; then
         echo "### $label"
-        cat "$RUN_DIR/$label.reason.txt"
+        hide "$(cat "$RUN_DIR/$label.reason.txt")"
+        echo
         echo
       fi
     done
@@ -1032,5 +1739,5 @@ echo "完了しました。"
 echo "機械可読な一覧: $SUMMARY"
 echo "そのまま貼れる整形済みの一覧: $SUMMARY_TXT"
 echo "中身のファイルは $RUN_DIR にあります。リポジトリには入れないでください。"
-echo "<label>.sql・<label>.reason.txt・<label>.start.err は実名（DB 名・テーブル名）を"
-echo "含みうるので、summary.txt 以外を貼るときは中身を確かめてください。"
+echo "<label>.sql・<label>.reason.txt・<label>.start.err・<label>.rows.txt は実名（DB 名・"
+echo "テーブル名・S3 Tables の名前）を含みうるので、summary.txt 以外を貼るときは中身を確かめてください。"

@@ -2,6 +2,7 @@
 
 mod classification;
 mod completion;
+mod entity_check;
 mod execution;
 mod format_probe;
 mod iceberg_partitions;

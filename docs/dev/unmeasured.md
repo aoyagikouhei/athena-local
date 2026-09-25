@@ -13,15 +13,10 @@
 
 ## 文の種類と構文（[measurements/statements.md](measurements/statements.md)）
 
-- [ ] 引用符付きの名前を取る DDL 系の文（`DESCRIBE`・`DESC`・`SHOW COLUMNS FROM`／`IN`・`DROP TABLE`・`SHOW CREATE TABLE`・`ALTER TABLE`・`SHOW TABLES IN`・CTAS でない `CREATE TABLE`）のうち、3 部の `ALTER TABLE` 名で 2 番目の部分だけ引用符付きの形（`cat."ns".t`）。athena-local は今までどおり実行する（#204、2026-09-25）
-- [ ] 同上、4 部以上の修飾名（`a.b.c.d`）。athena-local は今までどおり実行する（#204、2026-09-25）
-- [ ] `ALTER TABLE IF EXISTS ...` に引用符付きの名前を渡した形（`ALTER TABLE IF EXISTS "t" ...`）。athena-local は `IF EXISTS` があれば判定自体をしないので今までどおり実行する（#204、2026-09-25）
-- [ ] `CREATE TABLE IF NOT EXISTS "t" (n int)`（IF NOT EXISTS 付きの素の CREATE TABLE に引用符付きの名前）。athena-local は判定しないので今までどおり実行する（#204、2026-09-25）
-- [ ] DESCRIBE・DESC 以外の文（SHOW COLUMNS・DROP TABLE・SHOW CREATE TABLE・ALTER TABLE・SHOW TABLES IN・CREATE TABLE）で、引用符付きの部分に非 ASCII の文字を含む形（`DROP TABLE "日本"`）。DESCRIBE では本物が `Entity Not Found` を返したので、athena-local はどの文でも弾かず今までどおり実行する（#204、2026-09-25）
-- [ ] `SHOW TABLES IN`／CTAS でない `CREATE TABLE` に 2 部以上の修飾名を渡した形（`SHOW TABLES IN "cat"."db"`、`CREATE TABLE "db"."t" (n int)`）。athena-local は名前が 1 部（無引用の `IN`／`CREATE TABLE` の直後だけ）のときしか弾かないので、2 部以上は今までどおり実行する（#204、2026-09-25）
-- [ ] `DESCRIBE`／`DESC` の引用符付きの部分に非 ASCII の文字を含む、かつ対象の名前が実在しない形（`DESCRIBE "存在しない名前"`）。実在しない非 ASCII の名前（`DESCRIBE "日本"`）は本物が構文の文言でなく Glue の `Entity Not Found`（毎回違う Request ID 付き）を返すと分かった（#204、2026-09-25）が、この文言は再現できないので athena-local は今までどおり実行する。実在する非 ASCII の名前でも同じ `Entity Not Found` になるかは未確認
-- [ ] `DESCRIBE` に引用符付きの ASCII の名前を渡し、かつ対象が実在しない形（`DESCRIBE "no_such_table"`）の正確な文言。実測した引用符付きの ASCII 名はすべて実在するプローブ用のテーブル（`t`）で、実在しないテーブルでは無引用の `DROP TABLE`／`ALTER TABLE` でしか確かめていない。athena-local は存在チェックをせず構文の位置だけで文言を決めるので、実在しない場合も同じ文言になる前提で実装しているが、その前提自体は未実測（#204、2026-09-25）
-- [ ] 上のラウンド 1・2 とも、S3 Tables への対照 `SELECT * FROM "<cat>".<ns>.<t> LIMIT 1` が `SCHEMA_NOT_FOUND` で失敗しており、名前空間の指定が正しく解決できる状態そのものを確認できていない（アカウント固有の設定の可能性が高い）。対照 SELECT が通る状態に直したうえで、DESCRIBE・SHOW CREATE TABLE・DROP TABLE・SHOW COLUMNS の S3 Tables カタログ名の拒否（`Unsupported DDL with 2 catalogs` など）を測り直すとより確実になる（#204、2026-09-25）
+- [ ] 引用符付きの名前を取る DDL 系の文のうち、`SHOW CREATE TABLE`・`SHOW TABLES IN`・CTAS でない `CREATE TABLE` の 4 部以上の修飾名（`a.b.c.d`）。athena-local は今までどおり実行する（#204、2026-09-25。#207 で `DESCRIBE`・`DESC`・`SHOW COLUMNS`・`DROP TABLE`・`ALTER TABLE` の 4 部以上は測って一致条件を広げたが、この 3 文だけ未実測のまま残った。追跡: #212）
+- [ ] `SHOW TABLES IN` の 3 部の修飾名（`SHOW TABLES IN a.b."c"`）。athena-local は今までどおり実行する（#207 で 1・2 部は測って一致条件を広げた。2026-09-25。追跡: #212）
+- [ ] 既定・文脈のカタログが Trino に無いときの `DESCRIBE`・`DESC`・`SHOW COLUMNS` の文言。#207 で測ったのは名前に 3 部まで書いてカタログを指定した形（`DATACATALOG_NOT_FOUND`）だけで、省略した既定のカタログが無い場合は未実測。athena-local の存在の確認（`entity_check.rs`）はこのケースを判定せず今までどおり実行する（2026-09-25。追跡: #212）
+- [ ] `Invalid table name`（4 部以上の `DESCRIBE`・`DESC`・`SHOW COLUMNS` の文言）で、引用符付きの部分が大文字のときにどう出るか（無引用の大文字は小文字にすると測ったが、引用符付きの大文字は測っていない）。athena-local は引用符付きの部分を中身のまま（大文字小文字を変えず）出す（#207、2026-09-25。追跡: #212）
 
 ## GetQueryResults（[measurements/query-results.md](measurements/query-results.md)）
 

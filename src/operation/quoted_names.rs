@@ -1,6 +1,6 @@
 //! 本物の Athena が StartQueryExecution の時点で弾く、引用符付きの名前を取る DDL 系の文とその文言（#204）。
 
-use athena_sql::{Cursor, skip_leading_trivia};
+use athena_sql::{Cursor, NamePart, skip_leading_trivia, skip_trivia};
 
 use super::classification::substatement_type;
 use super::target_table::table_name_start;
@@ -10,12 +10,13 @@ const EXPECTING: &str = "{'SELECT', 'FROM', 'ADD', 'AS', 'ALL', 'DISTINCT', 'WHE
 
 /// 本物が開始時に弾く形なら、その文言を返す。`is_alias` は `TRINO_CATALOG_MAP` の別名（S3 Tables の
 /// カタログ名）かどうか。構文チェックの後で呼ぶ: 本物は Trino が構文エラーにする形（`ALTER TABLE "t" ADD
-/// COLUMNS` など）には Trino の文言を返した（2026-09-25 実測）。
+/// COLUMNS` など）には Trino の文言を返した（2026-09-25 実測）。DESCRIBE・SHOW COLUMNS の対象が実在しないときと
+/// ビューのときは、先に `entity_check` が決める（本物は存在を先に確かめる。#207）。
 ///
 /// 本物は、下の文の名前に引用符付きの部分が 1 つでもあると、その部分を Hive 系のパーサが読めずに弾く。
-/// 無引用とバッククォートは通る。弾くのは実測した形だけで、実測していない形（3 部の ALTER の 2 番目だけ
-/// 引用符付き、4 部以上、`ALTER TABLE IF EXISTS`、`CREATE TABLE IF NOT EXISTS`、SHOW TABLES IN と
-/// CREATE TABLE の 2 部以上、引用符付きの部分に非 ASCII があるもの）は今までどおり実行する。
+/// 無引用とバッククォートは通る。4 部以上の名前は無引用でも弾く（#207）。弾くのは実測した形だけで、
+/// 実測していない形（`ALTER TABLE IF EXISTS`、SHOW TABLES IN の 3 部以上、SHOW CREATE TABLE と
+/// CREATE TABLE の 4 部以上）は今までどおり実行する。
 pub(super) fn rejection(query: &str, is_alias: impl Fn(&str) -> bool) -> Option<String> {
     // 本物は先頭の空白・タブ・改行を数えずに位置を出す（先頭のコメントは数える）。
     let sql = query.trim_start_matches([' ', '\t', '\r', '\n']);
@@ -31,19 +32,36 @@ pub(super) fn rejection(query: &str, is_alias: impl Fn(&str) -> bool) -> Option<
     }
     let offset = sql.len() - rest.len();
     let parts = Cursor::new(rest).qualified_name()?.parts;
-    if parts.len() > 3 {
-        return None;
-    }
-    let quoted = parts.iter().position(|part| part.text.starts_with('"'))?;
     let part = |index: usize| (offset + parts[index].start, offset + parts[index].end);
-    let (start, end) = part(quoted);
-    // 引用符付きの部分に非 ASCII があると、本物は構文の文言でなく Glue の Entity Not Found（毎回違う
-    // Request ID 付き）を返した（DESCRIBE で実測）。ほかの文は測っていないので、どれも弾かない。
-    if !sql[start..end].is_ascii() {
-        return None;
-    }
     // 文の最初の語（先頭のコメントの後ろ）と名前の始まり。
     let statement_start = sql.len() - skip_leading_trivia(sql).len();
+    let quoted = parts.iter().position(|part| part.text.starts_with('"'));
+    let quoted = if parts.len() <= 3 {
+        quoted?
+    } else {
+        // 4 部以上（2026-09-25 実測 V2・W2・W3。#207）。DESCRIBE・SHOW COLUMNS は引用符の有無・位置によらず、
+        // S3 Tables の別名より先に Invalid table name。DROP・ALTER は引用符付きの部分が 3 部目までにあれば
+        // 3 部と同じ規則で、無ければ 3 つ目の `.` で弾かれる。
+        let dot = skip_trivia(sql.as_bytes(), part(2).1);
+        match (statement, quoted) {
+            (Statement::Describe | Statement::ShowColumns, _) => {
+                let name: Vec<String> = parts.iter().map(NamePart::value).collect();
+                return Some(format!("Invalid table name {}", name.join(".")));
+            }
+            (Statement::DropTable | Statement::AlterTable, Some(index)) if index < 3 => index,
+            (Statement::DropTable, _) => {
+                let (line, column) = position(sql, dot);
+                return Some(format!(
+                    "line {line}:{column}: mismatched input '.' expecting {{<EOF>, 'PURGE'}}"
+                ));
+            }
+            (Statement::AlterTable, _) => {
+                return Some(no_viable_alternative(sql, dot, &sql[statement_start..=dot]));
+            }
+            _ => return None,
+        }
+    };
+    let (start, end) = part(quoted);
     let name_start = part(0).0;
     let no_viable = |from: usize| Some(no_viable_alternative(sql, start, &sql[from..end]));
     let mismatched = || Some(mismatched_input(sql, start, &sql[start..end]));
@@ -60,10 +78,9 @@ pub(super) fn rejection(query: &str, is_alias: impl Fn(&str) -> bool) -> Option<
         (Statement::Describe, _, _) | (Statement::ShowColumns | Statement::DropTable, _, _) => {
             mismatched()
         }
-        (Statement::AlterTable, 3, 1) => None,
         (Statement::AlterTable, _, _) => no_viable(statement_start),
-        (Statement::ShowTables, 1, _) => mismatched(),
-        (Statement::CreateTable, 1, _) if substatement_type(query) == Some("CREATE_TABLE") => {
+        (Statement::ShowTables, 1 | 2, _) => mismatched(),
+        (Statement::CreateTable, _, _) if substatement_type(query) == Some("CREATE_TABLE") => {
             no_viable(statement_start)
         }
         (Statement::ShowTables | Statement::CreateTable, _, _) => None,
@@ -82,6 +99,11 @@ const STATEMENTS: &[(&[&str], Statement)] = &[
     (&["ALTER", "TABLE"], Statement::AlterTable),
     (&["SHOW", "TABLES", "IN"], Statement::ShowTables),
     (&["CREATE", "TABLE"], Statement::CreateTable),
+    // `table_name_start` は IF の後に EXISTS しか読まないので、IF NOT EXISTS は並びごと書く（#207）。
+    (
+        &["CREATE", "TABLE", "IF", "NOT", "EXISTS"],
+        Statement::CreateTable,
+    ),
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq)]

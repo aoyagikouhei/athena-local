@@ -96,6 +96,13 @@ later name the date they were measured on.
   `SELECT ('a')`) or of `- 1` writes its result file and `.metadata` as
   `binary/octet-stream`, as real Athena does (measured 2026-09-25)
   ([docs](docs/result-files.md#result-files)).
+- `StartQueryExecution` now also rejects a name of four parts or more
+  (quoted or not) and more forms of a double-quoted table name, with real
+  Athena's own message (measured 2026-09-25) ([docs](docs/caveats.md#sql-dialect)).
+- `StartQueryExecution` now checks whether the target of `DESCRIBE`, `DESC`
+  and `SHOW COLUMNS` exists, the same way real Athena does, and runs it
+  (quoted name included) when the target is a view (measured 2026-09-25)
+  ([docs](docs/caveats.md#sql-dialect), [docs](docs/caveats.md#failed-queries)).
 
 ## [0.5.0] - 2026-09-23
 

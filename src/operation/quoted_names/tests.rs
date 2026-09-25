@@ -171,8 +171,16 @@ fn alter_table_は文の最初の語から引用符付きの部分の終わり�
             r#"ALTER TABLE "s3tablescatalog/b".ns.nope RENAME TO x"#,
             nv("1:13", r#"ALTER TABLE "s3tablescatalog/b""#),
         ),
-        // 3 部の名前で 2 番目だけ引用符付きは実測していないので弾かない。IF EXISTS は本物が別の文言で弾く。
-        (r#"ALTER TABLE awsdatacatalog."db".nope RENAME TO x"#, None),
+        // 3 部の名前で 2 番目が引用符付きでも同じ規則（2026-09-25 実測 V1。#207）。
+        (
+            r#"ALTER TABLE awsdatacatalog."db".nope RENAME TO x"#,
+            nv("1:28", r#"ALTER TABLE awsdatacatalog."db""#),
+        ),
+        (
+            r#"ALTER TABLE awsdatacatalog."db"."nope" DROP COLUMN m"#,
+            nv("1:28", r#"ALTER TABLE awsdatacatalog."db""#),
+        ),
+        // IF EXISTS は本物が引用符の有無によらず別の文言で弾く（範囲外の差）。
         (r#"ALTER TABLE IF EXISTS "nope" RENAME TO x"#, None),
     ];
     for (query, expected) in cases {
@@ -181,19 +189,182 @@ fn alter_table_は文の最初の語から引用符付きの部分の終わり�
 }
 
 #[test]
-fn show_tables_in_と_ctas_でない_create_table_は_1_部の引用符付きの名前だけ弾く() {
+fn show_tables_in_と_ctas_でない_create_table_は最初の引用符付きの部分で弾く() {
     let cases = [
         (r#"SHOW TABLES IN "db""#, mm("1:16", r#""db""#)),
+        // 2 部は最初の引用符付きの部分で mismatched input（2026-09-25 実測 V3。#207）。
+        (r#"SHOW TABLES IN "cat"."db""#, mm("1:16", r#""cat""#)),
+        (r#"SHOW TABLES IN "cat".db"#, mm("1:16", r#""cat""#)),
+        (r#"SHOW TABLES IN cat."db""#, mm("1:20", r#""db""#)),
         (
             r#"CREATE TABLE "nope3" (n int)"#,
             nv("1:14", r#"CREATE TABLE "nope3""#),
         ),
-        (r#"SHOW TABLES IN "cat"."db""#, None),
-        (r#"CREATE TABLE db."nope3" (n int)"#, None),
+        // 2・3 部も文の最初の語から最初の引用符付きの部分まで（2026-09-25 実測 V3。#207）。
+        (
+            r#"CREATE TABLE "db"."nope3" (n int)"#,
+            nv("1:14", r#"CREATE TABLE "db""#),
+        ),
+        (
+            r#"CREATE TABLE db."nope3" (n int)"#,
+            nv("1:17", r#"CREATE TABLE db."nope3""#),
+        ),
+        (
+            r#"CREATE TABLE awsdatacatalog."db".nope3 (n int)"#,
+            nv("1:29", r#"CREATE TABLE awsdatacatalog."db""#),
+        ),
+        // IF NOT EXISTS も文の最初の語から（2026-09-25 実測 V3。#207）。
+        (
+            r#"CREATE TABLE IF NOT EXISTS "t" (n int)"#,
+            nv("1:28", r#"CREATE TABLE IF NOT EXISTS "t""#),
+        ),
+        (r#"CREATE TABLE IF NOT EXISTS t (n int)"#, None),
         // CTAS は本物も引用符付きの名前で成功する（2026-09-25 実測。#200）。
         (r#"CREATE TABLE "t" AS SELECT 1"#, None),
-        // IF NOT EXISTS 付きは実測していない（`table_name_start` が IF の次に EXISTS を求めるので一致しない）。
-        (r#"CREATE TABLE IF NOT EXISTS "t" (n int)"#, None),
+        (r#"CREATE TABLE IF NOT EXISTS "t" AS SELECT 1"#, None),
+        // SHOW TABLES IN の 3 部は実測していない。
+        (r#"SHOW TABLES IN a.b."c""#, None),
+    ];
+    for (query, expected) in cases {
+        assert_eq!(rejected(query), expected, "{query:?}");
+    }
+}
+
+#[test]
+fn describe_と_show_columns_は_4_部以上なら引用符によらず_invalid_table_name() {
+    let invalid = |name: &str| Some(format!("Invalid table name {name}"));
+    let cases = [
+        // 2026-09-25 実測 V2・W2（#207）。各部は無引用なら小文字、引用符付きなら中身。
+        (
+            "DESCRIBE awsdatacatalog.db.t.n",
+            invalid("awsdatacatalog.db.t.n"),
+        ),
+        (
+            r#"DESCRIBE "awsdatacatalog".db.t.n"#,
+            invalid("awsdatacatalog.db.t.n"),
+        ),
+        (
+            r#"DESCRIBE awsdatacatalog.db.t."n""#,
+            invalid("awsdatacatalog.db.t.n"),
+        ),
+        (
+            "DESCRIBE AwsDataCatalog.db.t.N",
+            invalid("awsdatacatalog.db.t.n"),
+        ),
+        (
+            r#"DESCRIBE awsdatacatalog."db"."a""b".n"#,
+            invalid(r#"awsdatacatalog.db.a"b.n"#),
+        ),
+        (
+            r#"DESCRIBE awsdatacatalog.db."x.y".n"#,
+            invalid("awsdatacatalog.db.x.y.n"),
+        ),
+        (
+            "DESCRIBE awsdatacatalog.db.t.n.m",
+            invalid("awsdatacatalog.db.t.n.m"),
+        ),
+        (
+            "DESC awsdatacatalog.db.t.n",
+            invalid("awsdatacatalog.db.t.n"),
+        ),
+        (
+            "SHOW COLUMNS FROM awsdatacatalog.db.t.n",
+            invalid("awsdatacatalog.db.t.n"),
+        ),
+        (
+            r#"SHOW COLUMNS IN "awsdatacatalog".db.t.n"#,
+            invalid("awsdatacatalog.db.t.n"),
+        ),
+        // S3 Tables の別名より先に判定する。
+        (
+            r#"DESCRIBE "s3tablescatalog/b".ns.t.n"#,
+            invalid("s3tablescatalog/b.ns.t.n"),
+        ),
+    ];
+    for (query, expected) in cases {
+        assert_eq!(rejected(query), expected, "{query:?}");
+    }
+}
+
+#[test]
+fn drop_table_と_alter_table_は_4_部以上なら引用符の位置で規則が分かれる() {
+    let dot = |position: &str| {
+        Some(format!(
+            "line {position}: mismatched input '.' expecting {{<EOF>, 'PURGE'}}"
+        ))
+    };
+    let cases = [
+        // 引用符付きの部分が 1〜3 部目なら 3 部の規則（2026-09-25 実測 V2。#207）。
+        (
+            r#"DROP TABLE "awsdatacatalog".db.nope.n"#,
+            mm("1:12", r#""awsdatacatalog""#),
+        ),
+        (
+            r#"DROP TABLE awsdatacatalog."db".nope.n"#,
+            nv("1:27", r#"awsdatacatalog."db""#),
+        ),
+        (
+            r#"DROP TABLE awsdatacatalog.db."nope".n"#,
+            mm("1:30", r#""nope""#),
+        ),
+        (
+            r#"ALTER TABLE "awsdatacatalog".db.nope.n RENAME TO x"#,
+            nv("1:13", r#"ALTER TABLE "awsdatacatalog""#),
+        ),
+        (
+            r#"ALTER TABLE awsdatacatalog."db".nope.n RENAME TO x"#,
+            nv("1:28", r#"ALTER TABLE awsdatacatalog."db""#),
+        ),
+        // 無引用か 4 部目以降だけなら 3 つ目の `.` の位置（2026-09-25 実測 V2・W3。#207）。
+        ("DROP TABLE awsdatacatalog.db.nope.n", dot("1:34")),
+        (r#"DROP TABLE awsdatacatalog.db.nope."n""#, dot("1:34")),
+        ("DROP TABLE awsdatacatalog.db.nope.n.m", dot("1:34")),
+        ("DROP TABLE IF EXISTS awsdatacatalog.db.nope.n", dot("1:44")),
+        ("DROP TABLE a . b . c . d", dot("1:22")),
+        (
+            "ALTER TABLE awsdatacatalog.db.nope.n RENAME TO x",
+            nv("1:35", "ALTER TABLE awsdatacatalog.db.nope."),
+        ),
+        (
+            r#"ALTER TABLE awsdatacatalog.db.nope."n" RENAME TO x"#,
+            nv("1:35", "ALTER TABLE awsdatacatalog.db.nope."),
+        ),
+        (
+            "ALTER TABLE awsdatacatalog.db.nope.n.m RENAME TO x",
+            nv("1:35", "ALTER TABLE awsdatacatalog.db.nope."),
+        ),
+        // ほかの文の 4 部以上は実測していない。
+        (r#"SHOW CREATE TABLE a.b.c."d""#, None),
+        (r#"SHOW TABLES IN a.b.c."d""#, None),
+        (r#"CREATE TABLE a.b.c."d" (n int)"#, None),
+    ];
+    for (query, expected) in cases {
+        assert_eq!(rejected(query), expected, "{query:?}");
+    }
+}
+
+#[test]
+fn 非_ascii_の名前も一般の規則で弾く() {
+    // 2026-09-25 実測 V5・V6（#207）。DESCRIBE・SHOW COLUMNS は実在するテーブルなら構文の文言（実在しなければ
+    // 先に entity_check が Entity Not Found にする）、ほかの文は実在しない "日本" でも構文の文言だった。
+    let cases = [
+        (r#"DESCRIBE "t_日本""#, nv("1:10", r#"DESCRIBE "t_日本""#)),
+        (r#"DESCRIBE db."t_日本""#, nv("1:13", r#"db."t_日本""#)),
+        (r#"SHOW COLUMNS FROM "t_日本""#, mm("1:19", r#""t_日本""#)),
+        (r#"DROP TABLE "日本""#, mm("1:12", r#""日本""#)),
+        (
+            r#"ALTER TABLE "日本" RENAME TO x"#,
+            nv("1:13", r#"ALTER TABLE "日本""#),
+        ),
+        (
+            r#"SHOW CREATE TABLE "日本""#,
+            Some("Queries of this type are not supported".to_string()),
+        ),
+        (r#"SHOW TABLES IN "日本""#, mm("1:16", r#""日本""#)),
+        (
+            r#"CREATE TABLE "日本" (n int)"#,
+            nv("1:14", r#"CREATE TABLE "日本""#),
+        ),
     ];
     for (query, expected) in cases {
         assert_eq!(rejected(query), expected, "{query:?}");
@@ -239,14 +410,6 @@ fn 本物が通す形と実測していない形は弾かない() {
         r#"CREATE VIEW "v" AS SELECT 1"#,
         r#"SELECT * FROM "t""#,
         r#"INSERT INTO "t" VALUES (1)"#,
-        // 引用符付きの部分に非 ASCII がある DESCRIBE は、本物が構文の文言でなく Entity Not Found を返した。
-        // ほかの文の非 ASCII は測っていないので、どれも弾かない。
-        r#"DESCRIBE "日本""#,
-        r#"DROP TABLE "日本""#,
-        r#"SHOW COLUMNS FROM db."日本""#,
-        r#"ALTER TABLE "日本" RENAME TO x"#,
-        // 4 部以上は実測していない。
-        r#"DESCRIBE "a".b.c.d"#,
         "",
         "DESCRIBE",
     ] {
