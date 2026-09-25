@@ -1,0 +1,8 @@
+[package]
+name = "athena-sql"
+# 版は追わない（CHANGELOG と Docker のイメージのタグは athena-local の版だけ）。workspace からも継承しない:
+# release スキルは Cargo.lock の差分が athena-local の 1 行だけであることを確かめる（docs/dev/decisions.md）。
+version = "0.1.0"
+edition = "2024"
+description = "SQL lexing and statement recognition for athena-local (internal)"
+publish = false

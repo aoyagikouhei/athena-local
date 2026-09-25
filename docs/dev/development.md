@@ -18,6 +18,8 @@ tools/dev.sh docker build -t aoyagikouhei/athena-local:dev .
 tools/dev.sh tools/e2e/minio/verify.sh             # 検証の足場（tools/e2e）。環境は compose.yml の trino / minio など。同時に流すなら COMPOSE_PROJECT_NAME
 ```
 
+ルートの `Cargo.toml` は workspace を兼ね、`default-members` に内部 crate（`crates/athena-sql`）も入れているので、上のコマンドは `-p`／`--workspace` なしで crate にも効く（`cargo test` の出力に crate の `unittests` と `Doc-tests` の行が足される）。`--test <名前>` は athena-local の結合テストだけ、`--lib <パス>` は両方の lib で走る（crate 側は filtered out）。`Cargo.lock` はルートの 1 つだけで、crate の版は追わない（[decisions.md](decisions.md) の「SQL の内部 crate（athena-sql）」）。
+
 CI（`.github/workflows/ci.yml`）の `check` ジョブはホストランナーで直に cargo を回す。`e2e` ジョブは toolbox の中で request-errors と paging-validation を流し、`cargo test --locked` を回す（amd64 の toolbox で通すため。#184）（toolbox のイメージは GHA キャッシュ、cargo は `.toolbox/target/release` だけキャッシュ）。
 
 ## 検証の足場（toolbox）

@@ -5,6 +5,8 @@ FROM rust:1.98-bookworm AS builder
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+# workspace の内部 crate（Cargo.toml の members）。無いと manifest を読めずビルドが落ちる。
+COPY crates ./crates
 RUN cargo build --release --locked
 
 # 実行用。Rust のツールチェインは持ち込まない。
