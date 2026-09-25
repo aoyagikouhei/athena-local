@@ -8,7 +8,6 @@
 
 - [ ] `SHOW CREATE TABLE`／`SHOW CREATE VIEW` 以外の `SHOW CREATE ...`（`SCHEMA`／`MATERIALIZED VIEW`／`FUNCTION`。Trino にはある）を本物の `StartQueryExecution` が受けるか、受けるなら `.txt` の Content-Type と `.metadata` の形式。athena-local は `.txt` の既定（binary、エンジン ID）に落としている（#151、2026-09-24。`SHOW SESSION`／`STATS` と同じく本物が弾く可能性が高い）
 - [ ] Iceberg のテーブルへの `DESCRIBE EXTENDED t`・`DESCRIBE FORMATTED t`・`DESCRIBE t PARTITION (...)`・`DESCRIBE t col` の `UpdateCount`・Content-Type・`.metadata`・行の形（`DESCRIBE t` は Hive で null・application、Iceberg で 0・binary・不透明。#160、2026-09-24）。athena-local は `EXTENDED` などを名前として読むので、どれも Hive 扱い（null・application）。`DESC t` は Hive で `DESCRIBE t` と同じと測った（#173）ので Iceberg でも `DESCRIBE` と同じに扱っていて、Iceberg の `DESC t` そのものは測っていない
-- [ ] `SHOW CREATE TABLE"t"`（`TABLE` と引用符付きの名前の間に空白が無い形）を本物が受けるか、受けるなら分類と Content-Type。athena-local は `athena_sql::words` で `TABLE"T"` が 1 語になり、`SubstatementType` は None、`.txt` は既定の binary（#151、2026-09-24）
 
 - [ ] 複合型の中の varbinary の `[B@<hex>` の数字が、等しいバイト列で同じになるか、実行ごとに変わるか（#146 は `ARRAY[X'0102', X'03']` の違う 2 要素だけ。athena-local はバイト列の FNV-1a で決定的にしている。#149、2026-09-24）
 
@@ -110,6 +109,7 @@
 - ビューへの `DESCRIBE` の `UpdateCount`・Content-Type・`.metadata`（#160）→ #173（2026-09-24。`SHOW COLUMNS` も含め SubstatementType `DESC_VIEW`、`column`／`type` の varchar 2 列、UpdateCount 0、binary、`.metadata` は 440B の不透明な形式。[measurements/query-results.md](measurements/query-results.md) の「DESCRIBE／SHOW COLUMNS の行の形」）
 - Hive のテーブルへの `DESC t`（#160）→ #173（2026-09-24。`DESCRIBE t` と同じ。同じ項目）
 - 本物の Athena + PyAthena の `PandasCursor` で Iceberg の `DROP TABLE` を読むと `EmptyDataError` になるか（#111 の人間検証）→ #119（2026-09-25。本物でも `OperationalError: No columns to parse from file`。素の `Cursor` と Hive の `DROP TABLE` は例外なし。[measurements/clients.md](measurements/clients.md)）
+- `SHOW CREATE TABLE"t"`（`TABLE` と引用符付きの名前の間に空白が無い形）を本物が受けるか、受けるなら分類と Content-Type（#151）→ #200（2026-09-25。本物は空白の有無によらず `StartQueryExecution` の時点で `InvalidRequestException` にする（実行は作られない）。athena-local は Trino が受けるので実行し、空白ありの形と同じ `UTILITY`／`SHOW_CREATE_TABLE`／application を返す。同じラウンドで、キーワードの直後に空白の無い他の形（`SELECT(1)` など）も空白ありの形と同じに分類することを確かめた。[measurements/statements.md](measurements/statements.md) の「キーワードの直後に空白が無い形」）
 
 ## 測れないもの
 

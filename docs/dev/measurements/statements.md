@@ -231,3 +231,46 @@
   - v1〜v4 の StateChangeReason は 4 件とも `MISSING_COLUMN_NAME: line 1:1: Column name not specified at position 1. You may need to manually clean the data at location '<OUTPUT>tables/<id>' before retrying. Athena will not delete data in your account.`（ErrorCategory 2、ErrorType 1100、Retryable false）。列の別名（`(n)`）を付けた v2・v4 も同じ文言
   - c0・c1・c2・t1・t2 は SHOW CREATE TABLE でテーブルができていることと Hive であることを確かめた
 - 備考: 本物は `AS` の後ろの括弧の有無・`AS(` と続けた形・`SELECT`／`VALUES`／`TABLE` のどれでも、失敗しても CTAS として分類し `tables/<id>` にする。athena-local は `AS (VALUES` / `AS (TABLE` をファイル名だけ CTAS、`AS VALUES` / `AS TABLE` / `AS(SELECT` を両方とも CTAS でない扱いにしていたので、#199 で `is_create_table_as` を本物に揃えた。手元の Trino 482（memory カタログ）は v1・v3 を同じ `Column name not specified at position 1` で弾き、v2・v4 は通した（v2・v4 は athena-local では成功し、本物では失敗する）
+
+## キーワードの直後に空白が無い形（`SELECT(1)` など）
+
+Content-Type と `.metadata` を含む置き場所は本項が主で、[result-files.md](result-files.md) の「Content-Type」からここへリンクしている。
+
+### 決め手: 空白の有無で分類が一致する（H1）
+- 日付: 2026-09-25（06:08 UTC、run-20260925-055931） ／ issue: #200 ／ スクリプト: `tools/measure/keyword-boundary.sh` ／ 生データ: `$HOME/athena-keyword-boundary-measurements/run-20260925-055931`
+- 相手: 本物の Athena（StartQueryExecution 44 本、ラウンド 1、`PROBE_DDL=1`。DDL は `athena_local_probe_200*` の Hive・CTAS 2・VIEW 2・Iceberg を作って消した）
+- 投げたもの: キーワードの直後に空白の無い形と、対応する空白ありの対照（`SELECT(1)` / `SELECT (1)` など）
+- 返ったもの:
+
+  | 対（空白なし／空白あり） | State | StatementType／SubstatementType | 置き場所 | 本体 Content-Type | `.metadata`（クエリ ID の出どころ） | 行数 |
+  |---|---|---|---|---|---|---|
+  | `SELECT(1)` ／ `SELECT (1)` | SUCCEEDED | DML／SELECT | `.csv` | binary | binary（QueryExecutionId） | |
+  | `SELECT'a'` ／ `SELECT 'a'` | 同 | DML／SELECT | `.csv` | binary | binary（QueryExecutionId） | |
+  | `SELECT*FROM (VALUES 1)` ／ 空白あり | 同 | DML／SELECT | `.csv` | application | application（エンジン ID） | |
+  | `SELECT"x" FROM (VALUES 1) AS t(x)` ／ 空白あり | 同 | DML／SELECT | `.csv` | application | application（エンジン ID） | |
+  | `WITH"w" AS (SELECT 1 AS x) SELECT x FROM "w"` ／ 空白あり | 同 | DML／SELECT | `.csv` | application | application（エンジン ID） | |
+  | `VALUES(1)` ／ `VALUES (1)` | 同 | DML／SELECT | `.csv` | application | application（エンジン ID） | |
+  | `EXPLAIN(TYPE IO) SELECT 1` ／ 空白あり | 同 | DML／EXPLAIN | `.txt` | application | application（エンジン ID） | 12（行分割あり） |
+  | `EXPLAIN(SELECT 1)` ／ 空白あり | 同 | DML／EXPLAIN | `.txt` | application | application（エンジン ID） | 本物 15（手元の Trino 482 は 16。プランの文面が版で違うだけで、行分割の規則の差ではない） |
+  | `CREATE TABLE"c1" AS SELECT 1 AS x` ／ 空白あり | 同 | DDL／CREATE_TABLE_AS_SELECT | `tables/<id>` | — | application（エンジン ID） | |
+  | `CREATE VIEW"v1" AS SELECT 1 AS x` ／ 空白あり | 同 | DDL／CREATE_VIEW | `.txt` 0B | binary | 無し | |
+  | `SHOW CREATE VIEW"v1"` ／ 空白あり | 同 | UTILITY／SHOW_CREATE_VIEW | `.txt` | binary | binary 312B（不透明な形式） | 2 |
+  | `DROP VIEW"v1"` ／ 空白あり | 同 | DDL／DROP_VIEW | `.txt` 0B | binary | 無し | |
+
+- 備考: 空白の有無で全項目が一致した（決め手）。athena-local はこの実測を受けて `athena_sql::words` の語の境目を識別子の文字と ASCII の記号の境目にも広げ、空白の無い形を空白ありの形と同じに分類するようにした（2c7a329）。`SELECT (1)`（括弧付きリテラル）が本物で binary・athena-local が application になる差は語の境界と無関係な既存の差で、[#205](https://github.com/aoyagikouhei/athena-local/issues/205) に起票（[docs/result-files.md](../../result-files.md) に既知の差として記載）。
+
+### 引用符付きの名前は空白の有無によらず開始時に弾かれる（DESCRIBE・DESC・SHOW CREATE TABLE・ALTER TABLE ... ADD COLUMNS・DROP TABLE・OPTIMIZE）
+- 日付: 2026-09-25（同じラウンド、run-20260925-055931） ／ issue: #200 ／ スクリプト: `tools/measure/keyword-boundary.sh` ／ 生データ: `$HOME/athena-keyword-boundary-measurements/run-20260925-055931`
+- 相手: 本物の Athena（同じ 44 本の一部）
+- 投げたもの: 上の 6 種の引用符付き名前（空白あり・空白なし両方）と、無引用の対照
+- 返ったもの（`StartQueryExecution` の `InvalidRequestException`。実行は作られない）:
+
+  | 形（空白なし・空白ありの両方） | 理由 | 対照（無引用） |
+  |---|---|---|
+  | `DESCRIBE"t"`・`DESC"t"` | `no viable alternative at input 'DESCRIBE"…"'` | `DESCRIBE t` は UTILITY／DESCRIBE_TABLE、application、`.metadata` は QueryExecutionId、3 行 |
+  | `SHOW CREATE TABLE"t"` | `Queries of this type are not supported` | 無引用は SHOW_CREATE_TABLE、application（Hive）、QueryExecutionId、21 行 |
+  | `ALTER TABLE"t" ADD COLUMNS (m1 int)` | `mismatched input 'COLUMNS'. Expecting: '.', 'ADD'`（Trino の文法で読まれている） | 無引用は ALTER_TABLE_ADD_COLUMN |
+  | `DROP TABLE"t"` | `mismatched input '"…_t"' expecting {'SELECT', 'FROM', …}` | 無引用（`IF EXISTS`）は DROP_TABLE |
+  | `OPTIMIZE"t" REWRITE DATA USING BIN_PACK` | `mismatched input 'OPTIMIZE'. Expecting: 'ALTER', …`（Trino の文法で読まれている） | 無引用の `OPTIMIZE` は今回測っていない（Trino に無く athena-local では実行できないので起票しない） |
+
+- 備考: `StartQueryExecution` の時点で実行が作られないので、分類そのものは観測できない。athena-local は SQL を書き換えず・独自に弾かない方針のため、Trino が受ける `OPTIMIZE` 以外の 5 形を実行してしまう（空白ありの形と同じ値を返す。`OPTIMIZE` は Trino に無く、athena-local も構文チェックで弾く。2026-09-25 手元の Trino 482 で確認）。差は [docs/caveats.md](../../caveats.md) の「SQL dialect」に記載し、athena-local 側を本物に揃える対応は [#204](https://github.com/aoyagikouhei/athena-local/issues/204) に起票した。

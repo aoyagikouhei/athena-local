@@ -267,7 +267,8 @@ mod tests {
             ("SELECT 1 /* c", BINARY, false, false),
             ("SELECT '--' AS \"/*\"", BINARY, false, false),
             // 引用符付き識別子（q5・q8）
-            ("SHOW CREATE TABLE\"t\"", BINARY, false, false),
+            // #200 で空白ありの形と同じ値に揃えた。
+            ("SHOW CREATE TABLE\"t\"", APPLICATION, true, true),
             ("SELECT 1 AS \"a b\"", BINARY, false, false),
             // 大文字小文字（k1・k2・k3・k4・k7）
             ("sElEcT 1", BINARY, false, false),
@@ -280,9 +281,10 @@ mod tests {
             ("DESCRIBE\r\nt", APPLICATION, true, true),
             ("SHOW  CREATE   TABLE t", APPLICATION, true, true),
             ("\n\tSELECT 1", BINARY, false, false),
-            ("SELECT(1)", BINARY, false, false),
+            // w5・w6・w8 は #200 で空白ありの形と同じ値に揃えた（2026-09-25 実測。w5 の本物は binary で #205）。
+            ("SELECT(1)", APPLICATION, false, false),
             ("SELECT'a'", BINARY, false, false),
-            ("EXPLAIN(TYPE IO) SELECT 1", BINARY, false, false),
+            ("EXPLAIN(TYPE IO) SELECT 1", APPLICATION, true, false),
             ("SELECT\x0B1", BINARY, false, false),
             ("SELECT\u{3000}1", BINARY, false, false),
             ("SELECT\u{00A0}1", BINARY, false, false),

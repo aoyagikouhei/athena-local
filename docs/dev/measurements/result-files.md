@@ -526,6 +526,10 @@
 - 採用: **`DESCRIBE` も `SHOW CREATE TABLE` と同じくテーブルの形式で割れる**（Hive は null・application・素の protobuf、Iceberg は 0・binary・不透明）。`SHOW COLUMNS`／`SHOW TBLPROPERTIES` は形式によらず 0・binary。「`UpdateCount` が無い ＝ application ＝ 素の protobuf」の相関はこの 16 文でも崩れない。athena-local は #160 で `DESCRIBE` にも形式の問い合わせを使い、`UpdateCount` を完了時に決めるようにした
 - 備考: `DESC`、`DESCRIBE EXTENDED`／`FORMATTED`、`DESCRIBE t PARTITION (...)`／列指定、ビューへの `DESCRIBE` は測っていない（[../unmeasured.md](../unmeasured.md)）
 
+### キーワードの直後に空白が無い形の Content-Type（詳細は statements.md）
+- 空白の有無で置き場所・Content-Type・`.metadata` が一致することを 2026-09-25 に実測した（issue #200）。表は分類が主題のため [statements.md](statements.md) の「キーワードの直後に空白が無い形（`SELECT(1)` など）」に置いてある
+- 同じラウンドで分かった、語の境界と無関係な既存の差: `SELECT (1)`（括弧付きリテラル）は本物で binary、athena-local は application（[#205](https://github.com/aoyagikouhei/athena-local/issues/205)、[docs/result-files.md](../../result-files.md) に記載済み）
+
 ## 値の表記
 
 `GetQueryResults` と `.csv` の本体に出る値の文字列。

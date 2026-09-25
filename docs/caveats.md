@@ -62,6 +62,24 @@ Known differences between athena-local and real Athena, grouped by topic.
   `ErrorType` 1003 with the reason written to `<id>.txt`; `SHOW PARTITIONS`,
   `SHOW TBLPROPERTIES`, `SHOW COLUMNS FROM`, `SHOW CREATE VIEW` and
   `CREATE EXTERNAL TABLE` with the same comment succeed (measured 2026-09-24).
+- **Five quoted-name forms fail at `StartQueryExecution` on real Athena but
+  run here, whether or not there is a space before the quote.**
+  `DESCRIBE "t"` / `DESCRIBE"t"`, `DESC "t"` / `DESC"t"`,
+  `SHOW CREATE TABLE "t"` / `SHOW CREATE TABLE"t"`,
+  `ALTER TABLE "t" ADD COLUMNS (...)` / `ALTER TABLE"t" ADD COLUMNS (...)` and
+  `DROP TABLE "t"` / `DROP TABLE"t"` all answer `InvalidRequestException`
+  (`AthenaErrorCode` `MALFORMED_QUERY`) before a `QueryExecutionId` is created
+  (measured 2026-09-25). Trino's grammar accepts all five, so athena-local
+  sends them to Trino and runs them, returning the same
+  `StatementType`/`SubstatementType` as the unquoted form. (`OPTIMIZE "t" ...`
+  is rejected the same way on real Athena, and athena-local rejects every
+  `OPTIMIZE` because Trino has no such statement.) Name the table
+  without quotes to avoid depending on this difference; tracked in
+  [#204](https://github.com/aoyagikouhei/athena-local/issues/204). The other
+  statements that can take a quoted name right after the keyword —
+  `CREATE TABLE "t" AS SELECT`, `CREATE VIEW "v" AS ...`,
+  `SHOW CREATE VIEW "v"` and `DROP VIEW "v"` — succeed on real Athena too,
+  quoted or not.
 
 ## `ALTER TABLE` and format-dependent DDL
 

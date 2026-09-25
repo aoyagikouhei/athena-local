@@ -141,7 +141,12 @@ Behaviour that matches real Athena:
   whitespace, also the same way Athena does (measured 2026-09-22); this also
   decides the `OutputLocation` file name and, for `DESCRIBE` /
   `SHOW CREATE TABLE`, whether the `.metadata` file's leading query ID is the
-  `QueryExecutionId` or Trino's own ID.
+  `QueryExecutionId` or Trino's own ID. A keyword with no space before what
+  follows it (`SELECT(1)`, `SELECT'a'`, `SELECT*FROM t`,
+  `CREATE TABLE"t" AS SELECT ...`) classifies the same as the spaced form too
+  (measured 2026-09-25); see [Caveats](caveats.md#sql-dialect) for five quoted
+  table-name forms real Athena rejects before running, whether or not there
+  is a space before the quote.
 - A `FAILED` query carries `Status.AthenaError` with the same `ErrorMessage` as
   `StateChangeReason`. Trino's user errors are `ErrorCategory` 2 with the
   `ErrorType` Athena uses for that error name (measured: `TABLE_NOT_FOUND` and

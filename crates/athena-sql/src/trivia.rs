@@ -19,6 +19,12 @@ pub fn skip_quoted(bytes: &[u8], start: usize) -> usize {
     bytes.len()
 }
 
+/// 識別子の文字（ASCII の英数字と `_`）か。`Cursor` のキーワード・識別子の境界、修飾名の無引用の名前部分、
+/// `words` の語の境目が共有する（同じ規則の別定義は作らない。#200）。
+pub(crate) fn is_identifier_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
 /// `--` か `/*` で始まるコメントなら、その終わりの次の位置。閉じていなければ末尾。
 ///
 /// 修飾名（`name.rs`）と `Cursor` のトリビアの読み飛ばしにも再利用する（issue #39 Phase 2）。

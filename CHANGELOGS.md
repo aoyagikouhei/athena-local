@@ -71,6 +71,10 @@ later name the date they were measured on.
 - A CTAS whose query is `VALUES`, `TABLE` or parenthesised (`AS (VALUES 1)`,
   `AS(SELECT 1)`) is `CREATE_TABLE_AS_SELECT` with `tables/<id>`, as on real
   Athena (measured 2026-09-25) ([docs](docs/result-files.md#result-files)).
+- A keyword with no space before what follows it (`SELECT(1)`, `SELECT'a'`,
+  `SELECT*FROM t`, `EXPLAIN(TYPE IO) SELECT 1`, `CREATE TABLE"t" AS SELECT`, ...)
+  classifies the same as the spaced form, as real Athena does (measured
+  2026-09-25) ([docs](docs/api.md#supported-api)).
 - The retention caveat and the `ATHENA_LOCAL_RETENTION_SECONDS` entry now say
   that the one-hour default is shorter than real Athena's, which still knew a
   query and its token 67 minutes after completion (measured 2026-09-24)

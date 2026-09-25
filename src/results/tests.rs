@@ -460,6 +460,7 @@ fn 結果ファイルの種類は_crate_の_api_に寄せる前と同じ() {
             "ALTER TABLE \"a\".\"b\".\"c\" ADD COLUMN c int",
             ResultFile::Text,
         ),
+        // q4〜q6 は #200 の後も `.txt`（空白ありの形と同じ）。
         ("ALTER TABLE\"t\" ADD COLUMNS (m int)", ResultFile::Text),
         ("SHOW CREATE TABLE\"t\"", ResultFile::Text),
         ("DESC\"t\"", ResultFile::Text),
@@ -485,9 +486,10 @@ fn 結果ファイルの種類は_crate_の_api_に寄せる前と同じ() {
         ("DESCRIBE\r\nt", ResultFile::Text),
         ("SHOW  CREATE   TABLE t", ResultFile::Text),
         ("\n\tSELECT 1", ResultFile::Csv),
-        ("SELECT(1)", ResultFile::Text),
-        ("SELECT'a'", ResultFile::Text),
-        ("SELECT*FROM t", ResultFile::Text),
+        // w5〜w7 は #200 で空白ありの形と同じ `.csv` に揃えた（2026-09-25 実測）。
+        ("SELECT(1)", ResultFile::Csv),
+        ("SELECT'a'", ResultFile::Csv),
+        ("SELECT*FROM t", ResultFile::Csv),
         ("EXPLAIN(TYPE IO) SELECT 1", ResultFile::Text),
         ("DESCRIBE(t)", ResultFile::Text),
         ("SELECT\x0B1", ResultFile::Text),
