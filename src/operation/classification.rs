@@ -6,10 +6,8 @@
 /// `(SELECT` と同じ判定にする（#64 のレビューで見つかった。本物も `( SELECT 1 )` と改行を挟んだ形を
 /// DML / SELECT にする。2026-09-24 実測。#146）。
 pub(super) fn words(query: &str) -> Vec<String> {
-    athena_sql::words(query)
-        .into_iter()
-        .map(|word| word.trim_start_matches('(').to_string())
-        .filter(|word| !word.is_empty())
+    crate::results::strip_open_parens(&athena_sql::words(query))
+        .map(str::to_string)
         .collect()
 }
 

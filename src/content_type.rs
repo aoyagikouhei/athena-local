@@ -5,7 +5,7 @@
 //! 判定をここに分けて置く。`.metadata` は本体と同じ値（36 項目すべて一致。例外は 140 MB の
 //! マルチパート本体だけで、athena-local は単一の PUT しかしない）。
 
-use athena_sql::{Cursor, words};
+use athena_sql::{Cursor, words_iter};
 
 use crate::results::ResultFile;
 
@@ -57,7 +57,10 @@ fn text_content_type(query: &str) -> &'static str {
 /// 無し、SELECT は 0。#160、#169）ので、`operation/completion.rs` の `update_count` も同じ述語で選ぶ。
 /// Iceberg のテーブルへの DESCRIBE / SHOW CREATE TABLE だけは本物が binary・0 で、形式の問い合わせの後に上書きする。
 pub(crate) fn plain_text_statement(query: &str) -> bool {
-    carries_execution_id(query) || words(query).first().is_some_and(|word| word == "EXPLAIN")
+    carries_execution_id(query)
+        || words_iter(query)
+            .next()
+            .is_some_and(|word| word.upper == "EXPLAIN")
 }
 
 /// 本物が `.metadata` を素の protobuf で置き、先頭（field 1）に QueryExecutionId を載せる文:
@@ -69,7 +72,7 @@ pub(crate) fn plain_text_statement(query: &str) -> bool {
 /// `SHOW CREATE ...` は Athena の構文に無く未実測で、`.txt` の既定（binary）に落ちる。
 /// 語は `athena_sql::words` で読むので、先頭やキーワードの間のコメントは語にならない。
 pub(crate) fn carries_execution_id(query: &str) -> bool {
-    let words = words(query);
+    let words: Vec<String> = words_iter(query).take(3).map(|word| word.upper).collect();
     let word = |index: usize| words.get(index).map(String::as_str).unwrap_or_default();
     matches!(
         (word(0), word(1), word(2)),

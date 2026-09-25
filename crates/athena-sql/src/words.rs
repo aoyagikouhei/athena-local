@@ -13,27 +13,59 @@ use crate::trivia::{comment_end, skip_quoted, skip_trivia};
 /// 1 行の CTAS で、`--` から文末までが消えて `AS SELECT` を見失う退行を計画攻撃が見つけた。
 /// `alias_qualified_names` と同じく、引用符 → コメント → その他の順で見る。
 pub fn words(sql: &str) -> Vec<String> {
-    let bytes = sql.as_bytes();
-    let mut words = Vec::new();
-    let mut i = 0;
-    while i < bytes.len() {
-        i = skip_trivia(bytes, i);
-        let start = i;
-        while i < bytes.len() {
-            match bytes[i] {
-                b' ' | b'\t' | b'\r' | b'\n' => break,
-                b'\'' | b'"' => i = skip_quoted(bytes, i),
-                _ => match comment_end(bytes, i) {
-                    Some(_) => break,
-                    None => i += 1,
-                },
+    words_iter(sql).map(|word| word.upper).collect()
+}
+
+/// 空白とコメントを区切りにした語 1 つ。`upper` は大文字にした語、`start`／`end` は元の SQL でのバイト範囲。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Word {
+    pub upper: String,
+    pub start: usize,
+    pub end: usize,
+}
+
+/// `words_iter` が返す語の並び。
+#[derive(Debug)]
+pub struct Words<'a> {
+    sql: &'a str,
+    pos: usize,
+}
+
+/// 空白とコメントを区切りにした語を先頭から順に返す。読む深さは呼び出し側が `take(n)` などで選ぶ。
+/// 語の切り方は `words` と同じ（引用符は語の一部、`(` は取り除かない）で、`words` はこれを集めたもの。
+pub fn words_iter(sql: &str) -> Words<'_> {
+    Words { sql, pos: 0 }
+}
+
+impl Iterator for Words<'_> {
+    type Item = Word;
+
+    fn next(&mut self) -> Option<Word> {
+        let bytes = self.sql.as_bytes();
+        while self.pos < bytes.len() {
+            self.pos = skip_trivia(bytes, self.pos);
+            let start = self.pos;
+            // 引用符 → コメント → その他の順で見る（引用符の中の `--` や `/*` をコメントと読まない）。
+            while self.pos < bytes.len() {
+                match bytes[self.pos] {
+                    b' ' | b'\t' | b'\r' | b'\n' => break,
+                    b'\'' | b'"' => self.pos = skip_quoted(bytes, self.pos),
+                    _ => match comment_end(bytes, self.pos) {
+                        Some(_) => break,
+                        None => self.pos += 1,
+                    },
+                }
+            }
+            if self.pos > start {
+                return Some(Word {
+                    upper: self.sql[start..self.pos].to_uppercase(),
+                    start,
+                    end: self.pos,
+                });
             }
         }
-        if i > start {
-            words.push(sql[start..i].to_uppercase());
-        }
+        None
     }
-    words
 }
 
 #[cfg(test)]
@@ -94,5 +126,66 @@ mod tests {
         // 未閉じの `/*` は comment_end と同じく末尾まで飛ばす。
         assert_eq!(words("SELECT /* c"), ["SELECT"]);
         assert_eq!(words("SELECT/* c"), ["SELECT"]);
+    }
+
+    #[test]
+    fn words_iter_は_words_と同じ語を元の_sql_での範囲つきで返す() {
+        for sql in [
+            "SELECT '日本語' /* あ */ x",
+            "SELECT 's3://a--b--x-s3/p/' AS x",
+            "SELECT /* c",
+            "(SELECT 1)",
+        ] {
+            assert_eq!(
+                words_iter(sql).map(|word| word.upper).collect::<Vec<_>>(),
+                words(sql),
+                "{sql}"
+            );
+            for word in words_iter(sql) {
+                assert_eq!(
+                    sql[word.start..word.end].to_uppercase(),
+                    word.upper,
+                    "{sql}"
+                );
+            }
+        }
+        // 範囲はバイト単位で、多バイト文字の後ろの語も元の SQL の位置を指す。
+        assert_eq!(
+            words_iter("SELECT '日本語' /* あ */ x").collect::<Vec<_>>(),
+            [
+                Word {
+                    upper: "SELECT".to_string(),
+                    start: 0,
+                    end: 6
+                },
+                Word {
+                    upper: "'日本語'".to_string(),
+                    start: 7,
+                    end: 18
+                },
+                Word {
+                    upper: "X".to_string(),
+                    start: 29,
+                    end: 30
+                },
+            ]
+        );
+        // `(` は取り除かない。
+        assert_eq!(
+            words_iter("(SELECT 1)").next(),
+            Some(Word {
+                upper: "(SELECT".to_string(),
+                start: 0,
+                end: 7
+            })
+        );
+        // `take(1)` は先頭の語だけを読む。
+        assert_eq!(
+            words_iter("  /* a */ SELECT 1 -- c")
+                .take(1)
+                .map(|word| word.upper)
+                .collect::<Vec<_>>(),
+            ["SELECT"]
+        );
     }
 }

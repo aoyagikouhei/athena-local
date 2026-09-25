@@ -13,4 +13,4 @@ mod words;
 pub use cursor::Cursor;
 pub use name::{NamePart, QualifiedName, unquote};
 pub use trivia::{comment_end, skip_leading_trivia, skip_quoted, skip_trivia};
-pub use words::words;
+pub use words::{Word, Words, words, words_iter};

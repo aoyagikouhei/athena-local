@@ -48,11 +48,7 @@ impl ResultFile {
         let words = athena_sql::words(query);
         // 先頭の `(` は取り除いて判定する。`( SELECT` のように `(` だけの語が先頭に来たら、
         // その次の語で判定する（`operation/classification.rs` の `words` と同じ扱い。#64）。
-        let first = words
-            .iter()
-            .map(|word| word.trim_start_matches('('))
-            .find(|word| !word.is_empty())
-            .unwrap_or_default();
+        let first = strip_open_parens(&words).next().unwrap_or_default();
 
         match first {
             "SELECT" | "WITH" | "VALUES" | "TABLE" | "UPDATE" | "DELETE" | "MERGE" | "VACUUM" => {
@@ -81,6 +77,15 @@ impl ResultFile {
             Self::FailedText => unreachable!("失敗したときのキーは ResultLocation::failed が作る"),
         }
     }
+}
+
+/// 語の並びから先頭の `(` を取り除き、`(` だけの語（`( SELECT` のように直後に空白や改行があるとき）は落とす。
+/// 先頭語の判定（`ResultFile::of` と `operation/classification.rs` の `words`）が共有する（#64・#146）。
+pub(crate) fn strip_open_parens(words: &[String]) -> impl Iterator<Item = &str> {
+    words
+        .iter()
+        .map(|word| word.trim_start_matches('('))
+        .filter(|word| !word.is_empty())
 }
 
 /// `CREATE [OR REPLACE] TABLE ... AS SELECT | WITH | (`。words は大文字にした単語の並び。
