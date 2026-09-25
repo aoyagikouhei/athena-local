@@ -222,8 +222,6 @@ fn show_tables_in_と_ctas_でない_create_table_は最初の引用符付きの
         // CTAS は本物も引用符付きの名前で成功する（2026-09-25 実測。#200）。
         (r#"CREATE TABLE "t" AS SELECT 1"#, None),
         (r#"CREATE TABLE IF NOT EXISTS "t" AS SELECT 1"#, None),
-        // SHOW TABLES IN の 3 部は実測していない。
-        (r#"SHOW TABLES IN a.b."c""#, None),
     ];
     for (query, expected) in cases {
         assert_eq!(rejected(query), expected, "{query:?}");
@@ -231,10 +229,11 @@ fn show_tables_in_と_ctas_でない_create_table_は最初の引用符付きの
 }
 
 #[test]
-fn describe_と_show_columns_は_4_部以上なら引用符によらず_invalid_table_name() {
+fn describe_と_show_columns_と_show_create_table_は_4_部以上なら引用符によらず_invalid_table_name()
+{
     let invalid = |name: &str| Some(format!("Invalid table name {name}"));
     let cases = [
-        // 2026-09-25 実測 V2・W2（#207）。各部は無引用なら小文字、引用符付きなら中身。
+        // 2026-09-25 実測 V2・W2（#207）・Y4（#212）。各部は引用符を外した中身を小文字にする。
         (
             "DESCRIBE awsdatacatalog.db.t.n",
             invalid("awsdatacatalog.db.t.n"),
@@ -279,6 +278,40 @@ fn describe_と_show_columns_は_4_部以上なら引用符によらず_invalid_
         (
             r#"DESCRIBE "s3tablescatalog/b".ns.t.n"#,
             invalid("s3tablescatalog/b.ns.t.n"),
+        ),
+        // 引用符付きの大文字も小文字になる（2026-09-25 実測 Y4。#212）。
+        (
+            r#"DESCRIBE awsdatacatalog.db."T".n"#,
+            invalid("awsdatacatalog.db.t.n"),
+        ),
+        (
+            r#"DESCRIBE "AwsDataCatalog".db.t.n"#,
+            invalid("awsdatacatalog.db.t.n"),
+        ),
+        (
+            r#"DESCRIBE awsdatacatalog."DB".t."N""#,
+            invalid("awsdatacatalog.db.t.n"),
+        ),
+        (
+            r#"SHOW COLUMNS FROM awsdatacatalog.db."T".n"#,
+            invalid("awsdatacatalog.db.t.n"),
+        ),
+        // SHOW CREATE TABLE も同じ（2026-09-25 実測 Y1。#212）。
+        (
+            "SHOW CREATE TABLE awsdatacatalog.db.t.n",
+            invalid("awsdatacatalog.db.t.n"),
+        ),
+        (
+            r#"SHOW CREATE TABLE awsdatacatalog."db".t.n"#,
+            invalid("awsdatacatalog.db.t.n"),
+        ),
+        (
+            r#"SHOW CREATE TABLE awsdatacatalog.db.t."n""#,
+            invalid("awsdatacatalog.db.t.n"),
+        ),
+        (
+            "SHOW CREATE TABLE awsdatacatalog.db.t.n.m",
+            invalid("awsdatacatalog.db.t.n.m"),
         ),
     ];
     for (query, expected) in cases {
@@ -333,10 +366,91 @@ fn drop_table_と_alter_table_は_4_部以上なら引用符の位置で規則�
             "ALTER TABLE awsdatacatalog.db.nope.n.m RENAME TO x",
             nv("1:35", "ALTER TABLE awsdatacatalog.db.nope."),
         ),
-        // ほかの文の 4 部以上は実測していない。
-        (r#"SHOW CREATE TABLE a.b.c."d""#, None),
-        (r#"SHOW TABLES IN a.b.c."d""#, None),
-        (r#"CREATE TABLE a.b.c."d" (n int)"#, None),
+    ];
+    for (query, expected) in cases {
+        assert_eq!(rejected(query), expected, "{query:?}");
+    }
+}
+
+#[test]
+fn show_tables_in_の_3_部以上は_2_つ目の_点_で弾く() {
+    let dot = |position: &str, kind: &str| {
+        Some(format!(
+            "line {position}: {kind} input '.' expecting {{<EOF>, 'LIKE', STRING}}"
+        ))
+    };
+    let cases = [
+        // 引用符付きの部分が 1・2 部目なら 1・2 部と同じ規則（2026-09-25 実測 Y1・Y2。#212）。
+        (
+            r#"SHOW TABLES IN "awsdatacatalog".db.x"#,
+            mm("1:16", r#""awsdatacatalog""#),
+        ),
+        (
+            r#"SHOW TABLES IN awsdatacatalog."db".x"#,
+            mm("1:31", r#""db""#),
+        ),
+        (
+            r#"SHOW TABLES IN awsdatacatalog."db".x.n"#,
+            mm("1:31", r#""db""#),
+        ),
+        // そうでなければ 2 つ目の `.`。直後が引用符付きなら extraneous（2026-09-25 実測 Y1・Y2。#212）。
+        (
+            "SHOW TABLES IN awsdatacatalog.db.x",
+            dot("1:33", "mismatched"),
+        ),
+        (
+            r#"SHOW TABLES IN awsdatacatalog.db."x""#,
+            dot("1:33", "extraneous"),
+        ),
+        (
+            "SHOW TABLES IN awsdatacatalog.db.x.n",
+            dot("1:33", "mismatched"),
+        ),
+        (
+            r#"SHOW TABLES IN awsdatacatalog.db.x."n""#,
+            dot("1:33", "mismatched"),
+        ),
+        ("SHOW TABLES IN a . b . c", dot("1:22", "mismatched")),
+    ];
+    for (query, expected) in cases {
+        assert_eq!(rejected(query), expected, "{query:?}");
+    }
+}
+
+#[test]
+fn ctas_でない_create_table_の_4_部以上は引用符が無ければ_3_つ目の_点_で弾く() {
+    let dot = |position: &str| {
+        Some(format!(
+            "line {position}: mismatched input '.' expecting {{<EOF>, '(', 'SELECT', 'FROM', 'AS', 'ROW', 'WITH', 'VALUES', 'TABLE', 'INSERT', 'MAP', 'COMMENT', 'REDUCE', 'TBLPROPERTIES', 'SKEWED', 'STORED', 'LOCATION', 'CLUSTERED', 'PARTITIONED'}}"
+        ))
+    };
+    let cases = [
+        // 2026-09-25 実測 Y1（#212）。引用符付きの部分が 3 部目までにあれば 3 部と同じ規則。
+        (
+            r#"CREATE TABLE awsdatacatalog."db".nope3.n (n int)"#,
+            nv("1:29", r#"CREATE TABLE awsdatacatalog."db""#),
+        ),
+        (
+            "CREATE TABLE awsdatacatalog.db.nope3.n (n int)",
+            dot("1:37"),
+        ),
+        (
+            r#"CREATE TABLE awsdatacatalog.db.nope3."n" (n int)"#,
+            dot("1:37"),
+        ),
+        (
+            "CREATE TABLE awsdatacatalog.db.nope3.n.m (n int)",
+            dot("1:37"),
+        ),
+        // IF NOT EXISTS も引用符付きの部分が 3 部目までにあれば、4 部目を読む前に文言が決まるので 3 部と同じ規則。
+        (
+            r#"CREATE TABLE IF NOT EXISTS a."b".c.d (n int)"#,
+            nv("1:30", r#"CREATE TABLE IF NOT EXISTS a."b""#),
+        ),
+        // IF NOT EXISTS の 3 つ目の `.` と CTAS の 4 部以上は実測していない。
+        ("CREATE TABLE IF NOT EXISTS a.b.c.d (n int)", None),
+        (r#"CREATE TABLE IF NOT EXISTS a.b.c."d" (n int)"#, None),
+        ("CREATE TABLE a.b.c.d AS SELECT 1", None),
     ];
     for (query, expected) in cases {
         assert_eq!(rejected(query), expected, "{query:?}");

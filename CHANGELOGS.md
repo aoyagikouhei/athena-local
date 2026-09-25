@@ -103,6 +103,10 @@ later name the date they were measured on.
   and `SHOW COLUMNS` exists, the same way real Athena does, and runs it
   (quoted name included) when the target is a view (measured 2026-09-25)
   ([docs](docs/caveats.md#sql-dialect), [docs](docs/caveats.md#failed-queries)).
+- `StartQueryExecution` now also rejects `SHOW CREATE TABLE` and a plain
+  `CREATE TABLE` with four parts or more and `SHOW TABLES IN` with three
+  parts or more, and lower-cases quoted parts in `Invalid table name`, as real
+  Athena does (measured 2026-09-25) ([docs](docs/caveats.md#sql-dialect)).
 
 ## [0.5.0] - 2026-09-23
 

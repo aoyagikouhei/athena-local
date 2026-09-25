@@ -127,7 +127,8 @@ Behaviour that matches real Athena:
   view runs even with a quoted name. Then `StartQueryExecution` rejects
   `DESCRIBE`, `DESC`, `SHOW COLUMNS`, `DROP TABLE`, `SHOW CREATE TABLE`,
   `ALTER TABLE`, `SHOW TABLES IN` and a plain `CREATE TABLE` whose table name
-  has a double-quoted part, with `InvalidRequestException` /
+  has a double-quoted part or too many parts (four or more; three or more for
+  `SHOW TABLES IN`), with `InvalidRequestException` /
   `AthenaErrorCode` `MALFORMED_QUERY` and real Athena's own message, the same
   way real Athena does; no `QueryExecutionId` is created for either check.
   See [Caveats](caveats.md#sql-dialect) for exactly which forms and the

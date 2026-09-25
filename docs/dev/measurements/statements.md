@@ -383,3 +383,31 @@ Content-Type と `.metadata` を含む置き場所は本項が主で、[result-f
   無引用の `ALTER TABLE IF EXISTS t ...` と同じ文言（`line 1:16: no viable alternative at input 'ALTER TABLE IF EXISTS'`）で弾かれており、引用符の有無を問わない。#204 で「範囲外」と記載済みの差と同じなので、athena-local 側は変えていない。
 
 - 備考: S3 Tables への対照 `SELECT * FROM "<cat>".<ns>.<t> LIMIT 1` はラウンド 1・2 とも `SCHEMA_NOT_FOUND` で失敗していた（アカウント固有の名前空間の指定の綴り違いとみられる）。ラウンド 4 では名前空間の指定を直して対照 `SELECT` を通した状態で DESCRIBE・SHOW CREATE TABLE・DROP・SHOW COLUMNS の拒否を測り直し、ラウンド 1・2 と同じ結果を確認した。athena-local はこの実測を受けて `quoted_names.rs` の一致条件を広げ（4 部以上、3 部の 2 番目、`SHOW TABLES IN`／`CREATE TABLE` の 2 部以上、`CREATE TABLE IF NOT EXISTS`）、非 ASCII の除外を撤回し、新モジュール `entity_check.rs` で DESCRIBE・SHOW COLUMNS の存在の確認を実装した（[docs/caveats.md](../../caveats.md) の「SQL dialect」に記載）。
+
+### #207 で残った名前の形（#212、ラウンド 5）
+- 日付: 2026-09-25（ラウンド 5） ／ issue: #212 ／ スクリプト: `tools/measure/quoted-names.sh`（`ROUND=5`） ／ 生データ: `$HOME/athena-quoted-names-measurements/run-20260925-122837`
+- 相手: 本物の Athena（`AwsDataCatalog`。S3 Tables は使っていない）
+- 投げたもの: 32 本（Y1〜Y4）。Y1 は 4 部以上の `SHOW CREATE TABLE`（実在の表）・`SHOW TABLES IN`・CTAS でない `CREATE TABLE`（実在しない表）を、無引用・2 部目だけ引用符付き・4 部目だけ引用符付き・5 部で。Y2 は `SHOW TABLES IN` の 3 部を、無引用と 1・2・3 部目だけ引用符付きで。Y3 は `QueryExecutionContext` の Catalog を実在しない `nocatalog_212`（1 本だけ `NoCatalog_212`）にした `SELECT 1`・`DESCRIBE`・`SHOW COLUMNS`。Y4 は 4 部の `DESCRIBE`・`SHOW COLUMNS` で引用符付きの部分が大文字の形
+- 過去のラウンドの読み直し: ラウンド 1〜4 の生データ（4 ラウンド・計 260 行）には、今回の形の答えは無かった（`w2-mixedcase` は無引用の大文字だけ）
+- 返ったもの（位置は伏せる前の実名での値。athena-local のテストでは名前を短くして数え直している）:
+
+  | 文 | 結果（すべて `InvalidRequestException` / `MALFORMED_QUERY`。Y3 を除く） |
+  |---|---|
+  | `SHOW CREATE TABLE` の 4 部以上（無引用・`"db"`・`"n"`・5 部） | 引用符の有無・位置によらず `Invalid table name <各部を . でつないだもの>`（DESCRIBE と同じ） |
+  | `SHOW TABLES IN awsdatacatalog.<db>.x.n`・`...x."n"`（4 部） | 2 つ目の `.` の位置で `line L:C: mismatched input '.' expecting {<EOF>, 'LIKE', STRING}` |
+  | `SHOW TABLES IN awsdatacatalog."<db>".x.n`（4 部） | 2 部目で `mismatched input '"<db>"' expecting {…}`（1・2 部と同じ規則・同じ一覧） |
+  | `SHOW TABLES IN awsdatacatalog.<db>.x`（3 部・無引用） | 2 つ目の `.` で `mismatched input '.' expecting {<EOF>, 'LIKE', STRING}` |
+  | `SHOW TABLES IN awsdatacatalog.<db>."x"`（3 部・3 部目が引用符付き） | 2 つ目の `.` で **`extraneous input '.'`** `expecting {<EOF>, 'LIKE', STRING}`（Hive では `"x"` は文字列なので、`.` を読み飛ばせば `LIKE` の無いパターンとして読めるため） |
+  | `SHOW TABLES IN "awsdatacatalog".<db>.x`・`awsdatacatalog."<db>".x`（3 部） | 最初の引用符付きの部分で `mismatched input`（1・2 部と同じ規則） |
+  | `CREATE TABLE awsdatacatalog.<db>.<t>.n (n int)`・`...<t>."n"`・`...<t>.n.m` | 3 つ目の `.` の位置で `line L:C: mismatched input '.' expecting {<EOF>, '(', 'SELECT', 'FROM', 'AS', 'ROW', 'WITH', 'VALUES', 'TABLE', 'INSERT', 'MAP', 'COMMENT', 'REDUCE', 'TBLPROPERTIES', 'SKEWED', 'STORED', 'LOCATION', 'CLUSTERED', 'PARTITIONED'}` |
+  | `CREATE TABLE awsdatacatalog."<db>".<t>.n (n int)` | `line 1:29: no viable alternative at input 'CREATE TABLE awsdatacatalog."<db>"'`（3 部と同じ規則） |
+  | 4 部の `DESCRIBE`・`SHOW COLUMNS FROM` で引用符付きの大文字（`"<T>"`・`"AwsDataCatalog"`・`"N"`・`"<DB>"`） | `Invalid table name` の名前は**小文字**（`awsdatacatalog.<db>.<t>.n`） |
+  | Y3: Context の Catalog が実在しない `SELECT 1`・`DESCRIBE t`・`DESCRIBE <db>.t`・`DESCRIBE awsdatacatalog.<db>.t`・`SHOW COLUMNS FROM t`・`<db>.t`、Catalog を `NoCatalog_212` にした `DESCRIBE t` | すべて **`SUCCEEDED`**（`DESCRIBE_TABLE`・`SHOW_COLUMNS`）。`GetQueryExecution` の `QueryExecutionContext.Catalog` は `nocatalog_212`（大文字混じりで送っても小文字） |
+  | Y3: 同じ Context で `DESCRIBE <t>_nope`（実在しない表） | `INVALID_INPUT`: `Entity Not Found (...)`（既定のカタログで存在を確かめている） |
+  | Y3: 同じ Context で `DESCRIBE "t"` | `line 1:10: no viable alternative at input 'DESCRIBE "t"'`（ふだんの引用符付きの規則） |
+
+- 採用した判断:
+  - #207 の表の「各部は無引用なら小文字、引用符付きなら中身」は、引用符付きの大文字を測っていなかった。今回、引用符付きも小文字になると分かったので、athena-local は各部の中身を小文字にしてつなぐ。`""` → `"`・`"x.y"` → `x.y`（W2）はこれと矛盾しない。
+  - `CREATE TABLE` の 4 部以上で引用符付きの部分が 1・3 部目にある形は測っていないが、3 部の名前では 1〜3 部目のどれも測ってあり（V3）、4 部の 2 部目（Y1）が 3 部と同じ文言だったので、4 部目より前で文言が決まる（パーサが 4 部目を読む前に止まる）と判断し、3 部と同じ規則を当てる。DROP・ALTER（#207）と同じ扱い。`SHOW TABLES IN` の 1・2 部目も同じ理由で当てる。
+  - Y3 は開始時に弾かれないので、athena-local の `entity_check.rs`（カタログが無いと分かっても名前にカタログを書いていなければ弾かない）は変えない。ただし athena-local はそのあと Trino に実在しないカタログで実行して FAILED になり、本物（既定のカタログで解決して SUCCEEDED）と差がある。この差は範囲外として別の issue で扱う。
+- 備考: CTAS の 4 部以上、引用符付きの部分が 3 部目までに無い `CREATE TABLE IF NOT EXISTS` の 4 部以上、`SHOW TABLES IN` の 2 つ目の `.` の直後が `LIKE` やバッククォートの形は測っていない。athena-local は前の 2 つを弾かず（今までどおり実行）、後ろ 2 つは直後が `"` で始まらない形として `mismatched input` にしている（[docs/dev/unmeasured.md](../unmeasured.md)）。
