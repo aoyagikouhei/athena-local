@@ -13,6 +13,7 @@ mod result_output;
 mod table_format;
 mod target_table;
 mod type_spelling;
+mod unquoted_ddl;
 mod utility_rows;
 mod validation;
 mod work_group;

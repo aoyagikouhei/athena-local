@@ -131,8 +131,14 @@ Behaviour that matches real Athena:
   `SHOW TABLES IN`), with `InvalidRequestException` /
   `AthenaErrorCode` `MALFORMED_QUERY` and real Athena's own message, the same
   way real Athena does; no `QueryExecutionId` is created for either check.
-  See [Caveats](caveats.md#sql-dialect) for exactly which forms and the
-  message rules.
+  Last, an unquoted `ALTER TABLE` gets the same treatment for forms Trino
+  accepts but Athena's grammar does not (`IF EXISTS`, the singular
+  `ADD COLUMN`, `RENAME COLUMN`, `SET PROPERTIES`, `SET AUTHORIZATION`,
+  `EXECUTE`, `ALTER COLUMN`, `DROP COLUMN IF EXISTS`); a plain
+  `DROP COLUMN` without `IF EXISTS` is not rejected here and reaches Trino
+  as before. See [Caveats](caveats.md#sql-dialect) and
+  [Caveats](caveats.md#alter-table-and-format-dependent-ddl) for exactly
+  which forms and the message rules.
 - `StatementType` and `SubstatementType` follow Athena: `SELECT` / `WITH` /
   `VALUES` / `TABLE` are `DML` / `SELECT`, `EXPLAIN` is `DML` / `EXPLAIN`, `SHOW TABLES` is
   `UTILITY` / `SHOW_TABLES`, `SHOW FUNCTIONS` is `UTILITY` / `SHOW_FUNCTIONS`

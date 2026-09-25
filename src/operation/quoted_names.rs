@@ -3,7 +3,7 @@
 use athena_sql::{Cursor, skip_leading_trivia, skip_trivia};
 
 use super::classification::substatement_type;
-use super::target_table::table_name_start;
+use super::target_table::{if_follows, table_name_start};
 
 /// 本物の `expecting {…}` の一覧（2026-09-25 実測。どの文・名前の形でも 1 文字も違わなかった）。
 const EXPECTING: &str = "{'SELECT', 'FROM', 'ADD', 'AS', 'ALL', 'DISTINCT', 'WHERE', 'GROUP', 'BY', 'GROUPING', 'SETS', 'CUBE', 'ROLLUP', 'ORDER', 'HAVING', 'LIMIT', 'AT', 'OR', 'AND', 'IN', NOT, 'NO', 'EXISTS', 'BETWEEN', 'LIKE', RLIKE, 'IS', 'NULL', 'TRUE', 'FALSE', 'NULLS', 'ASC', 'DESC', 'FOR', 'INTERVAL', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'JOIN', 'CROSS', 'OUTER', 'INNER', 'LEFT', 'SEMI', 'RIGHT', 'FULL', 'NATURAL', 'ON', 'LATERAL', 'WINDOW', 'OVER', 'PARTITION', 'RANGE', 'ROWS', 'UNBOUNDED', 'PRECEDING', 'FOLLOWING', 'CURRENT', 'ROW', 'WITH', 'VALUES', 'CREATE', 'TABLE', 'VIEW', 'REPLACE', 'INSERT', 'DELETE', 'INTO', 'DESCRIBE', 'EXPLAIN', 'FORMAT', 'LOGICAL', 'CODEGEN', 'CAST', 'SHOW', 'TABLES', 'COLUMNS', 'COLUMN', 'USE', 'PARTITIONS', 'FUNCTIONS', 'DROP', 'UNION', 'EXCEPT', 'INTERSECT', 'TO', 'TABLESAMPLE', 'STRATIFY', 'ALTER', 'RENAME', 'ARRAY', 'MAP', 'STRUCT', 'COMMENT', 'SET', 'RESET', 'DATA', 'START', 'TRANSACTION', 'COMMIT', 'ROLLBACK', 'MACRO', 'FIRST', 'AFTER', 'IF', 'DIV', 'PERCENT', 'BUCKET', 'OUT', 'OF', 'SORT', 'CLUSTER', 'DISTRIBUTE', 'OVERWRITE', 'TRANSFORM', 'REDUCE', 'USING', 'SERDE', 'SERDEPROPERTIES', 'RECORDREADER', 'RECORDWRITER', 'DELIMITED', 'FIELDS', 'TERMINATED', 'COLLECTION', 'ITEMS', 'KEYS', 'ESCAPED', 'LINES', 'SEPARATED', 'FUNCTION', 'EXTENDED', 'REFRESH', 'CLEAR', 'CACHE', 'UNCACHE', 'LAZY', 'FORMATTED', TEMPORARY, 'OPTIONS', 'UNSET', 'TBLPROPERTIES', 'DBPROPERTIES', 'BUCKETS', 'SKEWED', 'STORED', 'DIRECTORIES', 'LOCATION', 'EXCHANGE', 'ARCHIVE', 'UNARCHIVE', 'FILEFORMAT', 'TOUCH', 'COMPACT', 'CONCATENATE', 'CHANGE', 'CASCADE', 'RESTRICT', 'CLUSTERED', 'SORTED', 'PURGE', 'INPUTFORMAT', 'OUTPUTFORMAT', DATABASE, DATABASES, 'DFS', 'TRUNCATE', 'ANALYZE', 'COMPUTE', 'LIST', 'STATISTICS', 'PARTITIONED', 'EXTERNAL', 'DEFINED', 'REVOKE', 'GRANT', 'LOCK', 'UNLOCK', 'MSCK', 'REPAIR', 'EXPORT', 'IMPORT', 'LOAD', 'ROLE', 'ROLES', 'COMPACTIONS', 'PRINCIPALS', 'TRANSACTIONS', 'INDEX', 'INDEXES', 'LOCKS', 'OPTION', 'ANTI', 'LOCAL', 'INPATH', IDENTIFIER, BACKQUOTED_IDENTIFIER}";
@@ -23,12 +23,9 @@ pub(super) fn rejection(query: &str, is_alias: impl Fn(&str) -> bool) -> Option<
     let (statement, rest) = STATEMENTS
         .iter()
         .find_map(|(keywords, statement)| Some((*statement, table_name_start(sql, keywords)?)))?;
-    // `table_name_start` は `IF EXISTS` を読み飛ばすので、ALTER・CREATE TABLE の直後に IF があるかは元から読み直す。
-    let if_follows = |first: &str| {
-        let mut cursor = Cursor::new(sql);
-        cursor.keyword(first) && cursor.keyword("TABLE") && cursor.keyword("IF")
-    };
-    if statement == Statement::AlterTable && if_follows("ALTER") {
+    // `ALTER TABLE IF EXISTS ...` は #208 から `unquoted_ddl::rejection` が引き取る
+    // （引用符の有無によらず、名前の後ろの語だけで文言が決まるため）。
+    if statement == Statement::AlterTable && if_follows(sql, "ALTER") {
         return None;
     }
     let offset = sql.len() - rest.len();
@@ -89,7 +86,8 @@ pub(super) fn rejection(query: &str, is_alias: impl Fn(&str) -> bool) -> Option<
             (Statement::CreateTable, _)
                 // IF NOT EXISTS の 3 つ目の `.` は実測していない（引用符付きの部分が 3 部目までにあれば、4 部目を
                 // 読む前に文言が決まるので、上の腕で 3 部と同じ規則を当てる）。
-                if substatement_type(query) == Some("CREATE_TABLE") && !if_follows("CREATE") =>
+                if substatement_type(query) == Some("CREATE_TABLE")
+                    && !if_follows(sql, "CREATE") =>
             {
                 let (line, column) = position(sql, dot);
                 return Some(format!(
@@ -161,7 +159,7 @@ const CREATE_TABLE_EXPECTING: &str = "{<EOF>, '(', 'SELECT', 'FROM', 'AS', 'ROW'
 const NOT_SUPPORTED: &str = "Queries of this type are not supported";
 const TWO_CATALOGS: &str = "Unsupported DDL with 2 catalogs";
 
-fn no_viable_alternative(sql: &str, at: usize, input: &str) -> String {
+pub(super) fn no_viable_alternative(sql: &str, at: usize, input: &str) -> String {
     let (line, column) = position(sql, at);
     format!(
         "line {line}:{column}: no viable alternative at input '{}'",
@@ -178,7 +176,7 @@ fn mismatched_input(sql: &str, at: usize, input: &str) -> String {
 }
 
 /// `line L:C` の L と C。C は行頭からの UTF-16 の単位数 + 1（`/* 😀 */` の後ろが 1 つ多い。2026-09-25 実測）。
-fn position(sql: &str, at: usize) -> (usize, usize) {
+pub(super) fn position(sql: &str, at: usize) -> (usize, usize) {
     let before = &sql[..at];
     let line_start = before.rfind('\n').map_or(0, |newline| newline + 1);
     (
@@ -188,7 +186,7 @@ fn position(sql: &str, at: usize) -> (usize, usize) {
 }
 
 /// input の中の改行・CR・タブは、本物もバックスラッシュで書く（`DESCRIBE\r\n"t"`。2026-09-25 実測）。
-fn escape(input: &str) -> String {
+pub(super) fn escape(input: &str) -> String {
     input
         .replace('\n', "\\n")
         .replace('\r', "\\r")

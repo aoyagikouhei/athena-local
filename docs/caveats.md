@@ -21,15 +21,12 @@ Known differences between athena-local and real Athena, grouped by topic.
   Expecting: 'MATERIALIZED', 'MULTI', 'PROTECTED', 'VIEW'` and
   `AthenaErrorCode` `MALFORMED_QUERY` before anything runs, with or without an
   Iceberg `WITH` clause, measured 2026-09-23), and the `Expecting:` list in a
-  syntax error follows Trino's grammar. `ALTER TABLE IF EXISTS ...` and
-  `ALTER TABLE ... RENAME COLUMN ... TO ...` are the same: Trino runs both, but
-  Athena's grammar has no such form and rejects it before the statement starts
-  (`AthenaErrorCode` `MALFORMED_QUERY`), so athena-local executes them on
-  Trino where Athena would have rejected the call outright. `ALTER TABLE IF
-  EXISTS ...`'s message was pinned down as `line 1:16: no viable alternative
-  at input 'ALTER TABLE IF EXISTS'` (measured 2026-09-25); `RENAME COLUMN`'s
-  was only categorized as a `mismatched input` message, not transcribed
-  verbatim (measured 2026-09-21). A CTAS with a
+  syntax error follows Trino's grammar. `ALTER TABLE IF EXISTS ...` and the
+  other unquoted `ALTER TABLE` spellings Trino accepts but Athena's grammar
+  does not are rejected at `StartQueryExecution` with Athena's own message,
+  as real Athena does — see
+  [`ALTER TABLE` and format-dependent DDL](#alter-table-and-format-dependent-ddl).
+  A CTAS with a
   column list, such as `CREATE TABLE t (n) AS VALUES 1`, runs on Trino, while
   Athena accepts the call and then fails the query with `MISSING_COLUMN_NAME:
   line 1:1: Column name not specified at position 1` (measured 2026-09-25).
@@ -38,7 +35,10 @@ Known differences between athena-local and real Athena, grouped by topic.
   supported`; athena-local returns Trino's syntax error.
 - **Iceberg maintenance statements differ.** Athena's `OPTIMIZE ... REWRITE DATA`
   and `VACUUM` do not exist in Trino, which uses `ALTER TABLE ... EXECUTE optimize`
-  and `ALTER TABLE ... EXECUTE expire_snapshots` instead.
+  and `ALTER TABLE ... EXECUTE expire_snapshots` instead. athena-local rejects
+  `ALTER TABLE ... EXECUTE ...` at `StartQueryExecution` the same as real
+  Athena (see [`ALTER TABLE` and format-dependent DDL](#alter-table-and-format-dependent-ddl)),
+  so neither spelling runs Iceberg maintenance through athena-local.
 - **A block comment before `SHOW CREATE TABLE` can succeed here but fails on
   Athena.** `StatementType`/`SubstatementType`/`OutputLocation` are classified
   correctly either way (comments are skipped for classification), but Athena's
@@ -128,7 +128,9 @@ Known differences between athena-local and real Athena, grouped by topic.
   reaches Trino, the same as on real Athena.** `DESCRIBE`, `DESC`,
   `SHOW COLUMNS FROM` / `IN`, `DROP TABLE` (with or without `IF EXISTS`),
   `SHOW CREATE TABLE`, `ALTER TABLE` (whichever spelling reaches Trino — see
-  "Six `ALTER TABLE` spellings" below — except `ALTER TABLE IF EXISTS`),
+  "Six `ALTER TABLE` spellings" below — except `ALTER TABLE IF EXISTS`, which
+  is rejected by the unquoted-`ALTER TABLE` check below instead, regardless
+  of quoting, because Athena's grammar has no `IF EXISTS` form at all),
   `SHOW TABLES IN` with a one- or two-part name, and a plain `CREATE TABLE`
   (not a CTAS) with a one-, two- or three-part name, `CREATE TABLE IF NOT
   EXISTS` included, all answer `InvalidRequestException` (`AthenaErrorCode`
@@ -210,10 +212,10 @@ Known differences between athena-local and real Athena, grouped by topic.
 ## `ALTER TABLE` and format-dependent DDL
 
 - **Six `ALTER TABLE` spellings Athena has and Trino does not.** These are
-  Athena syntax, not Trino's, so athena-local rejects them at the syntax check
-  with `SYNTAX_ERROR` (returned as `InvalidRequestException` /
-  `AthenaErrorCode` `MALFORMED_QUERY`, with no `QueryExecutionId` created)
-  where Athena would have run them. Checked against Trino 482 on 2026-09-21:
+  Athena syntax, not Trino's; Trino's own syntax check rejects them with
+  `SYNTAX_ERROR` (returned as `InvalidRequestException` / `AthenaErrorCode`
+  `MALFORMED_QUERY`, with no `QueryExecutionId` created) where Athena would
+  have run them. Checked against Trino 482 on 2026-09-21:
 
   | Statement | Trino's syntax check | Trino's own spelling |
   | --- | --- | --- |
@@ -224,23 +226,49 @@ Known differences between athena-local and real Athena, grouped by topic.
   | `DROP PARTITION (...)` | `mismatched input 'PARTITION'` | none |
   | `SET LOCATION '...'` | `mismatched input 'LOCATION'` | none |
 
-  Write Trino's spelling where the last column gives one to reach the behaviour
-  described under
-  [DDL that depends on the target table's format](ddl.md#ddl-that-depends-on-the-target-tables-format);
-  classification accepts either spelling, so a statement written as
-  `ADD COLUMN` still gets the `ADD COLUMNS` `SubstatementType` (verified
-  against Trino 482 and MinIO on 2026-09-21). The four with no Trino spelling
-  cannot be run through athena-local at all — their `SubstatementType` and
-  result-file rows below record what Athena does, and are reachable here only
-  if the backend's grammar accepts the statement. **`ADD COLUMN` (singular,
-  unquoted) is the spelling to write to reach `ADD COLUMNS` through
-  athena-local, but real Athena itself rejects that exact statement at
-  `StartQueryExecution`**
-  (`ALTER TABLE t ADD COLUMN m int` answers `no viable alternative at input
-  'ALTER TABLE t ADD COLUMN'`, `AthenaErrorCode` `MALFORMED_QUERY`, measured
-  2026-09-25): there is no spelling of this statement both engines accept.
-  Use it to exercise athena-local's `ADD COLUMNS` behaviour locally, not as
-  SQL meant to also run on real Athena unchanged.
+  The four rows with no Trino spelling cannot be run through athena-local at
+  all — their `SubstatementType` and result-file rows below record what
+  Athena does, and are reachable here only if the backend's grammar accepts
+  the statement. The two Trino spellings in the last column are rejected at
+  `StartQueryExecution` the same as real Athena (see the next item), so the
+  `ADD COLUMNS` row under
+  [DDL that depends on the target table's format](ddl.md#ddl-that-depends-on-the-target-tables-format)
+  cannot be reached through athena-local either: no spelling of that
+  statement is accepted by both engines.
+- **Unquoted `ALTER TABLE IF EXISTS ...`, and six other Trino-only `ALTER
+  TABLE` spellings, are rejected at `StartQueryExecution`.** Real
+  Athena's grammar has no `IF EXISTS` clause on `ALTER TABLE` at all, and no
+  `RENAME COLUMN`, `SET PROPERTIES` (also covered by the item above),
+  `SET AUTHORIZATION`, `EXECUTE`, `ALTER COLUMN` or `DROP COLUMN IF EXISTS`
+  either — these are all Trino syntax, not Athena's. athena-local rejects
+  every one of them the same way real Athena does, with Athena's own message
+  (measured 2026-09-26), regardless of whether the table name is quoted or
+  how many parts it has:
+
+  | Form | Message |
+  | --- | --- |
+  | `ALTER TABLE IF EXISTS t <ADD\|DROP\|RENAME> ...` | `no viable alternative at input 'ALTER TABLE IF EXISTS'` |
+  | `ALTER TABLE IF EXISTS t ALTER COLUMN ...` | `mismatched input 'ALTER'. Expecting: '.', 'ADD', 'DROP', 'RENAME'` |
+  | `ALTER TABLE t ADD COLUMN ...` | `no viable alternative at input 'ALTER TABLE t ADD COLUMN'` |
+  | `ALTER TABLE t RENAME COLUMN a TO b` | `missing 'TO' at 'COLUMN'` |
+  | `ALTER TABLE t SET PROPERTIES ...` | `no viable alternative at input 'ALTER TABLE t SET PROPERTIES'` |
+  | `ALTER TABLE t SET AUTHORIZATION ...` | `no viable alternative at input 'ALTER TABLE t SET AUTHORIZATION'` |
+  | `ALTER TABLE t EXECUTE ...` | `no viable alternative at input 'ALTER TABLE t EXECUTE'` |
+  | `ALTER TABLE t ALTER COLUMN ...` | `mismatched input 'ALTER'. Expecting: '.', 'ADD', 'DROP', 'EXECUTE', 'RENAME', 'SET'` |
+  | `ALTER TABLE t DROP COLUMN IF EXISTS m` | `mismatched input 'EXISTS' expecting {<EOF>, '.'}` |
+
+  All answer `InvalidRequestException` / `AthenaErrorCode` `MALFORMED_QUERY`
+  with no `QueryExecutionId` created, Trino is never sent anything but the
+  syntax check, and the position is counted the same way as the quoted-name
+  check above (UTF-16 units from the first non-whitespace character, a
+  leading comment included). The `Expecting:` list after `IF EXISTS`
+  (four entries) is shorter than the one without it (six entries), because
+  real Athena's grammar allows fewer follow-on keywords once `IF EXISTS` is
+  present. A plain `ALTER TABLE t DROP COLUMN m` (no `IF EXISTS`) is **not**
+  rejected — real Athena accepts it too and only fails at run time (measured
+  2026-09-26), so athena-local sends it to Trino unchanged. Athena's own
+  spellings (`ADD COLUMNS`, `SET TBLPROPERTIES`, and so on) are rejected by
+  Trino's syntax check instead (the item above).
 - **`ALTER TABLE` classification covers eight forms.** `SET TBLPROPERTIES`,
   `ADD COLUMNS`, `DROP COLUMN`, `SET LOCATION`, `REPLACE COLUMNS`,
   `ADD PARTITION`, `DROP PARTITION` and `RENAME TO` each get the
@@ -253,13 +281,11 @@ Known differences between athena-local and real Athena, grouped by topic.
   run time, so athena-local classifies these forms regardless of the target's
   format. Any other `ALTER TABLE` form is left unclassified, the same as any
   other statement whose `SubstatementType` was not measured (see
-  [Supported API](api.md#supported-api)). Only three of the eight can actually be run
-  through athena-local — `ADD COLUMNS` (written as Trino's `ADD COLUMN`),
-  `DROP COLUMN` and `RENAME TO`. The other five are rejected at the syntax
-  check, so their classification is what athena-local would answer if the
-  backend's grammar accepted the statement; `SET TBLPROPERTIES` in particular
-  stays unclassified when written in Trino's `SET PROPERTIES` spelling, because
-  the classification keyword is the Athena one.
+  [Supported API](api.md#supported-api)). Only two of the eight can actually be run
+  through athena-local — `DROP COLUMN` and `RENAME TO`. The other six are
+  rejected at the syntax check or at `StartQueryExecution` (the items above),
+  so their classification is what athena-local would answer if the backend's
+  grammar accepted the statement.
 - **`DROP COLUMNS` (plural) is a syntax error on Athena.** `ADD` takes the
   plural `COLUMNS`, but `DROP` takes only the singular `COLUMN`: Athena rejects
   `DROP COLUMNS` in `StartQueryExecution` with `mismatched input 'COLUMNS'.

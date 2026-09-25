@@ -183,6 +183,34 @@ probe_add_columns_spelling() {
     "Athenaの綴り(ADD COLUMNS)はTrinoの構文エラーで弾かれた（想定どおり）: __type=$type_ AthenaErrorCode=$code Message=$msg"
 }
 
+# 無引用の ALTER TABLE（ADD COLUMN 単数・SET PROPERTIES など）は、本物と同じく athena-local も
+# StartQueryExecution の時点で弾き、QueryExecutionId を作らない（Trino には構文確認しか届かない。
+# 2026-09-26 実測。#208）。probe_add_columns_spelling の雛形を流用し、期待する文言は呼び出し側が
+# 名前の長さから計算して渡す（テーブル名が実行のたびに変わるため）。
+probe_unquoted_alter_rejected() {
+  local no="$1" name="$2" query="$3" catalog="$4" database="$5" expect_message="$6"
+  local resp qid type_ code msg
+
+  log "ケース $no: $name -- $query"
+  resp=$(athena_start_query_raw "$query" "$catalog" "$database")
+  qid=$(echo "$resp" | jq -r '.QueryExecutionId // empty')
+  if [ -n "$qid" ]; then
+    record "$no $name" FAIL "StartQueryExecution を通ってしまった [id=$qid]（想定外）"
+    return
+  fi
+
+  type_=$(echo "$resp" | jq -r '.__type // empty')
+  code=$(echo "$resp" | jq -r '.AthenaErrorCode // empty')
+  msg=$(echo "$resp" | jq -r '.Message // empty')
+  if [ "$type_" = "InvalidRequestException" ] && [ "$code" = "MALFORMED_QUERY" ] && [ "$msg" = "$expect_message" ]; then
+    record "$no $name" PASS \
+      "開始時に本物と同じ文言で弾かれた（Trinoには構文確認しか届かない）: __type=$type_ AthenaErrorCode=$code Message=$msg"
+  else
+    record "$no $name" FAIL \
+      "文言か種類が実測と違う: __type=$type_ AthenaErrorCode=$code Message=$msg（期待 Message=$expect_message）"
+  fi
+}
+
 main() {
   log "作業ディレクトリ: $SCRIPT_DIR"
   log "証跡の保存先: $EVIDENCE_DIR"
@@ -319,30 +347,35 @@ main() {
   fi
 
   # ケース 6 前段: Athena の綴り（ADD COLUMNS）は Trino の構文エラーで弾かれることを確認する
-  # （athena-local は SQL 本文を書き換えないため、Trino の文法に無い複数形はそのまま構文エラーになる）。
+  # （athena-local は SQL 本文を書き換えないため、Trino の文法に無い複数形はそのまま構文エラーになる。
+  # #208 の判定は COLUMN の単数形にしか一致しないので、この前段は変わらない）。
   probe_add_columns_spelling "${t_alter_hive}" hive default
 
-  # ケース 6: ALTER TABLE ... ADD COLUMN（Trino の綴り・単数形）× Hive。
-  # classification.rs の判定は ADD COLUMNS / ADD COLUMN のどちらでも効くが、Trino に投げられるのは
-  # 単数形だけなので、実機で通す文はこちらにする。
-  run_case 6 "ALTER_TABLE_ADD_COLUMN_hive" \
-    "ALTER TABLE ${t_alter_hive} ADD COLUMN m int" hive default txt \
-    0 "application/octet-stream" 0 1 38
+  # ケース 6・7（#208 で挙動が変わった）: ALTER TABLE ... ADD COLUMN（Trino の綴り・単数形）は、
+  # 本物の Athena 自身がこの綴りを StartQueryExecution で弾く（No spelling both engines accept。
+  # docs/caveats.md）。athena-local も同じ文言で開始時に弾き、Trino には構文確認しか届かない
+  # （対象がHive・Icebergのどちらでも文言は同じ。テーブルの形式に依存しない判定のため）。
+  local add_column_hive_query="ALTER TABLE ${t_alter_hive} ADD COLUMN m int"
+  local add_column_hive_prefix="ALTER TABLE ${t_alter_hive} ADD "
+  probe_unquoted_alter_rejected 6 "ALTER_TABLE_ADD_COLUMN_hive_開始時に弾く" \
+    "$add_column_hive_query" hive default \
+    "line 1:$(( ${#add_column_hive_prefix} + 1 )): no viable alternative at input 'ALTER TABLE ${t_alter_hive} ADD COLUMN'"
 
-  # ケース 7: ALTER TABLE ... ADD COLUMN × Iceberg。今までどおり本体 0 バイト・binary/octet-stream・
-  # .metadata 無し（Hive だけを特別扱いする実装のままであることの確認）。
-  run_case 7 "ALTER_TABLE_ADD_COLUMN_iceberg" \
-    "ALTER TABLE ${t_alter_iceberg} ADD COLUMN m int" iceberg default txt \
-    0 "binary/octet-stream" 0 0
+  local add_column_iceberg_query="ALTER TABLE ${t_alter_iceberg} ADD COLUMN m int"
+  local add_column_iceberg_prefix="ALTER TABLE ${t_alter_iceberg} ADD "
+  probe_unquoted_alter_rejected 7 "ALTER_TABLE_ADD_COLUMN_iceberg_開始時に弾く" \
+    "$add_column_iceberg_query" iceberg default \
+    "line 1:$(( ${#add_column_iceberg_prefix} + 1 )): no viable alternative at input 'ALTER TABLE ${t_alter_iceberg} ADD COLUMN'"
 
-  # ケース 8: ALTER TABLE ... SET PROPERTIES × Iceberg（対象外の ALTER が巻き込まれていないことの確認）。
-  # Athena の綴り（SET TBLPROPERTIES）は Trino の構文エラー（mismatched input 'TBLPROPERTIES'.
-  # Expecting: 'AUTHORIZATION', 'PROPERTIES'）になるため実機では投げられない（事前に確認済み）。
-  # comment プロパティは Iceberg 側に存在しない（Catalog 'iceberg' table property 'comment' does
-  # not exist）ため、Trino で通る format プロパティを使う。
-  run_case 8 "ALTER_TABLE_SET_PROPERTIES_iceberg" \
-    "ALTER TABLE ${t_alter_iceberg} SET PROPERTIES format = 'PARQUET'" iceberg default txt \
-    0 "binary/octet-stream" 0 0
+  # ケース 8（#208 で挙動が変わった）: ALTER TABLE ... SET PROPERTIES（Trino だけにある綴り）も、
+  # 本物は StartQueryExecution で弾く（docs/caveats.md の「Six ALTER TABLE spellings」）。
+  # Athena の綴り（SET TBLPROPERTIES）は Trino の構文エラーになるため、そちらは実機では投げられない
+  # （事前に確認済み）。
+  local set_properties_query="ALTER TABLE ${t_alter_iceberg} SET PROPERTIES format = 'PARQUET'"
+  local set_properties_prefix="ALTER TABLE ${t_alter_iceberg} SET "
+  probe_unquoted_alter_rejected 8 "ALTER_TABLE_SET_PROPERTIES_iceberg_開始時に弾く" \
+    "$set_properties_query" iceberg default \
+    "line 1:$(( ${#set_properties_prefix} + 1 )): no viable alternative at input 'ALTER TABLE ${t_alter_iceberg} SET PROPERTIES'"
 
   # ケース 9（issue #56）: MERGE × Iceberg。本物の Trino が updateType に "MERGE" を返し、
   # .metadata の field 2 がその文字列になること（本物の Athena は "MERGE"。2026-09-20 実測）。

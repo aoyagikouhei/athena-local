@@ -123,7 +123,7 @@ async fn 実在しないカタログの_ddl_とビューの文は差し替え_in
 
     for (query, sent) in [
         ("CREATE TABLE c (n integer)", "hive"),
-        ("ALTER TABLE t ADD COLUMN c varchar", "hive"),
+        ("ALTER TABLE t ADD COLUMNS (c varchar)", "hive"),
         ("CREATE VIEW v AS SELECT n FROM t", "hive"),
         ("SHOW CREATE VIEW v", "hive"),
         ("DROP VIEW IF EXISTS v", "hive"),

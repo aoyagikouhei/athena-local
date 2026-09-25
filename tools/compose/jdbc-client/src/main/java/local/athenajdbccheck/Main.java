@@ -9,9 +9,13 @@ import java.sql.Statement;
 import java.util.Properties;
 
 /**
- * issue #39 / #46 実機検証: 列 0 個の .metadata（DROP TABLE Iceberg = 41 バイト、
- * ALTER TABLE ADD COLUMN Hive = 38 バイト）を、公式 Athena JDBC ドライバの
- * 既定 ResultFetcher=auto（S3 を直接読む経路）が例外なく読めるかを確かめる。
+ * issue #39 / #46 実機検証: 列 0 個の .metadata（DROP TABLE Iceberg = 41 バイト）を、公式 Athena JDBC
+ * ドライバの既定 ResultFetcher=auto（S3 を直接読む経路）が例外なく読めるかを確かめる。
+ *
+ * ALTER TABLE ADD COLUMN（Hive、.metadata 38 バイト）のケースは #208 で削除した。単数形の ADD COLUMN は
+ * StartQueryExecution の時点で弾かれるようになり、athena-local からはもう届かない（docs/caveats.md の
+ * 「Six ALTER TABLE spellings」）。38 バイトの .metadata を JDBC が読めることは、Rust 側の結合テスト
+ * （tests/metadata.rs）が引き続き守る。
  *
  * 接続先は athena-local（本物の AWS は使わない）。
  *
@@ -51,7 +55,6 @@ public final class Main {
         String runId = Long.toString(System.currentTimeMillis());
         String tIcebergDrop = "t_jdbc_drop_iceberg_" + runId;
         String tHiveDrop = "t_jdbc_drop_hive_" + runId;
-        String tHiveAlter = "t_jdbc_alter_hive_" + runId;
 
         Properties props = new Properties();
         props.setProperty("Region", "ap-northeast-1");
@@ -87,7 +90,7 @@ public final class Main {
             } else if (scenario.equals("111")) {
                 FailedDdlScenario.run(conn, runId);
             } else {
-                runZeroColumnScenario(conn, tIcebergDrop, tHiveDrop, tHiveAlter);
+                runZeroColumnScenario(conn, tIcebergDrop, tHiveDrop);
             }
         } catch (Exception e) {
             System.out.println("!!! 接続自体が失敗した !!!");
@@ -142,25 +145,21 @@ public final class Main {
 
     // ---------------- issue #46: 列 0 個の .metadata ----------------
 
-    private static void runZeroColumnScenario(Connection conn, String tIcebergDrop, String tHiveDrop, String tHiveAlter) {
+    private static void runZeroColumnScenario(Connection conn, String tIcebergDrop, String tHiveDrop) {
         // --- セットアップ（athena-local 経由。verify.sh の直接 Trino 投入とは別に、
         //     JDBC の execute 経路そのものを使って検証対象のテーブルを作る） ---
         runSetup(conn, "CREATE TABLE iceberg.default." + tIcebergDrop + " AS SELECT 1 AS n");
         runSetup(conn, "CREATE TABLE hive.default." + tHiveDrop + " AS SELECT 1 AS n");
-        runSetup(conn, "CREATE TABLE hive.default." + tHiveAlter + " AS SELECT 1 AS n");
 
         // ケース 1: DROP TABLE (Iceberg) -> .metadata 41 バイト（列 0 個）
         runCase(conn, "ケース1 DROP_TABLE_iceberg(41B)", "DROP TABLE iceberg.default." + tIcebergDrop);
 
-        // ケース 2: ALTER TABLE ... ADD COLUMN (Hive) -> .metadata 38 バイト（列 0 個）
-        runCase(conn, "ケース2 ALTER_TABLE_ADD_COLUMN_hive(38B)",
-                "ALTER TABLE hive.default." + tHiveAlter + " ADD COLUMN m int");
+        // ケース 2（#208 前は 3）: DROP TABLE (Hive) -> .metadata を置かない従来経路（対照）。
+        // ALTER TABLE ... ADD COLUMN (Hive) -> 38 バイトのケースは #208 で削除した（クラス冒頭の javadoc）。
+        runCase(conn, "ケース2 DROP_TABLE_hive(対照・metadata無し)", "DROP TABLE hive.default." + tHiveDrop);
 
-        // ケース 3: DROP TABLE (Hive) -> .metadata を置かない従来経路（対照）
-        runCase(conn, "ケース3 DROP_TABLE_hive(対照・metadata無し)", "DROP TABLE hive.default." + tHiveDrop);
-
-        // ケース 4: 通常の SELECT -> 回帰確認
-        runSelectCase(conn, "ケース4 SELECT_回帰確認", "SELECT 1 AS n");
+        // ケース 3（#208 前は 4）: 通常の SELECT -> 回帰確認
+        runSelectCase(conn, "ケース3 SELECT_回帰確認", "SELECT 1 AS n");
     }
 
     // ---------------- issue #57: SHOW 文の .txt.metadata ----------------

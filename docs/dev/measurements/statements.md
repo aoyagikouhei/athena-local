@@ -489,5 +489,22 @@ Content-Type と `.metadata` を含む置き場所は本項が主で、[result-f
   | `CREATE TABLE <名前> (LIKE <db>.<t>)` | NV(`.`) | 受理 |
   | `CREATE TABLE <名前> (n int) LOCATION '...'` | `External keyword required for table type HIVE` | 構文エラー（`LOCATION`） |
 
-- 採用した判断: Trino 482 が受理する形のうち、上の表で文言が決まったものを athena-local も開始時に同じ文言で弾く（[decisions.md](../decisions.md)）。`LIKE` は 1 部の名前を測っていないので、1 部のときだけ弾かない。Trino が構文エラーにする形は今までどおり Trino の文言を返す
+- ラウンド 2（2026-09-26、UTC 21:55、`ROUND=2`、生データ `$HOME/athena-unquoted-ddl-measurements/run-20260925-215519`。48 本すべて開始時に `MALFORMED_QUERY`）: ラウンド 1 の一般化を確かめるため、型名・`LIKE`・Trino の型の中身・Trino 形の文言の綴りを測った。手元の Trino 482 は `struct<a:int,b:string>` だけを構文エラーにし、ほかはすべて受理した
+
+  | 文 | 本物 |
+  |---|---|
+  | `CREATE TABLE <名前> (n <型>)`、型は `bigint`・`tinyint`・`smallint`・`real`・`float`・`char(3)`・`varbinary`・`binary`・`uuid`・`json`・`ipaddress`・存在しない `foo`・`timestamp`・`time`・`time(3)`・`decimal`・`struct<a:int,b:string>`・`map<string,int>`・`array<array<int>>`・`INT`・`varchar(10, 2)`、および複数列 `(n int, m bigint, s string)` | `No location ...`（型名は構文の段階で見ていない） |
+  | 型の後ろに語が続く `timestamp(3) with time zone`・`double precision`・`interval day to second` | NV(その語: `with`・`precision`・`day`) |
+  | `(LIKE <1 部の名前>)`（実在する表・しない表） | `No location ...`（`LIKE` を列の名前、名前を型として読む） |
+  | `(LIKE <db>.<t> INCLUDING PROPERTIES)`・`(LIKE awsdatacatalog.<db>.<t>)`・`(n int, LIKE <db>.<t>)` | NV(最初の `.`) |
+  | `row(a int, b varchar)`・`array(row(a int))`・`map(varchar, array(int))`・`ROW(a int)`・`row( a int)`・2 列目の `row(a int)` | NV(括弧の中の最初の語: `a`・`row`・`varchar`・`a`・`a`・`a`) |
+  | `(n int NOT NULL, m int)` | NV(NOT) |
+  | `(n int) COMMENT 'x' WITH (...)`・`CREATE TABLE IF NOT EXISTS <名前> (n int) WITH (...)`・2 部の名前 + `WITH`・`)` の後の改行 + `WITH` | NV(`WITH` の後の `(`)（改行の後は `line 2:6`） |
+  | `alter table <名前> alter column ...`・`alter table if exists <名前> alter column ...` | `mismatched input 'alter'. Expecting: ...`（原文の小文字のまま。Expecting の一覧はラウンド 1 と同じ） |
+  | `ALTER TABLE <db>.<名前> ALTER COLUMN ...` | 位置は 2 つ目の ALTER（2 部の名前でも同じ規則） |
+  | `ALTER TABLE <名前> RENAME  COLUMN a TO b`（空白 2 つ）・`alter table <名前> rename column a to b` | `missing 'TO' at 'COLUMN'`（位置は COLUMN）・`missing 'TO' at 'column'` |
+  | `alter table <名前> drop column if exists m` | `mismatched input 'exists' expecting {<EOF>, '.'}` |
+  | `/* c */ ALTER TABLE <名前> SET PROPERTIES x = 1` | NV(PROPERTIES)（位置は先頭のコメントを数え、input は含めない） |
+
+- 採用した判断: Trino 482 が受理する形のうち、上の 2 つの表で文言が決まったものを athena-local も開始時に同じ文言で弾く（[decisions.md](../decisions.md)）。CREATE TABLE は「列の名前 → 型（識別子。後ろに数字だけの括弧か `<...>`）→ `COMMENT` か `,` か `)`」を Hive の読み方として一般化し、型の後ろの語は NV(その語)、`.` は NV(`.`)、`型名(` の中の最初の語は NV(その語) で弾く（`LIKE` はこの規則に含まれる）。Trino が構文エラーにする形は今までどおり Trino の文言を返す
 - 備考: 既知の実測（`ALTER TABLE IF EXISTS <t> RENAME TO <t2>` の `line 1:16`、`ALTER TABLE IF EXISTS <db>.<t> ADD COLUMNS` の Trino 形、`ALTER TABLE <t> ADD COLUMN` の NV(COLUMN)、場所の無い `CREATE TABLE` の `No location`）と食い違いは無かった

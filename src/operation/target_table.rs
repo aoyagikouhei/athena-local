@@ -91,5 +91,14 @@ fn parse_qualified_name(input: &str) -> Option<Vec<String>> {
     Some(athena_sql::Cursor::new(input).qualified_name()?.values())
 }
 
+/// `<first> TABLE IF` の並びが `query` の先頭にあるか。`table_name_start` が先に `IF` の後ろに
+/// `EXISTS` が続くことを確かめているので、ここでは `IF` までしか見ない。`quoted_names.rs`
+/// （ALTER・CREATE TABLE の `IF (NOT) EXISTS` の判定）と `unquoted_ddl.rs`（無引用の
+/// `ALTER TABLE IF EXISTS` の判定）が共有する（#208）。
+pub(super) fn if_follows(query: &str, first: &str) -> bool {
+    let mut cursor = athena_sql::Cursor::new(query);
+    cursor.keyword(first) && cursor.keyword("TABLE") && cursor.keyword("IF")
+}
+
 #[cfg(test)]
 mod tests;
