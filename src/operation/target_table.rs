@@ -78,13 +78,13 @@ pub(super) fn parse_target_table(
 fn table_name_start<'a>(query: &'a str, keywords: &[&str]) -> Option<&'a str> {
     let mut rest = query;
     for keyword in keywords {
-        rest = crate::catalog::skip_keyword(rest, keyword)?;
+        rest = athena_sql::skip_keyword(rest, keyword)?;
     }
-    let rest = match crate::catalog::skip_keyword(rest, "IF") {
-        Some(after_if) => crate::catalog::skip_keyword(after_if, "EXISTS")?,
+    let rest = match athena_sql::skip_keyword(rest, "IF") {
+        Some(after_if) => athena_sql::skip_keyword(after_if, "EXISTS")?,
         None => rest,
     };
-    Some(crate::catalog::skip_leading_trivia(rest))
+    Some(athena_sql::skip_leading_trivia(rest))
 }
 
 /// `.` で区切られた名前の並びを読む。引用符付きの識別子は中身を、無引用は小文字にして集める。
@@ -94,9 +94,9 @@ fn parse_qualified_name(input: &str) -> Option<Vec<String>> {
     loop {
         let (part, after) = read_name_part(rest)?;
         parts.push(part);
-        let after_trivia = crate::catalog::skip_leading_trivia(after);
+        let after_trivia = athena_sql::skip_leading_trivia(after);
         match after_trivia.strip_prefix('.') {
-            Some(next) => rest = crate::catalog::skip_leading_trivia(next),
+            Some(next) => rest = athena_sql::skip_leading_trivia(next),
             None => break,
         }
     }
@@ -107,9 +107,9 @@ fn parse_qualified_name(input: &str) -> Option<Vec<String>> {
 /// 無引用なら英数字と `_` の並びを小文字にして返す。
 fn read_name_part(input: &str) -> Option<(String, &str)> {
     if input.starts_with('"') {
-        let end = crate::catalog::skip_quoted(input.as_bytes(), 0);
+        let end = athena_sql::skip_quoted(input.as_bytes(), 0);
         let quoted = &input[..end];
-        Some((crate::catalog::unquote(quoted), &input[end..]))
+        Some((athena_sql::unquote(quoted), &input[end..]))
     } else {
         let end = input
             .as_bytes()

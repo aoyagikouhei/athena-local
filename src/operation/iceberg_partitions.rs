@@ -3,7 +3,7 @@
 //! `partitioning = ARRAY[...]` を読み、本物の `field_name`／`field_transform`／`column_name` にする
 //! （2026-09-24 実測 d2・d8）。
 
-use crate::catalog::{skip_quoted, unquote};
+use athena_sql::{skip_quoted, unquote};
 
 /// Trino の `SHOW CREATE TABLE` の DDL から `partitioning = ARRAY['s', 'bucket(n, 4)', 'day(ts)']` の
 /// 要素（`''` は `'` に戻す）を取り出す。`partitioning` が無ければ空。

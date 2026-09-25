@@ -6,7 +6,7 @@
 /// `(SELECT` と同じ判定にする（#64 のレビューで見つかった。本物も `( SELECT 1 )` と改行を挟んだ形を
 /// DML / SELECT にする。2026-09-24 実測。#146）。
 pub(super) fn words(query: &str) -> Vec<String> {
-    crate::catalog::words(query)
+    athena_sql::words(query)
         .into_iter()
         .map(|word| word.trim_start_matches('(').to_string())
         .filter(|word| !word.is_empty())
@@ -112,46 +112,46 @@ pub(super) fn fixed_column(query: &str) -> Option<(&'static str, &'static str)> 
 /// そうしないと `TBLPROPERTIES('comment' = 'x')` のようにキーワードの直後に空白なしで
 /// `(` や文字列リテラルが続く書き方を判定できない（3 本目のレビューで実測）。
 fn alter_table_action(query: &str) -> Option<&'static str> {
-    let after_alter = crate::catalog::skip_keyword(query, "ALTER")?;
-    let after_table = crate::catalog::skip_keyword(after_alter, "TABLE")?;
-    let name_start = after_table.len() - crate::catalog::skip_leading_trivia(after_table).len();
-    let name_end = crate::catalog::skip_qualified_name(after_table, name_start);
+    let after_alter = athena_sql::skip_keyword(query, "ALTER")?;
+    let after_table = athena_sql::skip_keyword(after_alter, "TABLE")?;
+    let name_start = after_table.len() - athena_sql::skip_leading_trivia(after_table).len();
+    let name_end = athena_sql::skip_qualified_name(after_table, name_start);
     let rest = &after_table[name_end..];
 
-    if let Some(after_add) = crate::catalog::skip_keyword(rest, "ADD") {
+    if let Some(after_add) = athena_sql::skip_keyword(rest, "ADD") {
         if skip_columns_keyword(after_add).is_some() {
             return Some("ALTER_TABLE_ADD_COLUMN");
         }
-        return crate::catalog::skip_keyword(after_add, "PARTITION")
+        return athena_sql::skip_keyword(after_add, "PARTITION")
             .map(|_| "ALTER_TABLE_ADD_PARTITION");
     }
-    if let Some(after_drop) = crate::catalog::skip_keyword(rest, "DROP") {
+    if let Some(after_drop) = athena_sql::skip_keyword(rest, "DROP") {
         // DROP が受けるのは単数形の COLUMN だけ。複数形は本物が
         // `mismatched input 'COLUMNS'. Expecting: '.', 'DROP'` で弾く（2026-09-21 実測）ので、
         // ADD と違って `skip_columns_keyword` は使わない。
-        if crate::catalog::skip_keyword(after_drop, "COLUMN").is_some() {
+        if athena_sql::skip_keyword(after_drop, "COLUMN").is_some() {
             return Some("ALTER_TABLE_DROP_COLUMN");
         }
-        return crate::catalog::skip_keyword(after_drop, "PARTITION")
+        return athena_sql::skip_keyword(after_drop, "PARTITION")
             .map(|_| "ALTER_TABLE_DROP_PARTITION");
     }
     // REPLACE の値だけ単数形の COLUMN で終わる（2026-09-21 実測）。受けるのは本物に構文がある
     // 複数形の COLUMNS だけで、単数形の `REPLACE COLUMN` は本物が StartQueryExecution で
     // `mismatched input 'REPLACE'` の構文エラーにする（2026-09-24 実測。#146）ので分類しない。
-    if let Some(after_replace) = crate::catalog::skip_keyword(rest, "REPLACE") {
-        return crate::catalog::skip_keyword(after_replace, "COLUMNS")
+    if let Some(after_replace) = athena_sql::skip_keyword(rest, "REPLACE") {
+        return athena_sql::skip_keyword(after_replace, "COLUMNS")
             .map(|_| "ALTER_TABLE_REPLACE_COLUMN");
     }
     // RENAME TO だけ分類する。RENAME COLUMN は本物に構文が無い（2026-09-21 実測）ので、
     // `TO` を要求すればそのまま None に落ちる。
-    if let Some(after_rename) = crate::catalog::skip_keyword(rest, "RENAME") {
-        return crate::catalog::skip_keyword(after_rename, "TO").map(|_| "ALTER_TABLE_RENAME");
+    if let Some(after_rename) = athena_sql::skip_keyword(rest, "RENAME") {
+        return athena_sql::skip_keyword(after_rename, "TO").map(|_| "ALTER_TABLE_RENAME");
     }
-    if let Some(after_set) = crate::catalog::skip_keyword(rest, "SET") {
-        if crate::catalog::skip_keyword(after_set, "TBLPROPERTIES").is_some() {
+    if let Some(after_set) = athena_sql::skip_keyword(rest, "SET") {
+        if athena_sql::skip_keyword(after_set, "TBLPROPERTIES").is_some() {
             return Some("ALTER_TABLE_PROPERTIES");
         }
-        if crate::catalog::skip_keyword(after_set, "LOCATION").is_some() {
+        if athena_sql::skip_keyword(after_set, "LOCATION").is_some() {
             return Some("ALTER_TABLE_SET_LOCATION");
         }
     }
@@ -162,8 +162,7 @@ fn alter_table_action(query: &str) -> Option<&'static str> {
 /// 受けないので使わない）。長い方から試す
 /// （先に `COLUMN` を試すと `COLUMNS` の `S` が識別子の文字として境界チェックに引っかかり None になる）。
 fn skip_columns_keyword(input: &str) -> Option<&str> {
-    crate::catalog::skip_keyword(input, "COLUMNS")
-        .or_else(|| crate::catalog::skip_keyword(input, "COLUMN"))
+    athena_sql::skip_keyword(input, "COLUMNS").or_else(|| athena_sql::skip_keyword(input, "COLUMN"))
 }
 
 #[cfg(test)]

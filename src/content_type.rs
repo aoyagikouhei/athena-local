@@ -5,7 +5,8 @@
 //! 判定をここに分けて置く。`.metadata` は本体と同じ値（36 項目すべて一致。例外は 140 MB の
 //! マルチパート本体だけで、athena-local は単一の PUT しかしない）。
 
-use crate::catalog::{skip_keyword, skip_leading_trivia, skip_quoted, words};
+use athena_sql::{skip_keyword, skip_leading_trivia, skip_quoted, words};
+
 use crate::results::ResultFile;
 
 /// 本物がエンジンの計画を通さずに置くファイルの値（実測ではどれも `QueryPlanningTimeInMillis` が

@@ -345,7 +345,7 @@ fn parse_qualified_name_と_catalog_skip_qualified_name_は同じ書き方を受
         let parts = parse_qualified_name(input).expect("parse_qualified_name");
         assert!(!parts.is_empty(), "{input:?}");
         assert_eq!(
-            crate::catalog::skip_qualified_name(input, 0),
+            athena_sql::skip_qualified_name(input, 0),
             input.len(),
             "{input:?}"
         );

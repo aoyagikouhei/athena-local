@@ -45,7 +45,7 @@ impl ResultFile {
     /// （2026-09-22 実測。#52）。文の種類だけで決まり、SQL の残りは見ない。
     /// 2 語目まで見るのは CTAS（`is_create_table_as`）と `SHOW FUNCTIONS` だけ。
     pub fn of(query: &str) -> Self {
-        let words = crate::catalog::words(query);
+        let words = athena_sql::words(query);
         // 先頭の `(` は取り除いて判定する。`( SELECT` のように `(` だけの語が先頭に来たら、
         // その次の語で判定する（`operation/classification.rs` の `words` と同じ扱い。#64）。
         let first = words
