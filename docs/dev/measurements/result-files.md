@@ -528,7 +528,25 @@
 
 ### キーワードの直後に空白が無い形の Content-Type（詳細は statements.md）
 - 空白の有無で置き場所・Content-Type・`.metadata` が一致することを 2026-09-25 に実測した（issue #200）。表は分類が主題のため [statements.md](statements.md) の「キーワードの直後に空白が無い形（`SELECT(1)` など）」に置いてある
-- 同じラウンドで分かった、語の境界と無関係な既存の差: `SELECT (1)`（括弧付きリテラル）は本物で binary、athena-local は application（[#205](https://github.com/aoyagikouhei/athena-local/issues/205)、[docs/result-files.md](../../result-files.md) に記載済み）
+- 同じラウンドで分かった、語の境界と無関係な既存の差: `SELECT (1)`（括弧付きリテラル）は本物で binary、athena-local は application（[#205](https://github.com/aoyagikouhei/athena-local/issues/205)。下の「括弧付きのリテラルと符号の後ろの空白の Content-Type」で測り直して揃えた）
+
+### 括弧付きのリテラルと符号の後ろの空白の Content-Type
+- 日付: 2026-09-25（09:33 UTC、run-20260925-092542） ／ issue: #205 ／ スクリプト: `tools/measure/parenthesized-literal.sh` ／ 生データ: `$HOME/athena-parenthesized-literal-measurements/run-20260925-092542`
+- 相手: 本物の Athena（StartQueryExecution 28 本（preflight の `SHOW TABLES` 1 本 + 27 項目）、ラウンド 1。DDL 無し・スキャン無し）
+- 投げたもの: 対照（`SELECT 1`・`SELECT 1 + 1`・`SELECT (1)`）、括弧で包んだリテラル 15 形、括弧が式・行・NULL・CAST を包む 5 形、符号の変種 4 形
+- 返ったもの（全項目 SUCCEEDED・DML／SELECT・`<id>.csv`。本体と `.metadata` の Content-Type は全項目で一致）:
+
+  | 文 | Content-Type | `.metadata` の field 1 |
+  |---|---|---|
+  | `SELECT 1`（対照）、`SELECT (1)`（対照。#200 と同じ） | binary | QueryExecutionId |
+  | `SELECT ((1))`、`SELECT (1), 2`、`SELECT 1, (2)`、`SELECT (1) AS x`、`SELECT (1) x`、`SELECT (1) AS "x"`、`SELECT ('a')`、`SELECT (-1)`、`SELECT (1.5)`、`SELECT (1.5E0)`、`SELECT (true)`、`SELECT ( 1 )`、`SELECT (/* c */ 1)`、`SELECT ('a') AS s, (2) AS t` | binary | QueryExecutionId |
+  | `SELECT - 1`（`-` と数の間に空白） | binary | QueryExecutionId |
+  | `SELECT 1 + 1`（対照） | application | エンジン ID |
+  | `SELECT (1 + 1)`、`SELECT (1) + 1`、`SELECT (1, 2)`、`SELECT (NULL)`、`SELECT (CAST(1 AS BIGINT))` | application | エンジン ID |
+  | `SELECT -(1)`、`SELECT - (1)`、`SELECT -(-1)`、`SELECT +1` | application | エンジン ID |
+
+- 採用: 括弧は何重でもリテラルを包むだけで、括弧の外の符号と `+` は式になる。Trino の文法（数値リテラルは `MINUS? INTEGER_VALUE` で、`-` は別のトークン。括弧は式を包むだけ）と整合する。athena-local は `is_literal_only_select` で括弧の対を読み、`athena_sql::Cursor::literal` で `-` と数の間の空白・コメントを読み飛ばすようにした。3 重以上の括弧と `-` と数の間のコメントは測っておらず、それぞれ 2 重の括弧・空白からの一般化（`(-1)` が binary で `-(1)` が application に割れたので、本物は括弧の深さではなく構文木でリテラルかを見ていると読んだ）
+- 備考: binary の項目の `.metadata` の先頭は QueryExecutionId で、athena-local はエンジン ID を書く（リテラルだけの SELECT 全体の既存の差。#70 の生データでも同じ。[#210](https://github.com/aoyagikouhei/athena-local/issues/210)）
 
 ## 値の表記
 

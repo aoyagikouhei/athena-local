@@ -111,21 +111,24 @@ which athena-local never produces.
 
 | Statement | Content-Type |
 | --- | --- |
-| `SELECT` of literals only: `SELECT 1`, `SELECT 1, 2`, `SELECT 'a'`, `SELECT 1.5`, `SELECT -1`, `SELECT 1.5E0`, `SELECT true`, `SELECT 1, 'a'`, `SELECT 1 AS i`, `SELECT 1 AS "x"`, `SELECT 1 i`, `SELECT 1 AS i, 2 AS j`, `select 1`, with or without comments | `binary/octet-stream` |
-| Any other `SELECT`: an expression (`SELECT 1 + 1`, `SELECT 'a' \|\| 'b'`), a `CAST`, `NULL`, a typed literal (`DATE '2020-01-01'`), `ARRAY[1]`, a `WHERE`, a `LIMIT`, a `FROM`, `(SELECT 1)`, `VALUES 1`, `UNION`, or a table | `application/octet-stream` |
+| `SELECT` of literals only: `SELECT 1`, `SELECT 1, 2`, `SELECT 'a'`, `SELECT 1.5`, `SELECT -1`, `SELECT - 1`, `SELECT 1.5E0`, `SELECT true`, `SELECT 1, 'a'`, `SELECT 1 AS i`, `SELECT 1 AS "x"`, `SELECT 1 i`, `SELECT 1 AS i, 2 AS j`, `select 1`, a literal in parentheses (`SELECT (1)`, `SELECT ((1))`, `SELECT (1) AS x`, `SELECT ('a')`, `SELECT (-1)`, `SELECT (1), 2`), with or without comments | `binary/octet-stream` |
+| Any other `SELECT`: an expression (`SELECT 1 + 1`, `SELECT (1 + 1)`, `SELECT 'a' \|\| 'b'`), a sign outside parentheses (`SELECT -(1)`) or a `+` sign (`SELECT +1`), a `CAST`, `NULL` (also `(NULL)`), a row (`SELECT (1, 2)`), a typed literal (`DATE '2020-01-01'`), `ARRAY[1]`, a `WHERE`, a `LIMIT`, a `FROM`, `(SELECT 1)`, `VALUES 1`, `UNION`, or a table | `application/octet-stream` |
 | `SHOW TABLES`, `SHOW DATABASES`, `SHOW COLUMNS`, `SHOW TBLPROPERTIES`, `SHOW VIEWS`, `SHOW PARTITIONS`, `SHOW CREATE VIEW`, `SHOW CREATE TABLE` on an Iceberg table (see [DDL](ddl.md#ddl-that-depends-on-the-target-tables-format)) | `binary/octet-stream` |
 | `DESCRIBE` and `SHOW CREATE TABLE` on a Hive table (an Iceberg table gets `binary/octet-stream`; see [DDL](ddl.md#ddl-that-depends-on-the-target-tables-format)), `DESC`, `EXPLAIN`, `SHOW FUNCTIONS` (the `<id>.csv` above) | `application/octet-stream` |
 | Column-less DDL (`CREATE DATABASE`, `DROP DATABASE`, ...) | `binary/octet-stream` |
 | `INSERT`, `UPDATE`, `DELETE`, `MERGE`, CTAS (`.metadata` only) | `application/octet-stream` |
 
 athena-local recognises a literals-only `SELECT` as a comma-separated list of
-numbers (an optional `-` directly before the digits, an optional fraction and
+numbers (an optional `-` before the digits, an optional fraction and
 an optional exponent), single-quoted strings and `true`/`false`, each
+optionally wrapped in any number of balanced parentheses and
 optionally followed by an alias (with or without `AS`, unquoted or
 double-quoted), with nothing after it but whitespace and comments; keyword
-case does not matter. The forms measured are the ones in the table; the only
+case does not matter. The forms measured are the ones in the table (the
+parenthesised ones and `SELECT - 1` on 2026-09-25, issue #205); the only
 generalisations are combining them, a lowercase `e` or a signed exponent
-(`SELECT -1.5e-1 x`), and keyword case.
+(`SELECT -1.5e-1 x`), more than two pairs of parentheses, a comment between
+`-` and the digits, and keyword case.
 Everything else is sent as `application/octet-stream`, the value Athena gave
 every measured `SELECT` that is not literals only. Two measured forms cannot be
 compared: Athena writes `SELECT 1;` as `binary/octet-stream`, but Trino
@@ -133,11 +136,6 @@ rejects the trailing `;`, so athena-local fails it at the syntax check; and
 Athena rejects `SHOW SESSION` and `SHOW STATS FOR t` at `StartQueryExecution`
 (`InvalidRequestException`, `no viable alternative`), while Trino runs them, so
 athena-local writes their `<id>.txt` with the `binary/octet-stream` default.
-A known difference, not related to keyword spacing: `SELECT (1)`, a
-parenthesised literal, is `binary/octet-stream` on real Athena but
-`application/octet-stream` here, because athena-local's literals-only check
-does not look inside parentheses
-([#205](https://github.com/aoyagikouhei/athena-local/issues/205)).
 `SHOW CREATE VIEW` is `binary/octet-stream` for both the `.txt` and its
 `.metadata`, with `SubstatementType` `SHOW_CREATE_VIEW`, unlike
 `SHOW CREATE TABLE` on a Hive table (measured 2026-09-24, also with a `/* c */` between

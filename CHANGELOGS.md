@@ -92,6 +92,10 @@ later name the date they were measured on.
   plain `CREATE TABLE` whose table name has a double-quoted part, with real
   Athena's own message, instead of running them on Trino (measured
   2026-09-25) ([docs](docs/caveats.md#sql-dialect)).
+- A `SELECT` of literals in parentheses (`SELECT (1)`, `SELECT ((1)) AS x`,
+  `SELECT ('a')`) or of `- 1` writes its result file and `.metadata` as
+  `binary/octet-stream`, as real Athena does (measured 2026-09-25)
+  ([docs](docs/result-files.md#result-files)).
 
 ## [0.5.0] - 2026-09-23
 
