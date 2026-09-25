@@ -1,0 +1,398 @@
+tests/catalog.rs [athena_local] パラメータ付きでも別名を当ててから包み_投げ直す_sql_にも当てる
+tests/catalog.rs [athena_local] 修飾名のカタログは別名にして送り_構文チェックと実行情報は受け取った_sql_のまま
+tests/catalog.rs [athena_local] 別名に無いカタログと既定のカタログはそのまま送る
+tests/catalog.rs [athena_local] 別名のカタログは差し替えて送り_実行情報には受け取った名前を返す
+tests/catalog.rs [athena_local] 実行情報の_catalog_は小文字で返し_database_は受け取ったまま返す
+tests/catalog.rs [athena_local] 省略した_catalog_と_database_は既定を_trino_に送るだけで実行情報には返さない
+tests/describe.rs [athena_local] desc_は_describe_と同じく形式を問い合わせて同じ行を返し_describe_table_になる
+tests/describe.rs [athena_local] desc_は_iceberg_でも_describe_と同じ行を返す
+tests/describe.rs [athena_local] desc_もビューなら_describe_と同じ形で_desc_view_になる
+tests/describe.rs [athena_local] describe_は_hive_なら今までどおり_update_count_無しで_application_で先頭が実行_id
+tests/describe.rs [athena_local] describe_は_hive_のパーティション付きのテーブルで本物の_3_列と見出し行群を返す
+tests/describe.rs [athena_local] describe_は_hive_カタログのビューなら_column_と_type_の_2_列で_desc_view_になる
+tests/describe.rs [athena_local] describe_は_iceberg_なら_update_count_0_で本体も_metadata_も_binary_で先頭がエンジン_id
+tests/describe.rs [athena_local] describe_は_iceberg_のパーティション付きのテーブルで本物の_d2_の_15_行を返す
+tests/describe.rs [athena_local] describe_は_iceberg_の引用符付きの修飾名にも別名を当てて_show_create_table_を問い合わせる
+tests/describe.rs [athena_local] describe_は_iceberg_カタログのビューでも同じ形で_show_create_table_を投げない
+tests/describe.rs [athena_local] describe_は_show_create_table_が失敗しても成功のままでパーティション行を出さない
+tests/describe.rs [athena_local] show_columns_は_20_文字以上の列名を詰めずに_txt_では行を改行でつなぐ
+tests/describe.rs [athena_local] show_columns_は_hive_なら_field_の_1_列で列名を_20_桁に左詰めする
+tests/describe.rs [athena_local] show_columns_は_iceberg_なら列名を詰めない
+tests/describe.rs [athena_local] show_columns_もビューなら_describe_と同じ形で_desc_view_になる
+tests/describe.rs [athena_local] ビューへの_describe_も完了前は_describe_table_のまま
+tests/describe.rs [athena_local] 結果_s3_が無効でも_describe_は形式を問い合わせ_iceberg_なら_update_count_が_0
+tests/describe.rs [athena_local] 結果_s3_が無効でも_show_columns_は形式を問い合わせ_iceberg_なら詰めない
+tests/dml.rs [athena_local] ddl_は_statement_type_が_ddl_になり_件数の無い_ddl_は_update_count_を省く
+tests/dml.rs [athena_local] dml_は行を返さず_update_count_を返す
+tests/dml.rs [athena_local] trino_のエラーは_failed_と理由になる
+tests/dml.rs [athena_local] エラー本文は_type_と_athena_error_code_と_error_code_と_message_の_4_つを持つ
+tests/dml.rs [athena_local] 偽_trino_は_sql_ごとに応答を変えられる
+tests/dml.rs [athena_local] 先頭のコメントを読み飛ばして_statement_type_と_update_count_を決める
+tests/dml.rs [athena_local] 失敗したクエリには_athena_error_が付き_成功したクエリには付かない
+tests/dml.rs [athena_local] 未対応のオペレーションはエラーになる
+tests/dml.rs [athena_local] 知らない実行_id_はエラーになる
+tests/failed_results.rs [athena_local] 失敗した_select_と_insert_と_explain_は何も置かない
+tests/failed_results.rs [athena_local] 失敗した_show_は_failed_の理由を_txt_に置く
+tests/failed_results.rs [athena_local] 失敗の理由のファイルが書けなくても_failed_の理由は変わらない
+tests/failed_results.rs [athena_local] 失敗の理由のファイルを書き終わるまで_failed_にしない
+tests/idempotency.rs [athena_local] トークンが無ければ_invalid_input_になる
+tests/idempotency.rs [athena_local] トークンの表記の違いは正規化しない
+tests/idempotency.rs [athena_local] トークンの長さは_32_文字以上_128_バイト以下
+tests/idempotency.rs [athena_local] 同じトークンで2回呼ぶと同じ_id_が返り_trino_への本体は1回になる
+tests/idempotency.rs [athena_local] 同じトークンで_catalog_database_output_location_のどれかを変えると衝突になる
+tests/idempotency.rs [athena_local] 同じトークンで_execution_parameters_か_work_group_を変えても同じ_id_が返る
+tests/idempotency.rs [athena_local] 同じトークンでクエリを変えると_idempotent_parameter_mismatch_になる
+tests/idempotency.rs [athena_local] 同じトークンを50本同時に送っても_id_は1つで実行は1本になる
+tests/idempotency.rs [athena_local] 同時に2回呼んでも実行は1本だけになる
+tests/list_work_groups.rs [athena_local] max_results_が範囲外ならエラーにする
+tests/list_work_groups.rs [athena_local] max_results_でページングされ_next_token_を辿ると続きが取れる
+tests/list_work_groups.rs [athena_local] max_results_を省くと_50_件ずつ返す
+tests/list_work_groups.rs [athena_local] state_と_engine_version_は_get_work_group_と同じ値を返す
+tests/list_work_groups.rs [athena_local] summary_の項目は_name_state_description_engine_version_の_4_つ
+tests/list_work_groups.rs [athena_local] trino_には一切問い合わせない
+tests/list_work_groups.rs [athena_local] 不正な_next_token_はエラーにする
+tests/list_work_groups.rs [athena_local] 設定が無ければ_primary_の_1_件を返す
+tests/list_work_groups.rs [athena_local] 設定した名前をその順に返す
+tests/metadata.rs [athena_local] _0_行の_select_でも_metadata_を置く
+tests/metadata.rs [athena_local] alter_table_add_columns_は_hive_なら_38_バイトの_metadata_を置く
+tests/metadata.rs [athena_local] describe_の_metadata_は先頭が実行_id_になる
+tests/metadata.rs [athena_local] drop_table_は_iceberg_なら_41_バイトの_metadata_を置く
+tests/metadata.rs [athena_local] insert_と_ctas_は_metadata_だけを置く
+tests/metadata.rs [athena_local] merge_の_metadata_は_update_と同じ形で_update_type_の長さだけが違う
+tests/metadata.rs [athena_local] metadata_の書き込みに失敗しても_succeeded_のまま
+tests/metadata.rs [athena_local] select_は_csv_の隣に_csv_metadata_を置く
+tests/metadata.rs [athena_local] show_create_table_の_metadata_も先頭が実行_id_になる
+tests/metadata.rs [athena_local] show_は_txt_の隣に_txt_metadata_を置く
+tests/metadata.rs [athena_local] txt_の書き込みに失敗したら_metadata_は試みない
+tests/metadata.rs [athena_local] update_は本体を置かず_csv_metadata_だけを置く
+tests/metadata.rs [athena_local] 先頭のコメントを読み飛ばして_metadata_のクエリ_id_の出どころを決める
+tests/metadata.rs [athena_local] 行の無い_insert_も_metadata_だけを置き_更新件数_0_を書く
+tests/parameters.rs [athena_local] パラメータが_null_なら無いものとして扱う
+tests/parameters.rs [athena_local] パラメータの数が合わなければ_failed_になり投げ直さない
+tests/parameters.rs [athena_local] パラメータ付きの_dml_は元の_sql_で種別が決まり更新件数が返る
+tests/parameters.rs [athena_local] プレースホルダの無い_sql_に渡した値は捨てて実行し直す
+tests/parameters.rs [athena_local] 値は式か文字列かに分類されて_execute_immediate_で包まれる
+tests/parameters.rs [athena_local] 意味エラーの値は文字列にならず本体の失敗になる
+tests/parameters.rs [athena_local] 括弧を抜けて列が増える値は文字列になる
+tests/parameters.rs [athena_local] 空のパラメータなら分類もせず_sql_をそのまま送る
+tests/request.rs [athena_local] integer_の範囲外は上限の検証になる
+tests/request.rs [athena_local] null_の項目と未知のキーは無いのと同じ
+tests/request.rs [athena_local] エラー応答に_x_amzn_errortype_ヘッダを付けない
+tests/request.rs [athena_local] 型違いは_serialization_exception_になり文言は型の組み合わせで決まる
+tests/request.rs [athena_local] 型違いは枠組みの検証より先
+tests/request.rs [athena_local] 小数の_max_results_は_message_を付けずに弾く
+tests/request.rs [athena_local] 必須の項目の欠落と_null_は枠組みの検証になる
+tests/request.rs [athena_local] 未対応のオペレーションと_x_amz_target_の異常は_unknown_operation_exception
+tests/request.rs [athena_local] 本文そのものの異常は_message_無しの_serialization_exception_になる
+tests/request.rs [athena_local] 配列の要素の_null_は無いのと同じ
+tests/results.rs [athena_local] describe_と_explain_は_txt_と_metadata_を_application_で書く
+tests/results.rs [athena_local] dml_と_ctas_は_metadata_だけを置き_ddl_は_0_バイトの_txt_を書く
+tests/results.rs [athena_local] explain_の結果は_txt_の先頭に列名行を入れて書く
+tests/results.rs [athena_local] s3_の形でない出力先はどちらのモードでも受け付けない
+tests/results.rs [athena_local] select_の結果を_csv_で書き_フルパスを返す
+tests/results.rs [athena_local] show_functions_の結果は_select_と同じ_csv_で書く
+tests/results.rs [athena_local] show_の結果を_txt_で書く
+tests/results.rs [athena_local] txt_の書き込みに失敗しても_succeeded_のままになる
+tests/results.rs [athena_local] リテラルだけの_select_は_csv_と_metadata_を_binary_で書く
+tests/results.rs [athena_local] 先頭のコメントを読み飛ばして_output_location_を決める
+tests/results.rs [athena_local] 応答しない_s3_には_put_を諦めて_failed_になる
+tests/results.rs [athena_local] 既定の出力先を使い_末尾スラッシュが無くても同じ場所に置く
+tests/results.rs [athena_local] 書かないモードでもフルパスは返し_出力先が無ければ項目ごと省く
+tests/results.rs [athena_local] 書き終わるまで_succeeded_にしない
+tests/results.rs [athena_local] 書き込みに失敗すると_failed_になり理由が残る
+tests/results.rs [athena_local] 書くモードで出力先も既定も無ければ受け付けない
+tests/retention.rs [athena_local] 保持期限を過ぎたあとに同じトークンを再送すると新しい_id_になる
+tests/retention.rs [athena_local] 実行の完了が遅れても保持期限切れまで待ち切る
+tests/retention.rs [athena_local] 実行中のクエリは保持期限を過ぎても消えない
+tests/retention.rs [athena_local] 終わったクエリは保持期限を過ぎると知らない_id_と同じ_400_になる
+tests/select.rs [athena_local] explain_type_validate_の真偽値の結果も文字列にして末尾に空行を足す
+tests/select.rs [athena_local] explain_の結果には_select_と同じく列名行が入る
+tests/select.rs [athena_local] max_results_が枠組みの上限を超えると_1000_の文言より先に枠組みの検証になる
+tests/select.rs [athena_local] max_results_が範囲外ならエラーにする
+tests/select.rs [athena_local] max_results_でページングされ_next_token_で続きが取れる
+tests/select.rs [athena_local] next_token_はページが満杯なら残りが無くても付き_次のページは空になる
+tests/select.rs [athena_local] show_functions_の結果には_utility_でも列名行が入る
+tests/select.rs [athena_local] show_schemas_の列は本物の_show_databases_と同じ_database_name_の_string
+tests/select.rs [athena_local] show_と_describe_の結果には列名行が入らない
+tests/select.rs [athena_local] trino_が複数ページで返しても全行そろう
+tests/select.rs [athena_local] カタログとスキーマはヘッダで渡り_sql_は書き換えられない
+tests/select.rs [athena_local] 不正な_next_token_はエラーにする
+tests/select.rs [athena_local] 先頭行に列名が入り値は文字列で返る
+tests/select.rs [athena_local] 文脈が無いときは設定の既定を使う
+tests/select.rs [athena_local] 日時を精度どおりに受け取るよう_trino_に伝える
+tests/select.rs [athena_local] 結果の無いクエリでも_max_results_の上限は先に見る
+tests/select.rs [athena_local] 行の無い_utility_の結果は_next_token_を無視する
+tests/select.rs [athena_local] 配列の列は_athena_の表記で返る
+tests/show_create.rs [athena_local] show_create_table_の_get_query_results_は形式によらず本体の行ごとに分ける
+tests/show_create.rs [athena_local] show_create_table_は_hive_なら今までどおり_application_で先頭が実行_id
+tests/show_create.rs [athena_local] show_create_table_は_iceberg_なら本体も_metadata_も_binary_で先頭がエンジン_id
+tests/show_create.rs [athena_local] show_create_view_の_get_query_results_は本体の行ごとに分ける
+tests/show_create.rs [athena_local] show_create_view_は本体も_metadata_も_binary_で先頭がエンジン_id
+tests/show_create.rs [athena_local] 結果_s3_が無効でも_show_create_table_は形式を問い合わせ_iceberg_なら_update_count_が_0
+tests/startup.rs [athena_local] 不正な環境変数で止まるときは理由を平文で標準エラーに出す
+tests/statistics.rs [athena_local] 止めたクエリは止めた時点までの時間が入る
+tests/statistics.rs [athena_local] 終わったクエリは_trino_を待った時間が実行時間に入り足すと全体になる
+tests/stop.rs [athena_local] 取り消した_show_は失敗の理由のファイルも置かない
+tests/stop.rs [athena_local] 取り消したクエリは結果も_metadata_も置かない
+tests/stop.rs [athena_local] 失敗したクエリの結果取得は最終状態を返し理由は載せない
+tests/stop.rs [athena_local] 実行中に止めるとすぐ_cancelled_になり_trino_に_delete_が届く
+tests/stop.rs [athena_local] 最初の応答を待っている間に止めても_応答が来たら_delete_を送り続きは辿らない
+tests/stop.rs [athena_local] 知らない_id_は止められない
+tests/stop.rs [athena_local] 終わったクエリを止めても_200_で状態も結果も変わらない
+tests/stop.rs [athena_local] 結果取得のエラーは実行中と止めたあとで文言が変わる
+tests/syntax.rs [athena_local] パラメータ付きでも値を当てる前の_sql_で確かめる
+tests/syntax.rs [athena_local] ブロックコメント付きの_show_create_table_も本物と違いそのまま通る
+tests/syntax.rs [athena_local] 構文が正しければ確かめたうえでそのまま実行する
+tests/syntax.rs [athena_local] 構文エラーは開始時に_400_で弾き_本体は_trino_に送らない
+tests/syntax.rs [athena_local] 構文エラー以外の失敗は開始時には返さず実行に任せる
+tests/syntax.rs [athena_local] 複数行の文でも元の_sql_の行で数える
+tests/table_format.rs [athena_local] alter_table_add_columns_は_hive_なら本体_0_バイトのまま_metadataを_38_バイト書く
+tests/table_format.rs [athena_local] alter_table_add_columns_は_iceberg_なら今までどおり_0_バイトのまま_metadataも置かない
+tests/table_format.rs [athena_local] drop_table_は_hive_なら今までどおり_0_バイトのまま
+tests/table_format.rs [athena_local] drop_table_は_iceberg_なら改行1つと_41_バイトを書く
+tests/table_format.rs [athena_local] 修飾名でカタログを指す文も形式を問い合わせて判定する
+tests/table_format.rs [athena_local] 列を変える_alter_table_以外は形式を問い合わせない
+tests/table_format.rs [athena_local] 別名を当てたカタログ名で形式を問い合わせる
+tests/table_format.rs [athena_local] 取り消したなら本体も_metadata_も置かない
+tests/table_format.rs [athena_local] 取り消し済みなら形式の問い合わせも届かない
+tests/table_format.rs [athena_local] 存在しないテーブルの_drop_table_if_existsは_iceberg_でも今までどおり_0_バイトのまま
+tests/table_format.rs [athena_local] 対象外の文では形式を問い合わせない
+tests/table_format.rs [athena_local] 引用符付きのカタログ名にも別名を当てて問い合わせる
+tests/table_format.rs [athena_local] 結果_s3_が無効なら_drop_table_でも形式を問い合わせない
+tests/waiting.rs [athena_local] run_query_は実行の完了が_2_秒を超えても待ち切る
+tests/waiting.rs [athena_local] wait_for_は_2_秒を超えても条件が成り立つまで待つ
+tests/work_group.rs [athena_local] output_location_が無ければ_result_configuration_は空になる
+tests/work_group.rs [athena_local] output_location_が設定されていれば反映する
+tests/work_group.rs [athena_local] primary_の設定を返す
+tests/work_group.rs [athena_local] start_query_execution_で指定した_work_group_を_get_query_execution_が返す
+tests/work_group.rs [athena_local] trino_には一切問い合わせない
+tests/work_group.rs [athena_local] work_group_を省くと_primary_になる
+tests/work_group.rs [athena_local] 任意の名前でも同じ設定を返す_本物と違い名前でエラーにしない
+unittests src/lib.rs [athena_local] catalog::tests::リテラルやコメントが閉じた後ろは置き換える
+unittests src/lib.rs [athena_local] catalog::tests::修飾名がいくつあってもそれぞれ置き換える
+unittests src/lib.rs [athena_local] catalog::tests::別名の方が長ければ空白で埋めずに置き換える
+unittests src/lib.rs [athena_local] catalog::tests::引用符の無い名前と大文字小文字の違う名前は置き換えない
+unittests src/lib.rs [athena_local] catalog::tests::引用符付きのカタログ名を別名にして桁を空白で揃える
+unittests src/lib.rs [athena_local] catalog::tests::後ろに点が続かなければ置き換えない
+unittests src/lib.rs [athena_local] catalog::tests::文字列リテラルとコメントの中は置き換えない
+unittests src/lib.rs [athena_local] catalog::tests::桁は文字数で揃える
+unittests src/lib.rs [athena_local] catalog::tests::空白や改行やコメントを挟んで続く点でも置き換える
+unittests src/lib.rs [athena_local] catalog::tests::置き換える箇所が無ければ受け取った_sql_を借りたまま返す
+unittests src/lib.rs [athena_local] catalog::tests::識別子の二重の引用符は中身として比べて別名では二重にする
+unittests src/lib.rs [athena_local] catalog::tests::閉じていない引用符やコメントでも止まらない
+unittests src/lib.rs [athena_local] config::tests::s3_で設定が足りないか形が崩れていれば起動時エラーにする
+unittests src/lib.rs [athena_local] config::tests::s3_なら接続先と認証情報を読み_region_の既定は_us_east_1
+unittests src/lib.rs [athena_local] config::tests::カンマ区切りで読み前後の空白を捨てて辞書順に並べる
+unittests src/lib.rs [athena_local] config::tests::ワークグループの既定は_primary_の_1_件
+unittests src/lib.rs [athena_local] config::tests::保持期限が数として読めないか_0_なら起動時エラーにする
+unittests src/lib.rs [athena_local] config::tests::保持期限の既定は_1_時間
+unittests src/lib.rs [athena_local] config::tests::保持期限は秒の整数で読む
+unittests src/lib.rs [athena_local] config::tests::別名があれば差し替え無ければそのまま
+unittests src/lib.rs [athena_local] config::tests::別名を_1_件読む
+unittests src/lib.rs [athena_local] config::tests::形式が崩れていればエラーにする
+unittests src/lib.rs [athena_local] config::tests::接続先は_s3_専用の変数を優先し_無ければ共通の変数を読む
+unittests src/lib.rs [athena_local] config::tests::既定の出力先があれば警告を出さない
+unittests src/lib.rs [athena_local] config::tests::既定の出力先が無ければ警告を出す
+unittests src/lib.rs [athena_local] config::tests::未設定か_none_なら結果は書かない
+unittests src/lib.rs [athena_local] config::tests::空の要素があれば起動時エラーにする
+unittests src/lib.rs [athena_local] config::tests::複数件を読み前後の空白は無視する
+unittests src/lib.rs [athena_local] content_type::tests::show_functions_は_csv_として_application
+unittests src/lib.rs [athena_local] content_type::tests::txt_は_show_と_ddl_が_binary_で_describe_explain_show_create_table_が_application
+unittests src/lib.rs [athena_local] content_type::tests::リテラルだけの_select_は_binary
+unittests src/lib.rs [athena_local] content_type::tests::リテラル以外を含む_select_は_application
+unittests src/lib.rs [athena_local] content_type::tests::本体を書かない_insert_と_ctas_は_metadata_の値として_application
+unittests src/lib.rs [athena_local] convert::athena_type::tests::列情報の型は_athena_の実測と同じになる
+unittests src/lib.rs [athena_local] convert::athena_type::tests::型情報が無ければ型名の文字列から基底名を取る
+unittests src/lib.rs [athena_local] convert::athena_type::tests::複合型の列は基底名だけになる
+unittests src/lib.rs [athena_local] convert::render::tests::map_の値が複合型なら値の型で書く
+unittests src/lib.rs [athena_local] convert::render::tests::map_はキー昇順で_key_value_と書く
+unittests src/lib.rs [athena_local] convert::render::tests::row_の配列
+unittests src/lib.rs [athena_local] convert::render::tests::varbinary_は_16_進を空白で区切る
+unittests src/lib.rs [athena_local] convert::render::tests::トップレベルのスカラは型があっても変わらない
+unittests src/lib.rs [athena_local] convert::render::tests::入れ子の配列
+unittests src/lib.rs [athena_local] convert::render::tests::名前付き_row_は_name_value_と書く
+unittests src/lib.rs [athena_local] convert::render::tests::型と値の形が合わない部分は_json_のまま返す
+unittests src/lib.rs [athena_local] convert::render::tests::型情報が無ければ_json_のまま返す
+unittests src/lib.rs [athena_local] convert::render::tests::型情報が読めなければ_json_のまま返す
+unittests src/lib.rs [athena_local] convert::render::tests::数値として比べるときも読めないキーは後ろに文字列の順で置く
+unittests src/lib.rs [athena_local] convert::render::tests::数値キーの_map
+unittests src/lib.rs [athena_local] convert::render::tests::数値キーの_map_は数値の順に並べる
+unittests src/lib.rs [athena_local] convert::render::tests::整数は桁を変えない
+unittests src/lib.rs [athena_local] convert::render::tests::浮動小数点数は_java_の表記にする
+unittests src/lib.rs [athena_local] convert::render::tests::無名_row_は値だけを波括弧に並べる
+unittests src/lib.rs [athena_local] convert::render::tests::空配列
+unittests src/lib.rs [athena_local] convert::render::tests::複合型の中の_varbinary_は_java_の_byte_配列の_tostring_の形にする
+unittests src/lib.rs [athena_local] convert::render::tests::配列の_decimal_真偽値_日付_時刻
+unittests src/lib.rs [athena_local] convert::render::tests::配列の中の浮動小数点数も_java_の表記にする
+unittests src/lib.rs [athena_local] convert::render::tests::配列の文字列はクオートせず_null_は_null_と書く
+unittests src/lib.rs [athena_local] convert::render::tests::配列は区切りに空白が入る
+unittests src/lib.rs [athena_local] convert::result_set::tests::作り直した列情報があれば_trino_の列と固定の列より優先する
+unittests src/lib.rs [athena_local] convert::result_set::tests::列ごとに自分の型で書く
+unittests src/lib.rs [athena_local] convert::result_set::tests::列の無い結果は列名行も作らない
+unittests src/lib.rs [athena_local] convert::result_set::tests::固定の列名と型があれば_trino_の列をその名前と型に置き換える
+unittests src/lib.rs [athena_local] failure::tests::athena_local_側の失敗はシステムのエラーで再試行できる
+unittests src/lib.rs [athena_local] failure::tests::実測したエラー名はその_error_type_になる
+unittests src/lib.rs [athena_local] failure::tests::実測していない名前は汎用の番号になる
+unittests src/lib.rs [athena_local] failure::tests::理由は_error_name_と_message_をつないだもの
+unittests src/lib.rs [athena_local] metadata::tests::列名の長さは文字数ではなくバイト数で数える
+unittests src/lib.rs [athena_local] metadata::tests::実測した_0_行の_select_の_metadata_と同じバイト列になる
+unittests src/lib.rs [athena_local] metadata::tests::実測した_describe_の_metadata_と同じバイト列になる
+unittests src/lib.rs [athena_local] metadata::tests::実測した_select_の_metadata_と同じバイト列になる
+unittests src/lib.rs [athena_local] metadata::tests::実測した_update_の_metadata_と同じバイト列になる
+unittests src/lib.rs [athena_local] metadata::tests::更新件数が_0_でも_field_3_を書く
+unittests src/lib.rs [athena_local] metadata::tests::未実測の型は同じ系統の型と同じフィールドを出す
+unittests src/lib.rs [athena_local] metadata::tests::長い列名では長さの_varint_が_2_バイトになる
+unittests src/lib.rs [athena_local] operation::classification::tests::statement_type_は先頭のキーワードで決まる
+unittests src/lib.rs [athena_local] operation::classification::tests::substatement_type_は_alter_table_のキーワードの直後に空白が無くても分類する
+unittests src/lib.rs [athena_local] operation::classification::tests::substatement_type_は_alter_table_の判定でテーブル名の後ろのトリビアを跨いでも正しく分類する
+unittests src/lib.rs [athena_local] operation::classification::tests::substatement_type_はキーワードの直後が識別子の文字かどうかで一致を決める
+unittests src/lib.rs [athena_local] operation::classification::tests::substatement_type_はキーワードの間のコメントを空白として読む
+unittests src/lib.rs [athena_local] operation::classification::tests::substatement_type_はトリビアが何個どこに挟まっても同じ結果になる
+unittests src/lib.rs [athena_local] operation::classification::tests::substatement_type_は大文字小文字を無視し多バイト文字と短い入力でも破綻しない
+unittests src/lib.rs [athena_local] operation::classification::tests::substatement_type_は実測した文の種類を返す
+unittests src/lib.rs [athena_local] operation::completion::tests::explain_でない文と文字列でない値は分けない
+unittests src/lib.rs [athena_local] operation::completion::tests::explain_の真偽値の結果は文字列にしてから同じ規則で分ける
+unittests src/lib.rs [athena_local] operation::completion::tests::explain_は全文の末尾に改行を足してから行に分ける
+unittests src/lib.rs [athena_local] operation::completion::tests::update_count_は_describe_と_hive_の_show_create_table_で省き_iceberg_なら_0
+unittests src/lib.rs [athena_local] operation::completion::tests::update_count_は件数が無ければ_ddl_以外で_0_になる
+unittests src/lib.rs [athena_local] operation::iceberg_partitions::tests::parse_partitioning_は_1_つの要素を取り出す
+unittests src/lib.rs [athena_local] operation::iceberg_partitions::tests::parse_partitioning_は_partitioning_が無ければ空
+unittests src/lib.rs [athena_local] operation::iceberg_partitions::tests::parse_partitioning_は_with_より前の引用符付き識別子の中の単引用符に惑わされない
+unittests src/lib.rs [athena_local] operation::iceberg_partitions::tests::parse_partitioning_は_二重の単引用符を戻し引用符付きの列名を残す
+unittests src/lib.rs [athena_local] operation::iceberg_partitions::tests::parse_partitioning_は複数の要素を順に取り出す
+unittests src/lib.rs [athena_local] operation::iceberg_partitions::tests::partition_row_は実測した_7_種の変換を本物の行にする
+unittests src/lib.rs [athena_local] operation::iceberg_partitions::tests::partition_row_は引用符付きの列名の引用符を外す
+unittests src/lib.rs [athena_local] operation::iceberg_partitions::tests::partition_row_は測っていない変換を_none_にする
+unittests src/lib.rs [athena_local] operation::query_execution::tests::まだ来ていない区切りの時間は_0
+unittests src/lib.rs [athena_local] operation::query_execution::tests::実行に進まずに止められたら全体が待ち時間になる
+unittests src/lib.rs [athena_local] operation::query_execution::tests::統計は待ち時間と実行時間に分かれ足すと全体になる
+unittests src/lib.rs [athena_local] operation::result_output::tests::metadata_query_id_は_describe_と_show_create_table_だけ実行_id_で_show_create_view_はエンジン_id
+unittests src/lib.rs [athena_local] operation::table_format::tests::format_override_は_describe_とビューの組み合わせを_describe_view_にし_ほかの文は上書きしない
+unittests src/lib.rs [athena_local] operation::table_format::tests::format_override_は_drop_table_と_iceberg_の組み合わせだけ_some
+unittests src/lib.rs [athena_local] operation::table_format::tests::format_override_は_show_create_table_と_iceberg_の組み合わせだけ_some
+unittests src/lib.rs [athena_local] operation::table_format::tests::format_override_は_列を変える_alter_table_と_hive_の組み合わせだけ_some
+unittests src/lib.rs [athena_local] operation::table_format::tests::parse_probe_result_は_hive_でも_iceberg_でもない形式は判定しない
+unittests src/lib.rs [athena_local] operation::table_format::tests::parse_probe_result_はカタログが無ければ_none
+unittests src/lib.rs [athena_local] operation::table_format::tests::parse_probe_result_はビューならカタログの形式によらず_view
+unittests src/lib.rs [athena_local] operation::table_format::tests::parse_probe_result_は対象が無ければ形式が読めても_none
+unittests src/lib.rs [athena_local] operation::table_format::tests::parse_probe_result_は形式とテーブルがそろえば形式を返す
+unittests src/lib.rs [athena_local] operation::table_format::tests::probe_sql_はカタログ_スキーマ_テーブル名を全部リテラルで埋め込む
+unittests src/lib.rs [athena_local] operation::table_format::tests::probe_sql_は単一引用符を含む名前を_quote_literal_で埋め込む
+unittests src/lib.rs [athena_local] operation::table_format::tests::show_columns_は対象にし_書き方は上書きせず_s3_が無効でも形式を問い合わせる
+unittests src/lib.rs [athena_local] operation::table_format::tests::target_statement_は_2_パートの名前を既定カタログの文として対象にする
+unittests src/lib.rs [athena_local] operation::table_format::tests::target_statement_は_add_columns_以外の_alter_table_を対象外にする
+unittests src/lib.rs [athena_local] operation::table_format::tests::target_statement_は_alter_table_add_columns_も対象にする
+unittests src/lib.rs [athena_local] operation::table_format::tests::target_statement_は_alter_table_replace_columns_も対象にする
+unittests src/lib.rs [athena_local] operation::table_format::tests::target_statement_は_drop_table_だけを対象にする
+unittests src/lib.rs [athena_local] operation::table_format::tests::target_statement_は_show_create_table_も対象にし_show_create_view_は対象外にする
+unittests src/lib.rs [athena_local] operation::table_format::tests::target_statement_は修飾名でカタログを指す文も対象にする
+unittests src/lib.rs [athena_local] operation::table_format::tests::形式の問い合わせが失敗すれば今までどおりに倒す
+unittests src/lib.rs [athena_local] operation::target_table::tests::parse_qualified_name_と_catalog_skip_qualified_name_は同じ書き方を受け付ける
+unittests src/lib.rs [athena_local] operation::target_table::tests::parse_target_table_は_2_パートの名前にスキーマを当て既定のカタログを使う
+unittests src/lib.rs [athena_local] operation::target_table::tests::parse_target_table_は_3_パートの名前でカタログとスキーマをそのまま使う
+unittests src/lib.rs [athena_local] operation::target_table::tests::parse_target_table_は_alter_table_add_columns_の名前も読む
+unittests src/lib.rs [athena_local] operation::target_table::tests::parse_target_table_は_alter_table_replace_columns_の名前も読む
+unittests src/lib.rs [athena_local] operation::target_table::tests::parse_target_table_は_alter_table_でも_if_exists_を読み飛ばす
+unittests src/lib.rs [athena_local] operation::target_table::tests::parse_target_table_は_desc_の直後の名前を読む
+unittests src/lib.rs [athena_local] operation::target_table::tests::parse_target_table_は_describe_の直後の名前を読む
+unittests src/lib.rs [athena_local] operation::target_table::tests::parse_target_table_は_if_exists_を読み飛ばす
+unittests src/lib.rs [athena_local] operation::target_table::tests::parse_target_table_は_show_columns_の_from_と_in_のどちらの後ろの名前も読む
+unittests src/lib.rs [athena_local] operation::target_table::tests::parse_target_table_は_show_create_table_の名前も読む
+unittests src/lib.rs [athena_local] operation::target_table::tests::parse_target_table_はカタログが決まらなければ_none
+unittests src/lib.rs [athena_local] operation::target_table::tests::parse_target_table_はカタログもスキーマも決まらなければ_none
+unittests src/lib.rs [athena_local] operation::target_table::tests::parse_target_table_はキーワードの直後が識別子の文字かどうかで一致を決める
+unittests src/lib.rs [athena_local] operation::target_table::tests::parse_target_table_はコメントを読み飛ばす
+unittests src/lib.rs [athena_local] operation::target_table::tests::parse_target_table_はスキーマが決まらなければ_none
+unittests src/lib.rs [athena_local] operation::target_table::tests::parse_target_table_はトリビアが何個どこに挟まっても同じ結果になる
+unittests src/lib.rs [athena_local] operation::target_table::tests::parse_target_table_は修飾名の無い名前に既定のカタログとスキーマを当てる
+unittests src/lib.rs [athena_local] operation::target_table::tests::parse_target_table_は大文字小文字を無視し多バイト文字と短い入力でも破綻しない
+unittests src/lib.rs [athena_local] operation::target_table::tests::parse_target_table_は引用符の無い名前を小文字にする
+unittests src/lib.rs [athena_local] operation::target_table::tests::parse_target_table_は引用符付きの第_1_パートを中身のまま使う
+unittests src/lib.rs [athena_local] operation::type_spelling::tests::hive_は_row_のフィールド名の引用符を外す
+unittests src/lib.rs [athena_local] operation::type_spelling::tests::hive_は_timestamp_の精度によらず_timestamp_にする
+unittests src/lib.rs [athena_local] operation::type_spelling::tests::hive_は入れ子を_2_段まで写す
+unittests src/lib.rs [athena_local] operation::type_spelling::tests::hive_は実測した_17_種を本物の綴りに写す
+unittests src/lib.rs [athena_local] operation::type_spelling::tests::hive_は測っていない型を_trino_の綴りのまま返す
+unittests src/lib.rs [athena_local] operation::type_spelling::tests::iceberg_は入れ子を空白付きの区切りで写す
+unittests src/lib.rs [athena_local] operation::type_spelling::tests::iceberg_は実測した_13_種を本物の綴りに写す
+unittests src/lib.rs [athena_local] operation::type_spelling::tests::iceberg_は測っていない型を_trino_の綴りのまま返す
+unittests src/lib.rs [athena_local] operation::utility_rows::tests::cell_は文字列でない値と欠けている値を空にする
+unittests src/lib.rs [athena_local] operation::utility_rows::tests::comment_field_は空なら空白_20_個で_詰めた後の先頭のタブまでを取る
+unittests src/lib.rs [athena_local] operation::utility_rows::tests::describe_hive_rows_は本物の_d1_main_の_34_行と一致する
+unittests src/lib.rs [athena_local] operation::utility_rows::tests::describe_hive_rows_は非_ascii_の名前とコメントを文字数で詰め_パーティションが無ければ見出しを付けない
+unittests src/lib.rs [athena_local] operation::utility_rows::tests::describe_iceberg_rows_はコメントをそのまま置き_パーティションが無ければ見出しまで
+unittests src/lib.rs [athena_local] operation::utility_rows::tests::describe_iceberg_rows_は本物の_d8_の_20_行と一致する
+unittests src/lib.rs [athena_local] operation::utility_rows::tests::pad_は_20_桁に満たない名前だけ右を空白で埋める
+unittests src/lib.rs [athena_local] operation::utility_rows::tests::reshape_は_hive_と判定できないときの_describe_を_3_列と_1_値の行に作り直し_iceberg_は素通しする
+unittests src/lib.rs [athena_local] operation::utility_rows::tests::reshape_は_show_columns_と_describe_以外の文をそのまま返す
+unittests src/lib.rs [athena_local] operation::utility_rows::tests::reshape_は_show_columns_を_field_の_1_列と_1_値の行に作り直す
+unittests src/lib.rs [athena_local] operation::utility_rows::tests::reshape_はビューへの_describe_と_show_columns_を_column_と_type_の_varchar_の_2_列にする
+unittests src/lib.rs [athena_local] operation::utility_rows::tests::show_columns_rows_は_hive_と判定できないときは詰め_iceberg_は詰めない
+unittests src/lib.rs [athena_local] request::tests::null_は入れ子でも配列の要素でも無いのと同じで未知のキーは無視する
+unittests src/lib.rs [athena_local] request::tests::実測した組み合わせの文言を出す
+unittests src/lib.rs [athena_local] request::tests::必須の欠落と_null_は_lower_camel_の項目名で枠組みの検証になる
+unittests src/lib.rs [athena_local] request::tests::未実測の組み合わせと本文の異常は_message_無し
+unittests src/lib.rs [athena_local] results::tests::ctas_は_iceberg_でも_tables_を付ける
+unittests src/lib.rs [athena_local] results::tests::insert_はテーブルの形式でも更新件数でも_拡張子なしの_id_のまま
+unittests src/lib.rs [athena_local] results::tests::s3_の形でない出力先は受け付けない
+unittests src/lib.rs [athena_local] results::tests::to_text_は_null_を空文字にする
+unittests src/lib.rs [athena_local] results::tests::to_text_は行が無ければ空になる
+unittests src/lib.rs [athena_local] results::tests::to_text_は複合型を含め_to_csv_と同じ表記で_引用符もヘッダも無い
+unittests src/lib.rs [athena_local] results::tests::to_text_は複数行をタブと改行で連結し_末尾に改行を付けない
+unittests src/lib.rs [athena_local] results::tests::to_text_は見出しありなら列名の行を先頭に入れる
+unittests src/lib.rs [athena_local] results::tests::to_text_は見出し無しなら列名の行を入れない
+unittests src/lib.rs [athena_local] results::tests::キーワードの間のコメントは空白として読んで判定する
+unittests src/lib.rs [athena_local] results::tests::ファイル名は文の種類で変わる
+unittests src/lib.rs [athena_local] results::tests::付随ファイルの_content_type_は本体と同じ
+unittests src/lib.rs [athena_local] results::tests::付随ファイルのキーは本体のキーに_metadata_を足したもの
+unittests src/lib.rs [athena_local] results::tests::失敗ファイルの_content_type_は文の形によらず_application
+unittests src/lib.rs [athena_local] results::tests::失敗ファイルの置き場所は_txt_の文だけにあり_キーは成功時と同じ
+unittests src/lib.rs [athena_local] results::tests::実測した_csv_と同じバイト列になる
+unittests src/lib.rs [athena_local] results::tests::文の先頭で置くファイルの種類を決める
+unittests src/lib.rs [athena_local] results::tests::置き場所は_prefix_の末尾スラッシュの有無によらない
+unittests src/lib.rs [athena_local] results::tests::行が無くても列名行は書く
+unittests src/lib.rs [athena_local] statement::tests::パラメータがあれば_execute_immediate_で包む
+unittests src/lib.rs [athena_local] statement::tests::パラメータが無ければ_sql_はそのまま
+unittests src/lib.rs [athena_local] statement::tests::余剰パラメータのエラーだけを見分ける
+unittests src/lib.rs [athena_local] statement::tests::元の_sql_の単一引用符は二重になり改行とコメントは残る
+unittests src/lib.rs [athena_local] statement::tests::分類の問い合わせは値を括弧で包む
+unittests src/lib.rs [athena_local] statement::tests::式として読める値はそのまま載る
+unittests src/lib.rs [athena_local] statement::tests::意味エラーの値は文字列にせずそのまま載る
+unittests src/lib.rs [athena_local] statement::tests::括弧を抜けて列が増える値は文字列になる
+unittests src/lib.rs [athena_local] statement::tests::接続失敗など_error_name_の無い失敗はそのまま載る
+unittests src/lib.rs [athena_local] statement::tests::文字列リテラルは単一引用符を二重にして包む
+unittests src/lib.rs [athena_local] statement::tests::構文エラーと列参照の値は文字列になる
+unittests src/lib.rs [athena_local] store::tests::submit_はフィンガープリントが違えば_conflict
+unittests src/lib.rs [athena_local] store::tests::submit_は同じトークンなら既存の_id_を返す
+unittests src/lib.rs [athena_local] store::tests::ロックを取ると期限切れの実行が消える
+unittests src/lib.rs [athena_local] store::tests::保持期限ちょうどで消える
+unittests src/lib.rs [athena_local] store::tests::保持期限の手前では消えない
+unittests src/lib.rs [athena_local] store::tests::失敗すると理由が残り結果は入らない
+unittests src/lib.rs [athena_local] store::tests::実行中に止めると_cancelled_になり取り消し要求が立つ
+unittests src/lib.rs [athena_local] store::tests::実行中の実行は保持期限を過ぎても消えない
+unittests src/lib.rs [athena_local] store::tests::投入から成功までの状態が進む
+unittests src/lib.rs [athena_local] store::tests::投入直後に止めると実行には進めない
+unittests src/lib.rs [athena_local] store::tests::捨てた実行のトークンも消えるので同じトークンで新しい実行になる
+unittests src/lib.rs [athena_local] store::tests::止めたあとに届いた結果は捨てる
+unittests src/lib.rs [athena_local] store::tests::止めたクエリをもう一度止めても変わらない
+unittests src/lib.rs [athena_local] store::tests::知らない_id_は取れない
+unittests src/lib.rs [athena_local] store::tests::知らない_id_は止められない
+unittests src/lib.rs [athena_local] store::tests::終わったクエリは止めても変わらない
+unittests src/lib.rs [athena_local] store::tests::終わった実行は保持期限を過ぎると消える
+unittests src/lib.rs [athena_local] trino::tests::trino_の_id_と_updatetype_を_outcome_に写す
+unittests src/lib.rs [athena_local] trino::tests::構文を確かめたときの行番号を元の_sql_の行に戻す
+unittests src/lib.rs [athena_sql] tests::skip_qualified_name_はドットが続かなければ後ろのトリビアを消費せずに止まる
+unittests src/lib.rs [athena_sql] tests::skip_qualified_name_はドットで繋いだ修飾名を読み飛ばす
+unittests src/lib.rs [athena_sql] tests::skip_qualified_name_はドットの前後の空白やコメントを読み飛ばす
+unittests src/lib.rs [athena_sql] tests::skip_qualified_name_は引用符付きの識別子を読み飛ばす
+unittests src/lib.rs [athena_sql] tests::skip_qualified_name_は無引用の単純な名前を読み飛ばす
+unittests src/lib.rs [athena_sql] tests::skip_qualified_name_は途中の位置からも読める
+unittests src/lib.rs [athena_sql] tests::words_はコメントだけの文や未閉じのコメントで空か途中までになる
+unittests src/lib.rs [athena_sql] tests::words_は引用符の中のコメント記号をコメントと読まない
+unittests src/lib.rs [athena_sql] tests::words_は空白とコメントの両方を区切りにして大文字の語にする
+unittests src/lib.rs [athena_sql] tests::コメントだけの文は空文字列になる
+unittests src/lib.rs [athena_sql] tests::トリビアが無ければ受け取った_sql_をそのまま返す
+unittests src/lib.rs [athena_sql] tests::ブロックコメントを読み飛ばす
+unittests src/lib.rs [athena_sql] tests::空白とコメントを交互に読み飛ばす
+unittests src/lib.rs [athena_sql] tests::行コメントを読み飛ばす
+unittests src/lib.rs [athena_sql] tests::非_ascii_のコメントでもバイト単位の走査が途中を切らない
