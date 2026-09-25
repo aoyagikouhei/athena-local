@@ -167,7 +167,10 @@ public final class Main {
     private static void runShowScenario(Connection conn, String runId) {
         String t = "hive.default.t_jdbc_show_" + runId;
         // SHOW PARTITIONS の対象になるよう、パーティション付きの Hive テーブルに 2 パーティション分の行を入れる。
-        runSetup(conn, "CREATE TABLE " + t + " (n integer, p varchar) WITH (partitioned_by = ARRAY['p'])");
+        // 列も型もパーティション列も揃えた表を作る書き方を、素の CREATE TABLE から CTAS に替えた
+        // （#208 のフェーズ 2 から、無引用の場所の無い CREATE TABLE は athena-local が開始時に弾くため）。
+        runSetup(conn, "CREATE TABLE " + t
+            + " WITH (partitioned_by = ARRAY['p']) AS SELECT CAST(NULL AS integer) AS n, CAST(NULL AS varchar) AS p WHERE false");
         runSetup(conn, "INSERT INTO " + t + " VALUES (1, 'a'), (2, 'b')");
 
         // 対照: SHOW TABLES（#5 で JDBC が読めることを実機で確かめ済み）。前のラウンドが作ったテーブルが
@@ -190,7 +193,8 @@ public final class Main {
         String v = "hive.default.v_jdbc_show_" + runId;
         String tIceberg = "iceberg.default.t_jdbc_show_iceberg_" + runId;
         runSetup(conn, "CREATE VIEW " + v + " AS SELECT 1 AS n");
-        runSetup(conn, "CREATE TABLE " + tIceberg + " (n integer)");
+        // 素の CREATE TABLE から CTAS に替えた（#208 のフェーズ 2。理由は上の t と同じ）。
+        runSetup(conn, "CREATE TABLE " + tIceberg + " AS SELECT CAST(NULL AS integer) AS n WHERE false");
         runShowCase(conn, "SHOW_CREATE_VIEW", "SHOW CREATE VIEW " + v);
         runShowCase(conn, "SHOW_CREATE_TABLE_iceberg", "SHOW CREATE TABLE " + tIceberg);
     }

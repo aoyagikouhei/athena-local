@@ -122,7 +122,10 @@ async fn 実在しないカタログの_ddl_とビューの文は差し替え_in
         .await;
 
     for (query, sent) in [
-        ("CREATE TABLE c (n integer)", "hive"),
+        // 引用符付きの列名は #208 のフェーズ 2 で弾かない形（未実測）なので、CREATE_TABLE の
+        // カタログの差し替えを引き続き観測できる（無引用の列名だと場所の無い CREATE TABLE として
+        // 開始時に弾かれ、Trino にこの文が届かなくなる）。
+        (r#"CREATE TABLE c ("n" integer)"#, "hive"),
         ("ALTER TABLE t ADD COLUMNS (c varchar)", "hive"),
         ("CREATE VIEW v AS SELECT n FROM t", "hive"),
         ("SHOW CREATE VIEW v", "hive"),

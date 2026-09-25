@@ -203,11 +203,10 @@ Known differences between athena-local and real Athena, grouped by topic.
   (measured 2026-09-25; out of scope for #204).
 - **A plain, unquoted `CREATE TABLE x (n int)` (not a CTAS) is rejected by
   real Athena at `StartQueryExecution`** with `No location was specified for
-  table. An S3 location must be specified` before a `QueryExecutionId` is
-  created, because an Athena table needs an explicit S3 location. Trino's
-  catalogs can supply a location on their own, so athena-local sends the
-  statement to Trino and it runs there (measured 2026-09-25; out of scope
-  for #204).
+  table. An S3 location must be specified`, because an Athena table needs an
+  explicit S3 location, while Trino's catalogs can supply one on their own.
+  athena-local rejects the same forms real Athena does, with Athena's own
+  message — see [Plain `CREATE TABLE`](#plain-create-table).
 
 ## `ALTER TABLE` and format-dependent DDL
 
@@ -320,6 +319,42 @@ Known differences between athena-local and real Athena, grouped by topic.
   `UpdateCount`. See
   [DDL that depends on the target table's format](ddl.md#ddl-that-depends-on-the-target-tables-format)
   for what this changes.
+
+## Plain `CREATE TABLE`
+
+- **A CTAS-less, unquoted `CREATE TABLE` whose column list Trino's grammar
+  accepts is rejected at `StartQueryExecution`, with real Athena's own
+  message** (measured 2026-09-26), regardless of the table name's part count
+  (one to three parts) or whether `IF NOT EXISTS` is present:
+
+  | Form | Message |
+  | --- | --- |
+  | `CREATE TABLE t (n <type>)`, any single-word type name, existing or not (`int`, `varchar(10)`, `decimal(10,2)`, `array<int>`, `foo`, …), any number of columns | `No location was specified for table. An S3 location must be specified` |
+  | `CREATE TABLE t (n <type>) WITH (...)` | `no viable alternative at input '...WITH ('` |
+  | `CREATE TABLE t (n int NOT NULL)` | `no viable alternative at input '...NOT'` |
+  | `CREATE TABLE t (n <type> <word> ...)` (a Trino-only trailing word right after the type, such as `timestamp(3) with time zone`, `double precision`, `interval day to second`) | `no viable alternative at input '...<word>'` |
+  | `CREATE TABLE t (n row(a int))`, `array(row(...))`, `map(varchar, ...)` (any type name followed by `(` whose first token is an identifier) | `no viable alternative at input '...<first word inside the parens>'` |
+  | `CREATE TABLE t (LIKE u)` (one-part name) | `No location was specified for table. An S3 location must be specified` |
+  | `CREATE TABLE t (LIKE db.u)` (two or more parts, with or without `INCLUDING PROPERTIES`) | `no viable alternative at input '...db.'` |
+
+  All answer `InvalidRequestException` / `AthenaErrorCode` `MALFORMED_QUERY`
+  with no `QueryExecutionId` created, Trino is never sent anything but the
+  syntax check, and the position is counted the same way as the quoted-name
+  and `ALTER TABLE` checks above. athena-local reads the column list the way
+  real Athena's Hive-style grammar does — a column name, a type name (any
+  identifier; type names are not distinguished from one another), then either
+  a further `(...)` or `<...>` on the type, `COMMENT '...'`, a comma or the
+  closing `)` — without validating that the type actually exists. `LIKE` has
+  no special handling: it is read as an ordinary column name, so
+  `(LIKE u)` is read as a column named `LIKE` of type `u` (giving `No location`)
+  and `(LIKE db.u)` hits the `.` that follows the "type" `db` (giving the
+  `no viable alternative` message above, at that `.`). A trailing
+  `COMMENT '...'` after the column list, on the table itself, is skipped
+  either way.
+- **Forms not listed above still run on Trino unchanged.** A quoted column
+  name (`CREATE TABLE t ("n" int)`), a table name with four parts or more, and
+  a table name with a quoted part are not rejected here — either the
+  quoted-name check above rejects them first, or they have not been measured.
 
 ## Parameters and catalog aliases
 

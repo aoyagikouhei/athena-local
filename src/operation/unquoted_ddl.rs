@@ -1,12 +1,16 @@
-//! 本物の Athena が StartQueryExecution の時点で弾く、無引用の `ALTER TABLE` の文言（2026-09-26 実測。#208）。
+//! 本物の Athena が StartQueryExecution の時点で弾く、無引用の `ALTER TABLE` と、CTAS でない無引用の
+//! `CREATE TABLE`（`create_table` サブモジュール）の文言（2026-09-26 実測。#208）。
+
+mod create_table;
 
 use athena_sql::{Cursor, skip_leading_trivia};
 
 use super::quoted_names::{escape, no_viable_alternative, position};
 use super::target_table::{if_follows, table_name_start};
 
-/// 本物が開始時に弾く無引用の `ALTER TABLE` なら、その文言を返す。構文チェックの後、
-/// `quoted_names::rejection` の後で呼ぶ（引用符付きの名前の文言が先。実測 alt-addcol-q。#204 の順序を保つ）。
+/// 本物が開始時に弾く無引用の `ALTER TABLE`・CTAS でない無引用の `CREATE TABLE` なら、その文言を返す。
+/// 構文チェックの後、`quoted_names::rejection` の後で呼ぶ（引用符付きの名前の文言が先。実測
+/// alt-addcol-q。#204 の順序を保つ）。`ALTER TABLE` でなければ `create_table::rejection` に回す（#208）。
 ///
 /// `ALTER TABLE IF EXISTS <名前>` の後ろは、続く語が `ADD`・`DROP`・`RENAME` なら
 /// `no viable alternative at input 'ALTER TABLE IF EXISTS'`（R-A1）、`ALTER`（`ALTER COLUMN`）なら
@@ -20,7 +24,9 @@ use super::target_table::{if_follows, table_name_start};
 pub(super) fn rejection(query: &str) -> Option<String> {
     // 本物は先頭の空白・タブ・改行を数えずに位置を出す（先頭のコメントは数える。quoted_names.rs と同じ）。
     let sql = query.trim_start_matches([' ', '\t', '\r', '\n']);
-    let rest = table_name_start(sql, &["ALTER", "TABLE"])?;
+    let Some(rest) = table_name_start(sql, &["ALTER", "TABLE"]) else {
+        return create_table::rejection(query);
+    };
     let mut cursor = Cursor::new(rest);
     let name = cursor.qualified_name()?;
     let statement_start = sql.len() - skip_leading_trivia(sql).len();

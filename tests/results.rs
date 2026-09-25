@@ -162,10 +162,9 @@ async fn dml_と_ctas_は_metadata_だけを置き_ddl_は_0_バイトの_txt_�
                 "updateCount": 1
             }),
         )
-        .route(
-            "CREATE TABLE t (i int)",
-            json!({ "updateType": "CREATE TABLE" }),
-        )
+        // 列も行も無い DDL の代表として `CREATE SCHEMA`（#208 のフェーズ 2 から、無引用の場所の無い
+        // `CREATE TABLE` は開始時に弾かれ Trino に届かなくなるため）。
+        .route("CREATE SCHEMA s", json!({}))
         .route(
             "CREATE TABLE t2 AS SELECT 1",
             json!({
@@ -184,7 +183,7 @@ async fn dml_と_ctas_は_metadata_だけを置き_ddl_は_0_バイトの_txt_�
         .run_query(json!({ "QueryString": "INSERT INTO t VALUES (1)" }))
         .await;
     let create = harness
-        .run_query(json!({ "QueryString": "CREATE TABLE t (i int)" }))
+        .run_query(json!({ "QueryString": "CREATE SCHEMA s" }))
         .await;
     let update = harness
         .run_query(json!({ "QueryString": "UPDATE t SET name = 'x'" }))
@@ -214,7 +213,7 @@ async fn dml_と_ctas_は_metadata_だけを置き_ddl_は_0_バイトの_txt_�
         format!("s3://results-bucket/athena/tables/{}", execution_id(&ctas))
     );
 
-    // 列も行も無い DDL（CREATE TABLE t (i int)）だけが 0 バイトの .txt を書く（列が無いので付随ファイルは無し）。
+    // 列も行も無い DDL（CREATE SCHEMA s）だけが 0 バイトの .txt を書く（列が無いので付随ファイルは無し）。
     // DML（INSERT・UPDATE）と CTAS は本体を置かず、付随ファイルだけを 1 件ずつ置く
     // （中身は tests/metadata.rs が見る）。
     let keys: Vec<String> = harness.s3_puts().into_iter().map(|put| put.key).collect();
@@ -402,11 +401,10 @@ async fn explain_の結果は_txt_の先頭に列名行を入れて書く() {
 
 #[tokio::test]
 async fn txt_の書き込みに失敗しても_succeeded_のままになる() {
+    // 列も行も無い DDL の代表として `CREATE SCHEMA`（#208 のフェーズ 2 から、無引用の場所の無い
+    // `CREATE TABLE` は開始時に弾かれ Trino に届かなくなるため）。
     let harness = Harness::builder(select_response())
-        .route(
-            "CREATE TABLE t (i int)",
-            json!({ "updateType": "CREATE TABLE" }),
-        )
+        .route("CREATE SCHEMA s", json!({}))
         .results_s3()
         .s3_status(500)
         .start()
@@ -414,7 +412,7 @@ async fn txt_の書き込みに失敗しても_succeeded_のままになる() {
 
     let execution = harness
         .run_query(json!({
-            "QueryString": "CREATE TABLE t (i int)",
+            "QueryString": "CREATE SCHEMA s",
             "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
         }))
         .await;

@@ -47,8 +47,12 @@ def regression():
     except Exception as exc:  # noqa: BLE001
         report("FAIL", "(7) wr 型の行(int・varchar)", short(exc))
     table = f"iceberg.default.t111_wr_{RUN}"
+    # 列も型も揃えた表を作る書き方を、素の CREATE TABLE から CTAS に替えた（#208 のフェーズ 2 から、
+    # 無引用の場所の無い CREATE TABLE は athena-local が開始時に弾くため）。CTAS は Trino の
+    # 更新件数（rows）を返すので、続く INSERT・CTAS と同じ INFO にする。
     steps = [
-        ("PASS", "CREATE TABLE", f"CREATE TABLE {table} (n int, s varchar)"),
+        ("INFO", "CREATE TABLE",
+         f"CREATE TABLE {table} AS SELECT CAST(NULL AS integer) AS n, CAST(NULL AS varchar) AS s WHERE false"),
         ("INFO", "INSERT", f"INSERT INTO {table} VALUES (1, 'a')"),
         ("PASS", "SHOW TABLES", "SHOW TABLES IN iceberg.default"),
         ("PASS", "DESCRIBE", f"DESCRIBE {table}"),

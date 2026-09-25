@@ -183,11 +183,13 @@ probe_add_columns_spelling() {
     "Athenaの綴り(ADD COLUMNS)はTrinoの構文エラーで弾かれた（想定どおり）: __type=$type_ AthenaErrorCode=$code Message=$msg"
 }
 
-# 無引用の ALTER TABLE（ADD COLUMN 単数・SET PROPERTIES など）は、本物と同じく athena-local も
-# StartQueryExecution の時点で弾き、QueryExecutionId を作らない（Trino には構文確認しか届かない。
-# 2026-09-26 実測。#208）。probe_add_columns_spelling の雛形を流用し、期待する文言は呼び出し側が
-# 名前の長さから計算して渡す（テーブル名が実行のたびに変わるため）。
-probe_unquoted_alter_rejected() {
+# 無引用の ALTER TABLE（ADD COLUMN 単数・SET PROPERTIES など）と、CTAS でない場所の無い
+# CREATE TABLE は、本物と同じく athena-local も StartQueryExecution の時点で弾き、
+# QueryExecutionId を作らない（Trino には構文確認しか届かない。2026-09-26 実測。#208）。
+# probe_add_columns_spelling の雛形を流用し、期待する文言は呼び出し側が名前の長さから
+# 計算して渡す（テーブル名が実行のたびに変わるため。位置の無い No location の文言は名前に
+# 依存しないのでそのまま渡せる）。
+probe_unquoted_ddl_rejected() {
   local no="$1" name="$2" query="$3" catalog="$4" database="$5" expect_message="$6"
   local resp qid type_ code msg
 
@@ -318,10 +320,12 @@ main() {
     RESULT_DETAIL[$case3_idx]="${RESULT_DETAIL[$case3_idx]} ※Phase 1 時点は失敗が想定どおり（対象テーブルの存在確認は Phase 2 の範囲）"
   fi
 
-  # ケース 4: CREATE TABLE（Iceberg、素の CREATE）。回帰していないことの確認。
-  run_case 4 "CREATE_TABLE_iceberg_回帰確認" \
-    "CREATE TABLE ${t_plain} (n int)" iceberg default txt \
-    0 "binary/octet-stream" 0 0
+  # ケース 4（#208 で挙動が変わった）: 場所の無い CREATE TABLE（Iceberg、素の CREATE）は、
+  # 本物の Athena 自身が StartQueryExecution で弾く（No location was specified for table...。
+  # docs/caveats.md）。athena-local も同じ文言で開始時に弾き、Trino には構文確認しか届かない。
+  probe_unquoted_ddl_rejected 4 "CREATE_TABLE_iceberg_開始時に弾く" \
+    "CREATE TABLE ${t_plain} (n int)" iceberg default \
+    "No location was specified for table. An S3 location must be specified"
 
   # ケース 5: SELECT。回帰していないことの確認（.csv が置かれること）。
   local id5 resp5 state5 key5 out5 size5
@@ -357,13 +361,13 @@ main() {
   # （対象がHive・Icebergのどちらでも文言は同じ。テーブルの形式に依存しない判定のため）。
   local add_column_hive_query="ALTER TABLE ${t_alter_hive} ADD COLUMN m int"
   local add_column_hive_prefix="ALTER TABLE ${t_alter_hive} ADD "
-  probe_unquoted_alter_rejected 6 "ALTER_TABLE_ADD_COLUMN_hive_開始時に弾く" \
+  probe_unquoted_ddl_rejected 6 "ALTER_TABLE_ADD_COLUMN_hive_開始時に弾く" \
     "$add_column_hive_query" hive default \
     "line 1:$(( ${#add_column_hive_prefix} + 1 )): no viable alternative at input 'ALTER TABLE ${t_alter_hive} ADD COLUMN'"
 
   local add_column_iceberg_query="ALTER TABLE ${t_alter_iceberg} ADD COLUMN m int"
   local add_column_iceberg_prefix="ALTER TABLE ${t_alter_iceberg} ADD "
-  probe_unquoted_alter_rejected 7 "ALTER_TABLE_ADD_COLUMN_iceberg_開始時に弾く" \
+  probe_unquoted_ddl_rejected 7 "ALTER_TABLE_ADD_COLUMN_iceberg_開始時に弾く" \
     "$add_column_iceberg_query" iceberg default \
     "line 1:$(( ${#add_column_iceberg_prefix} + 1 )): no viable alternative at input 'ALTER TABLE ${t_alter_iceberg} ADD COLUMN'"
 
@@ -373,7 +377,7 @@ main() {
   # （事前に確認済み）。
   local set_properties_query="ALTER TABLE ${t_alter_iceberg} SET PROPERTIES format = 'PARQUET'"
   local set_properties_prefix="ALTER TABLE ${t_alter_iceberg} SET "
-  probe_unquoted_alter_rejected 8 "ALTER_TABLE_SET_PROPERTIES_iceberg_開始時に弾く" \
+  probe_unquoted_ddl_rejected 8 "ALTER_TABLE_SET_PROPERTIES_iceberg_開始時に弾く" \
     "$set_properties_query" iceberg default \
     "line 1:$(( ${#set_properties_prefix} + 1 )): no viable alternative at input 'ALTER TABLE ${t_alter_iceberg} SET PROPERTIES'"
 

@@ -91,7 +91,7 @@ tls-proxy など他のコンテナからは届かず、JDBC の検証には使�
 | 1 | `DROP TABLE`（Iceberg） | `<id>.txt` が 1 バイト（改行 1 つ）、Content-Type `application/octet-stream`、`.metadata` が 41 バイト |
 | 2 | `DROP TABLE`（Hive） | `<id>.txt` が 0 バイト、Content-Type `binary/octet-stream`、`.metadata` 無し |
 | 3 | `DROP TABLE IF EXISTS`（存在しない・Iceberg） | `<id>.txt` が 0 バイト、`.metadata` 無し（Phase 2 で対象テーブルの存在確認が入って初めて通る想定） |
-| 4 | `CREATE TABLE`（Iceberg、素の CREATE） | 回帰確認。0 バイト・`.metadata` 無しのまま |
+| 4 | 場所の無い `CREATE TABLE`（Iceberg、素の CREATE） | `StartQueryExecution` が本物と同じ文言（`No location was specified for table. An S3 location must be specified`）で開始時に弾き、`QueryExecutionId` を作らない。Trino には構文確認しか届かない（#208） |
 | 5 | `SELECT 1 AS n` | 回帰確認。`<id>.csv` が置かれる |
 | 6前 | `ALTER TABLE ... ADD COLUMNS`（Athena の綴り） | Trino の構文エラーで `StartQueryExecution` が弾く（#208 前と同じ） |
 | 6 | `ALTER TABLE ... ADD COLUMN`（Hive、単数形） | `StartQueryExecution` が本物と同じ文言（`no viable alternative at input '...'`）で開始時に弾き、`QueryExecutionId` を作らない。Trino には構文確認しか届かない（#208） |

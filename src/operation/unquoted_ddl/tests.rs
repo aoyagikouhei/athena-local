@@ -257,7 +257,10 @@ fn drop_column_は_if_exists_が無ければ弾かない() {
 fn alter_table_以外や名前が読めない形や_if_だけの形は_none() {
     for query in [
         "SELECT 1",
-        "CREATE TABLE t (n int)",
+        // CTAS でない無引用の `CREATE TABLE` は #208 のフェーズ 2 から `create_table::rejection` が
+        // 引き取る（別途 `create_table/tests.rs` で固定）ので、ここでは ALTER TABLE でも CREATE TABLE
+        // でもない文で確かめる。
+        "DROP TABLE t",
         "ALTER TABLE .t RENAME TO u",
         "",
         "ALTER TABLE",
