@@ -50,8 +50,8 @@ fn struct_type(fields: &[&str], comma: &str, colon: &str) -> Option<String> {
             if !field.starts_with('"') {
                 return None;
             }
-            let end = crate::catalog::skip_quoted(field.as_bytes(), 0);
-            let name = crate::catalog::unquote(&field[..end]);
+            let end = athena_sql::skip_quoted(field.as_bytes(), 0);
+            let name = athena_sql::unquote(&field[..end]);
             Some(format!(
                 "{name}{colon}{}",
                 spell(field[end..].trim(), comma, colon)
@@ -73,7 +73,7 @@ fn split_parameters(trino: &str) -> Option<(&str, Vec<&str>)> {
     while index < bytes.len() {
         match bytes[index] {
             b'"' => {
-                index = crate::catalog::skip_quoted(bytes, index);
+                index = athena_sql::skip_quoted(bytes, index);
                 continue;
             }
             b'(' => depth += 1,

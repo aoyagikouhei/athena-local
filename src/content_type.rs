@@ -5,7 +5,8 @@
 //! 判定をここに分けて置く。`.metadata` は本体と同じ値（36 項目すべて一致。例外は 140 MB の
 //! マルチパート本体だけで、athena-local は単一の PUT しかしない）。
 
-use crate::catalog::{skip_keyword, skip_leading_trivia, skip_quoted, words};
+use athena_sql::{skip_keyword, skip_leading_trivia, skip_quoted, words};
+
 use crate::results::ResultFile;
 
 /// 本物がエンジンの計画を通さずに置くファイルの値（実測ではどれも `QueryPlanningTimeInMillis` が
@@ -66,7 +67,7 @@ pub(crate) fn plain_text_statement(query: &str) -> bool {
 /// `SHOW CREATE` は 3 語目が `TABLE` のときだけで、`SHOW CREATE VIEW` は本物が不透明な `.metadata` を
 /// binary で置く（2026-09-24 実測。#146・#151）ので入れない。`SHOW CREATE SCHEMA` などほかの
 /// `SHOW CREATE ...` は Athena の構文に無く未実測で、`.txt` の既定（binary）に落ちる。
-/// 語は `catalog::words` で読むので、先頭やキーワードの間のコメントは語にならない。
+/// 語は `athena_sql::words` で読むので、先頭やキーワードの間のコメントは語にならない。
 pub(crate) fn carries_execution_id(query: &str) -> bool {
     let words = words(query);
     let word = |index: usize| words.get(index).map(String::as_str).unwrap_or_default();

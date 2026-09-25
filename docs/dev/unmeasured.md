@@ -8,7 +8,7 @@
 
 - [ ] `SHOW CREATE TABLE`／`SHOW CREATE VIEW` 以外の `SHOW CREATE ...`（`SCHEMA`／`MATERIALIZED VIEW`／`FUNCTION`。Trino にはある）を本物の `StartQueryExecution` が受けるか、受けるなら `.txt` の Content-Type と `.metadata` の形式。athena-local は `.txt` の既定（binary、エンジン ID）に落としている（#151、2026-09-24。`SHOW SESSION`／`STATS` と同じく本物が弾く可能性が高い）
 - [ ] Iceberg のテーブルへの `DESCRIBE EXTENDED t`・`DESCRIBE FORMATTED t`・`DESCRIBE t PARTITION (...)`・`DESCRIBE t col` の `UpdateCount`・Content-Type・`.metadata`・行の形（`DESCRIBE t` は Hive で null・application、Iceberg で 0・binary・不透明。#160、2026-09-24）。athena-local は `EXTENDED` などを名前として読むので、どれも Hive 扱い（null・application）。`DESC t` は Hive で `DESCRIBE t` と同じと測った（#173）ので Iceberg でも `DESCRIBE` と同じに扱っていて、Iceberg の `DESC t` そのものは測っていない
-- [ ] `SHOW CREATE TABLE"t"`（`TABLE` と引用符付きの名前の間に空白が無い形）を本物が受けるか、受けるなら分類と Content-Type。athena-local は `catalog::words` で `TABLE"T"` が 1 語になり、`SubstatementType` は None、`.txt` は既定の binary（#151、2026-09-24）
+- [ ] `SHOW CREATE TABLE"t"`（`TABLE` と引用符付きの名前の間に空白が無い形）を本物が受けるか、受けるなら分類と Content-Type。athena-local は `athena_sql::words` で `TABLE"T"` が 1 語になり、`SubstatementType` は None、`.txt` は既定の binary（#151、2026-09-24）
 
 - [ ] 複合型の中の varbinary の `[B@<hex>` の数字が、等しいバイト列で同じになるか、実行ごとに変わるか（#146 は `ARRAY[X'0102', X'03']` の違う 2 要素だけ。athena-local はバイト列の FNV-1a で決定的にしている。#149、2026-09-24）
 

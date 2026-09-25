@@ -18,13 +18,13 @@ pub(super) async fn iceberg_partition_specs(
     database: Option<&str>,
     cancel: &Cancel,
 ) -> Vec<String> {
-    let Some(after) = crate::catalog::skip_keyword(query, "DESCRIBE")
-        .or_else(|| crate::catalog::skip_keyword(query, "DESC"))
+    let Some(after) = athena_sql::skip_keyword(query, "DESCRIBE")
+        .or_else(|| athena_sql::skip_keyword(query, "DESC"))
     else {
         return Vec::new();
     };
-    let start = after.len() - crate::catalog::skip_leading_trivia(after).len();
-    let end = crate::catalog::skip_qualified_name(after, start);
+    let start = after.len() - athena_sql::skip_leading_trivia(after).len();
+    let end = athena_sql::skip_qualified_name(after, start);
     let sql = format!("SHOW CREATE TABLE {}", &after[start..end]);
     let sql = alias_qualified_names(&sql, &config.catalog_map);
     let Ok(outcome) = trino.execute(&sql, catalog, database, cancel).await else {

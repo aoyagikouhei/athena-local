@@ -30,7 +30,7 @@ CI（`.github/workflows/ci.yml`）の中身とリリース（`v*` タグで `doc
 
 - `handler.rs` — `POST /` の 1 本だけ。`X-Amz-Target: AmazonAthena.<Operation>` で振り分ける。SigV4 は検証しない。
 - `operation/` — 6 つのオペレーションの本体（`execution.rs`・`query_execution.rs`・`work_group.rs`）と、実行の前後の処理（`format_probe.rs`・`completion.rs`・`result_output.rs`・`utility_rows.rs` など）、文の種類の判定（`classification.rs`）、`MaxResults`／`NextToken` の検証（`validation.rs`）。`mod.rs` は `mod` 宣言と再エクスポートだけ。
-- `store.rs`（実行状態をメモリの `HashMap` で持つ）、`trino.rs`（Trino クライアント）、`convert/`（Trino の値と型 → Athena の `ResultSet`）、`catalog.rs`（`TRINO_CATALOG_MAP` の別名と SQL の字句処理）、`metadata.rs`（`.metadata` の protobuf）、`results.rs`（結果ファイルの名前と CSV）、`content_type.rs`、`failure.rs`（Trino のエラー → `AthenaError`）、`request.rs`／`response.rs`（awsJson1.1 の本文とエラーの形）、`athena.rs`（リクエスト／レスポンスの型）、`config.rs`。
+- `store.rs`（実行状態をメモリの `HashMap` で持つ）、`trino.rs`（Trino クライアント）、`convert/`（Trino の値と型 → Athena の `ResultSet`）、`catalog.rs`（`TRINO_CATALOG_MAP` の別名を修飾名に当てる置換）、`metadata.rs`（`.metadata` の protobuf）、`results.rs`（結果ファイルの名前と CSV）、`content_type.rs`、`failure.rs`（Trino のエラー → `AthenaError`）、`request.rs`／`response.rs`（awsJson1.1 の本文とエラーの形）、`athena.rs`（リクエスト／レスポンスの型）、`config.rs`。
 - `crates/athena-sql` — SQL の字句処理と文の認識を置く内部 crate（workspace の member。`publish = false`、版は追わない。規則は decisions.md の「SQL の内部 crate（athena-sql）」）。ルートの `Cargo.toml` が workspace を兼ね、`default-members` で上のコマンドが crate にも効く。
 
 壊すと事故になる不変条件:
