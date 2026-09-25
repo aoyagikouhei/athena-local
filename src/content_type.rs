@@ -302,4 +302,87 @@ mod tests {
             APPLICATION
         );
     }
+
+    /// #195 の固定表 (3)（入力表から 51 件）。
+    /// 期待値は着手前のコード（76e66f8 + P1a）に `195-verify/golden.sh` を流した出力を写した。推測で書いていない。
+    #[test]
+    fn content_type_は_crate_の_api_に寄せる前と同じ値を返す() {
+        let cases: &[(&str, &str, bool, bool)] = &[
+            // コメント（c1・c3・c4・c5・c7・c8・c9・c10・c11・c12・c13）
+            ("/* c */SELECT 1", BINARY, false, false),
+            ("SELECT--c\n1", BINARY, false, false),
+            ("--c\r\nSELECT 1", BINARY, false, false),
+            ("/* a */ /* b */ DESCRIBE t", APPLICATION, true, true),
+            ("DESC/* c */t", APPLICATION, true, true),
+            ("SHOW -- c\nCREATE /* d */ TABLE t", APPLICATION, true, true),
+            (
+                "CREATE TABLE t AS -- c\n(SELECT 1)",
+                APPLICATION,
+                false,
+                false,
+            ),
+            ("EXPLAIN /* c */ SELECT 1", APPLICATION, true, false),
+            ("/* c DESCRIBE t", BINARY, false, false),
+            ("SELECT 1 /* c", BINARY, false, false),
+            ("SELECT '--' AS \"/*\"", BINARY, false, false),
+            // 引用符付き識別子（q5・q8）
+            ("SHOW CREATE TABLE\"t\"", BINARY, false, false),
+            ("SELECT 1 AS \"a b\"", BINARY, false, false),
+            // 大文字小文字（k1・k2・k3・k4・k7）
+            ("sElEcT 1", BINARY, false, false),
+            ("Describe T", APPLICATION, true, true),
+            ("Show Create Table T", APPLICATION, true, true),
+            ("eXpLaIn SELECT 1", APPLICATION, true, false),
+            ("show functions", APPLICATION, false, false),
+            // 空白（w1・w2・w3・w4・w5・w6・w8・w10・w12・w13）
+            ("SELECT\t1", BINARY, false, false),
+            ("DESCRIBE\r\nt", APPLICATION, true, true),
+            ("SHOW  CREATE   TABLE t", APPLICATION, true, true),
+            ("\n\tSELECT 1", BINARY, false, false),
+            ("SELECT(1)", BINARY, false, false),
+            ("SELECT'a'", BINARY, false, false),
+            ("EXPLAIN(TYPE IO) SELECT 1", BINARY, false, false),
+            ("SELECT\x0B1", BINARY, false, false),
+            ("SELECT\u{3000}1", BINARY, false, false),
+            ("SELECT\u{00A0}1", BINARY, false, false),
+            // `(` の変種（p1・p4・p6・p7・p8・p9・p11・p17）
+            ("(SELECT 1)", APPLICATION, false, false),
+            ("(VALUES 1)", APPLICATION, false, false),
+            ("(EXPLAIN SELECT 1)", BINARY, false, false),
+            ("(DESCRIBE t)", BINARY, false, false),
+            ("( SHOW FUNCTIONS )", BINARY, false, false),
+            ("(SHOW FUNCTIONS)", BINARY, false, false),
+            ("CREATE TABLE t AS (VALUES 1)", APPLICATION, false, false),
+            ("CREATE TABLE t AS(SELECT 1)", BINARY, false, false),
+            // 空・トリビアだけ・多バイト（e1・e3・e5・e6・e7・e10・e11）
+            ("", BINARY, false, false),
+            ("-- only", BINARY, false, false),
+            ("/* unclosed", BINARY, false, false),
+            ("日本語", BINARY, false, false),
+            ("SELECT '日本語'", BINARY, false, false),
+            ("-- あ\nDESCRIBE t", APPLICATION, true, true),
+            ("SELECT 1 AS 日本", APPLICATION, false, false),
+            // `;` 付き（s1・s2・s3・s4・s5）
+            ("SELECT 1;", APPLICATION, false, false),
+            ("DESCRIBE t;", APPLICATION, true, true),
+            ("SHOW CREATE TABLE t;", APPLICATION, true, true),
+            ("EXPLAIN SELECT 1;", APPLICATION, true, false),
+            ("CREATE TABLE t AS SELECT 1;", APPLICATION, false, false),
+            // SHOW（h1・h3・h5）
+            ("SHOW CREATE VIEW v", BINARY, false, false),
+            ("SHOW TABLES", BINARY, false, false),
+            ("SHOW COLUMNS FROM t", BINARY, false, false),
+        ];
+        for &(query, content_type, plain, carries) in cases {
+            assert_eq!(
+                (
+                    of(ResultFile::of(query), query),
+                    plain_text_statement(query),
+                    carries_execution_id(query)
+                ),
+                (content_type, plain, carries),
+                "{query:?}"
+            );
+        }
+    }
 }

@@ -503,3 +503,193 @@ fn parse_target_table_は大文字小文字を無視し多バイト文字と短�
         );
     }
 }
+
+/// #195 の固定表 (4)（`target_statement` が Some になる入力だけ）。
+/// 期待値は着手前のコード（76e66f8 + P1a）に `195-verify/golden.sh` を流した出力を写した。推測で書いていない。
+#[test]
+fn parse_target_table_は_crate_の_api_に寄せる前と同じ対象を返す() {
+    type Case = (
+        &'static str,
+        TargetStatement,
+        Option<(&'static str, &'static str, &'static str)>,
+    );
+    let cases: &[Case] = &[
+        // コメント（c5・c6・c7・c8・c14・c15）
+        (
+            "/* a */ /* b */ DESCRIBE t",
+            TargetStatement::Describe,
+            Some(("dc", "ds", "t")),
+        ),
+        (
+            "DESCRIBE -- c\n t",
+            TargetStatement::Describe,
+            Some(("dc", "ds", "t")),
+        ),
+        (
+            "DESC/* c */t",
+            TargetStatement::Describe,
+            Some(("dc", "ds", "t")),
+        ),
+        (
+            "SHOW -- c\nCREATE /* d */ TABLE t",
+            TargetStatement::ShowCreateTable,
+            Some(("dc", "ds", "t")),
+        ),
+        (
+            "DESCRIBE cat /* c */ . ns -- d\n . t",
+            TargetStatement::Describe,
+            Some(("cat", "ns", "t")),
+        ),
+        (
+            "ALTER TABLE t /* c */ ADD /* d */ COLUMN c int",
+            TargetStatement::AlterTableAddColumns,
+            Some(("dc", "ds", "t")),
+        ),
+        // 引用符付き識別子（q1・q2・q3・q7・q10・q11）
+        (
+            "DESCRIBE \"my t\"",
+            TargetStatement::Describe,
+            Some(("dc", "ds", "my t")),
+        ),
+        (
+            "DESCRIBE \"a\"\"b\".t",
+            TargetStatement::Describe,
+            Some(("dc", "a\"b", "t")),
+        ),
+        (
+            "ALTER TABLE \"a\".\"b\".\"c\" ADD COLUMN c int",
+            TargetStatement::AlterTableAddColumns,
+            Some(("a", "b", "c")),
+        ),
+        (
+            "DESCRIBE \"t",
+            TargetStatement::Describe,
+            Some(("dc", "ds", "\"t")),
+        ),
+        (
+            "DROP TABLE \"s3tablescatalog/b\" . ns . t",
+            TargetStatement::DropTable,
+            Some(("s3tablescatalog/b", "ns", "t")),
+        ),
+        (
+            "DESCRIBE \"\"",
+            TargetStatement::Describe,
+            Some(("dc", "ds", "")),
+        ),
+        // 大文字小文字（k2・k3・k6）
+        (
+            "Describe T",
+            TargetStatement::Describe,
+            Some(("dc", "ds", "t")),
+        ),
+        (
+            "Show Create Table T",
+            TargetStatement::ShowCreateTable,
+            Some(("dc", "ds", "t")),
+        ),
+        (
+            "alter TABLE t add Column c int",
+            TargetStatement::AlterTableAddColumns,
+            Some(("dc", "ds", "t")),
+        ),
+        // 空白（w2・w3・w14）
+        (
+            "DESCRIBE\r\nt",
+            TargetStatement::Describe,
+            Some(("dc", "ds", "t")),
+        ),
+        (
+            "SHOW  CREATE   TABLE t",
+            TargetStatement::ShowCreateTable,
+            Some(("dc", "ds", "t")),
+        ),
+        (
+            "ALTER TABLE t ADD COLUMN(c int)",
+            TargetStatement::AlterTableAddColumns,
+            Some(("dc", "ds", "t")),
+        ),
+        // `(` の変種（p7）
+        ("(DESCRIBE t)", TargetStatement::Describe, None),
+        // 修飾名の空の部分（n1・n2・n3・n4・n6・n7・n8・n9・n10・n11）
+        (
+            "DESCRIBE IF EXISTS t",
+            TargetStatement::Describe,
+            Some(("dc", "ds", "t")),
+        ),
+        (
+            "ALTER TABLE .t ADD COLUMN c int",
+            TargetStatement::AlterTableAddColumns,
+            None,
+        ),
+        (
+            "ALTER TABLE cat..t ADD COLUMN c int",
+            TargetStatement::AlterTableAddColumns,
+            None,
+        ),
+        (
+            "ALTER TABLE cat. .t ADD COLUMN c int",
+            TargetStatement::AlterTableAddColumns,
+            None,
+        ),
+        ("DESCRIBE cat..t", TargetStatement::Describe, None),
+        ("DESCRIBE .t", TargetStatement::Describe, None),
+        ("DESCRIBE cat.", TargetStatement::Describe, None),
+        ("DESCRIBE", TargetStatement::Describe, None),
+        ("DROP TABLE cat..t", TargetStatement::DropTable, None),
+        (
+            "DESCRIBE t PARTITION (p = 1)",
+            TargetStatement::Describe,
+            Some(("dc", "ds", "t")),
+        ),
+        // 空・トリビアだけ・多バイト（e8・e9・e10）
+        ("DESCRIBE 日本", TargetStatement::Describe, None),
+        ("DROP TABLE 日本", TargetStatement::DropTable, None),
+        (
+            "-- あ\nDESCRIBE t",
+            TargetStatement::Describe,
+            Some(("dc", "ds", "t")),
+        ),
+        // `;` 付き（s2・s3・s6・s7）
+        (
+            "DESCRIBE t;",
+            TargetStatement::Describe,
+            Some(("dc", "ds", "t")),
+        ),
+        (
+            "SHOW CREATE TABLE t;",
+            TargetStatement::ShowCreateTable,
+            Some(("dc", "ds", "t")),
+        ),
+        (
+            "DESCRIBE t ;",
+            TargetStatement::Describe,
+            Some(("dc", "ds", "t")),
+        ),
+        (
+            "ALTER TABLE t ADD COLUMN c int;",
+            TargetStatement::AlterTableAddColumns,
+            Some(("dc", "ds", "t")),
+        ),
+        // SHOW（h5）
+        (
+            "SHOW COLUMNS FROM t",
+            TargetStatement::ShowColumns,
+            Some(("dc", "ds", "t")),
+        ),
+    ];
+    for &(query, statement, expected) in cases {
+        assert_eq!(
+            super::super::table_format::target_statement(query),
+            Some(statement),
+            "{query:?}"
+        );
+        let actual = parse_target_table(query, statement, Some("dc"), Some("ds"));
+        assert_eq!(
+            actual
+                .as_ref()
+                .map(|t| (t.catalog.as_str(), t.schema.as_str(), t.table.as_str())),
+            expected,
+            "{query:?}"
+        );
+    }
+}

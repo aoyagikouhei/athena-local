@@ -246,4 +246,42 @@ mod tests {
             [["true"], [""]].map(|row| row.map(serde_json::Value::from))
         );
     }
+
+    /// #195 の固定表 (5)（`parse_target_table` が Some になる DESCRIBE の入力と対照）。
+    /// 期待値は着手前のコード（76e66f8 + P1a）に `195-verify/golden.sh` を流した出力を写した。推測で書いていない。
+    #[test]
+    fn describe_の対象の名前の範囲は_crate_の_api_に寄せる前と同じ() {
+        let cases: &[(&str, Option<&str>)] = &[
+            // コメント（c5・c6・c7・c14）
+            ("/* a */ /* b */ DESCRIBE t", Some("t")),
+            ("DESCRIBE -- c\n t", Some("t")),
+            ("DESC/* c */t", Some("t")),
+            (
+                "DESCRIBE cat /* c */ . ns -- d\n . t",
+                Some("cat /* c */ . ns -- d\n . t"),
+            ),
+            // 引用符付き識別子（q1・q2・q7・q11。未閉じと空の引用符も名前として読む）
+            ("DESCRIBE \"my t\"", Some("\"my t\"")),
+            ("DESCRIBE \"a\"\"b\".t", Some("\"a\"\"b\".t")),
+            ("DESCRIBE \"t", Some("\"t")),
+            ("DESCRIBE \"\"", Some("\"\"")),
+            // 大文字小文字（k2）
+            ("Describe T", Some("T")),
+            // 空白（w2）
+            ("DESCRIBE\r\nt", Some("t")),
+            // 修飾名の空の部分（n1・n11）
+            ("DESCRIBE IF EXISTS t", Some("IF")),
+            ("DESCRIBE t PARTITION (p = 1)", Some("t")),
+            // 空・トリビアだけ・多バイト（e10）
+            ("-- あ\nDESCRIBE t", Some("t")),
+            // `;` 付き（s2・s6）
+            ("DESCRIBE t;", Some("t")),
+            ("DESCRIBE t ;", Some("t")),
+            // 対照（x1）
+            ("SELECT 1", None),
+        ];
+        for &(query, expected) in cases {
+            assert_eq!(describe_target_name(query), expected, "{query:?}");
+        }
+    }
 }
