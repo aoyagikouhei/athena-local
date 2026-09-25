@@ -1,6 +1,6 @@
 //! SQL の先頭のキーワードから StatementType / SubstatementType を判定する。
 
-/// 空白とコメントを区切りにした大文字の語の並び（`catalog::words`）から、先頭の `(` を取り除いたもの。
+/// 空白とコメントを区切りにした大文字の語の並び（`athena_sql::words`）から、先頭の `(` を取り除いたもの。
 /// 先頭のコメント（2026-09-18 実測）もキーワードの間のコメント（2026-09-22 実測。#52）も語にならない。
 /// `(` だけの語（`( SELECT` のように直後に空白や改行があるとき）は取り除くと空になるので落とし、
 /// `(SELECT` と同じ判定にする（#64 のレビューで見つかった。本物も `( SELECT 1 )` と改行を挟んだ形を
@@ -73,7 +73,7 @@ pub(super) fn substatement_type(query: &str) -> Option<&'static str> {
             "DATABASE" | "SCHEMA" => "DROP_DATABASE",
             _ => return None,
         },
-        // テーブル名は固定位置ではなく `catalog::skip_qualified_name` で読み飛ばしてから、
+        // テーブル名は固定位置ではなく `athena_sql::skip_qualified_name` で読み飛ばしてから、
         // その後ろのキーワードで判定する（2026-09-21 実測で見つかった退行の修正。
         // `word(3)`／`word(4)` の固定位置だと、引用符付きテーブル名や修飾名が空白・コメントを
         // 挟むと語数がずれて None に落ちていた。`ALTER TABLE IF EXISTS ...` と
@@ -102,13 +102,13 @@ pub(super) fn fixed_column(query: &str) -> Option<(&'static str, &'static str)> 
     }
 }
 
-/// `ALTER TABLE` の後ろのテーブル名を `catalog::skip_qualified_name` で読み飛ばし、
+/// `ALTER TABLE` の後ろのテーブル名を `athena_sql::skip_qualified_name` で読み飛ばし、
 /// その後ろのキーワードを 1 つずつ読み進めて ADD／DROP／REPLACE／RENAME／SET を判定する。
 /// 本物が実行時に失敗する組み合わせ（REPLACE COLUMNS・ADD PARTITION × Iceberg、
 /// RENAME TO × Hive）でも SubstatementType は同じ値で返るので、成否では分けない（2026-09-21 実測）。
 /// `ALTER`／`TABLE` のキーワード自体は呼び出し元の `word(0)`／`word(1)` の guard で確定している。
 ///
-/// キーワードの一致は `words()` の語の完全一致ではなく `catalog::skip_keyword` で確かめる。
+/// キーワードの一致は `words()` の語の完全一致ではなく `athena_sql::skip_keyword` で確かめる。
 /// そうしないと `TBLPROPERTIES('comment' = 'x')` のようにキーワードの直後に空白なしで
 /// `(` や文字列リテラルが続く書き方を判定できない（3 本目のレビューで実測）。
 fn alter_table_action(query: &str) -> Option<&'static str> {

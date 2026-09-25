@@ -331,7 +331,7 @@ fn parse_target_table_は_show_columns_の_from_と_in_のどちらの後ろの�
 #[test]
 fn parse_qualified_name_と_catalog_skip_qualified_name_は同じ書き方を受け付ける() {
     // 名前を「取り出す」parse_qualified_name（ここ）と「読み飛ばす」
-    // catalog::skip_qualified_name（classification.rs の ALTER TABLE 判定が使う）は
+    // athena_sql::skip_qualified_name（classification.rs の ALTER TABLE 判定が使う）は
     // 用途が違うので実装は別だが、受け付ける書き方（引用符・ドット・空白・コメント）は
     // 揃っていることをここで固定する（issue #39 レビュー指摘）。
     for input in [

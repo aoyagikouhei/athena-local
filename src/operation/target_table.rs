@@ -36,7 +36,7 @@ fn keywords(statement: TargetStatement) -> &'static [&'static [&'static str]] {
 /// Trino の規則で小文字）を使い、無ければ `default_catalog` / `default_schema`（実行時の値。
 /// 別名解決前）を使う。カタログかスキーマが決まらなければ None（今までどおりに倒す）。
 ///
-/// 字句処理は新しく書かず、`catalog.rs` の `skip_keyword`・`skip_leading_trivia`・`skip_quoted`・`unquote`
+/// 字句処理は新しく書かず、`athena_sql` の `skip_keyword`・`skip_leading_trivia`・`skip_quoted`・`unquote`
 /// を再利用する。
 pub(super) fn parse_target_table(
     query: &str,
@@ -72,7 +72,7 @@ pub(super) fn parse_target_table(
 /// `<キーワードの並び>` と、あれば `IF EXISTS` を読み飛ばし、名前が始まる位置を返す。
 /// 先頭が `<キーワードの並び>` でなければ None。並びは `keywords` が返す候補の 1 つ。
 ///
-/// `catalog::skip_keyword` が先頭のトリビアを自分で読み飛ばすので、キーワードの手前では
+/// `athena_sql::skip_keyword` が先頭のトリビアを自分で読み飛ばすので、キーワードの手前では
 /// 読み飛ばさない。**最後の 1 回だけは残す**: `parse_qualified_name` はトリビアを読み飛ばさず、
 /// 先頭が空白やコメントのままだと `read_name_part` が名前を 1 文字も読めずに None を返す。
 fn table_name_start<'a>(query: &'a str, keywords: &[&str]) -> Option<&'a str> {
@@ -103,7 +103,7 @@ fn parse_qualified_name(input: &str) -> Option<Vec<String>> {
     Some(parts)
 }
 
-/// 名前を 1 つ読む。引用符付きなら `catalog::skip_quoted` で終わりを見つけて中身を返し、
+/// 名前を 1 つ読む。引用符付きなら `athena_sql::skip_quoted` で終わりを見つけて中身を返し、
 /// 無引用なら英数字と `_` の並びを小文字にして返す。
 fn read_name_part(input: &str) -> Option<(String, &str)> {
     if input.starts_with('"') {

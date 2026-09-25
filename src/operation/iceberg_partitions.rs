@@ -7,7 +7,7 @@ use athena_sql::{skip_quoted, unquote};
 
 /// Trino の `SHOW CREATE TABLE` の DDL から `partitioning = ARRAY['s', 'bucket(n, 4)', 'day(ts)']` の
 /// 要素（`''` は `'` に戻す）を取り出す。`partitioning` が無ければ空。
-/// 文字列リテラルと引用符付きの識別子は `catalog::skip_quoted` で読み飛ばすので、コメントや
+/// 文字列リテラルと引用符付きの識別子は `athena_sql::skip_quoted` で読み飛ばすので、コメントや
 /// `location` の中の `partitioning` は読まない。
 pub(super) fn parse_partitioning(ddl: &str) -> Vec<String> {
     let bytes = ddl.as_bytes();
