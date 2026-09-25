@@ -107,6 +107,10 @@ fn parenthesized_type_arguments(
             None => Some(ColumnOutcome::Unmeasured),
         };
     }
+    // 引用符付きの語（`row("f" int)`）は実測していないので、列名と同じく弾かない（#208 の独立レビュー）。
+    if quoted_ahead(cursor) {
+        return Some(ColumnOutcome::Unmeasured);
+    }
     Some(match identifier_span(sql, inner) {
         Some((start, end)) => ColumnOutcome::Rejected(no_viable_alternative(
             sql,

@@ -198,10 +198,15 @@ fn ctas_や_create_or_replace_や_4_部以上や引用符付きの名前は_none
     }
 }
 
-/// 列 0 個、列の名前が引用符付きなら None（未実測。#204 の粒度で quoted_names には持ち込まない）。
+/// 列 0 個、列の名前か型名の括弧の中の最初の語が引用符付きなら None（未実測。#204 の粒度で quoted_names
+/// には持ち込まない。括弧の中は #208 の独立レビューより）。
 #[test]
-fn 列が_0_個か列名が引用符付きなら_none() {
-    for query in ["CREATE TABLE t ()", r#"CREATE TABLE t ("n" int)"#] {
+fn 列が_0_個か列名や型の括弧の中が引用符付きなら_none() {
+    for query in [
+        "CREATE TABLE t ()",
+        r#"CREATE TABLE t ("n" int)"#,
+        r#"CREATE TABLE t (n row("f" int))"#,
+    ] {
         assert_eq!(rejected(query), None, "{query}");
     }
 }
