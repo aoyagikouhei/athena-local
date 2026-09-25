@@ -11,6 +11,11 @@ later name the date they were measured on.
 
 ### Changed
 
+- A `QueryExecutionContext.Catalog` that does not exist in Trino now also falls
+  back for a plain `CREATE TABLE`, `ALTER TABLE ... ADD COLUMN`, views and
+  `CREATE` / `DROP SCHEMA`, as on real Athena (measured 2026-09-26)
+  ([docs](docs/caveats.md#sql-dialect)).
+
 - `GetQueryResults` returns `SHOW CREATE TABLE` and `SHOW CREATE VIEW` one row
   per line, as real Athena does (measured 2026-09-16 and 2026-09-24), instead
   of a single value with embedded newlines ([docs](docs/api.md#supported-api)).

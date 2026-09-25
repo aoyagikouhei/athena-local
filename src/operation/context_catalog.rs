@@ -1,7 +1,7 @@
 //! QueryExecutionContext の Catalog が Trino に実在しないときに、メタデータの文だけ既定のカタログへ差し替える（#214）。
-//! 本物は実在しない Catalog でも DESCRIBE・SHOW COLUMNS・SHOW TABLES・SHOW DATABASES・SHOW CREATE TABLE・
-//! DROP TABLE を既定の AwsDataCatalog で解決して成功させ、表を読む SELECT・EXPLAIN・CTAS は CATALOG_NOT_FOUND で
-//! 失敗させた（2026-09-25 実測。#212 Y3・#214）。
+//! 本物は実在しない Catalog でも DESCRIBE・SHOW 系・DROP TABLE、CTAS でない CREATE TABLE・ALTER TABLE・ビューと
+//! データベースの DDL を既定の AwsDataCatalog で解決して成功させ、表を読む SELECT・EXPLAIN・CTAS・INSERT・
+//! DELETE・UPDATE・MERGE は失敗させた（2026-09-25／26 実測。#212 Y3・#214・#217）。
 
 use std::collections::HashMap;
 
@@ -11,8 +11,11 @@ use crate::trino::{Cancel, Trino};
 use super::classification::substatement_type;
 use super::table_format::catalog_exists_sql;
 
-/// 本物が実在しない Catalog でも既定のカタログで成功させた文（2026-09-25 実測）。
-/// SHOW TBLPROPERTIES・SHOW VIEWS も成功したが、Trino に無い構文で athena-local の分類にも無いので載せない。
+/// 本物が実在しない Catalog でも既定のカタログで成功させた文（2026-09-25 実測 #214、2026-09-26 実測 #217）。
+/// SHOW TBLPROPERTIES・SHOW VIEWS・SHOW PARTITIONS・MSCK REPAIR TABLE・ALTER TABLE の ADD/DROP PARTITION・
+/// SET TBLPROPERTIES・VACUUM も成功したが、Trino に無い構文で athena-local からは届かないので載せない。
+/// OPTIMIZE も成功したが、分類が CTAS と同じ（本物は CTAS を失敗させた）ので載せない。SHOW FUNCTIONS は
+/// Trino が実在しないカタログでも成功させるので要らない。INSERT（1300）と DELETE・UPDATE・MERGE（1301）は本物も失敗させた。
 const RESOLVED_STATEMENTS: &[&str] = &[
     "DESCRIBE_TABLE",
     "SHOW_COLUMNS",
@@ -20,6 +23,13 @@ const RESOLVED_STATEMENTS: &[&str] = &[
     "SHOW_DATABASES",
     "SHOW_CREATE_TABLE",
     "DROP_TABLE",
+    "CREATE_TABLE",
+    "ALTER_TABLE_ADD_COLUMN",
+    "CREATE_VIEW",
+    "SHOW_CREATE_VIEW",
+    "DROP_VIEW",
+    "CREATE_DATABASE",
+    "DROP_DATABASE",
 ];
 
 /// Trino に送るカタログの元になる名前を返す。差し替えたときは Trino 側の名前（別名の値か、`TRINO_CATALOG` に

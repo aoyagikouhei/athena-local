@@ -473,7 +473,7 @@ emit_row() {
 skip() {
   local label=$1 note=$2
   echo "== $label: 未測定（$note）"
-  emit_row "$label" "SKIPPED" - - - - - - - - - - "$(sanitize "$note")"
+  emit_row "$label" "SKIPPED" - - - - - - - - - - "$(sanitize "$(hide "$note")")"
 }
 
 # 測定ではない確かめの結果（裏取り・件数・有無など）を summary に 1 行残す
@@ -481,7 +481,8 @@ skip() {
 info_row() {
   local label=$1 note=$2
   echo "== $label: $note"
-  emit_row "$label" "INFO" - - - - - - - - - - "$(sanitize "$note")"
+  # note には DB 名・表名が入るので、summary には伏せて書く（2026-09-26 のラウンドで実名が出た）。
+  emit_row "$label" "INFO" - - - - - - - - - - "$(sanitize "$(hide "$note")")"
 }
 
 # ラベルを指定して 1 文を実行する。呼んだ時点の QueryExecutionContext（QE_CONTEXT）を
@@ -700,7 +701,8 @@ verify_count() {
   if run "$label" "SELECT count(*) AS c FROM $table"; then
     fetch_all_table_names "$(query_id_of "$label")" "$RUN_DIR/$label.rows.txt"
     local c
-    c=$(head -n1 "$RUN_DIR/$label.rows.txt" 2>/dev/null | tr -d '\r')
+    # 1 行目は列名の見出し（c）なので 2 行目を読む。
+    c=$(sed -n 2p "$RUN_DIR/$label.rows.txt" 2>/dev/null | tr -d '\r')
     info_row "${label}-check" "count(*)=${c:-?}（$desc）"
   else
     info_row "${label}-check" "SELECT count(*) が通らず確かめられなかった（$desc）"

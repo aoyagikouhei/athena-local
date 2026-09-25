@@ -432,3 +432,32 @@ Content-Type と `.metadata` を含む置き場所は本項が主で、[result-f
 - 手元の Trino 482（compose）で同じ Context: `SELECT * FROM t`・`EXPLAIN`・`SHOW TABLES`・`DESCRIBE t`・CTAS はどれも `CATALOG_NOT_FOUND`（USER_ERROR）`Catalog 'nocatalog_214' not found`（位置は SELECT が 1:15、EXPLAIN が 1:23、SHOW TABLES・DESCRIBE・CTAS は 1:1、SHOW SCHEMAS は位置なし）。`SELECT 1` と `DROP TABLE IF EXISTS <nope>` は成功した。
 - 採用した判断: メタデータの文（本物が成功した文のうち Trino にもあるもの）だけ、実在しない Context のカタログを `TRINO_CATALOG_MAP` の `AwsDataCatalog` の別名（無ければ `TRINO_CATALOG`）に差し替える（[decisions.md](../decisions.md)）。表を読む文は差し替えず、`CATALOG_NOT_FOUND` を ErrorType 1006 にする。文言（`not found` ↔ `does not exist`）と CTAS の 1300 は変換しない。
 - 備考: `INSERT INTO <c> SELECT 2` は、前の CTAS が失敗して表が無かったため `Table <c> not found in database <db>`（1301）になり、カタログの扱いは測れていない。
+
+### 実在しない QueryExecutionContext の Catalog と文の種類の残り（#217）
+- 日付: 2026-09-26（UTC 2026-09-25 19:11）／ issue: #217 ／ スクリプト: `tools/measure/context-catalog-statements.sh` ／ 生データ: `$HOME/athena-context-catalog-measurements/run-20260925-190731`
+- 相手: 本物の Athena（`AwsDataCatalog`）
+- 投げたもの: 75 本。Context の Catalog を実在しない `nocatalog_217`、Database を実在の DB にして（NC）、準備した Hive 表・Hive のパーティション表・Iceberg 表・ビューに対して下の文を投げた。NC が失敗した文は同じ文を `AwsDataCatalog` の Context（OK）で対照に投げ、NC が成功した文は効果が既定のカタログに出たかを OK の読み取り（SHOW TABLES・SHOW DATABASES・DESCRIBE・SHOW PARTITIONS・SHOW TBLPROPERTIES）で裏取りした
+- 返ったもの:
+
+  | 文（NC） | SubstatementType | 結果 |
+  |---|---|---|
+  | `INSERT INTO t SELECT ...`・`INSERT INTO <db>.t SELECT ...`・`INSERT INTO t VALUES (...)` | `INSERT` | `FAILED`、ErrorCategory 2、ErrorType 1300、`NOT_FOUND: Session property catalog does not exist: nocatalog_217. If a data manifest file was generated at '<OUTPUT><uuid>-manifest.csv', you may need to manually clean the data from locations specified in the manifest. Athena will not delete data in your account.`。OK の対照は成功 |
+  | `DELETE`・`UPDATE`・`MERGE`（Iceberg 表） | `DELETE`・`UPDATE`・`MERGE` | `FAILED`、2 / 1301、`TABLE_NOT_FOUND: line 1:1: Table 'nocatalog_217.<db>.<t>' does not exist`。OK の対照は成功 |
+  | `CREATE EXTERNAL TABLE ... LOCATION ...`・`CREATE TABLE ... LOCATION ... TBLPROPERTIES ('table_type'='ICEBERG')` | `CREATE_TABLE` | `SUCCEEDED`。既定のカタログの DB に表ができた |
+  | `ALTER TABLE t ADD COLUMNS (c string)`（Hive・Iceberg） | `ALTER_TABLE_ADD_COLUMN` | `SUCCEEDED`。既定のカタログの表に列が増えた |
+  | `ALTER TABLE t SET TBLPROPERTIES (...)` | `ALTER_TABLE_PROPERTIES` | `SUCCEEDED`（SHOW TBLPROPERTIES に出た） |
+  | `ALTER TABLE tp ADD PARTITION (...)`・`DROP PARTITION (...)`・`SHOW PARTITIONS tp`・`MSCK REPAIR TABLE tp` | `ALTER_TABLE_ADD_PARTITION`・`ALTER_TABLE_DROP_PARTITION`・`SHOW_PARTITIONS`・`MSCK_REPAIR` | `SUCCEEDED`（パーティションが増えて消えた） |
+  | `CREATE VIEW v AS SELECT 1 AS n`・`CREATE VIEW v AS SELECT n FROM t`（表を参照する） | `CREATE_VIEW` | `SUCCEEDED`。既定のカタログの DB にビューができた |
+  | `SHOW CREATE VIEW v` | `SHOW_CREATE_VIEW` | `SUCCEEDED`（ColumnInfo の CatalogName は `hive`） |
+  | `DESCRIBE v`・`SHOW COLUMNS IN v`（ビュー） | `DESC_VIEW` | `SUCCEEDED` |
+  | `DROP VIEW IF EXISTS v`（実在のビュー・NC で作ったビュー） | `DROP_VIEW` | `SUCCEEDED`。既定のカタログからビューが消えた |
+  | `CREATE DATABASE IF NOT EXISTS d`・`DROP DATABASE IF EXISTS d`、`CREATE SCHEMA ...`・`DROP SCHEMA ...` | `CREATE_DATABASE`・`DROP_DATABASE` | `SUCCEEDED`。既定のカタログに DB ができて消えた |
+  | `SHOW FUNCTIONS` | `SHOW_FUNCTIONS` | `SUCCEEDED` |
+  | `OPTIMIZE ti REWRITE DATA USING BIN_PACK`・`VACUUM ti` | `CREATE_TABLE_AS_SELECT`・`VACUUM_TABLE` | `SUCCEEDED` |
+  | `SHOW TBLPROPERTIES ti`・`SHOW CREATE TABLE ti`（Iceberg） | `SHOW_TABLE_PROPERTIES`・`SHOW_CREATE_TABLE` | `SUCCEEDED` |
+  | `DROP TABLE IF EXISTS <実在の外部表>` | `DROP_TABLE` | `SUCCEEDED`。既定のカタログから表が消えた |
+  | `ALTER TABLE t RENAME TO t2` | `ALTER_TABLE_RENAME` | `FAILED`、1006、`Query type not supported by DDL engine.`。OK の対照も同じなので、カタログとは関係ない |
+
+- 手元の Trino 482（compose）で同じ Context（`X-Trino-Catalog: nocatalog_217`）: `CREATE VIEW`・`CREATE SCHEMA`・`CREATE TABLE c (n int)` は `Catalog 'nocatalog_217' not found`、`SHOW CREATE VIEW v` は `View 'nocatalog_217.<s>.v' does not exist`、`ALTER TABLE t ADD COLUMN`・`INSERT`・`DELETE`・`RENAME TO` は `Table 'nocatalog_217.<s>.t' does not exist` で失敗した。`DROP VIEW IF EXISTS v`・`DROP SCHEMA IF EXISTS s` は成功するが、既定のカタログのものは消えない。`SHOW FUNCTIONS` は成功した。Hive の書き方（`CREATE EXTERNAL TABLE`・`LOCATION` 付きの `CREATE TABLE`・`ADD COLUMNS`・`SET TBLPROPERTIES`・`ADD`／`DROP PARTITION`・`SHOW PARTITIONS`・`MSCK`・`CREATE`／`DROP DATABASE`・`OPTIMIZE`・`VACUUM`）はカタログにかかわらず構文エラー
+- 採用した判断: 本物が既定のカタログで成功させ、Trino の構文でも書ける文の種類（`CREATE_TABLE`・`ALTER_TABLE_ADD_COLUMN`・`CREATE_VIEW`・`SHOW_CREATE_VIEW`・`DROP_VIEW`・`CREATE_DATABASE`・`DROP_DATABASE`）を `RESOLVED_STATEMENTS` に足した（[decisions.md](../decisions.md)）。INSERT・DELETE・UPDATE・MERGE は差し替えない。INSERT の本物の 1300 と Trino の 1301 の差は変換しない
+- 備考: 裏取りの `SELECT count(*)` は、スクリプトが見出し行を値として読んだため summary では `count(*)=c` と出た（生データの 2 行目は `1`）。INSERT の 3 本は NC が失敗したので件数の裏取りはしていない
