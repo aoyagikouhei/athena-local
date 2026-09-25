@@ -13,10 +13,8 @@
 
 ## 文の種類と構文（[measurements/statements.md](measurements/statements.md)）
 
-- [ ] 引用符付きの名前を取る DDL 系の文のうち、`SHOW CREATE TABLE`・`SHOW TABLES IN`・CTAS でない `CREATE TABLE` の 4 部以上の修飾名（`a.b.c.d`）。athena-local は今までどおり実行する（#204、2026-09-25。#207 で `DESCRIBE`・`DESC`・`SHOW COLUMNS`・`DROP TABLE`・`ALTER TABLE` の 4 部以上は測って一致条件を広げたが、この 3 文だけ未実測のまま残った。追跡: #212）
-- [ ] `SHOW TABLES IN` の 3 部の修飾名（`SHOW TABLES IN a.b."c"`）。athena-local は今までどおり実行する（#207 で 1・2 部は測って一致条件を広げた。2026-09-25。追跡: #212）
-- [ ] 既定・文脈のカタログが Trino に無いときの `DESCRIBE`・`DESC`・`SHOW COLUMNS` の文言。#207 で測ったのは名前に 3 部まで書いてカタログを指定した形（`DATACATALOG_NOT_FOUND`）だけで、省略した既定のカタログが無い場合は未実測。athena-local の存在の確認（`entity_check.rs`）はこのケースを判定せず今までどおり実行する（2026-09-25。追跡: #212）
-- [ ] `Invalid table name`（4 部以上の `DESCRIBE`・`DESC`・`SHOW COLUMNS` の文言）で、引用符付きの部分が大文字のときにどう出るか（無引用の大文字は小文字にすると測ったが、引用符付きの大文字は測っていない）。athena-local は引用符付きの部分を中身のまま（大文字小文字を変えず）出す（#207、2026-09-25。追跡: #212）
+- [ ] CTAS の 4 部以上の修飾名（`a.b.c.d`）と、引用符付きの部分が 3 部目までに無い `CREATE TABLE IF NOT EXISTS` の 4 部以上（3 つ目の `.` の文言）。athena-local は今までどおり実行する（#212 で CTAS でない `CREATE TABLE` の 4 部以上は測って弾くようにしたが、この 2 つは測っていない。引用符付きの部分が 3 部目までにある IF NOT EXISTS は 3 部と同じ規則で弾く。2026-09-25）
+- [ ] `SHOW TABLES IN` の 3 部以上で、2 つ目の `.` の直後が `LIKE` やバッククォートの名前の形（`SHOW TABLES IN a.b.like`・``SHOW TABLES IN a.b.`c` ``）。#212 で直後が無引用の名前なら `mismatched input '.'`、引用符付きなら `extraneous input '.'` と測った。athena-local は `"` で始まらない形をすべて `mismatched input '.'` にする（2026-09-25）
 
 ## GetQueryResults（[measurements/query-results.md](measurements/query-results.md)）
 

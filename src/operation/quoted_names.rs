@@ -1,6 +1,6 @@
 //! 本物の Athena が StartQueryExecution の時点で弾く、引用符付きの名前を取る DDL 系の文とその文言（#204）。
 
-use athena_sql::{Cursor, NamePart, skip_leading_trivia, skip_trivia};
+use athena_sql::{Cursor, skip_leading_trivia, skip_trivia};
 
 use super::classification::substatement_type;
 use super::target_table::table_name_start;
@@ -14,20 +14,21 @@ const EXPECTING: &str = "{'SELECT', 'FROM', 'ADD', 'AS', 'ALL', 'DISTINCT', 'WHE
 /// ビューのときは、先に `entity_check` が決める（本物は存在を先に確かめる。#207）。
 ///
 /// 本物は、下の文の名前に引用符付きの部分が 1 つでもあると、その部分を Hive 系のパーサが読めずに弾く。
-/// 無引用とバッククォートは通る。4 部以上の名前は無引用でも弾く（#207）。弾くのは実測した形だけで、
-/// 実測していない形（`ALTER TABLE IF EXISTS`、SHOW TABLES IN の 3 部以上、SHOW CREATE TABLE と
-/// CREATE TABLE の 4 部以上）は今までどおり実行する。
+/// 無引用とバッククォートは通る。4 部以上の名前（SHOW TABLES IN は 3 部以上）は無引用でも弾く（#207・#212）。
+/// 弾くのは実測した形だけで、実測していない形（`ALTER TABLE IF EXISTS`、CTAS の 4 部以上、引用符付きの部分が
+/// 3 部目までに無い `CREATE TABLE IF NOT EXISTS` の 4 部以上）は今までどおり実行する。
 pub(super) fn rejection(query: &str, is_alias: impl Fn(&str) -> bool) -> Option<String> {
     // 本物は先頭の空白・タブ・改行を数えずに位置を出す（先頭のコメントは数える）。
     let sql = query.trim_start_matches([' ', '\t', '\r', '\n']);
     let (statement, rest) = STATEMENTS
         .iter()
         .find_map(|(keywords, statement)| Some((*statement, table_name_start(sql, keywords)?)))?;
-    // `table_name_start` は `IF EXISTS` を読み飛ばすので、ALTER TABLE の直後に IF があるかは元から読み直す。
-    if statement == Statement::AlterTable && {
+    // `table_name_start` は `IF EXISTS` を読み飛ばすので、ALTER・CREATE TABLE の直後に IF があるかは元から読み直す。
+    let if_follows = |first: &str| {
         let mut cursor = Cursor::new(sql);
-        cursor.keyword("ALTER") && cursor.keyword("TABLE") && cursor.keyword("IF")
-    } {
+        cursor.keyword(first) && cursor.keyword("TABLE") && cursor.keyword("IF")
+    };
+    if statement == Statement::AlterTable && if_follows("ALTER") {
         return None;
     }
     let offset = sql.len() - rest.len();
@@ -36,19 +37,46 @@ pub(super) fn rejection(query: &str, is_alias: impl Fn(&str) -> bool) -> Option<
     // 文の最初の語（先頭のコメントの後ろ）と名前の始まり。
     let statement_start = sql.len() - skip_leading_trivia(sql).len();
     let quoted = parts.iter().position(|part| part.text.starts_with('"'));
+    // SHOW TABLES IN の 3 部以上（2026-09-25 実測 Y1・Y2。#212）。引用符付きの部分が 2 部目までに無ければ
+    // 2 つ目の `.` で弾かれ、その直後が引用符付き（Hive では文字列）なら extraneous input になる。
+    if statement == Statement::ShowTables
+        && parts.len() >= 3
+        && quoted.is_none_or(|index| index >= 2)
+    {
+        let (line, column) = position(sql, skip_trivia(sql.as_bytes(), part(1).1));
+        let kind = if parts[2].text.starts_with('"') {
+            "extraneous"
+        } else {
+            "mismatched"
+        };
+        return Some(format!(
+            "line {line}:{column}: {kind} input '.' expecting {{<EOF>, 'LIKE', STRING}}"
+        ));
+    }
     let quoted = if parts.len() <= 3 {
         quoted?
     } else {
-        // 4 部以上（2026-09-25 実測 V2・W2・W3。#207）。DESCRIBE・SHOW COLUMNS は引用符の有無・位置によらず、
-        // S3 Tables の別名より先に Invalid table name。DROP・ALTER は引用符付きの部分が 3 部目までにあれば
-        // 3 部と同じ規則で、無ければ 3 つ目の `.` で弾かれる。
+        // 4 部以上（2026-09-25 実測 V2・W2・W3（#207）、Y1・Y4（#212））。DESCRIBE・SHOW COLUMNS・
+        // SHOW CREATE TABLE は引用符の有無・位置によらず、S3 Tables の別名より先に Invalid table name で、
+        // 名前は引用符を外した中身を小文字にしてつなぐ。DROP・ALTER・CREATE TABLE（と、上で 2 部目までに
+        // 引用符付きの部分がある SHOW TABLES IN）は引用符付きの部分が 3 部目までにあれば 3 部と同じ規則で、
+        // 無ければ 3 つ目の `.` で弾かれる。
         let dot = skip_trivia(sql.as_bytes(), part(2).1);
         match (statement, quoted) {
-            (Statement::Describe | Statement::ShowColumns, _) => {
-                let name: Vec<String> = parts.iter().map(NamePart::value).collect();
+            (Statement::Describe | Statement::ShowColumns | Statement::ShowCreateTable, _) => {
+                let name: Vec<String> = parts
+                    .iter()
+                    .map(|part| part.value().to_lowercase())
+                    .collect();
                 return Some(format!("Invalid table name {}", name.join(".")));
             }
-            (Statement::DropTable | Statement::AlterTable, Some(index)) if index < 3 => index,
+            (
+                Statement::DropTable
+                | Statement::AlterTable
+                | Statement::CreateTable
+                | Statement::ShowTables,
+                Some(index),
+            ) if index < 3 => index,
             (Statement::DropTable, _) => {
                 let (line, column) = position(sql, dot);
                 return Some(format!(
@@ -57,6 +85,16 @@ pub(super) fn rejection(query: &str, is_alias: impl Fn(&str) -> bool) -> Option<
             }
             (Statement::AlterTable, _) => {
                 return Some(no_viable_alternative(sql, dot, &sql[statement_start..=dot]));
+            }
+            (Statement::CreateTable, _)
+                // IF NOT EXISTS の 3 つ目の `.` は実測していない（引用符付きの部分が 3 部目までにあれば、4 部目を
+                // 読む前に文言が決まるので、上の腕で 3 部と同じ規則を当てる）。
+                if substatement_type(query) == Some("CREATE_TABLE") && !if_follows("CREATE") =>
+            {
+                let (line, column) = position(sql, dot);
+                return Some(format!(
+                    "line {line}:{column}: mismatched input '.' expecting {CREATE_TABLE_EXPECTING}"
+                ));
             }
             _ => return None,
         }
@@ -79,11 +117,11 @@ pub(super) fn rejection(query: &str, is_alias: impl Fn(&str) -> bool) -> Option<
             mismatched()
         }
         (Statement::AlterTable, _, _) => no_viable(statement_start),
-        (Statement::ShowTables, 1 | 2, _) => mismatched(),
+        (Statement::ShowTables, _, _) => mismatched(),
         (Statement::CreateTable, _, _) if substatement_type(query) == Some("CREATE_TABLE") => {
             no_viable(statement_start)
         }
-        (Statement::ShowTables | Statement::CreateTable, _, _) => None,
+        (Statement::CreateTable, _, _) => None,
     }
 }
 
@@ -116,6 +154,9 @@ enum Statement {
     ShowTables,
     CreateTable,
 }
+
+/// CTAS でない CREATE TABLE の 4 部以上で、3 つ目の `.` に対する本物の `expecting {…}`（2026-09-25 実測 Y1。#212）。
+const CREATE_TABLE_EXPECTING: &str = "{<EOF>, '(', 'SELECT', 'FROM', 'AS', 'ROW', 'WITH', 'VALUES', 'TABLE', 'INSERT', 'MAP', 'COMMENT', 'REDUCE', 'TBLPROPERTIES', 'SKEWED', 'STORED', 'LOCATION', 'CLUSTERED', 'PARTITIONED'}";
 
 const NOT_SUPPORTED: &str = "Queries of this type are not supported";
 const TWO_CATALOGS: &str = "Unsupported DDL with 2 catalogs";

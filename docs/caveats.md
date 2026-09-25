@@ -88,8 +88,12 @@ Known differences between athena-local and real Athena, grouped by topic.
   four parts or more, a `TRINO_CATALOG_MAP` alias catalog, a Trino error, or
   a response this check does not recognize are all left alone — the check
   only rejects a table it can prove is missing, and everything else runs, or
-  falls through to the quoted-name check below, as before. A missing default
-  or context catalog was not measured and still runs.
+  falls through to the quoted-name check below, as before. A missing
+  context catalog (`QueryExecutionContext.Catalog`) is not rejected either,
+  the same as real Athena (measured 2026-09-25); real Athena then resolves
+  the name in its default catalog and succeeds, whereas athena-local runs the
+  statement against the missing Trino catalog, where it fails — tracked in
+  [#214](https://github.com/aoyagikouhei/athena-local/issues/214).
 - **A quoted table name is rejected at `StartQueryExecution` before it
   reaches Trino, the same as on real Athena.** `DESCRIBE`, `DESC`,
   `SHOW COLUMNS FROM` / `IN`, `DROP TABLE` (with or without `IF EXISTS`),
@@ -111,17 +115,22 @@ Known differences between athena-local and real Athena, grouped by topic.
   the backquote item below for the one difference that remains between the
   two engines for a quoted name).
   A name of **four parts or more** is rejected differently, and even when
-  every part is unquoted: `DESCRIBE`, `DESC` and `SHOW COLUMNS FROM` / `IN`
-  answer `Invalid table name <name>` (each part lower-cased if unquoted or
-  unwrapped if quoted, joined with `.`), checked ahead of the
-  `TRINO_CATALOG_MAP` alias case below; `DROP TABLE` and `ALTER TABLE`
-  follow the three-part message rule above when the quoted part falls
-  within the first three parts, and otherwise are rejected at the third
-  `.` (`mismatched input '.' expecting {<EOF>, 'PURGE'}` for `DROP TABLE`,
-  `no viable alternative at input '...'` from the start of the statement to
-  that `.` for `ALTER TABLE`). `SHOW CREATE TABLE`, `SHOW TABLES IN` and
-  `CREATE TABLE` with four parts or more were not measured and still run
-  here unrejected.
+  every part is unquoted: `DESCRIBE`, `DESC`, `SHOW COLUMNS FROM` / `IN`
+  and `SHOW CREATE TABLE` answer `Invalid table name <name>` (each part
+  unwrapped if quoted and lower-cased, joined with `.`), checked ahead of
+  the `TRINO_CATALOG_MAP` alias case below; `DROP TABLE`, `ALTER TABLE` and
+  a plain `CREATE TABLE` follow the three-part message rule above when the
+  quoted part falls within the first three parts, and otherwise are
+  rejected at the third `.` (`mismatched input '.' expecting {<EOF>,
+  'PURGE'}` for `DROP TABLE`, `no viable alternative at input '...'` from
+  the start of the statement to that `.` for `ALTER TABLE`, and
+  `mismatched input '.' expecting {<EOF>, '(', ...}` for `CREATE TABLE`).
+  `SHOW TABLES IN` takes a database, so it is rejected from **three parts**:
+  a quoted first or second part follows the one- and two-part rule, and
+  otherwise the second `.` answers `mismatched input '.' expecting {<EOF>,
+  'LIKE', STRING}` — or `extraneous input '.'` with the same list when the
+  part right after it is double-quoted, since Hive reads `"x"` as a string
+  (measured 2026-09-25).
   A double-quoted catalog that is a `TRINO_CATALOG_MAP` alias — an S3 Tables
   catalog written `"s3tablescatalog/my-bucket"`, for example — is rejected
   the same way even where the alias would otherwise resolve it: `DESCRIBE`,
@@ -129,14 +138,15 @@ Known differences between athena-local and real Athena, grouped by topic.
   the name has four parts or more, which the check above catches first), and
   the other statements above follow the general rule (measured 2026-09-25);
   see [`TRINO_CATALOG_MAP`](configuration.md#environment-variables) for what
-  the alias covers instead. A few forms were not measured and still run
-  here unrejected: `SHOW CREATE TABLE`, `SHOW TABLES IN` and `CREATE TABLE`
-  with four parts or more, `SHOW TABLES IN` with three parts, the message
-  real Athena gives for `DESCRIBE` / `DESC` / `SHOW COLUMNS` when the
-  default or context catalog itself does not exist in Trino, and how an
-  upper-case quoted part reads in the `Invalid table name` message above.
-  Name the table without quotes to avoid depending on any of this; tracked
-  in [#212](https://github.com/aoyagikouhei/athena-local/issues/212). The
+  the alias covers instead. A CTAS with four parts or more, and a
+  `CREATE TABLE IF NOT EXISTS` with four parts or more whose first three
+  parts are all unquoted, were not measured and still run here unrejected
+  (with a quoted part among the first three, `CREATE TABLE IF NOT EXISTS`
+  follows the three-part rule like `CREATE TABLE`), and
+  for `SHOW TABLES IN` a part after the second `.` that is `LIKE` or
+  backquoted was not measured either (athena-local answers `mismatched
+  input '.'`). Name the table without quotes, in three parts or fewer, to
+  avoid depending on any of this. The
   other statements that can take a quoted name right after the keyword —
   `CREATE TABLE "t" AS SELECT` (a CTAS), `CREATE VIEW "v" AS ...`,
   `SHOW CREATE VIEW "v"` and `DROP VIEW "v"` — succeed on real Athena too,
