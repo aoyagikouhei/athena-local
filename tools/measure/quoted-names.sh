@@ -42,11 +42,39 @@
 #     （tools/measure/leading-comment.sh の注意のとおり、$'...' は変数展開しないので
 #     改行だけを $'...' の断片にして残りと隣接させて連結する）。
 #   - S3 Tables（環境変数 3 つが揃ったときだけ測る任意の群）を新設した。
+#   - 【2 ラウンド目】環境変数 `ROUND`（既定 1）でラウンドを切り替える。ROUND=1 は
+#     上の D〜P 群・S3 Tables 群（1 ラウンド目と同じ項目。変えていない）を流し、
+#     ROUND=2 は下の「ROUND=2 の項目」の U1〜U7 群だけを流す。preflight・準備の
+#     Hive テーブル（d0-setup-hive）・後始末（z-drop-hive）は両ラウンド共通。
+#
+# ROUND=2 の項目（1 ラウンド目 `run-20260925-075408` の結果を踏まえた 2 ラウンド目）:
+#   U1  3 部の名前で途中・末尾だけ引用符付き（n12 = awsdatacatalog."db".t、
+#       n13 = awsdatacatalog.db."t"）を DESCRIBE・DESC・SHOW CREATE TABLE・
+#       SHOW COLUMNS FROM の 4 文に、DROP TABLE には実在しない名前に対して。
+#   U2  ALTER で Trino が受ける操作（RENAME TO／DROP COLUMN）を、db."nope"・
+#       "db".nope・"awsdatacatalog".db.nope（n14）・awsdatacatalog.db."nope"（n13）の
+#       4 形に、加えて ALTER TABLE IF EXISTS の引用符付き／無引用の対。すべて
+#       実在しない名前 athena_local_probe_204_nope に対して投げる。
+#   U3  S3 Tables（S3TABLES_* が揃うときだけ）。1 ラウンド目は名前空間の綴り違いで
+#       対照の SELECT が SCHEMA_NOT_FOUND だったので、正しい値で対照を取り直しつつ、
+#       DESCRIBE・DESC・SHOW COLUMNS FROM・SHOW CREATE TABLE・存在しない表への
+#       DESCRIBE/DROP/ALTER・名前空間まで引用符付きの形を測る。
+#   U4  先頭・区切りの空白（タブ・改行・CRLF・2 連続改行・行コメント後・改行入り
+#       ブロックコメント）を ANSI-C quoting（`$'...'`）で作る。DROP にも先頭・区切りの
+#       改行を 1 本ずつ。
+#   U5  コメントの中の非 ASCII（ひらがな・4 バイトの絵文字）と、存在しない非 ASCII
+#       名前 "日本" への DESCRIBE。
+#   U6  DESCRIBE EXTENDED／FORMATTED の引用符付きと、対照の無引用 EXTENDED。
+#   U7  SHOW TABLES IN／DROP DATABASE IF EXISTS／CREATE TABLE（非 EXTERNAL の Hive。
+#       本物では失敗するはずだが、万一成功したら直後に無引用 IF EXISTS の DROP を
+#       run で投げて後始末する）を、引用符付き・無引用の対で。
 #
 # 使い方:
 #   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db bash tools/measure/quoted-names.sh
-#   S3 Tables も測るとき:
-#   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db \
+#   2 ラウンド目:
+#   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=2 bash tools/measure/quoted-names.sh
+#   S3 Tables も測るとき（どちらのラウンドでも指定できる）:
+#   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=2 \
 #     S3TABLES_CATALOG=s3tablescatalog/your-bucket S3TABLES_NS=your_ns S3TABLES_TABLE=your_table \
 #     bash tools/measure/quoted-names.sh
 #   （資格情報はホストのシェルで AWS_ACCESS_KEY_ID などを export してから。または ~/.aws/credentials）
@@ -64,31 +92,42 @@
 #   RETRY_MAX        名前解決・接続など一時的な失敗を再試行する回数の上限。既定 4
 #   RETRY_DELAY      再試行の間隔（秒）。既定 5
 #   PROBE_DDL        既定 1（測る）。準備の Hive テーブル athena_local_probe_204 を
-#                    作って D/E/C/L/M/P 群の対象にし、最後に無引用 + IF EXISTS の
+#                    作って対象テーブルが要る群に使い、最後に無引用 + IF EXISTS の
 #                    DROP で消す。0 にすると SHOW TABLES の 1 件目（実在のテーブル）を
 #                    対象にする（名前は小文字。実名は summary に出さない）。
+#   ROUND            既定 1。1 は D〜P 群・S3 Tables 群（1 ラウンド目）、2 は
+#                    U1〜U7 群（2 ラウンド目）だけを流す。
 #   S3TABLES_CATALOG S3 Tables のカタログ名（例 s3tablescatalog/my-bucket）。
 #   S3TABLES_NS      S3 Tables の名前空間。
 #   S3TABLES_TABLE   S3 Tables のテーブル名。
-#                    この 3 つが揃ったときだけ S3 Tables 群を測る。1 つでも欠けていれば
+#                    この 3 つが揃ったときだけ S3 Tables 群（ROUND=1 の S3T・
+#                    ROUND=2 の U3）を測る。1 つでも欠けていれば
 #                    「未測定（S3TABLES_* 未設定）」として summary に残す。
 #
-# ** PROBE_DDL=1 のときにこのスクリプトが本物に対して行う破壊的な操作 **
-#   <db>.athena_local_probe_204（Hive。CREATE TABLE ... AS SELECT で作成）を作り、
-#   最後に無引用 + IF EXISTS の DROP TABLE で消す（異常終了時も trap で同じ形で
-#   消しにいく）。同名のテーブルが既にあると壊すので、開始前に SHOW TABLES で
+# ** このスクリプトが本物に対して行う破壊的な操作 **
+#   PROBE_DDL=1 のとき: <db>.athena_local_probe_204（Hive。CREATE TABLE ... AS SELECT
+#   で作成）を作り、最後に無引用 + IF EXISTS の DROP TABLE で消す（異常終了時も trap で
+#   同じ形で消しにいく）。同名のテーブルが既にあると壊すので、開始前に SHOW TABLES で
 #   athena_local_probe_204 という接頭辞が無いことを確かめ、1 件でもあれば何も作らずに
 #   止まる。ALTER TABLE・DROP TABLE は実在しない名前
 #   （<db>.athena_local_probe_204_nope）にだけ投げるので、そのテーブル自体は作らない
 #   （後始末の対象にもならない）。
+#   ROUND=2 の U7 群だけ、実在しない名前 <db>.athena_local_probe_204_nope3 に対する
+#   CREATE TABLE（非 EXTERNAL の Hive。本物では失敗するはず）を引用符付き・無引用の
+#   両方で投げる。想定外に成功したら、その場で無引用 IF EXISTS の DROP を投げて消す
+#   （trap にも同じ DROP を保険として持つ）。
 #
 # 課金について: スキャンの無いクエリだけ。DESCRIBE・DESC・SHOW CREATE TABLE・
-# SHOW COLUMNS・MSCK REPAIR TABLE・ALTER TABLE・DROP TABLE はどれもメタデータだけを
-# 見る／書く文で、実データのスキャンは無い。準備の CTAS（PROBE_DDL=1 のときだけ）も
-# 1 行の計算結果を書くだけ。Athena の最小課金 × クエリ数の見込み。
+# SHOW COLUMNS・MSCK REPAIR TABLE・ALTER TABLE・DROP TABLE・SHOW TABLES・
+# DROP DATABASE はどれもメタデータだけを見る／書く文で、実データのスキャンは無い。
+# 準備の CTAS（PROBE_DDL=1 のときだけ）・U3 の SELECT（S3 Tables、LIMIT 1）・
+# U7 の CREATE TABLE（0 行）も、スキャンや書き込みは軽微。Athena の最小課金 ×
+# クエリ数の見込み。
 #
 # 本物への呼び出し回数の見込み（StartQueryExecution のみ。GetQueryExecution・
 # GetQueryResults・S3 への呼び出しは含めない。課金には影響しない）:
+#
+#   [ROUND=1]
 #   preflight 1
 #   + PROBE_DDL=1 のときのセットアップ 1・後始末 1（既定はこちら）
 #   + D 群（DESCRIBE、n0〜n11）12
@@ -99,16 +138,33 @@
 #   + A 群（ALTER TABLE、5 種 × 引用/無引用）10
 #   + M 群（MSCK REPAIR TABLE、引用/無引用）2
 #   + P 群（文言の位置の規則）8
-#   = 68（既定の PROBE_DDL=1）。S3TABLES_* が 3 つとも揃っていればさらに 4 本増え、72 になる。
-#   開始時に弾かれた（START_FAILED）項目があっても、追加の呼び出しはしない
-#   （AthenaErrorCode・Message は同じ標準エラーからそのまま抜くため）。
+#   = 68。S3TABLES_* が 3 つとも揃っていればさらに 4 本増え、72 になる。
+#
+#   [ROUND=2]
+#   preflight 1 + セットアップ 1・後始末 1
+#   + U1 群（8 + DROP 2）10
+#   + U2 群（4 形 × 2 操作 8 + IF EXISTS 対 2）10
+#   + U3 群（S3TABLES_* が揃うときだけ）10
+#   + U4 群（先頭・区切りの空白）10
+#   + U5 群（非 ASCII の位置）3
+#   + U6 群（DESCRIBE の変種）3
+#   + U7 群（3 対 6。CREATE TABLE の対照が想定外に成功すれば後始末が最大 2 本増える）6
+#   = 45（S3TABLES_* 無し）／55（S3TABLES_* あり）。
+#
+#   どちらのラウンドも、開始時に弾かれた（START_FAILED）項目があっても追加の呼び出しは
+#   しない（AthenaErrorCode・Message は同じ標準エラーからそのまま抜くため）。
 #
 # 実行ごとに $OUT_DIR/run-<日時>/ を作り、その中だけに書く。前の回の結果と混ざらない。
 #
 # 項目ごとに次を保存する（取れたものだけ）。
-#   <label>.sql            投げた SQL そのもの（**DB 名・テーブル名を含む。実名を含む**）
-#   <label>.start.err      StartQueryExecution の標準エラー（開始時に弾かれた証拠。
-#                          Message と AthenaErrorCode もここから抜く）
+#   <label>.sql            投げた SQL そのもの（**DB 名・テーブル名を含む。実名を含む**。
+#                          U4/U5 群は実際のタブ・CR・改行・非 ASCII をそのまま含む）
+#   <label>.start.err      StartQueryExecution の標準エラー（開始時に弾かれた証拠）。
+#                          **一切加工せず AWS CLI の出力そのまま保存する**（実際の制御
+#                          文字か `\t` のような 2 文字表記かを、ファイルの中身では
+#                          失わない）。Message と AthenaErrorCode は summary 用にここから
+#                          抜くときだけ、実際の制御文字を <TAB>/<CR>/<LF> という目に
+#                          見える形に変える（start_err_message を参照）
 #   <label>.execution.json GetQueryExecution の生の応答（開始できた項目だけ）
 #   <label>.execution.err  GetQueryExecution の標準エラー
 #   <label>.reason.txt     StateChangeReason と AthenaError（**実名を含みうる。貼る前に確認**）
@@ -131,6 +187,7 @@ POLL_TIMEOUT=${POLL_TIMEOUT:-180}
 RETRY_MAX=${RETRY_MAX:-4}
 RETRY_DELAY=${RETRY_DELAY:-5}
 PROBE_DDL=${PROBE_DDL:-1}
+ROUND=${ROUND:-1}
 S3TABLES_CATALOG=${S3TABLES_CATALOG:-}
 S3TABLES_NS=${S3TABLES_NS:-}
 S3TABLES_TABLE=${S3TABLES_TABLE:-}
@@ -157,15 +214,25 @@ START_CALL_FILE="$RUN_DIR/.start-calls"
 : > "$START_CALL_FILE"
 # PROBE_DDL=1 のセットアップに着手したかどうか。trap での後始末に使う。
 DDL_ATTEMPTED=0
+# ROUND=2 の U7 群で CREATE TABLE の対照（無引用・引用符付きのどちらか）が想定外に
+# 成功したかどうか。trap での後始末に使う（本編の u7-*-cleanup で消せなかったときの保険）。
+U7_CREATED=0
 
 # 中間ファイル（.tmp-*）は、途中で止めても残らないよう trap で消す。セットアップに
 # 着手していたら、ベストエフォートで「無引用 + IF EXISTS」の後始末も投げる
-# （本編の z-drop-hive で消せなかったときの保険。cleanup 自体は結果を確かめない）。
+# （本編の z-drop-hive・u7-*-cleanup で消せなかったときの保険。cleanup 自体は結果を
+# 確かめない）。
 cleanup() {
   rm -f "$RUN_DIR"/.tmp-*
   if [ "$DDL_ATTEMPTED" = 1 ]; then
     aws athena start-query-execution --region "$REGION" \
       --query-string "DROP TABLE IF EXISTS $TABLE_HIVE" \
+      --query-execution-context "Catalog=$CATALOG,Database=$DB" \
+      --result-configuration "OutputLocation=$OUTPUT" >/dev/null 2>&1 || true
+  fi
+  if [ "$U7_CREATED" = 1 ]; then
+    aws athena start-query-execution --region "$REGION" \
+      --query-string "DROP TABLE IF EXISTS ${NOPE}3" \
       --query-execution-context "Catalog=$CATALOG,Database=$DB" \
       --result-configuration "OutputLocation=$OUTPUT" >/dev/null 2>&1 || true
   fi
@@ -243,14 +310,41 @@ is_transient_error() {
 #
 #   Additional error details:
 #   AthenaErrorCode: MALFORMED_QUERY
-# Message は 1 行目の「operation: 」より後ろ、AthenaErrorCode は「AthenaErrorCode: 」で
+# Message は「operation: 」より後ろ、「\n\nAdditional error details:」の手前まで
+# （無ければファイル末尾まで）を取る。AthenaErrorCode は「AthenaErrorCode: 」で
 # 始まる行から取る。どちらも見つからなければ "-"。
+#
+# ラウンド 2 の U4/U5 群は SQL に実際のタブ・CR・改行・コメントを挟むので、
+# Message の中にそれが実際の制御文字のまま echo back されることがある
+# （#204 の依頼どおり「実際の制御文字か \t などの 2 文字表記か」を区別できるよう、
+# start.err そのものは加工せず保存し、summary に載せるときだけ <TAB>/<CR>/<LF> という
+# 目に見える形に変える。始めに <BACKSLASH> へ変えておくことで、message がもともと
+# 持っていた 2 文字表記の `\t` などと、実際の制御文字を変換した <TAB> を混同しない）。
 start_err_message() {
-  local f=$1 line
+  local f=$1 msg
   [ -s "$f" ] || { echo "-"; return; }
-  line=$(grep -m1 -oE 'operation: .*' "$f")
-  if [ -n "$line" ]; then
-    sanitize "$(hide "${line#operation: }")"
+  msg=$(python3 -c '
+import sys
+try:
+    text = open(sys.argv[1], "rb").read().decode("utf-8", "replace")
+except Exception:
+    print("-")
+    sys.exit(0)
+marker = "operation: "
+idx = text.find(marker)
+if idx == -1:
+    print("-")
+    sys.exit(0)
+rest = text[idx + len(marker):]
+end = rest.find("\n\nAdditional error details:")
+msg = rest[:end] if end != -1 else rest
+msg = msg.rstrip("\r\n \t")
+msg = msg.replace("\\", "<BACKSLASH>")
+msg = msg.replace("\t", "<TAB>").replace("\r", "<CR>").replace("\n", "<LF>")
+print(msg)
+' "$f")
+  if [ -n "$msg" ] && [ "$msg" != "-" ]; then
+    sanitize "$(hide "$msg")"
   else
     echo "-"
   fi
@@ -395,7 +489,8 @@ skip() {
   emit_row "$label" "SKIPPED" - - - - - - - - "$(sanitize "$note")"
 }
 
-# 名前の形を返す（設計の n0〜n11。#204 の依頼文のとおり）。
+# 名前の形を返す（設計の n0〜n11 は #204 の依頼文どおり、n12〜n14 はラウンド 2 の
+# U1・U2 群で使う「3 部のうち一部だけ引用符付き」の形）。
 #   n0  無引用                          t
 #   n1  引用符付き（小文字）            "t"
 #   n2  引用符付き（大文字）            "T"
@@ -408,6 +503,9 @@ skip() {
 #   n9  3 部とも引用符付き              "awsdatacatalog"."db"."t"
 #   n10 バッククォート（テーブルのみ）  `t`
 #   n11 バッククォート（db・テーブル）  `db`.`t`
+#   n12 catalog 無引用・db 引用符付き・table 無引用   awsdatacatalog."db".t
+#   n13 catalog 無引用・db 無引用・table 引用符付き   awsdatacatalog.db."t"
+#   n14 catalog だけ引用符付き（小文字）・残り無引用  "awsdatacatalog".db.t
 name_form() {
   local idx=$1 base=$2 upper
   upper=$(printf '%s' "$base" | tr '[:lower:]' '[:upper:]')
@@ -424,6 +522,9 @@ name_form() {
     n9) printf '"awsdatacatalog"."%s"."%s"' "$DB" "$base" ;;
     n10) printf '`%s`' "$base" ;;
     n11) printf '`%s`.`%s`' "$DB" "$base" ;;
+    n12) printf 'awsdatacatalog."%s".%s' "$DB" "$base" ;;
+    n13) printf 'awsdatacatalog.%s."%s"' "$DB" "$base" ;;
+    n14) printf '"awsdatacatalog".%s.%s' "$DB" "$base" ;;
     *) printf '%s' "$base" ;;
   esac
 }
@@ -567,6 +668,8 @@ if [ -z "$TARGET_TABLE" ]; then
   echo "== 対象テーブルが決められないため、D/E/C/L/M 群と P 群の一部を未測定にします。"
 fi
 
+if [ "$ROUND" = 1 ]; then
+
 # --- D 群（DESCRIBE <t>） -------------------------------------------------------
 
 if [ -n "$TARGET_TABLE" ]; then
@@ -675,6 +778,141 @@ else
   done
 fi
 
+fi # ROUND=1
+
+if [ "$ROUND" = 2 ]; then
+
+# --- U1 群（3 部の名前で途中・末尾だけ引用符付き） --------------------------------
+# n12 = awsdatacatalog."<db>".<t>（catalog 無引用・db 引用符付き・table 無引用）
+# n13 = awsdatacatalog.<db>."<t>"（catalog 無引用・db 無引用・table 引用符付き）
+
+if [ -n "$TARGET_TABLE" ]; then
+  run "u1-desc-n12"    "DESCRIBE $(name_form n12 "$TARGET_TABLE")"
+  run "u1-desc-n13"    "DESCRIBE $(name_form n13 "$TARGET_TABLE")"
+  run "u1-descd-n12"   "DESC $(name_form n12 "$TARGET_TABLE")"
+  run "u1-descd-n13"   "DESC $(name_form n13 "$TARGET_TABLE")"
+  run "u1-showc-n12"   "SHOW CREATE TABLE $(name_form n12 "$TARGET_TABLE")"
+  run "u1-showc-n13"   "SHOW CREATE TABLE $(name_form n13 "$TARGET_TABLE")"
+  run "u1-showcol-n12" "SHOW COLUMNS FROM $(name_form n12 "$TARGET_TABLE")"
+  run "u1-showcol-n13" "SHOW COLUMNS FROM $(name_form n13 "$TARGET_TABLE")"
+else
+  for label in u1-desc-n12 u1-desc-n13 u1-descd-n12 u1-descd-n13 \
+    u1-showc-n12 u1-showc-n13 u1-showcol-n12 u1-showcol-n13; do
+    skip "$label" "対象テーブルが無いため未測定"
+  done
+fi
+run "u1-drop-n12" "DROP TABLE $(name_form n12 "$NOPE")"
+run "u1-drop-n13" "DROP TABLE $(name_form n13 "$NOPE")"
+
+# --- U2 群（ALTER。Trino が受ける RENAME TO / DROP COLUMN で、実在しない名前に） ----
+# n14 = "awsdatacatalog".<db>.<nope>（catalog だけ引用符付き・小文字）
+# n13（U1 と同じ関数）= awsdatacatalog.<db>."<nope>"
+
+U2_FORMS="n5 n6 n14 n13"
+for n in $U2_FORMS; do
+  run "u2-$n-rename"  "ALTER TABLE $(name_form "$n" "$NOPE") RENAME TO $NOPE2"
+  run "u2-$n-dropcol" "ALTER TABLE $(name_form "$n" "$NOPE") DROP COLUMN m"
+done
+run "u2-ifq" "ALTER TABLE IF EXISTS \"$NOPE\" RENAME TO $NOPE2"
+run "u2-ifu" "ALTER TABLE IF EXISTS $NOPE RENAME TO $NOPE2"
+
+# --- U3 群（S3 Tables。任意。環境変数が 3 つとも揃ったときだけ） -------------------
+# <s3>     = "<S3TABLES_CATALOG>".<ns>.<table>（実在する表。ラウンド 1 は名前空間の
+#            綴り違いで SCHEMA_NOT_FOUND だったので、今回は正しい値で対照を取り直す）
+# <s3nope> = "<S3TABLES_CATALOG>".<ns>.nope_204（実在しない表）
+
+if [ -n "$S3TABLES_CATALOG" ] && [ -n "$S3TABLES_NS" ] && [ -n "$S3TABLES_TABLE" ]; then
+  S3_NAME="\"$S3TABLES_CATALOG\".$S3TABLES_NS.$S3TABLES_TABLE"
+  S3_NOPE_NAME="\"$S3TABLES_CATALOG\".$S3TABLES_NS.nope_204"
+  run "u3-select"          "SELECT * FROM $S3_NAME LIMIT 1"
+  run "u3-desc"            "DESCRIBE $S3_NAME"
+  run "u3-descd"           "DESC $S3_NAME"
+  run "u3-showcol"         "SHOW COLUMNS FROM $S3_NAME"
+  run "u3-showc"           "SHOW CREATE TABLE $S3_NAME"
+  run "u3-desc-nope"       "DESCRIBE $S3_NOPE_NAME"
+  run "u3-drop-nope"       "DROP TABLE $S3_NOPE_NAME"
+  run "u3-alt-rename-nope" "ALTER TABLE $S3_NOPE_NAME RENAME TO nope_204b"
+  run "u3-alt-dropcol-nope" "ALTER TABLE $S3_NOPE_NAME DROP COLUMN m"
+  run "u3-desc-allq" "DESCRIBE \"$S3TABLES_CATALOG\".\"$S3TABLES_NS\".\"$S3TABLES_TABLE\""
+else
+  for label in u3-select u3-desc u3-descd u3-showcol u3-showc u3-desc-nope \
+    u3-drop-nope u3-alt-rename-nope u3-alt-dropcol-nope u3-desc-allq; do
+    skip "$label" "未測定（S3TABLES_* 未設定）"
+  done
+fi
+
+# --- U4 群（先頭と区切りの空白。ANSI-C quoting $'...' で作る） --------------------
+
+if [ -n "$TARGET_TABLE" ]; then
+  run "u4-leadtab"     $'\t'"DESCRIBE \"$TARGET_TABLE\""
+  run "u4-leadnl"      $'\n'"DESCRIBE \"$TARGET_TABLE\""
+  run "u4-leadcrlf"    $'\r\n'"DESCRIBE \"$TARGET_TABLE\""
+  run "u4-lead2nl"     $'\n\n'"DESCRIBE \"$TARGET_TABLE\""
+  run "u4-linecomment" $'-- c\n'"DESCRIBE \"$TARGET_TABLE\""
+  run "u4-blockcomment" $'/* a\nb */ '"DESCRIBE \"$TARGET_TABLE\""
+  run "u4-septab"      "DESCRIBE"$'\t'"\"$TARGET_TABLE\""
+  run "u4-sepcrlf"     "DESCRIBE"$'\r\n'"\"$TARGET_TABLE\""
+else
+  for label in u4-leadtab u4-leadnl u4-leadcrlf u4-lead2nl u4-linecomment \
+    u4-blockcomment u4-septab u4-sepcrlf; do
+    skip "$label" "対象テーブルが無いため未測定"
+  done
+fi
+run "u4-drop-leadnl" $'\n'"DROP TABLE \"$NOPE\""
+run "u4-drop-sepnl"  "DROP TABLE"$'\n'"\"$NOPE\""
+
+# --- U5 群（非 ASCII の後ろの位置） ------------------------------------------------
+
+if [ -n "$TARGET_TABLE" ]; then
+  run "u5-hira"  $'/* \xe3\x81\x82 */ '"DESCRIBE \"$TARGET_TABLE\""
+  run "u5-emoji" $'/* \xf0\x9f\x98\x80 */ '"DESCRIBE \"$TARGET_TABLE\""
+else
+  skip "u5-hira" "対象テーブルが無いため未測定"
+  skip "u5-emoji" "対象テーブルが無いため未測定"
+fi
+run "u5-jp" $'DESCRIBE "\xe6\x97\xa5\xe6\x9c\xac"'
+
+# --- U6 群（DESCRIBE の変種） -----------------------------------------------------
+
+if [ -n "$TARGET_TABLE" ]; then
+  run "u6-extended-q"   "DESCRIBE EXTENDED \"$TARGET_TABLE\""
+  run "u6-formatted-q"  "DESCRIBE FORMATTED \"$TARGET_TABLE\""
+  run "u6-extended-u"   "DESCRIBE EXTENDED $TARGET_TABLE"
+else
+  for label in u6-extended-q u6-formatted-q u6-extended-u; do
+    skip "$label" "対象テーブルが無いため未測定"
+  done
+fi
+
+# --- U7 群（ほかの文。すべて実在しない名前に対して） -------------------------------
+
+run "u7-showtables-q" "SHOW TABLES IN \"$DB\""
+run "u7-showtables-u" "SHOW TABLES IN $DB"
+run "u7-dropdb-q" "DROP DATABASE IF EXISTS \"${NOPE}_db\""
+run "u7-dropdb-u" "DROP DATABASE IF EXISTS ${NOPE}_db"
+
+if run "u7-createtable-q" "CREATE TABLE \"${NOPE}3\" (n int)"; then
+  U7_CREATED=1
+  run "u7-createtable-q-cleanup" "DROP TABLE IF EXISTS ${NOPE}3"
+  if [ -s "$RUN_DIR/u7-createtable-q-cleanup.reason.txt" ] && grep -q "^State: SUCCEEDED" "$RUN_DIR/u7-createtable-q-cleanup.reason.txt"; then
+    U7_CREATED=0
+  fi
+else
+  skip "u7-createtable-q-cleanup" "CREATE TABLE が失敗したため後始末不要"
+fi
+
+if run "u7-createtable-u" "CREATE TABLE ${NOPE}3 (n int)"; then
+  U7_CREATED=1
+  run "u7-createtable-u-cleanup" "DROP TABLE IF EXISTS ${NOPE}3"
+  if [ -s "$RUN_DIR/u7-createtable-u-cleanup.reason.txt" ] && grep -q "^State: SUCCEEDED" "$RUN_DIR/u7-createtable-u-cleanup.reason.txt"; then
+    U7_CREATED=0
+  fi
+else
+  skip "u7-createtable-u-cleanup" "CREATE TABLE が失敗したため後始末不要"
+fi
+
+fi # ROUND=2
+
 # --- 後始末（PROBE_DDL=1 のときだけ） ---------------------------------------------
 
 if [ "$PROBE_DDL" = 1 ] && [ "$D_SETUP_OK" = 1 ]; then
@@ -690,19 +928,35 @@ fi
 # --- summary -----------------------------------------------------------------
 
 ALL_LABELS="probe-show-tables d0-setup-hive"
-for n in $D_FORMS; do ALL_LABELS="$ALL_LABELS d-$n"; done
-for n in $E_FORMS; do ALL_LABELS="$ALL_LABELS e-$n"; done
-for n in $C_FORMS; do ALL_LABELS="$ALL_LABELS c-$n"; done
-for n in $L_FORMS; do ALL_LABELS="$ALL_LABELS l-$n"; done
-ALL_LABELS="$ALL_LABELS l-in"
-for n in $X_FORMS; do ALL_LABELS="$ALL_LABELS x-$n"; done
-ALL_LABELS="$ALL_LABELS x-ifq x-ifu"
-for key in addcols addcol dropcol rename settbl; do
-  ALL_LABELS="$ALL_LABELS alt-$key-q alt-$key-u"
-done
-ALL_LABELS="$ALL_LABELS msck-q msck-u"
-ALL_LABELS="$ALL_LABELS pos-lower pos-dblspace pos-newline pos-leadspace pos-leadcomment pos-trailspace pos-drop-dblspace pos-drop-lower"
-ALL_LABELS="$ALL_LABELS s3t-desc s3t-show s3t-select s3t-drop"
+if [ "$ROUND" = 1 ]; then
+  for n in $D_FORMS; do ALL_LABELS="$ALL_LABELS d-$n"; done
+  for n in $E_FORMS; do ALL_LABELS="$ALL_LABELS e-$n"; done
+  for n in $C_FORMS; do ALL_LABELS="$ALL_LABELS c-$n"; done
+  for n in $L_FORMS; do ALL_LABELS="$ALL_LABELS l-$n"; done
+  ALL_LABELS="$ALL_LABELS l-in"
+  for n in $X_FORMS; do ALL_LABELS="$ALL_LABELS x-$n"; done
+  ALL_LABELS="$ALL_LABELS x-ifq x-ifu"
+  for key in addcols addcol dropcol rename settbl; do
+    ALL_LABELS="$ALL_LABELS alt-$key-q alt-$key-u"
+  done
+  ALL_LABELS="$ALL_LABELS msck-q msck-u"
+  ALL_LABELS="$ALL_LABELS pos-lower pos-dblspace pos-newline pos-leadspace pos-leadcomment pos-trailspace pos-drop-dblspace pos-drop-lower"
+  ALL_LABELS="$ALL_LABELS s3t-desc s3t-show s3t-select s3t-drop"
+elif [ "$ROUND" = 2 ]; then
+  ALL_LABELS="$ALL_LABELS u1-desc-n12 u1-desc-n13 u1-descd-n12 u1-descd-n13"
+  ALL_LABELS="$ALL_LABELS u1-showc-n12 u1-showc-n13 u1-showcol-n12 u1-showcol-n13"
+  ALL_LABELS="$ALL_LABELS u1-drop-n12 u1-drop-n13"
+  for n in $U2_FORMS; do ALL_LABELS="$ALL_LABELS u2-$n-rename u2-$n-dropcol"; done
+  ALL_LABELS="$ALL_LABELS u2-ifq u2-ifu"
+  ALL_LABELS="$ALL_LABELS u3-select u3-desc u3-descd u3-showcol u3-showc u3-desc-nope"
+  ALL_LABELS="$ALL_LABELS u3-drop-nope u3-alt-rename-nope u3-alt-dropcol-nope u3-desc-allq"
+  ALL_LABELS="$ALL_LABELS u4-leadtab u4-leadnl u4-leadcrlf u4-lead2nl u4-linecomment u4-blockcomment"
+  ALL_LABELS="$ALL_LABELS u4-septab u4-sepcrlf u4-drop-leadnl u4-drop-sepnl"
+  ALL_LABELS="$ALL_LABELS u5-hira u5-emoji u5-jp"
+  ALL_LABELS="$ALL_LABELS u6-extended-q u6-formatted-q u6-extended-u"
+  ALL_LABELS="$ALL_LABELS u7-showtables-q u7-showtables-u u7-dropdb-q u7-dropdb-u"
+  ALL_LABELS="$ALL_LABELS u7-createtable-q u7-createtable-q-cleanup u7-createtable-u u7-createtable-u-cleanup"
+fi
 ALL_LABELS="$ALL_LABELS z-drop-hive"
 
 write_summary_txt() {
@@ -711,11 +965,19 @@ write_summary_txt() {
     echo "# issue #204: 引用符付きの名前を取る文が StartQueryExecution の時点でどの形なら"
     echo "#             弾かれ、どの形なら通るか（境界の規則）と、弾かれた文言の規則を実測"
     echo "# 実行日時: $(date -Iseconds)"
-    echo "# StartQueryExecution の見込み本数: 68（既定の PROBE_DDL=1。preflight 1 +"
-    echo "#   セットアップ/後始末 2 + D 12 + E 6 + C 12 + L 7 + X 8 + A 10 + M 2 + P 8）。"
-    echo "#   S3TABLES_* が揃っていれば +4 で 72。開始時に弾かれた（START_FAILED）項目が"
-    echo "#   あっても追加の呼び出しはしない（このラウンドの実測値:"
-    echo "#   $(wc -l < "$START_CALL_FILE" | tr -d ' ') 回）。"
+    echo "# ROUND: $ROUND（1 = D〜P 群・S3 Tables 群、2 = U1〜U7 群）"
+    if [ "$ROUND" = 1 ]; then
+      echo "# StartQueryExecution の見込み本数: 68（preflight 1 + セットアップ/後始末 2 +"
+      echo "#   D 12 + E 6 + C 12 + L 7 + X 8 + A 10 + M 2 + P 8）。"
+      echo "#   S3TABLES_* が揃っていれば +4 で 72。"
+    else
+      echo "# StartQueryExecution の見込み本数: 45（S3TABLES_* 無し）／55（あり）"
+      echo "#   （preflight 1 + セットアップ/後始末 2 + U1 10 + U2 10 + U4 10 + U5 3 +"
+      echo "#   U6 3 + U7 6、S3TABLES_* が揃っていれば U3 の 10 が乗る）。U7 の"
+      echo "#   CREATE TABLE の対照が想定外に成功すれば後始末が最大 2 本増える。"
+    fi
+    echo "#   開始時に弾かれた（START_FAILED）項目があっても追加の呼び出しはしない"
+    echo "#   （このラウンドの実測値: $(wc -l < "$START_CALL_FILE" | tr -d ' ') 回）。"
     echo "# DDL は準備の Hive テーブル athena_local_probe_204 を 1 つ作って消すだけ"
     echo "#   (PROBE_DDL=1)。DROP・ALTER は実在しない名前 (..._nope) にだけ投げる。"
     echo "# 課金: スキャンの無いクエリだけ（メタデータの参照・書き換えのみ）。"
