@@ -139,6 +139,32 @@ async fn 引用符付きの大文字の名前は小文字にして存在を確�
     assert_eq!(harness.trino_sqls(), [probe]);
 }
 
+/// Trino は引用符付きのカタログ名も大文字小文字を区別しないので、本体の `"DEFAULT_CATALOG".s.t` は実在の
+/// カタログに当たる。探索もカタログを小文字にして引き、カタログ不在と取り違えない（#207 の独立レビュー）。
+#[tokio::test]
+async fn 引用符付きの大文字のカタログも小文字にして存在を確かめる() {
+    let probe = probe_sql("default_catalog", "default_schema", "t");
+    let harness = Harness::builder(describe_response())
+        .route(&probe, probe_response(Some("hive"), Some("TABLE")))
+        // 大文字のまま引けば、Trino の system.metadata.catalogs には見つからない。
+        .route(
+            &probe_sql("DEFAULT_CATALOG", "default_schema", "t"),
+            probe_response(None, None),
+        )
+        .start()
+        .await;
+
+    let (code, error) = start(&harness, r#"DESCRIBE "DEFAULT_CATALOG".default_schema.t"#).await;
+
+    assert_eq!(code, 400, "{error}");
+    assert_eq!(error["AthenaErrorCode"], "MALFORMED_QUERY");
+    assert_eq!(
+        error["Message"],
+        r#"line 1:10: no viable alternative at input 'DESCRIBE "DEFAULT_CATALOG"'"#
+    );
+    assert_eq!(harness.trino_sqls(), [probe]);
+}
+
 #[tokio::test]
 async fn 名前に書いたカタログが無ければ_datacatalog_not_found_で弾く() {
     let probe = probe_sql("nocat", "db", "t");

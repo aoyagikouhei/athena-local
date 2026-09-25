@@ -47,11 +47,12 @@ pub(super) async fn check(
     if config.catalog_map.contains_key(&target.catalog) {
         return Check::Continue;
     }
-    // 本物は大文字の名前でも実在のテーブルを見つける（2026-09-25 実測 W1）。Trino のカタログは小文字で持つので
-    // 小文字にして引く。カタログは本体と同じ別名を当てた Trino 側の名前。
-    let trino_catalog = config.trino_catalog(&target.catalog);
+    // 本物は大文字の名前でも実在のテーブルを見つける（2026-09-25 実測 W1）。Trino はカタログ・スキーマ・
+    // テーブルを小文字で持ち、引用符付きの名前も大文字小文字を区別せずに引くので、どれも小文字にして引く。
+    // カタログは本体と同じ別名を当てた Trino 側の名前。
+    let trino_catalog = config.trino_catalog(&target.catalog).to_lowercase();
     let sql = table_format::probe_sql(
-        trino_catalog,
+        &trino_catalog,
         &target.schema.to_lowercase(),
         &target.table.to_lowercase(),
     );

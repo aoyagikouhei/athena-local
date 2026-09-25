@@ -71,8 +71,9 @@ Known differences between athena-local and real Athena, grouped by topic.
   the quoted-name check below, the same as real Athena does.** It asks Trino
   the same question the table-format probe (below, under
   "`ALTER TABLE` and format-dependent DDL") asks at execution time — one
-  query for `connector_name` and `table_type`, with the schema and table
-  lower-cased — so for these three statements the query goes to Trino twice.
+  query for `connector_name` and `table_type`, with the catalog, schema and
+  table lower-cased — so for these three statements the query goes to Trino
+  twice.
   A missing table or schema, quoted or not and ASCII or not, answers
   `InvalidRequestException` (`AthenaErrorCode` `INVALID_INPUT`) with Athena's
   Glue message, `Entity Not Found (Service: AmazonDataCatalog; Status Code:
