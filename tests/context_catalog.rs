@@ -1,7 +1,7 @@
 //! QueryExecutionContext の Catalog が Trino に実在しないとき、本物はメタデータの文（DESCRIBE・SHOW COLUMNS・
-//! SHOW TABLES・SHOW DATABASES・SHOW CREATE TABLE・DROP TABLE）だけ既定のカタログで解決して成功させ、
-//! 表を読む SELECT などは CATALOG_NOT_FOUND で失敗させた（2026-09-25 実測。#212 Y3・#214）。
-//! athena-local はメタデータの文のときだけカタログの有無を Trino に問い合わせ、無ければ `TRINO_CATALOG_MAP` の
+//! SHOW TABLES・SHOW DATABASES・SHOW CREATE TABLE・DROP TABLE）と DDL・ビューの文だけ既定のカタログで解決して
+//! 成功させ、表を読む SELECT などは CATALOG_NOT_FOUND で失敗させた（2026-09-25／26 実測。#212 Y3・#214・#217）。
+//! athena-local はそれらの文のときだけカタログの有無を Trino に問い合わせ、無ければ `TRINO_CATALOG_MAP` の
 //! `AwsDataCatalog` の別名（無ければ `TRINO_CATALOG`）に差し替えて送る。
 
 mod common;
@@ -102,6 +102,40 @@ async fn 実在しないカタログのメタデータの文は_awsdatacatalog_�
         assert_eq!(
             body_catalogs(&harness.trino_requests(), query),
             [Some("hive".to_string())],
+            "{query}"
+        );
+    }
+}
+
+/// #217 の実測（2026-09-26）: 本物は実在しない Context のカタログでも CTAS でない CREATE TABLE・ALTER TABLE ADD COLUMNS・
+/// CREATE VIEW・SHOW CREATE VIEW・DROP VIEW・CREATE/DROP DATABASE（SCHEMA）を既定のカタログで成功させ、INSERT は
+/// 1300、DELETE・UPDATE・MERGE は 1301 で失敗させた。Trino の構文で書ける形だけ確かめる。
+#[tokio::test]
+async fn 実在しないカタログの_ddl_とビューの文は差し替え_insert_と_delete_は差し替えない() {
+    let harness = Harness::builder(describe_response())
+        .catalog_map(&[("AwsDataCatalog", "hive")])
+        .route(
+            &catalog_exists_sql("nosuchcat"),
+            catalog_exists_response(None),
+        )
+        .start()
+        .await;
+
+    for (query, sent) in [
+        ("CREATE TABLE c (n integer)", "hive"),
+        ("ALTER TABLE t ADD COLUMN c varchar", "hive"),
+        ("CREATE VIEW v AS SELECT n FROM t", "hive"),
+        ("SHOW CREATE VIEW v", "hive"),
+        ("DROP VIEW IF EXISTS v", "hive"),
+        ("CREATE SCHEMA IF NOT EXISTS s", "hive"),
+        ("DROP SCHEMA IF EXISTS s", "hive"),
+        ("INSERT INTO t SELECT 1", "nosuchcat"),
+        ("DELETE FROM t WHERE n = 1", "nosuchcat"),
+    ] {
+        harness.run_query(request(query, "nosuchcat")).await;
+        assert_eq!(
+            body_catalogs(&harness.trino_requests(), query),
+            [Some(sent.to_string())],
             "{query}"
         );
     }

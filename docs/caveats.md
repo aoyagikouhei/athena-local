@@ -90,28 +90,36 @@ Known differences between athena-local and real Athena, grouped by topic.
   only rejects a table it can prove is missing, and everything else runs, or
   falls through to the quoted-name check below, as before.
 - **A `QueryExecutionContext.Catalog` that does not exist falls back to the
-  default catalog for metadata statements only, as on real Athena.** Real
+  default catalog for metadata statements and DDL, as on real Athena.** Real
   Athena resolves `DESCRIBE` / `DESC`, `SHOW COLUMNS`, `SHOW TABLES`,
-  `SHOW DATABASES` / `SCHEMAS`, `SHOW CREATE TABLE` and `DROP TABLE` in its
-  default catalog when the context catalog does not exist, while a query
-  that reads a table (`SELECT * FROM t`, `EXPLAIN`, a CTAS) fails (measured
-  2026-09-25). For those metadata statements athena-local asks Trino whether
-  the context catalog exists (one extra query in `StartQueryExecution` and
-  again before running, only when the catalog is given and is not a
-  `TRINO_CATALOG_MAP` alias) and, if it does not, sends the `AwsDataCatalog`
-  alias from `TRINO_CATALOG_MAP` instead, or `TRINO_CATALOG` when there is no
-  such alias; the existence check above then looks the table up there, so a
-  missing table still answers `Entity Not Found`. If neither is set, or Trino
-  cannot answer, the name is sent as before. `GetQueryExecution` still
-  returns the catalog as sent, lower-cased. Other statements are sent with
-  the missing catalog as before: a `SELECT` or `EXPLAIN` fails with
-  `CATALOG_NOT_FOUND` and `ErrorType` 1006 like real Athena, but Trino words
-  it `Catalog '<name>' not found` where Athena says `does not exist`, and a
-  CTAS fails the same way where real Athena answers `ErrorType` 1300 with
-  `NOT_FOUND: Session property catalog does not exist: <name>. ...`. How real
-  Athena treats a missing context catalog for `INSERT`, `ALTER TABLE`, a
-  plain `CREATE TABLE`, `SHOW PARTITIONS`, `CREATE VIEW` and the other
-  statements was not measured; athena-local sends the name as before.
+  `SHOW DATABASES` / `SCHEMAS`, `SHOW CREATE TABLE`, `DROP TABLE`, a plain
+  `CREATE TABLE`, `ALTER TABLE ... ADD COLUMNS`, `CREATE VIEW`,
+  `SHOW CREATE VIEW`, `DROP VIEW` and `CREATE` / `DROP DATABASE` (or
+  `SCHEMA`) in its default catalog when the context catalog does not exist,
+  while a query that reads or writes table data (`SELECT * FROM t`,
+  `EXPLAIN`, a CTAS, `INSERT`, `DELETE`, `UPDATE`, `MERGE`) fails (measured
+  2026-09-25 and 2026-09-26). For those statements athena-local asks Trino
+  whether the context catalog exists (one extra query in
+  `StartQueryExecution` and again before running, only when the catalog is
+  given and is not a `TRINO_CATALOG_MAP` alias) and, if it does not, sends
+  the `AwsDataCatalog` alias from `TRINO_CATALOG_MAP` instead, or
+  `TRINO_CATALOG` when there is no such alias; the existence check above then
+  looks the table up there, so a missing table still answers
+  `Entity Not Found`. If neither is set, or Trino cannot answer, the name is
+  sent as before. `GetQueryExecution` still returns the catalog as sent,
+  lower-cased. Other statements are sent with the missing catalog as before:
+  a `SELECT` or `EXPLAIN` fails with `CATALOG_NOT_FOUND` and `ErrorType` 1006
+  like real Athena, but Trino words it `Catalog '<name>' not found` where
+  Athena says `does not exist`; `DELETE`, `UPDATE` and `MERGE` fail with
+  `TABLE_NOT_FOUND` and `ErrorType` 1301 like real Athena; a CTAS fails with
+  `CATALOG_NOT_FOUND` (1006) and an `INSERT` with `TABLE_NOT_FOUND` (1301)
+  where real Athena answers `ErrorType` 1300 with
+  `NOT_FOUND: Session property catalog does not exist: <name>. ...`. Real
+  Athena also resolves the Hive DDL spellings (`ALTER TABLE ... ADD` /
+  `DROP PARTITION`, `SET TBLPROPERTIES`, `SHOW PARTITIONS`,
+  `MSCK REPAIR TABLE`, `SHOW TBLPROPERTIES`, `VACUUM`, `OPTIMIZE`) in its
+  default catalog, but Trino rejects those spellings as a syntax error
+  whatever the catalog (see [DDL](ddl.md)).
 - **A quoted table name is rejected at `StartQueryExecution` before it
   reaches Trino, the same as on real Athena.** `DESCRIBE`, `DESC`,
   `SHOW COLUMNS FROM` / `IN`, `DROP TABLE` (with or without `IF EXISTS`),
