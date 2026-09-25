@@ -46,11 +46,16 @@ if [ "${SKIP_BUILD:-0}" != 1 ]; then
 fi
 
 # Trino が起動直後だと構文チェック（PREPARE）が落ちて StartQueryExecution が失敗するので、/v1/info の starting が false になるまで待つ。
+# jq の `//` は false を偽とみなすので `.starting // "true"` では起動済みを判定できない（#194 の足場から引き継いだ式。常に 120 秒待っていた）。
+trino_ready() { [ "$(curl -s "$TRINO_URL/v1/info" | jq -r 'if .starting == false then "ready" else "waiting" end')" = ready ]; }
 for _ in $(seq 1 120); do
-  [ "$(curl -s "$TRINO_URL/v1/info" | jq -r '.starting // "true"')" = false ] && break
+  trino_ready && break
   sleep 1
 done
 log "trino: $(curl -s "$TRINO_URL/v1/info" | jq -c '{starting, nodeVersion}')"
+# Trino が無いまま進むと全ケースが FAILED（構文チェックが届かず実行だけ作られる）になり環境の問題と混ざるので、ここで止める
+# （2026-09-25 に踏んだ: 直前に流した tools/e2e の足場が終了時に trino を down -v で落としていた）。
+if ! trino_ready; then log "Trino が起動していない: $TRINO_URL（先に docker compose -f compose.yml up -d trino）"; exit 1; fi
 
 ATHENA_LOCAL_BIND="$ATHENA_BIND" TRINO_URL="$TRINO_URL" ATHENA_LOCAL_RESULTS=none "$BINARY" >"$EVIDENCE_DIR/athena-local.log" 2>&1 &
 ATHENA_PID=$!
