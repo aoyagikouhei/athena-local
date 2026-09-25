@@ -231,6 +231,38 @@ async fn 別名のカタログと_4_部以上の名前は存在を問い合わ�
     assert!(harness.trino_requests().is_empty(), "探索も本体も送らない");
 }
 
+/// 本物は Context の Catalog が AwsDataCatalog のとき、実在しない表の DESCRIBE を開始時に Entity Not Found で
+/// 弾いた（#207 の実測）。別名を問い合わせずに任せるのは、名前に別名を書いたときだけ（上の `2 catalogs`）で、
+/// Context から来た別名は Trino 側の名前で存在を確かめる（#216）。
+#[tokio::test]
+async fn context_の別名のカタログは_trino_側の名前で存在を確かめる() {
+    let probe = probe_sql("hive", "db", "nope");
+    let harness = Harness::builder(describe_response())
+        .catalog_map(&[("AwsDataCatalog", "hive")])
+        .route(&probe, probe_response(Some("hive"), None))
+        .start()
+        .await;
+
+    let (code, error) = harness
+        .call(
+            "StartQueryExecution",
+            json!({
+                "QueryString": "DESCRIBE nope",
+                "QueryExecutionContext": { "Catalog": "AwsDataCatalog", "Database": "db" }
+            }),
+        )
+        .await;
+
+    assert_eq!(code, 400, "{error}");
+    assert_eq!(error["AthenaErrorCode"], "INVALID_INPUT");
+    request_id(&error["Message"]);
+    assert_eq!(
+        harness.trino_sqls(),
+        [probe],
+        "探索だけを送り、本体は送らない"
+    );
+}
+
 /// 探索が失敗したら（Trino に届かない・権限が無いなど）存在は分からないので、今までどおりに倒す:
 /// 無引用なら実行し、引用符付きなら #204 の構文の文言。
 #[tokio::test]

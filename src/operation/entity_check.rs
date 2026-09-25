@@ -22,8 +22,8 @@ pub(super) enum Check {
 }
 
 /// 本物の判定の順序は、4 部以上の名前 → S3 Tables の別名 → カタログの有無 → テーブルの有無 → ビュー →
-/// 引用符付きの名前（2026-09-25 実測）。4 部以上は `parse_target_table` が None を返し、別名は問い合わせずに
-/// `quoted_names` に任せるので、この順序になる。存在は、無いと分かったときだけ弾く。探索が失敗したり
+/// 引用符付きの名前（2026-09-25 実測）。4 部以上は `parse_target_table` が None を返し、名前に書いた別名は
+/// 問い合わせずに `quoted_names` に任せるので、この順序になる。存在は、無いと分かったときだけ弾く。探索が失敗したり
 /// 応答の形が違ったりしたら（偽 Trino が本体の応答を返すときも）Continue に倒す。
 pub(super) async fn check(
     trino: &Trino,
@@ -44,7 +44,9 @@ pub(super) async fn check(
     else {
         return Check::Continue;
     };
-    if config.catalog_map.contains_key(&target.catalog) {
+    // 名前に書いた別名だけ `quoted_names` の `2 catalogs` に任せる。Context や既定から来た別名は、本物の
+    // AwsDataCatalog と同じく存在を確かめる（#216）。
+    if config.catalog_map.contains_key(&target.catalog) && names_catalog(query, statement) {
         return Check::Continue;
     }
     // 本物は大文字の名前でも実在のテーブルを見つける（2026-09-25 実測 W1）。Trino はカタログ・スキーマ・
