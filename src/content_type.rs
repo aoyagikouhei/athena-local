@@ -70,7 +70,7 @@ pub(crate) fn plain_text_statement(query: &str) -> bool {
 /// `SHOW CREATE` は 3 語目が `TABLE` のときだけで、`SHOW CREATE VIEW` は本物が不透明な `.metadata` を
 /// binary で置く（2026-09-24 実測。#146・#151）ので入れない。`SHOW CREATE SCHEMA` などほかの
 /// `SHOW CREATE ...` は Athena の構文に無く未実測で、`.txt` の既定（binary）に落ちる。
-/// 語は `athena_sql::words` で読むので、先頭やキーワードの間のコメントは語にならない。
+/// 語は `athena_sql::words_iter` で先頭の 3 語だけ読むので、先頭やキーワードの間のコメントは語にならない。
 pub(crate) fn carries_execution_id(query: &str) -> bool {
     let words: Vec<String> = words_iter(query).take(3).map(|word| word.upper).collect();
     let word = |index: usize| words.get(index).map(String::as_str).unwrap_or_default();
@@ -169,7 +169,7 @@ mod tests {
             "SELECT id, name FROM users",
             "(SELECT 1)",
             // 本物は binary（2026-09-23 実測）だが、Trino が末尾の `;` を構文エラーにするので
-            // athena-local では構文チェックで FAILED になり、ここには届かない。判定は変えない。
+            // athena-local では構文チェックが 400 にして実行を作らず、判定の結果は捨てられる。判定は変えない。
             "SELECT 1;",
             // 途中で終わる・数の形が崩れているもの。パーサの拒否の分岐を 1 つずつ踏む。
             "SELECT",

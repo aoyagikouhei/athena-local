@@ -2,7 +2,7 @@
 
 /// `'...'` や `"..."` の終わりの次の位置。引用符を 2 つ重ねたものは中身として読む。閉じていなければ末尾。
 ///
-/// `operation/target_table.rs` が DROP TABLE の修飾名の引用符付き識別子を読むのにも再利用する（issue #39 Phase 2）。
+/// 修飾名の引用符付き識別子（`name.rs`）や識別子・文字列リテラル（`cursor.rs`）を読むのにも再利用する（issue #39 Phase 2）。
 pub fn skip_quoted(bytes: &[u8], start: usize) -> usize {
     let quote = bytes[start];
     let mut i = start + 1;
@@ -21,7 +21,7 @@ pub fn skip_quoted(bytes: &[u8], start: usize) -> usize {
 
 /// `--` か `/*` で始まるコメントなら、その終わりの次の位置。閉じていなければ末尾。
 ///
-/// `operation/target_table.rs` が DROP TABLE の修飾名を読むのにも再利用する（issue #39 Phase 2）。
+/// 修飾名（`name.rs`）と `Cursor` のトリビアの読み飛ばしにも再利用する（issue #39 Phase 2）。
 pub fn comment_end(bytes: &[u8], start: usize) -> Option<usize> {
     let rest = &bytes[start..];
     if rest.starts_with(b"--") {

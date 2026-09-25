@@ -2,8 +2,9 @@
 //!
 //! 完全なパーサは目指さず、SQL が正しいかどうかも判定しない。トークンと句は元の SQL での位置を持ち、
 //! 書き換えは範囲の差し替えだけにする。規則と理由は docs/dev/decisions.md の「SQL の内部 crate（athena-sql）」。
-//! 今あるのは #194 で athena-local の `src/catalog.rs` から中身を変えずに移した字句処理の道具で、
-//! athena-local は `athena_sql::foo()` で呼ぶ。doc の中のパスは athena-local の `src/` からの相対。
+//! 字句処理の道具（`trivia.rs`・`words.rs`・`name.rs`）と、文の頭・句を読む `Cursor`（`cursor.rs`）を置く。
+//! 判定の規則（どの語の並びがどの分類か）は crate に置かず athena-local に残す。athena-local は `athena_sql::Cursor` のように
+//! ここで `pub use` したパスで呼ぶ。doc の中のパスは athena-local の `src/` からの相対。
 
 mod cursor;
 mod name;

@@ -347,7 +347,7 @@ fn substatement_type_は大文字小文字を無視し多バイト文字と短�
             "AlTeR TaBlE t sEt TbLpRoPeRtIeS ('a' = 'b')",
             Some("ALTER_TABLE_PROPERTIES"),
         ),
-        // 多バイト文字の引用符付きテーブル名を `skip_qualified_name` で読み飛ばしてから、
+        // 多バイト文字の引用符付きテーブル名を `Cursor::qualified_name` で読み飛ばしてから、
         // その後ろのキーワードで判定する。
         (
             r#"ALTER TABLE "日本語" ADD COLUMNS (c int)"#,

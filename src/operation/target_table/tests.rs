@@ -19,7 +19,7 @@ fn parse_target_table_は修飾名の無い名前に既定のカタログとス�
     );
 }
 
-/// DESCRIBE は `TABLE` を挟まない（#160）。コメントは `skip_leading_trivia` が読み飛ばす。
+/// DESCRIBE は `TABLE` を挟まない（#160）。コメントは `Cursor` が読み飛ばす。
 #[test]
 fn parse_target_table_は_describe_の直後の名前を読む() {
     for query in ["DESCRIBE t", "DESCRIBE /* c */ t"] {
@@ -426,7 +426,7 @@ fn parse_target_table_はトリビアが何個どこに挟まっても同じ結�
             TargetStatement::DropTable,
             既定付き("t"),
         ),
-        // トリビアを 2 つ重ねる。`skip_leading_trivia` は空白とコメントを続けて読み飛ばすので、
+        // トリビアを 2 つ重ねる。`Cursor` は空白とコメントを続けて読み飛ばすので、
         // 呼び出し元と関数の内側のどちらで読み飛ばしても同じ位置で止まる。
         (
             "DROP /* a */ -- b\nTABLE t",

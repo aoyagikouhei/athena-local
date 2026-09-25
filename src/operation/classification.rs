@@ -104,7 +104,8 @@ pub(super) fn fixed_column(query: &str) -> Option<(&'static str, &'static str)> 
 /// その後ろのキーワードを 1 つずつ読み進めて ADD／DROP／REPLACE／RENAME／SET を判定する。
 /// 本物が実行時に失敗する組み合わせ（REPLACE COLUMNS・ADD PARTITION × Iceberg、
 /// RENAME TO × Hive）でも SubstatementType は同じ値で返るので、成否では分けない（2026-09-21 実測）。
-/// `ALTER`／`TABLE` のキーワード自体は呼び出し元の `word(0)`／`word(1)` の guard で確定している。
+/// `ALTER`／`TABLE` は呼び出し元の `word(0)`／`word(1)` の guard（`(` を剥がした語）を通った後にここでも `keyword` で
+/// 読み直し、食い違えば（`(ALTER TABLE …` のように括弧で始まる形）None にする。
 ///
 /// キーワードの一致は `words()` の語の完全一致ではなく `athena_sql::Cursor::keyword` で確かめる。
 /// そうしないと `TBLPROPERTIES('comment' = 'x')` のようにキーワードの直後に空白なしで

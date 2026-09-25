@@ -100,7 +100,7 @@ fn read_name_part(sql: &str, start: usize) -> Option<NamePart<'_>> {
 
 /// `"a""b"` の中身 `a"b`。
 ///
-/// `operation/target_table.rs` が DROP TABLE の修飾名の引用符付き識別子を読むのにも再利用する（issue #39 Phase 2）。
+/// 修飾名の引用符付き識別子の中身（`NamePart::value`）を取り出すのにも再利用する（issue #39 Phase 2）。
 pub fn unquote(identifier: &str) -> String {
     let inner = identifier
         .strip_prefix('"')

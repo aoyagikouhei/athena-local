@@ -1,4 +1,4 @@
-//! 受け取った SQL を先頭から読み進める Cursor（キーワードの照合。修飾名・リテラル・識別子は #195 の後続フェーズで足す）。
+//! 受け取った SQL を先頭から読み進める Cursor（キーワード・リテラル・識別子・記号の読み取り。修飾名は `name.rs`）。
 
 use crate::trivia::{skip_leading_trivia, skip_quoted, skip_trivia};
 
