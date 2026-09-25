@@ -16,6 +16,8 @@
 - [ ] 引用符付きの名前を取る DDL 系の文（`DESCRIBE`・`DESC`・`SHOW COLUMNS FROM`／`IN`・`DROP TABLE`・`SHOW CREATE TABLE`・`ALTER TABLE`・`SHOW TABLES IN`・CTAS でない `CREATE TABLE`）のうち、3 部の `ALTER TABLE` 名で 2 番目の部分だけ引用符付きの形（`cat."ns".t`）。athena-local は今までどおり実行する（#204、2026-09-25）
 - [ ] 同上、4 部以上の修飾名（`a.b.c.d`）。athena-local は今までどおり実行する（#204、2026-09-25）
 - [ ] `ALTER TABLE IF EXISTS ...` に引用符付きの名前を渡した形（`ALTER TABLE IF EXISTS "t" ...`）。athena-local は `IF EXISTS` があれば判定自体をしないので今までどおり実行する（#204、2026-09-25）
+- [ ] `CREATE TABLE IF NOT EXISTS "t" (n int)`（IF NOT EXISTS 付きの素の CREATE TABLE に引用符付きの名前）。athena-local は判定しないので今までどおり実行する（#204、2026-09-25）
+- [ ] DESCRIBE・DESC 以外の文（SHOW COLUMNS・DROP TABLE・SHOW CREATE TABLE・ALTER TABLE・SHOW TABLES IN・CREATE TABLE）で、引用符付きの部分に非 ASCII の文字を含む形（`DROP TABLE "日本"`）。DESCRIBE では本物が `Entity Not Found` を返したので、athena-local はどの文でも弾かず今までどおり実行する（#204、2026-09-25）
 - [ ] `SHOW TABLES IN`／CTAS でない `CREATE TABLE` に 2 部以上の修飾名を渡した形（`SHOW TABLES IN "cat"."db"`、`CREATE TABLE "db"."t" (n int)`）。athena-local は名前が 1 部（無引用の `IN`／`CREATE TABLE` の直後だけ）のときしか弾かないので、2 部以上は今までどおり実行する（#204、2026-09-25）
 - [ ] `DESCRIBE`／`DESC` の引用符付きの部分に非 ASCII の文字を含む、かつ対象の名前が実在しない形（`DESCRIBE "存在しない名前"`）。実在しない非 ASCII の名前（`DESCRIBE "日本"`）は本物が構文の文言でなく Glue の `Entity Not Found`（毎回違う Request ID 付き）を返すと分かった（#204、2026-09-25）が、この文言は再現できないので athena-local は今までどおり実行する。実在する非 ASCII の名前でも同じ `Entity Not Found` になるかは未確認
 - [ ] `DESCRIBE` に引用符付きの ASCII の名前を渡し、かつ対象が実在しない形（`DESCRIBE "no_such_table"`）の正確な文言。実測した引用符付きの ASCII 名はすべて実在するプローブ用のテーブル（`t`）で、実在しないテーブルでは無引用の `DROP TABLE`／`ALTER TABLE` でしか確かめていない。athena-local は存在チェックをせず構文の位置だけで文言を決めるので、実在しない場合も同じ文言になる前提で実装しているが、その前提自体は未実測（#204、2026-09-25）

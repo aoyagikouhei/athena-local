@@ -14,8 +14,8 @@ const EXPECTING: &str = "{'SELECT', 'FROM', 'ADD', 'AS', 'ALL', 'DISTINCT', 'WHE
 ///
 /// 本物は、下の文の名前に引用符付きの部分が 1 つでもあると、その部分を Hive 系のパーサが読めずに弾く。
 /// 無引用とバッククォートは通る。弾くのは実測した形だけで、実測していない形（3 部の ALTER の 2 番目だけ
-/// 引用符付き、4 部以上、`ALTER TABLE IF EXISTS`、SHOW TABLES IN と CREATE TABLE の 2 部以上）は
-/// 今までどおり実行する。
+/// 引用符付き、4 部以上、`ALTER TABLE IF EXISTS`、`CREATE TABLE IF NOT EXISTS`、SHOW TABLES IN と
+/// CREATE TABLE の 2 部以上、引用符付きの部分に非 ASCII があるもの）は今までどおり実行する。
 pub(super) fn rejection(query: &str, is_alias: impl Fn(&str) -> bool) -> Option<String> {
     // 本物は先頭の空白・タブ・改行を数えずに位置を出す（先頭のコメントは数える）。
     let sql = query.trim_start_matches([' ', '\t', '\r', '\n']);
@@ -37,6 +37,11 @@ pub(super) fn rejection(query: &str, is_alias: impl Fn(&str) -> bool) -> Option<
     let quoted = parts.iter().position(|part| part.text.starts_with('"'))?;
     let part = |index: usize| (offset + parts[index].start, offset + parts[index].end);
     let (start, end) = part(quoted);
+    // 引用符付きの部分に非 ASCII があると、本物は構文の文言でなく Glue の Entity Not Found（毎回違う
+    // Request ID 付き）を返した（DESCRIBE で実測）。ほかの文は測っていないので、どれも弾かない。
+    if !sql[start..end].is_ascii() {
+        return None;
+    }
     // 文の最初の語（先頭のコメントの後ろ）と名前の始まり。
     let statement_start = sql.len() - skip_leading_trivia(sql).len();
     let name_start = part(0).0;
@@ -48,9 +53,6 @@ pub(super) fn rejection(query: &str, is_alias: impl Fn(&str) -> bool) -> Option<
         (Statement::Describe | Statement::ShowColumns, _, 0) if is_alias(&parts[0].value()) => {
             Some(TWO_CATALOGS.to_string())
         }
-        // 引用符付きの部分に非 ASCII がある DESCRIBE は、本物が構文の文言でなく Glue の Entity Not Found
-        // （毎回違う Request ID 付き）を返した。
-        (Statement::Describe, _, _) if !sql[start..end].is_ascii() => None,
         (Statement::Describe, _, 0) => no_viable(statement_start),
         (Statement::Describe | Statement::ShowColumns | Statement::DropTable, _, 1) => {
             no_viable(name_start)

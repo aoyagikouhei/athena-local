@@ -192,6 +192,7 @@ fn show_tables_in_と_ctas_でない_create_table_は_1_部の引用符付きの
         (r#"CREATE TABLE db."nope3" (n int)"#, None),
         // CTAS は本物も引用符付きの名前で成功する（2026-09-25 実測。#200）。
         (r#"CREATE TABLE "t" AS SELECT 1"#, None),
+        // IF NOT EXISTS 付きは実測していない（`table_name_start` が IF の次に EXISTS を求めるので一致しない）。
         (r#"CREATE TABLE IF NOT EXISTS "t" (n int)"#, None),
     ];
     for (query, expected) in cases {
@@ -239,7 +240,11 @@ fn 本物が通す形と実測していない形は弾かない() {
         r#"SELECT * FROM "t""#,
         r#"INSERT INTO "t" VALUES (1)"#,
         // 引用符付きの部分に非 ASCII がある DESCRIBE は、本物が構文の文言でなく Entity Not Found を返した。
+        // ほかの文の非 ASCII は測っていないので、どれも弾かない。
         r#"DESCRIBE "日本""#,
+        r#"DROP TABLE "日本""#,
+        r#"SHOW COLUMNS FROM db."日本""#,
+        r#"ALTER TABLE "日本" RENAME TO x"#,
         // 4 部以上は実測していない。
         r#"DESCRIBE "a".b.c.d"#,
         "",

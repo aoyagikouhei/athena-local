@@ -94,11 +94,13 @@ Known differences between athena-local and real Athena, grouped by topic.
   alias covers instead. A few forms were not measured and still run here
   unrejected: a name with more than three parts, a three-part `ALTER TABLE`
   name quoted only in its second part, `ALTER TABLE IF EXISTS ...` with a
-  quoted name, `SHOW TABLES IN` / `CREATE TABLE` with a qualified
-  (multi-part) name, and a quoted name that contains non-ASCII characters in
-  `DESCRIBE` / `DESC`. Name the table without quotes to avoid depending on
-  any of this; tracked in
-  [#204](https://github.com/aoyagikouhei/athena-local/issues/204). The other
+  quoted name, `CREATE TABLE IF NOT EXISTS` with a quoted name,
+  `SHOW TABLES IN` / `CREATE TABLE` with a qualified (multi-part) name, and a
+  quoted part that contains non-ASCII characters in any of these statements
+  (for `DESCRIBE` real Athena answered a Glue `Entity Not Found` with a
+  per-request ID instead of a syntax error). Name the table without quotes to
+  avoid depending on any of this; tracked in
+  [#207](https://github.com/aoyagikouhei/athena-local/issues/207). The other
   statements that can take a quoted name right after the keyword —
   `CREATE TABLE "t" AS SELECT` (a CTAS), `CREATE VIEW "v" AS ...`,
   `SHOW CREATE VIEW "v"` and `DROP VIEW "v"` — succeed on real Athena too,
