@@ -47,7 +47,11 @@ athena-local on 2026-09-21 with
 
 Write `ADD COLUMN` (singular) to reach the `ADD COLUMNS` row from
 athena-local: Trino's grammar rejects Athena's `ADD COLUMNS` at the syntax
-check. `REPLACE COLUMNS` has no Trino spelling at all, so that row cannot be
+check. That singular spelling is only a way to drive athena-local, not SQL
+that also runs unchanged on real Athena: Athena's own grammar rejects
+`ADD COLUMN` (singular) at `StartQueryExecution` too (see
+[Caveats](caveats.md#alter-table-and-format-dependent-ddl)). `REPLACE COLUMNS`
+has no Trino spelling at all, so that row cannot be
 reached through athena-local; it is listed because the classification and the
 format probe follow Athena for it. See [Caveats](caveats.md#alter-table-and-format-dependent-ddl) for every spelling
 Trino rejects.
@@ -86,9 +90,15 @@ For `DESCRIBE` and `SHOW COLUMNS` the probe also reads the target's
 The catalog, schema and table name come from a qualified name in the SQL when
 `DROP TABLE`, `ALTER TABLE ... ADD COLUMNS`, `SHOW CREATE TABLE`, `DESCRIBE`
 or `SHOW COLUMNS FROM` / `IN` gives one (`t`, `ns.t` or
-`cat.ns.t`, quoted or not, with a leading `IF EXISTS` skipped for `DROP TABLE`;
+`cat.ns.t`, with a leading `IF EXISTS` skipped for `DROP TABLE`;
 `ALTER TABLE IF EXISTS ...` gets no `SubstatementType` and runs as ordinary
-column-less DDL without the probe). Whichever part
+column-less DDL without the probe). Because `StartQueryExecution` rejects a
+double-quoted part in the name of any of these statements up front, before
+this analysis runs (see [Caveats](caveats.md#sql-dialect)), the name it sees
+in practice is unquoted; a handful of quoted forms Caveats lists as
+unmeasured still reach this analysis with a quoted part, and a quoted S3
+Tables catalog alias (`"s3tablescatalog/my-bucket"`) never does, because it
+is one of the rejected forms. Whichever part
 a qualified name does not give falls back to `QueryExecutionContext` /
 `TRINO_CATALOG` / `TRINO_SCHEMA`. A catalog taken from the SQL is translated
 through `TRINO_CATALOG_MAP` before the format probe is sent, the same as the

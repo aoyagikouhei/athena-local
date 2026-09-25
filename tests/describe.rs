@@ -308,37 +308,34 @@ async fn desc_は_iceberg_でも_describe_と同じ行を返す() {
     assert_describe_columns(&results);
 }
 
-/// `SHOW CREATE TABLE` は元の SQL の名前をそのまま使い、本体と同じく引用符付きの修飾名に別名を当てる
-/// （`catalog::alias_qualified_names` の空白詰めのまま）。
+/// 本物は S3 Tables のカタログ名（引用符付き）を取る DESCRIBE を、名前を解決する前に開始時に弾く
+/// （`Unsupported DDL with 2 catalogs`。存在しない表でも同じ。2026-09-25 実測。#204）。
 #[tokio::test]
-async fn describe_は_iceberg_の引用符付きの修飾名にも別名を当てて_show_create_table_を問い合わせる()
-{
+async fn describe_は_s3_tables_の引用符付きのカタログ名を本物と同じく開始時に弾く() {
     const S3_TABLES: &str = "s3tablescatalog/b";
-    // 元の引用符付き識別子 19 文字 - 別名を引用符で包んだ "iceberg" 9 文字 = 空白 10 個。
-    let aliased = format!("\"iceberg\"{}.ns.t", " ".repeat(10));
     let query = format!("DESCRIBE \"{S3_TABLES}\".ns.t");
-    let body = format!("DESCRIBE {aliased}");
-    let show_create = format!("SHOW CREATE TABLE {aliased}");
     let harness = Harness::builder(d2_describe_response())
         .catalog_map(&[(S3_TABLES, "iceberg")])
-        .route(&probe_sql("iceberg", "ns", "t"), probe_response("iceberg"))
-        .route(&body, d2_describe_response())
-        .route(&show_create, show_create_response(&d2_ddl("iceberg.ns.t")))
         .start()
         .await;
-    let execution = harness
-        .run_query(json!({
-            "QueryString": query,
-            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
-        }))
+
+    let (code, error) = harness
+        .call(
+            "StartQueryExecution",
+            json!({
+                "QueryString": query,
+                "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+            }),
+        )
         .await;
-    assert_eq!(execution["QueryExecution"]["Status"]["State"], "SUCCEEDED");
-    assert_eq!(
-        harness.trino_sqls(),
-        [probe_sql("iceberg", "ns", "t"), body, show_create]
+
+    assert_eq!(code, 400, "{error}");
+    assert_eq!(error["AthenaErrorCode"], "MALFORMED_QUERY");
+    assert_eq!(error["Message"], "Unsupported DDL with 2 catalogs");
+    assert!(
+        harness.trino_sqls().is_empty(),
+        "形式の問い合わせも実行もしない"
     );
-    let (values, _) = show_columns_results(&harness, &execution).await;
-    assert_eq!(values, d2_rows());
 }
 
 #[tokio::test]

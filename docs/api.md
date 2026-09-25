@@ -117,7 +117,14 @@ Behaviour that matches real Athena:
   Athena does. The message is Trino's, with positions counted in the original SQL
   (also when `ExecutionParameters` are given). athena-local asks Trino to `PREPARE`
   the statement first, which parses without executing and adds one round trip
-  (about 10–20 ms).
+  (about 10–20 ms). Right after that check, `StartQueryExecution` also rejects
+  `DESCRIBE`, `DESC`, `SHOW COLUMNS`, `DROP TABLE`, `SHOW CREATE TABLE`,
+  `ALTER TABLE`, `SHOW TABLES IN` and a plain `CREATE TABLE` whose table name
+  has a double-quoted part, with `InvalidRequestException` /
+  `AthenaErrorCode` `MALFORMED_QUERY` and real Athena's own message, the same
+  way real Athena does; no `QueryExecutionId` is created either. See
+  [Caveats](caveats.md#sql-dialect) for exactly which forms and the message
+  rules.
 - `StatementType` and `SubstatementType` follow Athena: `SELECT` / `WITH` /
   `VALUES` / `TABLE` are `DML` / `SELECT`, `EXPLAIN` is `DML` / `EXPLAIN`, `SHOW TABLES` is
   `UTILITY` / `SHOW_TABLES`, `SHOW FUNCTIONS` is `UTILITY` / `SHOW_FUNCTIONS`
@@ -144,9 +151,9 @@ Behaviour that matches real Athena:
   `QueryExecutionId` or Trino's own ID. A keyword with no space before what
   follows it (`SELECT(1)`, `SELECT'a'`, `SELECT*FROM t`,
   `CREATE TABLE"t" AS SELECT ...`) classifies the same as the spaced form too
-  (measured 2026-09-25); see [Caveats](caveats.md#sql-dialect) for five quoted
-  table-name forms real Athena rejects before running, whether or not there
-  is a space before the quote.
+  (measured 2026-09-25); see [Caveats](caveats.md#sql-dialect) for the quoted
+  table-name forms that real Athena and athena-local both reject before
+  running, whether or not there is a space before the quote.
 - A `FAILED` query carries `Status.AthenaError` with the same `ErrorMessage` as
   `StateChangeReason`. Trino's user errors are `ErrorCategory` 2 with the
   `ErrorType` Athena uses for that error name (measured: `TABLE_NOT_FOUND` and

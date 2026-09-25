@@ -87,6 +87,11 @@ later name the date they were measured on.
   measurements too
   ([docs](docs/caveats.md#query-lifecycle),
   [docs](docs/caveats.md#errors-and-request-bodies)).
+- `StartQueryExecution` now rejects `DESCRIBE`, `DESC`, `SHOW COLUMNS`,
+  `DROP TABLE`, `SHOW CREATE TABLE`, `ALTER TABLE`, `SHOW TABLES IN` and a
+  plain `CREATE TABLE` whose table name has a double-quoted part, with real
+  Athena's own message, instead of running them on Trino (measured
+  2026-09-25) ([docs](docs/caveats.md#sql-dialect)).
 
 ## [0.5.0] - 2026-09-23
 

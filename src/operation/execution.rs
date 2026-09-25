@@ -21,6 +21,7 @@ use crate::trino::{Outcome, QueryError, Trino};
 
 use super::completion;
 use super::format_probe;
+use super::quoted_names;
 use super::result_output;
 use super::table_format::{self, FormatOverride};
 
@@ -73,6 +74,13 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
     // 本物は構文エラーを StartQueryExecution で弾き、実行を作らない（ExecutionParameters があっても元の SQL で数える）。
     // 文言は Trino のもの、コードは 2026-09-14 に実測した MALFORMED_QUERY。
     if let Some(message) = app.trino.syntax_error(&request.query_string).await {
+        return invalid_request_with_code(message, "MALFORMED_QUERY");
+    }
+    // Trino は受けるが本物は開始時に弾く、引用符付きの名前を取る DDL 系の文（2026-09-25 実測。#204）。
+    // 本物も Trino が構文エラーにする形では Trino の文言を返したので、構文チェックの後に見る。
+    if let Some(message) = quoted_names::rejection(&request.query_string, |catalog| {
+        app.config.catalog_map.contains_key(catalog)
+    }) {
         return invalid_request_with_code(message, "MALFORMED_QUERY");
     }
 

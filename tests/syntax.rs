@@ -148,3 +148,48 @@ async fn ブロックコメント付きの_show_create_table_も本物と違い�
     assert_eq!(sqls.len(), 2, "{sqls:?}");
     assert_eq!(sqls.last().map(String::as_str), Some(sql));
 }
+
+/// 本物は引用符付きの名前を取る DESCRIBE などを、Trino が受ける形でも開始時に弾く（2026-09-25 実測。#204）。
+/// 文言は本物の Hive 系のパーサのもので、構文チェックを通った後に athena-local が返す。
+#[tokio::test]
+async fn 引用符付きの名前の_describe_は構文チェックの後に本物の文言で弾き_実行を作らない() {
+    let query = r#"DESCRIBE "t""#;
+    let harness = Harness::builder(select_response()).start().await;
+
+    let (code, error) = harness
+        .call("StartQueryExecution", json!({ "QueryString": query }))
+        .await;
+
+    assert_eq!(code, 400, "{error}");
+    assert_eq!(error["__type"], "InvalidRequestException");
+    assert_eq!(error["AthenaErrorCode"], "MALFORMED_QUERY");
+    assert_eq!(
+        error["Message"],
+        r#"line 1:10: no viable alternative at input 'DESCRIBE "t"'"#
+    );
+    assert_eq!(harness.syntax_checks(), [query], "構文チェックは先に送る");
+    assert!(harness.trino_requests().is_empty(), "実行は作らない");
+}
+
+/// Trino が構文エラーにする形は、本物も Trino の文言を返した（`ALTER TABLE "t" ADD COLUMNS`。2026-09-25 実測）。
+#[tokio::test]
+async fn 引用符付きの名前でも構文エラーなら_trino_の文言を返す() {
+    let query = r#"ALTER TABLE "t" ADD COLUMNS (m int)"#;
+    let harness = Harness::builder(select_response())
+        .syntax_check_response(
+            query,
+            syntax_error("line 2:21: mismatched input 'COLUMNS'. Expecting: '.', 'ADD'"),
+        )
+        .start()
+        .await;
+
+    let (code, error) = harness
+        .call("StartQueryExecution", json!({ "QueryString": query }))
+        .await;
+
+    assert_eq!(code, 400, "{error}");
+    assert_eq!(
+        error["Message"],
+        "line 1:21: mismatched input 'COLUMNS'. Expecting: '.', 'ADD'"
+    );
+}

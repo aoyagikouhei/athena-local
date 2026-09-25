@@ -74,7 +74,7 @@ pub(super) fn parse_target_table(
 /// `athena_sql::Cursor::keyword` がキーワードごとに先頭のトリビアを読み飛ばし、名前の直前のトリビアは
 /// `parse_qualified_name`（`athena_sql::Cursor::qualified_name`）が読むので、ここではトリビアを読み飛ばさない。
 /// 返すのは名前の直前のトリビアを含む残り。
-fn table_name_start<'a>(query: &'a str, keywords: &[&str]) -> Option<&'a str> {
+pub(super) fn table_name_start<'a>(query: &'a str, keywords: &[&str]) -> Option<&'a str> {
     let mut cursor = athena_sql::Cursor::new(query);
     if !keywords.iter().all(|keyword| cursor.keyword(keyword)) {
         return None;
