@@ -5,7 +5,7 @@
 //! 判定をここに分けて置く。`.metadata` は本体と同じ値（36 項目すべて一致。例外は 140 MB の
 //! マルチパート本体だけで、athena-local は単一の PUT しかしない）。
 
-use athena_sql::{skip_keyword, skip_leading_trivia, skip_quoted, words};
+use athena_sql::{Cursor, words};
 
 use crate::results::ResultFile;
 
@@ -87,85 +87,23 @@ pub(crate) fn carries_execution_id(query: &str) -> bool {
 /// 型付きリテラル、式、`ARRAY[1]`、`(SELECT 1)`、`VALUES 1`）と測っていない形は false にして
 /// application に落とす（本物が binary にする形を取りこぼす向きにだけ外れる）。
 fn is_literal_only_select(query: &str) -> bool {
-    let Some(mut rest) = skip_keyword(query, "SELECT") else {
+    let mut cursor = Cursor::new(query);
+    if !cursor.keyword("SELECT") {
         return false;
-    };
+    }
     loop {
-        let Some(after_literal) = skip_literal(skip_leading_trivia(rest)) else {
+        if !cursor.literal() {
             return false;
-        };
-        rest = skip_leading_trivia(after_literal);
-        let after_as = skip_keyword(rest, "AS");
-        match skip_identifier(skip_leading_trivia(after_as.unwrap_or(rest))) {
-            Some(after_alias) => rest = skip_leading_trivia(after_alias),
-            // `AS` の後ろに識別子が無ければ受理しない。`AS` が無ければ別名は任意。
-            None if after_as.is_some() => return false,
-            None => {}
         }
-        match rest.strip_prefix(',') {
-            Some(next) => rest = next,
-            None => return rest.is_empty(),
+        let has_as = cursor.keyword("AS");
+        // `AS` の後ろに識別子が無ければ受理しない。`AS` が無ければ別名は任意。
+        if !cursor.identifier() && has_as {
+            return false;
+        }
+        if !cursor.punct(b',') {
+            return cursor.at_end();
         }
     }
-}
-
-/// リテラルを 1 つ読み飛ばした残り。文字列は `skip_quoted` で読む（`'a''b'` も 1 つ。中の `--` は
-/// コメントではない）。閉じていない `'...` は末尾まで読んで受理するが、その文は構文チェック
-/// （`Trino::syntax_error`）が先に弾くのでここには届かない。
-fn skip_literal(input: &str) -> Option<&str> {
-    match input.as_bytes().first()? {
-        b'\'' => Some(&input[skip_quoted(input.as_bytes(), 0)..]),
-        b'0'..=b'9' => skip_number(input),
-        // `-` は数に直接続くときだけ（`SELECT -1` 実測。`- 1` は測っていない）。
-        b'-' => skip_number(&input[1..]),
-        _ => skip_keyword(input, "TRUE").or_else(|| skip_keyword(input, "FALSE")),
-    }
-}
-
-/// `1`、`1.5`、`1.5E0`（`e` でもよく、指数に符号を付けてもよい）。直後に識別子の文字や `.` が
-/// 続くもの（`1.5.2`、`1E0x`）と、`.` や `E` の後に数字が無いもの（`1.`、`1E`）は数のリテラルとして
-/// 読まない。
-fn skip_number(input: &str) -> Option<&str> {
-    let digits = |s: &str| s.len() - s.trim_start_matches(|c: char| c.is_ascii_digit()).len();
-    let mut end = digits(input);
-    if end == 0 {
-        return None;
-    }
-    if let Some(fraction) = input[end..].strip_prefix('.') {
-        let count = digits(fraction);
-        if count == 0 {
-            return None;
-        }
-        end += 1 + count;
-    }
-    if let Some(exponent) = input[end..].strip_prefix(['E', 'e']) {
-        let unsigned = exponent.strip_prefix(['+', '-']).unwrap_or(exponent);
-        let count = digits(unsigned);
-        if count == 0 {
-            return None;
-        }
-        end += 1 + (exponent.len() - unsigned.len()) + count;
-    }
-    let rest = &input[end..];
-    if rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '.') {
-        return None;
-    }
-    Some(rest)
-}
-
-/// 識別子を 1 つ読み飛ばした残り。無引用（英字か `_` で始まり、英数字と `_` が続く）か、
-/// `"..."`（`""` の重ねも 1 つ。閉じていなければ末尾まで。`skip_literal` の `'...'` と同じ扱い）。
-fn skip_identifier(input: &str) -> Option<&str> {
-    if input.starts_with('"') {
-        return Some(&input[skip_quoted(input.as_bytes(), 0)..]);
-    }
-    if !input.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') {
-        return None;
-    }
-    let end = input
-        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-        .unwrap_or(input.len());
-    Some(&input[end..])
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 //! 受け取った SQL を先頭から読み進める Cursor（キーワードの照合。修飾名・リテラル・識別子は #195 の後続フェーズで足す）。
 
-use crate::trivia::skip_trivia;
+use crate::trivia::{skip_leading_trivia, skip_quoted, skip_trivia};
 
 /// 受け取った SQL の上を先頭から読み進める位置。読む系のメソッドは、先頭の空白とコメントを読み飛ばし、
 /// 一致したときだけ位置を進め、後ろのトリビアは消費しない（呼び出し元が次の読み取りで読み飛ばす）。
@@ -45,12 +45,97 @@ impl<'a> Cursor<'a> {
         self.pos = start + keyword.len();
         true
     }
+
+    /// リテラルを 1 つ読む（`-` を付けてもよい数、`'...'`、TRUE／FALSE）。文字列は `skip_quoted` で読む
+    /// （`'a''b'` も 1 つ。中の `--` はコメントではない）。閉じていない `'...` は末尾まで読んで受理する
+    /// （その文は構文チェックが 400 にして実行を作らないので、判定の結果は捨てられる）。
+    /// TRUE／FALSE は `keyword` で読み、キーワードの境界の規則を 2 本目にしない。
+    pub fn literal(&mut self) -> bool {
+        let start = skip_trivia(self.sql.as_bytes(), self.pos);
+        if let Some(end) = literal_end(self.sql, start) {
+            self.pos = end;
+            return true;
+        }
+        self.keyword("TRUE") || self.keyword("FALSE")
+    }
+
+    /// 識別子を 1 つ読む。無引用（英字か `_` で始まり、英数字と `_` が続く）か、
+    /// `"..."`（`""` の重ねも 1 つ。閉じていなければ末尾まで。`literal` の `'...'` と同じ扱い）。
+    /// 数字で始まる無引用は読まない（修飾名の `NamePart` は数字で始まってもよいのと違う）。
+    pub fn identifier(&mut self) -> bool {
+        let bytes = self.sql.as_bytes();
+        let start = skip_trivia(bytes, self.pos);
+        let rest = &self.sql[start..];
+        let end = if rest.starts_with('"') {
+            skip_quoted(bytes, start)
+        } else if rest.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') {
+            rest.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .map_or(self.sql.len(), |len| start + len)
+        } else {
+            return false;
+        };
+        self.pos = end;
+        true
+    }
+
+    /// 先頭の空白・コメントを読み飛ばした位置のバイトが `symbol`（ASCII の記号）なら、それを読む。
+    pub fn punct(&mut self, symbol: u8) -> bool {
+        let start = skip_trivia(self.sql.as_bytes(), self.pos);
+        if self.sql.as_bytes().get(start) != Some(&symbol) {
+            return false;
+        }
+        self.pos = start + 1;
+        true
+    }
+
+    /// 今の位置から末尾まで空白とコメントしか無いか（`;` は末尾とみなさない）。
+    pub fn at_end(&self) -> bool {
+        skip_leading_trivia(self.rest()).is_empty()
+    }
 }
 
-/// `Cursor::keyword` の上の橋渡し。athena-local の呼び出し元が全部 `Cursor` に寄ったら消す（#195 フェーズ 4）。
-pub fn skip_keyword<'a>(input: &'a str, keyword: &str) -> Option<&'a str> {
-    let mut cursor = Cursor::new(input);
-    cursor.keyword(keyword).then(|| cursor.rest())
+/// `start` から始まるリテラル（`'...'`、数、`-` を付けた数）の終わりの次の位置。TRUE／FALSE はここでは読まない。
+fn literal_end(sql: &str, start: usize) -> Option<usize> {
+    let bytes = sql.as_bytes();
+    match bytes.get(start)? {
+        b'\'' => Some(skip_quoted(bytes, start)),
+        b'0'..=b'9' => number_end(sql, start),
+        // `-` は数に直接続くときだけ（`SELECT -1` 実測。`- 1` は測っていない）。
+        b'-' => number_end(sql, start + 1),
+        _ => None,
+    }
+}
+
+/// `start` から始まる数のリテラルの終わりの次の位置。
+/// `1`、`1.5`、`1.5E0`（`e` でもよく、指数に符号を付けてもよい）。直後に識別子の文字や `.` が
+/// 続くもの（`1.5.2`、`1E0x`）と、`.` や `E` の後に数字が無いもの（`1.`、`1E`）は数のリテラルとして
+/// 読まない。
+fn number_end(sql: &str, start: usize) -> Option<usize> {
+    let input = &sql[start..];
+    let digits = |s: &str| s.len() - s.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    let mut end = digits(input);
+    if end == 0 {
+        return None;
+    }
+    if let Some(fraction) = input[end..].strip_prefix('.') {
+        let count = digits(fraction);
+        if count == 0 {
+            return None;
+        }
+        end += 1 + count;
+    }
+    if let Some(exponent) = input[end..].strip_prefix(['E', 'e']) {
+        let unsigned = exponent.strip_prefix(['+', '-']).unwrap_or(exponent);
+        let count = digits(unsigned);
+        if count == 0 {
+            return None;
+        }
+        end += 1 + (exponent.len() - unsigned.len()) + count;
+    }
+    if input[end..].starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '.') {
+        return None;
+    }
+    Some(start + end)
 }
 
 #[cfg(test)]
@@ -109,5 +194,78 @@ mod tests {
             assert!(!cursor.keyword(keyword), "{sql}");
             assert_eq!(cursor.rest(), sql, "{sql}");
         }
+    }
+
+    #[test]
+    fn literal_は数と文字列と真偽値を読み形の崩れた数を読まない() {
+        for (sql, rest) in [
+            ("1", ""),
+            ("1.5", ""),
+            ("1.5E0", ""),
+            ("1e0", ""),
+            ("1E+1", ""),
+            ("2.5e-1", ""),
+            ("-1", ""),
+            ("'a''b'", ""),
+            ("TRUE", ""),
+            ("false", ""),
+            // 先頭のトリビアは読み飛ばし、後ろのトリビアは消費しない。
+            ("/* c */ 1 , 2", " , 2"),
+        ] {
+            let mut cursor = Cursor::new(sql);
+            assert!(cursor.literal(), "{sql}");
+            assert_eq!(cursor.rest(), rest, "{sql}");
+        }
+        // `.` や `E` の後に数字が無い、`-` と数の間に空白がある、数の直後に識別子の文字や `.` が続く、
+        // TRUE／FALSE の後ろに識別子の文字が続く、リテラルでない語。どれも位置を進めない。
+        for sql in [
+            "1.", "1E", "1E+", "-", "- 1", "1.5.2", "1E0x", "trueish", "NULL",
+        ] {
+            let mut cursor = Cursor::new(sql);
+            assert!(!cursor.literal(), "{sql}");
+            assert_eq!(cursor.rest(), sql, "{sql}");
+        }
+    }
+
+    #[test]
+    fn identifier_は英字か下線で始まる無引用と引用符付きを読む() {
+        for (sql, rest) in [
+            ("i", ""),
+            ("_x", ""),
+            (r#""a b""#, ""),
+            (r#""a""b""#, ""),
+            (" i2 , j", " , j"),
+        ] {
+            let mut cursor = Cursor::new(sql);
+            assert!(cursor.identifier(), "{sql}");
+            assert_eq!(cursor.rest(), rest, "{sql}");
+        }
+        // 数字で始まる無引用、文字列リテラル、記号は識別子として読まない。
+        for sql in ["1x", "'x'", "("] {
+            let mut cursor = Cursor::new(sql);
+            assert!(!cursor.identifier(), "{sql}");
+            assert_eq!(cursor.rest(), sql, "{sql}");
+        }
+    }
+
+    #[test]
+    fn punct_と_at_end_は先頭のトリビアを読み飛ばす() {
+        let mut cursor = Cursor::new("  ,x");
+        assert!(cursor.punct(b','));
+        assert_eq!(cursor.rest(), "x");
+        assert!(!cursor.at_end());
+        // 一致しなければ位置を進めない。
+        assert!(!cursor.punct(b','));
+        assert_eq!(cursor.rest(), "x");
+
+        let mut cursor = Cursor::new("/* c */,");
+        assert!(cursor.punct(b','));
+        assert!(cursor.at_end());
+
+        // 末尾のトリビアは末尾とみなし、`;` は末尾とみなさない。
+        assert!(Cursor::new("").at_end());
+        assert!(Cursor::new("-- c\n").at_end());
+        assert!(!Cursor::new(";").at_end());
+        assert!(!Cursor::new(" ; -- c").at_end());
     }
 }
