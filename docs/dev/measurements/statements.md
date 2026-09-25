@@ -411,3 +411,24 @@ Content-Type と `.metadata` を含む置き場所は本項が主で、[result-f
   - `CREATE TABLE` の 4 部以上で引用符付きの部分が 1・3 部目にある形は測っていないが、3 部の名前では 1〜3 部目のどれも測ってあり（V3）、4 部の 2 部目（Y1）が 3 部と同じ文言だったので、4 部目より前で文言が決まる（パーサが 4 部目を読む前に止まる）と判断し、3 部と同じ規則を当てる。DROP・ALTER（#207）と同じ扱い。`SHOW TABLES IN` の 1・2 部目も同じ理由で当てる。
   - Y3 は開始時に弾かれないので、athena-local の `entity_check.rs`（カタログが無いと分かっても名前にカタログを書いていなければ弾かない）は変えない。ただし athena-local はそのあと Trino に実在しないカタログで実行して FAILED になり、本物（既定のカタログで解決して SUCCEEDED）と差がある。この差は範囲外として別の issue で扱う。
 - 備考: CTAS の 4 部以上、引用符付きの部分が 3 部目までに無い `CREATE TABLE IF NOT EXISTS` の 4 部以上、`SHOW TABLES IN` の 2 つ目の `.` の直後が `LIKE` やバッククォートの形は測っていない。athena-local は前の 2 つを弾かず（今までどおり実行）、後ろ 2 つは直後が `"` で始まらない形として `mismatched input` にしている（[docs/dev/unmeasured.md](../unmeasured.md)）。
+
+### 実在しない QueryExecutionContext の Catalog と文の種類（#214）
+- 日付: 2026-09-25 ／ issue: #214 ／ スクリプト: `tools/measure/context-catalog.sh` ／ 生データ: `$HOME/athena-context-catalog-measurements/run-20260925-131314`
+- 相手: 本物の Athena（`AwsDataCatalog`）
+- 投げたもの: 27 本。Context の Catalog を実在しない `nocatalog_214`、Database を実在の DB にして（NC）、表を読む SELECT（1・2・3 部）、実在しない表・DB の SELECT、SHOW TABLES・SHOW DATABASES・SHOW CREATE TABLE・SHOW TBLPROPERTIES・SHOW VIEWS、EXPLAIN、CTAS → INSERT → DROP、実在しない表の DROP、Database を省いた Context の DESCRIBE・SELECT、`AWSDATACATALOG` の SELECT。対照は `AwsDataCatalog` の Context
+- 返ったもの:
+
+  | 文（NC） | 結果 |
+  |---|---|
+  | `SHOW TABLES`・`SHOW DATABASES`・`SHOW CREATE TABLE t`・`SHOW TBLPROPERTIES t`・`SHOW VIEWS`・`DROP TABLE IF EXISTS <c>`・`DROP TABLE IF EXISTS <nope>`、Database を省いた Context の `DESCRIBE <db>.t` | `SUCCEEDED`（既定のカタログで解決。GetQueryResults の ColumnInfo の CatalogName は `hive`）。#212 Y3 の `DESCRIBE`・`SHOW COLUMNS` も同じ |
+  | `SELECT * FROM t`・`<db>.t`・`<nope>`・`<nodb>.t`、Database を省いた Context の `SELECT * FROM <db>.t` | `FAILED`、ErrorCategory 2、ErrorType 1006、`CATALOG_NOT_FOUND: line 1:15: Catalog 'nocatalog_214' does not exist`（表・DB の有無より先）。`SELECT * FROM t` だけ AthenaError.ErrorMessage が空（StateChangeReason には同じ文言） |
+  | `EXPLAIN SELECT * FROM t` | `FAILED`、2 / 1006、`CATALOG_NOT_FOUND: line 1:23: ...` |
+  | `CREATE TABLE <c> AS SELECT 1 AS n` | `FAILED`、2 / 1300、`NOT_FOUND: Session property catalog does not exist: nocatalog_214. You may need to manually clean the data at location '<OUTPUT>tables/<uuid>' before retrying. Athena will not delete data in your account.` |
+  | `SELECT * FROM awsdatacatalog.<db>.t` | `SUCCEEDED` |
+  | 対照（OK）: `SELECT * FROM <nope>`／`<nodb>.t` | `TABLE_NOT_FOUND: line 1:15: Table 'awsdatacatalog.<db>.<nope>' does not exist`／`SCHEMA_NOT_FOUND: line 1:15: Schema '<nodb>' does not exist`（どちらも 1301） |
+  | `AWSDATACATALOG` の `SELECT * FROM t` | `SUCCEEDED` |
+
+  GetQueryExecution の Catalog はどれも送った名前の小文字、Database を省けばキー無し（#157・#167 と同じ）。
+- 手元の Trino 482（compose）で同じ Context: `SELECT * FROM t`・`EXPLAIN`・`SHOW TABLES`・`DESCRIBE t`・CTAS はどれも `CATALOG_NOT_FOUND`（USER_ERROR）`Catalog 'nocatalog_214' not found`（位置は SELECT が 1:15、EXPLAIN が 1:23、SHOW TABLES・DESCRIBE・CTAS は 1:1、SHOW SCHEMAS は位置なし）。`SELECT 1` と `DROP TABLE IF EXISTS <nope>` は成功した。
+- 採用した判断: メタデータの文（本物が成功した文のうち Trino にもあるもの）だけ、実在しない Context のカタログを `TRINO_CATALOG_MAP` の `AwsDataCatalog` の別名（無ければ `TRINO_CATALOG`）に差し替える（[decisions.md](../decisions.md)）。表を読む文は差し替えず、`CATALOG_NOT_FOUND` を ErrorType 1006 にする。文言（`not found` ↔ `does not exist`）と CTAS の 1300 は変換しない。
+- 備考: `INSERT INTO <c> SELECT 2` は、前の CTAS が失敗して表が無かったため `Table <c> not found in database <db>`（1301）になり、カタログの扱いは測れていない。

@@ -165,7 +165,7 @@ Behaviour that matches real Athena:
 - A `FAILED` query carries `Status.AthenaError` with the same `ErrorMessage` as
   `StateChangeReason`. Trino's user errors are `ErrorCategory` 2 with the
   `ErrorType` Athena uses for that error name (measured: `TABLE_NOT_FOUND` and
-  `SCHEMA_NOT_FOUND` 1301, `COLUMN_NOT_FOUND` 1006, `TYPE_MISMATCH` 1002,
+  `SCHEMA_NOT_FOUND` 1301, `COLUMN_NOT_FOUND` and `CATALOG_NOT_FOUND` 1006, `TYPE_MISMATCH` 1002,
   `FUNCTION_NOT_FOUND` 1303, `DIVISION_BY_ZERO` 1001, `INVALID_CAST_ARGUMENT` 1100,
   `NOT_SUPPORTED` 1200, and a few more), 1000 for names not measured, and
   `Retryable` false. Other Trino errors are category 1 with `ErrorType` 200.

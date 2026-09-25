@@ -72,6 +72,8 @@ jobs:
       - run: tools/dev.sh SKIP_BUILD=1 tools/e2e/paging-validation/verify.sh
       # 引用符付きの名前と DESCRIBE・SHOW COLUMNS の存在の確認（#207）。
       - run: tools/dev.sh SKIP_BUILD=1 tools/e2e/quoted-names/verify.sh
+      # 実在しない QueryExecutionContext の Catalog をメタデータの文だけ既定に差し替える（#214）。
+      - run: tools/dev.sh SKIP_BUILD=1 tools/e2e/context-catalog/verify.sh
       # toolbox の中の cargo test を amd64 でも通す（開発機は arm64 なので、ここが amd64 の唯一の確認。#184）。
       # check ジョブの cargo test はホストのランナーで直に動くので、toolbox のイメージ・uid・マウントの上では通らない。
       - run: tools/dev.sh cargo test --locked
