@@ -461,3 +461,33 @@ Content-Type と `.metadata` を含む置き場所は本項が主で、[result-f
 - 手元の Trino 482（compose）で同じ Context（`X-Trino-Catalog: nocatalog_217`）: `CREATE VIEW`・`CREATE SCHEMA`・`CREATE TABLE c (n int)` は `Catalog 'nocatalog_217' not found`、`SHOW CREATE VIEW v` は `View 'nocatalog_217.<s>.v' does not exist`、`ALTER TABLE t ADD COLUMN`・`INSERT`・`DELETE`・`RENAME TO` は `Table 'nocatalog_217.<s>.t' does not exist` で失敗した。`DROP VIEW IF EXISTS v`・`DROP SCHEMA IF EXISTS s` は成功するが、既定のカタログのものは消えない。`SHOW FUNCTIONS` は成功した。Hive の書き方（`CREATE EXTERNAL TABLE`・`LOCATION` 付きの `CREATE TABLE`・`ADD COLUMNS`・`SET TBLPROPERTIES`・`ADD`／`DROP PARTITION`・`SHOW PARTITIONS`・`MSCK`・`CREATE`／`DROP DATABASE`・`OPTIMIZE`・`VACUUM`）はカタログにかかわらず構文エラー
 - 採用した判断: 本物が既定のカタログで成功させ、Trino の構文でも書ける文の種類（`CREATE_TABLE`・`ALTER_TABLE_ADD_COLUMN`・`CREATE_VIEW`・`SHOW_CREATE_VIEW`・`DROP_VIEW`・`CREATE_DATABASE`・`DROP_DATABASE`）を `RESOLVED_STATEMENTS` に足した（[decisions.md](../decisions.md)）。INSERT・DELETE・UPDATE・MERGE は差し替えない。INSERT の本物の 1300 と Trino の 1301 の差は変換しない
 - 備考: 裏取りの `SELECT count(*)` は、スクリプトが見出し行を値として読んだため summary では `count(*)=c` と出た（生データの 2 行目は `1`）。INSERT の 3 本は NC が失敗したので件数の裏取りはしていない
+
+### 本物が開始時に弾く無引用の DDL（#208）
+- 日付: 2026-09-26（UTC 2026-09-25 20:30）／ issue: #208 ／ スクリプト: `tools/measure/unquoted-ddl.sh` ／ 生データ: `$HOME/athena-unquoted-ddl-measurements/run-20260925-203037`
+- 相手: 本物の Athena（`AwsDataCatalog`）
+- 投げたもの: 61 項目（S3 Tables を Context にした C20 は `S3TABLES_*` 未設定で未測定）。`ALTER TABLE IF EXISTS` に続く操作 11 種と位置の規則（小文字・先頭コメント・改行・空白 2 つ・途中のコメント・名前の部品数）、名前の後ろの `ADD COLUMN`（単数）の位置の規則と Trino にだけある他の ALTER 7 種、CTAS でない場所の無い `CREATE TABLE` の書き方 23 種。ALTER は実在しない名前に投げ（`ADD COLUMN` の 1 本だけ実在する表）、CREATE は作られたらその場で消す作りにした（作られたものは無かった）。手元の Trino 482 の構文チェック（`PREPARE ... FROM`）に同じ形を通し、athena-local の判定まで届くかも確かめた
+- 返ったもの（開始時に弾かれた 59 本はすべて `InvalidRequestException`・AthenaErrorCode `MALFORMED_QUERY`）。NV(x) は `line L:C: no viable alternative at input '<文の最初の語 … x の終わり>'` で、位置は x の先頭（先頭の空白は数えず、先頭のコメントは数える）、input は元の綴りのまま（小文字・途中のコメント・連続した空白を保ち、改行は `\n`）:
+
+  | 文 | 本物 | Trino 482 |
+  |---|---|---|
+  | `ALTER TABLE IF EXISTS <名前>` + `RENAME TO`・`ADD COLUMN`（`IF NOT EXISTS` も）・`DROP COLUMN`（`IF EXISTS` も）・`RENAME COLUMN` | NV(EXISTS)。1〜3 部の名前、`alter table if exists`（input も小文字）、`/* c */` の後（1:24）、`ALTER TABLE` の後の改行（`line 2:4`、input `ALTER TABLE\nIF EXISTS`）、空白 2 つ（1:19）、`ALTER TABLE /* c */ IF EXISTS`（input にコメントを含む）で同じ規則 | 受理 |
+  | `ALTER TABLE IF EXISTS <名前> ALTER COLUMN m SET DATA TYPE bigint` | `line L:C: mismatched input 'ALTER'. Expecting: '.', 'ADD', 'DROP', 'RENAME'`（位置は 2 つ目の ALTER） | 受理 |
+  | `ALTER TABLE IF EXISTS <名前>` + `ADD COLUMNS (m int)` | `mismatched input 'COLUMNS'. Expecting: '.', 'ADD'` | 同じ文言の構文エラー |
+  | `ALTER TABLE IF EXISTS <名前>` + `SET PROPERTIES`・`SET TBLPROPERTIES`・`EXECUTE` | `mismatched input 'SET'`（`'EXECUTE'`）`. Expecting: '.', 'ADD', 'DROP', 'RENAME'` | 構文エラー（Expecting に `'ALTER'` が入る） |
+  | `ALTER TABLE <名前> ADD COLUMN m int` | NV(COLUMN)。1〜3 部の名前、実在する表、小文字、先頭のコメント、`ADD` の後の改行（`line 2:1`）、`ADD /* c */ COLUMN`、空白 2 つ、`IF NOT EXISTS`・`COMMENT 'x'`・`varchar` で同じ規則 | 受理 |
+  | `ALTER TABLE <名前> RENAME COLUMN a TO b` | `line L:C: missing 'TO' at 'COLUMN'`（位置は COLUMN） | 受理 |
+  | `ALTER TABLE <名前> SET PROPERTIES x = 1` | NV(PROPERTIES) | 受理 |
+  | `ALTER TABLE <名前> EXECUTE optimize` | NV(EXECUTE) | 受理 |
+  | `ALTER TABLE <名前> ALTER COLUMN m SET DATA TYPE bigint` | `line L:C: mismatched input 'ALTER'. Expecting: '.', 'ADD', 'DROP', 'EXECUTE', 'RENAME', 'SET'`（位置は 2 つ目の ALTER） | 受理 |
+  | `ALTER TABLE <名前> DROP COLUMN IF EXISTS m` | `line L:C: mismatched input 'EXISTS' expecting {<EOF>, '.'}`（位置は EXISTS） | 受理 |
+  | `ALTER TABLE <名前> SET AUTHORIZATION someone` | NV(AUTHORIZATION) | 受理 |
+  | `ALTER TABLE <名前> DROP COLUMN m`（対照） | 開始でき、`FAILED`（`ParseException line 1:50 mismatched input 'COLUMN' expecting PARTITION near 'DROP' in drop partition statement`） | 受理 |
+  | `CREATE TABLE <名前> (n int)` と、型を `integer`・`varchar`・`varchar(10)`・`timestamp(3)`・`double`・`decimal(10,2)`・`date`・`boolean`・`string`・`array<int>` にしたもの、列と表の `COMMENT 'x'`、`create table`、先頭のコメント、3 部の名前 | `No location was specified for table. An S3 location must be specified`（位置なし） | 受理 |
+  | `CREATE TABLE <名前> (n int) WITH (...)`（`format`・`location`・`partitioned_by`・`table_type`） | NV(`WITH` の後の `(`) | 受理 |
+  | `CREATE TABLE <名前> (n int NOT NULL)` | NV(NOT) | 受理 |
+  | `CREATE TABLE <名前> (n row(a int))`・`(n array(int))`・`(n int, m map(varchar, int))` | NV(括弧の中の最初の語: `a`・`int`・`varchar`) | 受理 |
+  | `CREATE TABLE <名前> (LIKE <db>.<t>)` | NV(`.`) | 受理 |
+  | `CREATE TABLE <名前> (n int) LOCATION '...'` | `External keyword required for table type HIVE` | 構文エラー（`LOCATION`） |
+
+- 採用した判断: Trino 482 が受理する形のうち、上の表で文言が決まったものを athena-local も開始時に同じ文言で弾く（[decisions.md](../decisions.md)）。`LIKE` は 1 部の名前を測っていないので、1 部のときだけ弾かない。Trino が構文エラーにする形は今までどおり Trino の文言を返す
+- 備考: 既知の実測（`ALTER TABLE IF EXISTS <t> RENAME TO <t2>` の `line 1:16`、`ALTER TABLE IF EXISTS <db>.<t> ADD COLUMNS` の Trino 形、`ALTER TABLE <t> ADD COLUMN` の NV(COLUMN)、場所の無い `CREATE TABLE` の `No location`）と食い違いは無かった
