@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# issue #208 で作成
+# issue #208 で作成。issue #221 で ROUND=3 を追加
 # 本物の Athena が StartQueryExecution の時点で弾く、無引用の DDL 3 種
 # （ALTER TABLE IF EXISTS、ALTER TABLE ... ADD COLUMN（単数）、場所の無い CREATE TABLE）の
 # 弾かれ方の規則（`line L:C` の位置、`no viable alternative at input '...'` の input の範囲、
@@ -35,6 +35,20 @@
 #     four_part_form・fetch_all_table_names（引用符付きの名前の形の生成・S3 の読み出し）は
 #     持ち込んでいない。この実測は「開始時に弾かれたか」「開始できたら最終状態と理由」だけを
 #     見れば足りる。
+#   - 【issue #221 で追加】ROUND=3 は、#208 の 2 ラウンドで測れなかった／測っていない
+#     場所の無い CREATE TABLE の形だけを測る。preflight・DB 確認・後始末の仕組みは共通だが、
+#     実在する表 <PROBE>_real は使わないので作らない（setup-real・z-drop-real の行も出さない）。
+#       H 群: QueryExecutionContext の Catalog が S3 Tables のときの CREATE TABLE
+#             （#208 の C20 が S3TABLES_* 未設定で測れなかった。S3 Tables は場所を要らないので
+#             No location にならないかもしれない）。h9 は既定の Context の対照。
+#       Q 群: 列名・型が引用符付きの CREATE TABLE（Hive の文法では "n" は文字列）。
+#       P 群: 無引用の 4 部以上の名前の CREATE TABLE（IF NOT EXISTS・CTAS を含む。
+#             IF NOT EXISTS の無い形は 3 つ目の `.` で弾かれると #212 で測った）。
+#     別の QueryExecutionContext で作られうるテーブルは、C20_CREATED のような 1 項目 1 フラグ
+#     ではなく、「DROP を投げる Context と名前の組」の集合 PENDING_DROPS_CTX で管理する
+#     run_create_then_drop_ctx を新設した（作る Context と消す Context を別に渡せる。h8 は
+#     S3 Tables の Context で AwsDataCatalog の 3 部の名前を作るので、既定の Context で消す）。
+#     trap の cleanup は PENDING_DROPS_CTX に残っている組を全部、その Context で DROP する。
 #   - 対象の名前は固定の接頭辞ではなく、実行のたびに乱数を足した接頭辞
 #     （athena_local_probe_208_<4 桁 16 進>）を使う。テーブルを作る CREATE 系の項目は
 #     項目ごとに別名（<接頭辞>_c1 など）にするので、雛形の「同じ接頭辞のテーブルが
@@ -63,8 +77,13 @@
 #   ラウンド 2（CREATE TABLE の型名・LIKE・ALTER TABLE の Trino 形の文言の綴りだけを測る）:
 #   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=2 \
 #     bash tools/measure/unquoted-ddl.sh
-#   S3 Tables も測るとき（C20 だけに効く。両方揃ったときだけ。ROUND=1 のみ）:
+#   S3 Tables も測るとき（ROUND=1 の C20 と ROUND=3 の H 群に効く。両方揃ったときだけ）:
 #   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db \
+#     S3TABLES_CATALOG=s3tablescatalog/your-bucket S3TABLES_NS=your_ns \
+#     bash tools/measure/unquoted-ddl.sh
+#   ラウンド 3（issue #221。S3 Tables の Context の CREATE TABLE・引用符付きの列名と型・
+#   4 部以上の無引用の名前だけを測る。S3TABLES_* が無ければ H 群は未測定として残す）:
+#   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=3 \
 #     S3TABLES_CATALOG=s3tablescatalog/your-bucket S3TABLES_NS=your_ns \
 #     bash tools/measure/unquoted-ddl.sh
 #   （資格情報はホストのシェルで AWS_ACCESS_KEY_ID などを export してから。または ~/.aws/credentials）
@@ -78,6 +97,9 @@
 #                    C 群、S3 Tables）。2 は E 群（CREATE TABLE の型名）・F 群（LIKE と
 #                    Trino の型の中身）・G 群（Trino 形の文言の綴り）だけ（preflight・
 #                    DB 確認・実在する表の準備/後始末は共通で両方の値で走る）。
+#                    3 は H 群（S3 Tables の Context）・Q 群（引用符付きの列名と型）・
+#                    P 群（4 部以上の無引用の名前）だけ（issue #221）。preflight・DB 確認は
+#                    共通で走るが、実在する表 <PROBE>_real は作らない。
 #   CATALOG          既定 AwsDataCatalog
 #   REGION           既定 ap-northeast-1
 #   OUT_DIR          既定 ${DEV_HOST_HOME:-$HOME}/athena-unquoted-ddl-measurements
@@ -87,8 +109,9 @@
 #   RETRY_DELAY      再試行の間隔（秒）。既定 5
 #   S3TABLES_CATALOG S3 Tables のカタログ名（例 s3tablescatalog/my-bucket）。
 #   S3TABLES_NS      S3 Tables の名前空間。
-#                    この 2 つが揃ったときだけ C20（S3 Tables への場所の無い CREATE TABLE）を
-#                    測る。1 つでも欠けていれば「未測定（S3TABLES_* 未設定）」として summary に残す。
+#                    この 2 つが揃ったときだけ、ROUND=1 の C20（S3 Tables への場所の無い
+#                    CREATE TABLE）と ROUND=3 の H 群（h0〜h9）を測る。1 つでも欠けていれば
+#                    「未測定（S3TABLES_* 未設定）」として summary に残す。ROUND=2 では使わない。
 #
 # ** このスクリプトが本物に対して行う破壊的な操作 **
 #   - 実在する表 <db>.athena_local_probe_208_<乱数>_real を 1 つ CTAS で作り、
@@ -114,10 +137,26 @@
 #     実在する表 <接頭辞>_real を LIKE の対象にする（準備できていれば）。G 群
 #     （g1〜g7、Trino 形の文言の綴り）は ALTER TABLE のみで、実在しない名前
 #     （<接頭辞>_nope）にだけ投げるため表は作らない。
+#   - ROUND=3: 実在する表 <接頭辞>_real は作らない。CREATE TABLE（H・Q・P 群）はすべて
+#     「想定外に成功したらその場で無引用 + IF EXISTS の DROP TABLE を投げて消す」経路
+#     （run_create_then_drop か run_create_then_drop_ctx）で投げる。結果は確かめ、
+#     SUCCEEDED にならなければ trap がもう一度ベストエフォートで投げる。
+#     作られうるテーブルと、消すときの Context・名前:
+#       h1〜h7（S3 Tables の Context）→ S3 Tables の Context で DROP TABLE IF EXISTS <接頭辞>_hN
+#       h8（S3 Tables の Context で awsdatacatalog.<db>.<接頭辞>_h8）
+#                                     → 既定の Context で DROP TABLE IF EXISTS <接頭辞>_h8
+#       h9（既定の Context）          → 既定の Context で DROP TABLE IF EXISTS <接頭辞>_h9
+#       q0〜q8（既定の Context）      → 既定の Context で DROP TABLE IF EXISTS <接頭辞>_qN
+#       p0〜p8（既定の Context）      → 既定の Context で DROP TABLE IF EXISTS <接頭辞>_pN
+#                                       （4 部以上の名前が万一受理されたときに、<db> の下に
+#                                       できうる名前を消しにいく）
+#     h1〜h7 は S3 Tables が場所を要らないため受理されて作られうる。h9・q0・p0 は対照で
+#     開始時に弾かれる見込み（No location、または #212 で測った 3 つ目の `.` の構文エラー）。
 #
 # 課金について: ALTER TABLE・DROP TABLE はメタデータだけを見る／書く文で、実データの
 # スキャンは無い。CREATE TABLE（実在する表の準備・C3・C20・C21・C22・C23、E・F 群、
-# いずれも 0〜1 行）もスキャンや書き込みは軽微。Athena の最小課金 × クエリ数の見込み。
+# ROUND=3 の H・Q・P 群。いずれも 0〜1 行）もスキャンや書き込みは軽微。Athena の最小課金 ×
+# クエリ数の見込み。
 #
 # 本物への呼び出し回数の見込み（内訳。実際の回数は下で更新される。GetQueryExecution は
 # poll_until_terminal のポーリング + 終端後の 1 回で、開始できた項目の数 × 数回のオーダー。
@@ -173,6 +212,23 @@
 #   その後始末、開始できた G 群の項目が乗る見込み。件数は受理され方次第で変わる
 #   （4〜52 項目程度 × 2〜4 回）。
 #
+# == ROUND=3（H・Q・P 群のみ。issue #221。preflight・DB 確認は共通、実在する表は作らない） ==
+#
+#   [StartQueryExecution]
+#   preflight（SELECT 1 + SHOW TABLES）2
+#   + H 群（S3TABLES_* が揃うときだけ。h0 の SELECT 1 と h1〜h9 の CREATE TABLE）10
+#   + Q 群（引用符付きの列名と型、q0〜q8）9
+#   + P 群（4 部以上の無引用の名前、p0〜p8）9
+#   = 20（S3TABLES_* 無し）／30（あり）。
+#   受理された CREATE TABLE ごとに、その場で DROP する後始末が 1 本ずつ増える
+#   （最大で S3TABLES_* 無し +18、あり +27）。h1〜h7 は受理されうる。
+#   DB が実在しなければ ROUND=1 と同様に SHOW DATABASES で候補一覧を残してその場で止まる。
+#
+#   [GetQueryExecution]
+#   実際に開始できた項目だけ終端状態までポーリングし、終端後にもう 1 回まとめて取得する。
+#   preflight 2 と h0 に加え、受理された CREATE とその後始末が乗る見込み
+#   （2〜57 項目程度 × 2〜4 回）。
+#
 # 実行ごとに $OUT_DIR/run-<日時>/ を作り、その中だけに書く。前の回の結果と混ざらない。
 #
 # 項目ごとに次を保存する（取れたものだけ）。
@@ -198,9 +254,9 @@ set -uo pipefail
 : "${DB:?DB にデータベース名を設定してください}"
 ROUND=${ROUND:-1}
 case "$ROUND" in
-  1 | 2) ;;
+  1 | 2 | 3) ;;
   *)
-    echo "ROUND には 1 か 2 を指定してください（既定 1）" >&2
+    echo "ROUND には 1・2・3 のどれかを指定してください（既定 1）" >&2
     exit 1
     ;;
 esac
@@ -246,6 +302,11 @@ REAL_SETUP_OK=0
 declare -A PENDING_DROPS=()
 # C20（S3 Tables）だけ、DB とは別カタログ・別名前空間に作るので専用のフラグにする。
 C20_CREATED=0
+# ROUND=3（issue #221）で作られたかもしれず、まだ消せていないテーブルの集合。キーは
+# 「DROP を投げる QueryExecutionContext|裸のテーブル名」（名前は new_name で作るので `|` を
+# 含まない。区切りは最後の `|`）。run_create_then_drop_ctx が立て、後始末が SUCCEEDED に
+# なったら下ろす。
+declare -A PENDING_DROPS_CTX=()
 
 # StartQueryExecution に渡す QueryExecutionContext。ふだんは CATALOG・DB で、
 # run_in_ctx で 1 文だけ差し替える（preflight・C20）。
@@ -284,6 +345,10 @@ cleanup() {
     cleanup_drop_in_ctx "Catalog=$S3TABLES_CATALOG,Database=$S3TABLES_NS" \
       "DROP TABLE IF EXISTS $(new_name c20)"
   fi
+  local key
+  for key in "${!PENDING_DROPS_CTX[@]}"; do
+    cleanup_drop_in_ctx "${key%|*}" "DROP TABLE IF EXISTS ${key##*|}"
+  done
 }
 trap cleanup EXIT
 
@@ -604,6 +669,26 @@ run_create_then_drop() {
   fi
 }
 
+# run_create_then_drop の QueryExecutionContext 付き版（ROUND=3、issue #221）。
+# CREATE TABLE を $1 の Context で投げ、成功したら DROP TABLE IF EXISTS <name> を $2 の
+# Context で <label>-cleanup として投げて消す。作る Context と消す Context を分けるのは、
+# S3 Tables の Context で AwsDataCatalog の 3 部の名前を作る項目（h8）があるため。
+# 後始末が SUCCEEDED になるまで PENDING_DROPS_CTX["<消す Context>|<name>"] を立てておく
+# （trap の保険が対象にする組の集合）。CREATE TABLE が失敗したら後始末は未測定の行だけ残す。
+run_create_then_drop_ctx() {
+  local create_ctx=$1 drop_ctx=$2 label=$3 sql=$4 name=$5
+  local key="$drop_ctx|$name"
+  if run_in_ctx "$create_ctx" "$label" "$sql"; then
+    PENDING_DROPS_CTX[$key]=1
+    run_in_ctx "$drop_ctx" "$label-cleanup" "DROP TABLE IF EXISTS $name"
+    if succeeded "$label-cleanup"; then
+      unset 'PENDING_DROPS_CTX[$key]'
+    fi
+  else
+    skip "$label-cleanup" "CREATE TABLE が失敗したため後始末不要"
+  fi
+}
+
 # --- preflight -----------------------------------------------------------------
 # Database を渡さず Catalog だけで疎通を確かめる（DB の実在確認より先に、資格情報や
 # エンドポイントの問題を切り分ける）。
@@ -662,13 +747,16 @@ fi
 # --- 実在する表のセットアップ（B10・C15、ROUND=2 の F1・F3・F4・F5 の対照に使う） --------
 # WITH (format='PARQUET') は本物で external_location が要るかもしれないため、
 # quoted-names.sh の d0-setup-hive と同じ「WITH 句を付けない CTAS」の形にした。
+# ROUND=3 は実在する表を使わないので作らない（REAL_SETUP_ATTEMPTED・REAL_SETUP_OK は 0 のまま）。
 
+if [ "$ROUND" != 3 ]; then
 REAL_SETUP_ATTEMPTED=1
 if run setup-real "CREATE TABLE $DB.$REAL AS SELECT 1 AS n, 'x' AS s, 10 AS x"; then
   REAL_SETUP_OK=1
 else
   echo "== setup-real: 実在する表が作れませんでした。B10・ROUND=2 の F1・F3・F4・F5 は実在しない名前を対象にします。"
 fi
+fi # ROUND != 3
 
 if [ "$REAL_SETUP_OK" = 1 ]; then
   LIKE_TARGET="$DB.$REAL"
@@ -866,6 +954,66 @@ run g7 "/* c */ ALTER TABLE $NOPE SET PROPERTIES x = 1"
 
 fi # ROUND=2
 
+# ROUND=3 だけ、H・Q・P 群を投げる（issue #221）。
+if [ "$ROUND" = 3 ]; then
+
+DEFAULT_CTX="Catalog=$CATALOG,Database=$DB"
+
+# --- H 群（QueryExecutionContext の Catalog が S3 Tables。S3TABLES_* が揃うときだけ） ------
+# #208 の C20 の続き。S3 Tables は場所を要らないので、No location にならないかもしれない。
+# h1〜h7 は S3 Tables の Context で作られうるので、同じ Context で消す。h8 は S3 Tables の
+# Context で AwsDataCatalog の 3 部の名前を作るので、既定の Context で消す。h9 は既定の
+# Context の対照（No location の見込み）。h0 は疎通で、失敗しても他の H 項目は投げる。
+if [ -n "$S3TABLES_CATALOG" ] && [ -n "$S3TABLES_NS" ]; then
+  S3T_CTX="Catalog=$S3TABLES_CATALOG,Database=$S3TABLES_NS"
+  run_in_ctx "$S3T_CTX" h0 "SELECT 1"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" h1 "CREATE TABLE $(new_name h1) (n int)" "$(new_name h1)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" h2 "CREATE TABLE IF NOT EXISTS $(new_name h2) (n int)" "$(new_name h2)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" h3 "CREATE TABLE $(new_name h3) (n int) TBLPROPERTIES ('table_type' = 'iceberg')" "$(new_name h3)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" h4 "CREATE TABLE $S3TABLES_NS.$(new_name h4) (n int)" "$(new_name h4)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" h5 "CREATE TABLE $(new_name h5) (n int NOT NULL)" "$(new_name h5)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" h6 "CREATE TABLE $(new_name h6) (n int) WITH (format = 'PARQUET')" "$(new_name h6)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" h7 "CREATE TABLE $(new_name h7) (n string)" "$(new_name h7)"
+  run_create_then_drop_ctx "$S3T_CTX" "$DEFAULT_CTX" h8 "CREATE TABLE awsdatacatalog.$DB.$(new_name h8) (n int)" "$(new_name h8)"
+  run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" h9 "CREATE TABLE $(new_name h9) (n int)" "$(new_name h9)"
+else
+  skip h0 "未測定（S3TABLES_* 未設定）"
+  for l in h1 h2 h3 h4 h5 h6 h7 h8 h9; do
+    skip "$l" "未測定（S3TABLES_* 未設定）"
+    skip "$l-cleanup" "CREATE TABLE を投げていないため後始末不要"
+  done
+fi
+
+# --- Q 群（列名・型が引用符付き。既定の Context） ------------------------------------
+# Hive の文法では "n" は文字列リテラル。q0 は No location の対照。
+
+run_create_then_drop q0 "CREATE TABLE $(new_name q0) (n int)" "$(new_name q0)"
+run_create_then_drop q1 "CREATE TABLE $(new_name q1) (\"n\" int)" "$(new_name q1)"
+run_create_then_drop q2 "CREATE TABLE $(new_name q2) (n int, \"m\" int)" "$(new_name q2)"
+run_create_then_drop q3 "CREATE TABLE $(new_name q3) (\"n\" int NOT NULL)" "$(new_name q3)"
+# バッククォート（Hive の引用符）。二重引用符の中なのでバッククォートはエスケープする。
+run_create_then_drop q4 "CREATE TABLE $(new_name q4) (\`n\` int)" "$(new_name q4)"
+run_create_then_drop q5 "CREATE TABLE IF NOT EXISTS $(new_name q5) (\"n\" int)" "$(new_name q5)"
+run_create_then_drop q6 "CREATE TABLE $(new_name q6) (n row(\"f\" int))" "$(new_name q6)"
+run_create_then_drop q7 "CREATE TABLE $(new_name q7) (n struct<\"f\":int>)" "$(new_name q7)"
+run_create_then_drop q8 "CREATE TABLE $(new_name q8) (n \"int\")" "$(new_name q8)"
+
+# --- P 群（4 部以上の無引用の名前。既定の Context） -----------------------------------
+# p0 は #212 で測った形の対照（3 つ目の `.` で弾かれる）。p8 は IF NOT EXISTS の 1 部で、
+# No location の対照。万一受理されたときに <db> の下にできうる名前 <接頭辞>_pN を消しにいく。
+
+run_create_then_drop p0 "CREATE TABLE awsdatacatalog.$DB.$(new_name p0).n (n int)" "$(new_name p0)"
+run_create_then_drop p1 "CREATE TABLE IF NOT EXISTS awsdatacatalog.$DB.$(new_name p1).n (n int)" "$(new_name p1)"
+run_create_then_drop p2 "CREATE TABLE IF NOT EXISTS x.y.$(new_name p2).n (n int)" "$(new_name p2)"
+run_create_then_drop p3 "CREATE TABLE IF NOT EXISTS awsdatacatalog.$DB.$(new_name p3).n.m (n int)" "$(new_name p3)"
+run_create_then_drop p4 "CREATE TABLE IF NOT EXISTS awsdatacatalog.$DB.$(new_name p4).\"n\" (n int)" "$(new_name p4)"
+run_create_then_drop p5 "CREATE TABLE awsdatacatalog.$DB.$(new_name p5).n AS SELECT 1 AS n" "$(new_name p5)"
+run_create_then_drop p6 "CREATE TABLE IF NOT EXISTS awsdatacatalog.$DB.$(new_name p6).n AS SELECT 1 AS n" "$(new_name p6)"
+run_create_then_drop p7 "CREATE TABLE awsdatacatalog.$DB.$(new_name p7).n WITH (format = 'PARQUET') AS SELECT 1 AS n" "$(new_name p7)"
+run_create_then_drop p8 "CREATE TABLE IF NOT EXISTS $(new_name p8) (n int)" "$(new_name p8)"
+
+fi # ROUND=3
+
 # --- 後始末（実在する表） ----------------------------------------------------------
 
 if [ "$REAL_SETUP_OK" = 1 ]; then
@@ -876,7 +1024,7 @@ if [ "$REAL_SETUP_OK" = 1 ]; then
     echo "== 後始末の DROP TABLE が SUCCEEDED になりませんでした。終了時にもう一度投げます。"
     echo "   それでも消えなければ、$DB の $REAL を手で消してください。"
   fi
-else
+elif [ "$ROUND" != 3 ]; then
   skip z-drop-real "実在する表を作れなかったため後始末不要"
 fi
 
@@ -894,6 +1042,11 @@ if [ "$ROUND" = 1 ]; then
     ALL_LABELS="$ALL_LABELS $l $l-cleanup"
   done
   ALL_LABELS="$ALL_LABELS c20 c20-cleanup c21 c21-cleanup c22 c22-cleanup c23 c23-cleanup"
+elif [ "$ROUND" = 3 ]; then
+  ALL_LABELS="$ALL_LABELS h0"
+  for l in h1 h2 h3 h4 h5 h6 h7 h8 h9 q0 q1 q2 q3 q4 q5 q6 q7 q8 p0 p1 p2 p3 p4 p5 p6 p7 p8; do
+    ALL_LABELS="$ALL_LABELS $l $l-cleanup"
+  done
 else
   for l in e1 e2 e3 e4 e5 e6 e7 e8 e9 e10 e11 e12 e13 e14 e15 e16 e17 e18 e19 e20 e21 e22 e23 e24 e25; do
     ALL_LABELS="$ALL_LABELS $l $l-cleanup"
@@ -929,6 +1082,32 @@ write_summary_txt() {
       echo "#   開始時に弾かれる見込みだが、想定外に成功したら同じ仕組みで消す。ALTER・DROP は"
       echo "#   実在しない名前（<PROBE>_nope）にだけ投げる。"
       echo "# 課金: スキャンの無いクエリだけ（ALTER・DROP はメタデータのみ、CREATE は 0〜1 行）。"
+      echo "# 注意: これは実測した本物の Athena の挙動であり、将来の Athena の変更で変わりうる。"
+      echo "#   実測値は既定とは限らない（本物の Athena の挙動が変わっていれば、ここに書いた"
+      echo "#   見込みと食い違うことがある）。"
+    elif [ "$ROUND" = 3 ]; then
+      echo "# issue #221（#208 ラウンド 3）: 場所の無い CREATE TABLE のうち #208 で測れなかった形"
+      echo "#             （QueryExecutionContext の Catalog が S3 Tables のとき、列名・型が"
+      echo "#             引用符付きのとき、4 部以上の無引用の名前）が StartQueryExecution の時点で"
+      echo "#             どう扱われるかを実測"
+      echo "# 実行日時: $(date -Iseconds)"
+      if [ -n "$S3TABLES_CATALOG" ] && [ -n "$S3TABLES_NS" ]; then
+        echo "# S3TABLES_*: 設定あり（H 群を測る）"
+      else
+        echo "# S3TABLES_*: 未設定（H 群 h0〜h9 は未測定）"
+      fi
+      echo "# StartQueryExecution の見込み本数: 20（S3TABLES_* 無し）／30（あり）"
+      echo "#   （preflight 2 + Q 群 9 + P 群 9、S3TABLES_* が揃っていれば H 群 10"
+      echo "#   （h0 の SELECT 1 と h1〜h9）が乗る）。"
+      echo "#   このスクリプトの実測値: $(wc -l < "$START_CALL_FILE" | tr -d ' ') 回"
+      echo "#   （開始時に弾かれた項目があっても追加の呼び出しはしない）。"
+      echo "#   受理された CREATE TABLE ごとに、その場で DROP する後始末が 1 本ずつ増える"
+      echo "#   （最大で S3TABLES_* 無し +18、あり +27）。"
+      echo "# DDL: 実在する表 <PROBE>_real は作らない。H・Q・P 群の CREATE TABLE は、受理されたら"
+      echo "#   その場で DROP して消す（h1〜h7 は S3 Tables の Context で、h8・h9・Q・P 群は"
+      echo "#   既定の Context で DROP TABLE IF EXISTS <PROBE>_<項目>）。h1〜h7 は S3 Tables が"
+      echo "#   場所を要らないため受理されうる。h9・q0・p0 は対照で開始時に弾かれる見込み。"
+      echo "# 課金: スキャンの無いクエリだけ（CREATE は 0〜1 行、DROP はメタデータのみ）。"
       echo "# 注意: これは実測した本物の Athena の挙動であり、将来の Athena の変更で変わりうる。"
       echo "#   実測値は既定とは限らない（本物の Athena の挙動が変わっていれば、ここに書いた"
       echo "#   見込みと食い違うことがある）。"
@@ -1009,7 +1188,8 @@ PYEOF
 
 # 手で消す必要が残っていれば summary の冒頭に警告を積む（PENDING_DROPS に名前が
 # 残っている = 本編の -cleanup では消せず、trap のベストエフォートに委ねた状態）。
-if [ "${#PENDING_DROPS[@]}" -gt 0 ] || [ "$C20_CREATED" = 1 ] || [ "$REAL_SETUP_ATTEMPTED" = 1 ]; then
+if [ "${#PENDING_DROPS[@]}" -gt 0 ] || [ "${#PENDING_DROPS_CTX[@]}" -gt 0 ] \
+  || [ "$C20_CREATED" = 1 ] || [ "$REAL_SETUP_ATTEMPTED" = 1 ]; then
   PENDING_DROPS_REPORT="- **手で消してください**: 次のテーブルが残っているか、消えたか確かめられませんでした。"
   PENDING_DROPS_REPORT="$PENDING_DROPS_REPORT 終了時に trap がもう一度 DROP を投げますが、結果は確かめません。"
   if [ "$REAL_SETUP_ATTEMPTED" = 1 ]; then
@@ -1021,6 +1201,9 @@ if [ "${#PENDING_DROPS[@]}" -gt 0 ] || [ "$C20_CREATED" = 1 ] || [ "$REAL_SETUP_
   if [ "$C20_CREATED" = 1 ]; then
     PENDING_DROPS_REPORT="$PENDING_DROPS_REPORT"$'\n'"  - S3 Tables 側の <PROBE>_c20（Catalog=<S3TABLES_CATALOG>,Database=<S3TABLES_NS> で DROP TABLE IF EXISTS）"
   fi
+  for key in "${!PENDING_DROPS_CTX[@]}"; do
+    PENDING_DROPS_REPORT="$PENDING_DROPS_REPORT"$'\n'"  - $(hide "${key##*|}")（$(hide "${key%|*}") で DROP TABLE IF EXISTS）"
+  done
 fi
 
 SUMMARY_TXT=$(write_summary_txt)
