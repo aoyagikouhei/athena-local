@@ -11,6 +11,16 @@
 
 - [ ] 複合型の中の varbinary の `[B@<hex>` の数字が、等しいバイト列で同じになるか、実行ごとに変わるか（#146 は `ARRAY[X'0102', X'03']` の違う 2 要素だけ。athena-local はバイト列の FNV-1a で決定的にしている。#149、2026-09-24）
 
+## 文の種類と構文（[measurements/statements.md](measurements/statements.md)）
+
+- [ ] 引用符付きの名前を取る DDL 系の文（`DESCRIBE`・`DESC`・`SHOW COLUMNS FROM`／`IN`・`DROP TABLE`・`SHOW CREATE TABLE`・`ALTER TABLE`・`SHOW TABLES IN`・CTAS でない `CREATE TABLE`）のうち、3 部の `ALTER TABLE` 名で 2 番目の部分だけ引用符付きの形（`cat."ns".t`）。athena-local は今までどおり実行する（#204、2026-09-25）
+- [ ] 同上、4 部以上の修飾名（`a.b.c.d`）。athena-local は今までどおり実行する（#204、2026-09-25）
+- [ ] `ALTER TABLE IF EXISTS ...` に引用符付きの名前を渡した形（`ALTER TABLE IF EXISTS "t" ...`）。athena-local は `IF EXISTS` があれば判定自体をしないので今までどおり実行する（#204、2026-09-25）
+- [ ] `SHOW TABLES IN`／CTAS でない `CREATE TABLE` に 2 部以上の修飾名を渡した形（`SHOW TABLES IN "cat"."db"`、`CREATE TABLE "db"."t" (n int)`）。athena-local は名前が 1 部（無引用の `IN`／`CREATE TABLE` の直後だけ）のときしか弾かないので、2 部以上は今までどおり実行する（#204、2026-09-25）
+- [ ] `DESCRIBE`／`DESC` の引用符付きの部分に非 ASCII の文字を含む、かつ対象の名前が実在しない形（`DESCRIBE "存在しない名前"`）。実在しない非 ASCII の名前（`DESCRIBE "日本"`）は本物が構文の文言でなく Glue の `Entity Not Found`（毎回違う Request ID 付き）を返すと分かった（#204、2026-09-25）が、この文言は再現できないので athena-local は今までどおり実行する。実在する非 ASCII の名前でも同じ `Entity Not Found` になるかは未確認
+- [ ] `DESCRIBE` に引用符付きの ASCII の名前を渡し、かつ対象が実在しない形（`DESCRIBE "no_such_table"`）の正確な文言。実測した引用符付きの ASCII 名はすべて実在するプローブ用のテーブル（`t`）で、実在しないテーブルでは無引用の `DROP TABLE`／`ALTER TABLE` でしか確かめていない。athena-local は存在チェックをせず構文の位置だけで文言を決めるので、実在しない場合も同じ文言になる前提で実装しているが、その前提自体は未実測（#204、2026-09-25）
+- [ ] 上のラウンド 1・2 とも、S3 Tables への対照 `SELECT * FROM "<cat>".<ns>.<t> LIMIT 1` が `SCHEMA_NOT_FOUND` で失敗しており、名前空間の指定が正しく解決できる状態そのものを確認できていない（アカウント固有の設定の可能性が高い）。対照 SELECT が通る状態に直したうえで、DESCRIBE・SHOW CREATE TABLE・DROP TABLE・SHOW COLUMNS の S3 Tables カタログ名の拒否（`Unsupported DDL with 2 catalogs` など）を測り直すとより確実になる（#204、2026-09-25）
+
 ## GetQueryResults（[measurements/query-results.md](measurements/query-results.md)）
 
 - [ ] Iceberg のテーブルの `DESCRIBE` で、フィールドが 2 つ以上の `struct` の区切り。測ったのは 1 フィールドの `struct<a: int>` だけ。athena-local は `map<string, int>` に倣って `, ` でつなぐ（#173、2026-09-24）

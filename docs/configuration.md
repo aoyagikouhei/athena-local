@@ -51,3 +51,9 @@ SELECT * FROM "iceberg"                  .db.users
 
 String literals and comments are left alone. `GetQueryExecution` reports the
 query and the catalog name the request used.
+
+This alias resolution runs for statements such as `SELECT`; `DESCRIBE`,
+`DROP TABLE` and the other statements listed in
+[Caveats](caveats.md#sql-dialect) reject a double-quoted alias before it
+would be applied, the same way real Athena rejects those statements'
+double-quoted names outright.

@@ -274,3 +274,60 @@ Content-Type と `.metadata` を含む置き場所は本項が主で、[result-f
   | `OPTIMIZE"t" REWRITE DATA USING BIN_PACK` | `mismatched input 'OPTIMIZE'. Expecting: 'ALTER', …`（Trino の文法で読まれている） | 無引用の `OPTIMIZE` は今回測っていない（Trino に無く athena-local では実行できないので起票しない） |
 
 - 備考: `StartQueryExecution` の時点で実行が作られないので、分類そのものは観測できない。athena-local は SQL を書き換えず・独自に弾かない方針のため、Trino が受ける `OPTIMIZE` 以外の 5 形を実行してしまう（空白ありの形と同じ値を返す。`OPTIMIZE` は Trino に無く、athena-local も構文チェックで弾く。2026-09-25 手元の Trino 482 で確認）。差は [docs/caveats.md](../../caveats.md) の「SQL dialect」に記載し、athena-local 側を本物に揃える対応は [#204](https://github.com/aoyagikouhei/athena-local/issues/204) に起票した。
+
+### 引用符付きの名前を取る DDL 系の文言の規則（#204、ラウンド 1・2）
+- 日付: 2026-09-25 07:54 UTC（ラウンド 1） ／ issue: #204 ／ スクリプト: `tools/measure/quoted-names.sh`（`ROUND=1` が既定） ／ 生データ: `$HOME/athena-quoted-names-measurements/run-20260925-075408`
+- 日付: 2026-09-25 08:35 UTC（ラウンド 2、未実測の形だけを追加で流した） ／ issue: #204 ／ スクリプト: 同上（`ROUND=2`） ／ 生データ: `$HOME/athena-quoted-names-measurements/run-20260925-083528`
+- 相手: 本物の Athena（S3 Tables のカタログを含む構成）
+- 投げたもの: 上の #200 の実測を受けて対象を広げた `StartQueryExecution` 群。ラウンド 1 は 72 本（DESCRIBE・DESC・SHOW CREATE TABLE・SHOW COLUMNS FROM／IN・DROP TABLE［IF EXISTS］・ALTER TABLE の各種操作・MSCK REPAIR TABLE と、無引用・バッククォート・引用符付きの対照。S3 Tables のカタログ名 `"s3tablescatalog/<bucket>".<ns>.<t>` を含む）。ラウンド 2 は 55 本（ラウンド 1 で未実測のまま残った形: 名前の部品数と引用符の位置の組み合わせ、`SHOW TABLES IN`、CTAS でない `CREATE TABLE`、`ALTER TABLE IF EXISTS`、`DROP DATABASE IF EXISTS`、非 ASCII の名前への `DESCRIBE`、S3 Tables の対照 `SELECT`）
+- 返ったもの（`StartQueryExecution` の `InvalidRequestException`。実行は作られない。DDL の後始末はいずれも SUCCEEDED、ラウンド 2 の `CREATE TABLE` 2 本も開始時に弾かれて何も作られなかった）:
+
+  **決め手 1: 引用符付きの部分を 1 つでも含む名前は開始時に弾かれる。無引用・バッククォートは通る**
+
+  | 文 | 通った（SUCCEEDED／対象が無く FAILED） | 開始時に弾かれた |
+  |---|---|---|
+  | `DESCRIBE` | `t`・`db.t`・`awsdatacatalog.db.t`・`` `t` ``・`` `db`.`t` `` | `"t"`・`"T"`・`"db"."t"`・`db."t"`・`"db".t`・`"AwsDataCatalog".db.t`・`"awsdatacatalog"."db"."t"` |
+  | `DESC` | `t`・`` `t` `` | `"t"`・`"db"."t"`・`db."t"`・`"db".t` |
+  | `SHOW CREATE TABLE` | `DESCRIBE` と同じ 5 形 | `DESCRIBE` と同じ 7 形 |
+  | `SHOW COLUMNS FROM`／`IN` | `t`・`` `t` `` | `"t"`・`"db"."t"`・`db."t"`・`"db".t`、`IN "t"` |
+  | `DROP TABLE`（実在しない名前） | `nope`・`` `nope` ``（FAILED、対象なし）、`IF EXISTS nope`（SUCCEEDED） | `"nope"`・`"db"."nope"`・`db."nope"`・`"db".nope`・`IF EXISTS "nope"` |
+  | `ALTER TABLE "nope" ...` | — | `ADD COLUMNS`・`SET TBLPROPERTIES`（どちらも Trino の文言。Trino も同じく弾く）、`ADD COLUMN`・`DROP COLUMN`・`RENAME TO`（Hive 系の文言） |
+  | `ALTER TABLE nope ...`（無引用） | `ADD COLUMNS`・`DROP COLUMN`・`RENAME TO`・`SET TBLPROPERTIES`（FAILED、対象なし） | `ADD COLUMN`（単数）: `line 1:45: no viable alternative at input 'ALTER TABLE <nope> ADD COLUMN'`（範囲外。下の「範囲外の発見」参照） |
+  | `MSCK REPAIR TABLE` | `t`（SUCCEEDED、MSCK_REPAIR。範囲外） | `"t"`（Trino の文言 `mismatched input 'MSCK'`。Trino に MSCK が無い） |
+  | S3 Tables `"s3tablescatalog/<b>".<ns>.<t>` | — | DESCRIBE: `Unsupported DDL with 2 catalogs`／SHOW CREATE TABLE: `Queries of this type are not supported`／`DROP TABLE IF EXISTS "<cat>".<ns>.nope_204`: `line 1:22: mismatched input '"<cat>"' expecting {…}` |
+
+  S3 Tables の対照 `SELECT * FROM "<cat>".<ns>.<t> LIMIT 1` は 2 ラウンドとも `SCHEMA_NOT_FOUND`（名前空間の指定の綴り違いとみられ、アカウント固有の事情）。上の 3 つの拒否は名前空間を解決する前の開始時点なので、この結論には影響しないと判断した。
+
+  **決め手 2: 文言の規則（Trino が構文として受ける文だけ。Trino が弾く文は Trino の文言がそのまま出る＝判定の順は「構文チェック → この拒否」）**
+
+  | 文 | 名前の最初の部分が引用符付き | 最初の部分が無引用で後ろが引用符付き（`db."t"`） |
+  |---|---|---|
+  | `DESCRIBE`・`DESC`・`ALTER TABLE`（Trino が受ける操作） | `line L:C: no viable alternative at input '<文の最初の語 … 最初の引用符付きの部分の終わり>'`（例 `'DESCRIBE "t"'`・`'ALTER TABLE "nope"'`） | `line L:C: no viable alternative at input '<名前の始まり … 引用符付きの部分の終わり>'`（例 `'db."t"'`。ALTER は未実測） |
+  | `SHOW COLUMNS FROM`／`IN`・`DROP TABLE［IF EXISTS］` | `line L:C: mismatched input '<最初の部分>' expecting {…}`（一覧は 5 件とも同一、#200 の DROP とも同一） | 同上の no viable alternative |
+  | `SHOW CREATE TABLE` | `Queries of this type are not supported`（位置なし。末尾の空白があっても同じ） | 同じ |
+  | `DESCRIBE` の S3 Tables（最初の部分が別カタログ） | `Unsupported DDL with 2 catalogs`（位置なし） | — |
+
+  位置 C は引用符付きの部分の開始位置 + 1（1 文字目が 1）。先頭の空白は数えない（`  DESCRIBE "t"` → `1:10`）、先頭のコメントは数える（`/* c */ DESCRIBE "t"` → `1:18`。input にはコメントを含めない）、改行の後は `line 2:1`（`DESCRIBE\n"t"`）。空白 2 つはそのまま数え input にも残る。小文字のキーワードも同じ規則で input は元の綴り。input の中の改行は文字どおりの `\n`（バックスラッシュと n）で出る。
+
+  **ラウンド 2: 名前の部品数（k）と引用符付きの部分の番号（q）ごとの文言**
+
+  | 文 | q=1（k=1〜3） | q=2（k=2・3） | q=3（k=3） |
+  |---|---|---|---|
+  | `DESCRIBE`・`DESC` | NV(文の最初の語 … p1 の終わり) | NV(名前の始まり … p2 の終わり)（例 `'awsdatacatalog."db"'`） | MM(p3)（例 `mismatched input '"t"' expecting {…}`） |
+  | `SHOW COLUMNS FROM`／`IN`・`DROP TABLE［IF EXISTS］` | MM(p1) | NV(名前の始まり … p2 の終わり) | MM(p3) |
+  | `ALTER TABLE`（Trino が受ける操作） | NV(文の最初の語 … p1 の終わり) | NV(文の最初の語 … p2 の終わり)（k=2 だけ実測。k=3 の q=2 は未実測） | NV(文の最初の語 … p3 の終わり) |
+  | `SHOW CREATE TABLE` | `Queries of this type are not supported` | 同じ | 同じ |
+  | `DESCRIBE`・`DESC`・`SHOW COLUMNS` の最初の部分が S3 Tables のカタログ | `Unsupported DDL with 2 catalogs`（全部引用符付き・存在しない表でも同じ） | | |
+  | `DROP`・`ALTER`・`SHOW CREATE` の最初の部分が S3 Tables のカタログ | 上の一般の規則どおり（MM／NV／定数） | | |
+
+  NV = `line L:C: no viable alternative at input '…'`、MM = `line L:C: mismatched input '…' expecting {…}`（一覧は全部同一、md5 一致）。C は対象の部分の開始位置 + 1。
+
+  位置の追加の規則（ラウンド 2 で判明）: 先頭のタブ・LF・CRLF・連続 LF も数えない（すべて `1:10`）。行コメント `-- c\n` の後は `line 2:10`、改行入りのブロックコメントの後は `line 2:15`。列は **UTF-16 の単位**（`/* あ */` の後は 18、`/* 😀 */` の後は 19）。区切りのタブは `1:10` で input に `\t`、区切りの CRLF は `line 2:1` で input に `\r\n`（どちらもバックスラッシュ表記。ラウンド 1 の想定を覆した）。
+
+  ほかにラウンド 2 で確定したこと:
+  - `ALTER TABLE IF EXISTS` は引用符の有無によらず `line 1:16: no viable alternative at input 'ALTER TABLE IF EXISTS'`（無引用でも本物は弾く。athena-local は Trino が受けるので実行する。範囲外の差として [docs/caveats.md](../../caveats.md) に記載）
+  - `DESCRIBE EXTENDED`／`FORMATTED "t"` は Trino と同じ文言（`mismatched input '"t"'. Expecting: '.', <EOF>`）で、athena-local も今すでに同じ
+  - `SHOW TABLES IN "db"` は MM(p1)、`CREATE TABLE "x" (n int)` は NV(文の最初の語 … p1)。どちらも Trino は構文として受けるので、この判定を足さなければ athena-local が実行してしまうところだった（採用: 両方とも「一致条件と文言」の表に追加）。`DROP DATABASE IF EXISTS "x"` は Trino も同じ文言で弾くので、判定を足さなくても差は無い
+  - `DESCRIBE "日本"`（存在しない非 ASCII の名前）は `Entity Not Found (Service: AmazonDataCatalog; … Request ID: <毎回違う>)`。構文の文言にならず、再現できない Request ID を含むので athena-local では再現しない（弾かない＝実行する）
+
+- 備考: 範囲外（本物だけ受ける／本物だけ弾く。無引用）: 無引用の `ALTER TABLE t ADD COLUMN m int`（Trino の綴り、単数）は本物が開始時に弾く（`no viable alternative at input 'ALTER TABLE t ADD COLUMN'`）。バッククォートの名前（`` DESCRIBE `t` `` など）は本物が受けるが Trino の構文エラーで athena-local は弾く。無引用の `MSCK REPAIR TABLE t` は本物が受ける（`MSCK_REPAIR`）が Trino に構文が無く athena-local は弾く。無引用の `DROP DATABASE` は本物が受ける（`DROP_DATABASE`）が Trino には `DROP SCHEMA` しか無く athena-local は弾く。無引用の素の `CREATE TABLE x (n int)` は本物が `No location was specified for table. An S3 location must be specified` で開始時に弾くが、athena-local は Trino が作ってしまう。これら 5 つはいずれも #204 の対象（引用符付きの名前）の外なので直さず、[docs/caveats.md](../../caveats.md) に記載した。

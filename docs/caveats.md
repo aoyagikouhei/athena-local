@@ -23,9 +23,13 @@ Known differences between athena-local and real Athena, grouped by topic.
   Iceberg `WITH` clause, measured 2026-09-23), and the `Expecting:` list in a
   syntax error follows Trino's grammar. `ALTER TABLE IF EXISTS ...` and
   `ALTER TABLE ... RENAME COLUMN ... TO ...` are the same: Trino runs both, but
-  Athena's grammar has no such form and answers `mismatched input` before the
-  statement starts (measured 2026-09-21), so athena-local executes them on
-  Trino where Athena would have rejected the call outright. A CTAS with a
+  Athena's grammar has no such form and rejects it before the statement starts
+  (`AthenaErrorCode` `MALFORMED_QUERY`), so athena-local executes them on
+  Trino where Athena would have rejected the call outright. `ALTER TABLE IF
+  EXISTS ...`'s message was pinned down as `line 1:16: no viable alternative
+  at input 'ALTER TABLE IF EXISTS'` (measured 2026-09-25); `RENAME COLUMN`'s
+  was only categorized as a `mismatched input` message, not transcribed
+  verbatim (measured 2026-09-21). A CTAS with a
   column list, such as `CREATE TABLE t (n) AS VALUES 1`, runs on Trino, while
   Athena accepts the call and then fails the query with `MISSING_COLUMN_NAME:
   line 1:1: Column name not specified at position 1` (measured 2026-09-25).
@@ -62,24 +66,66 @@ Known differences between athena-local and real Athena, grouped by topic.
   `ErrorType` 1003 with the reason written to `<id>.txt`; `SHOW PARTITIONS`,
   `SHOW TBLPROPERTIES`, `SHOW COLUMNS FROM`, `SHOW CREATE VIEW` and
   `CREATE EXTERNAL TABLE` with the same comment succeed (measured 2026-09-24).
-- **Five quoted-name forms fail at `StartQueryExecution` on real Athena but
-  run here, whether or not there is a space before the quote.**
-  `DESCRIBE "t"` / `DESCRIBE"t"`, `DESC "t"` / `DESC"t"`,
-  `SHOW CREATE TABLE "t"` / `SHOW CREATE TABLE"t"`,
-  `ALTER TABLE "t" ADD COLUMNS (...)` / `ALTER TABLE"t" ADD COLUMNS (...)` and
-  `DROP TABLE "t"` / `DROP TABLE"t"` all answer `InvalidRequestException`
-  (`AthenaErrorCode` `MALFORMED_QUERY`) before a `QueryExecutionId` is created
-  (measured 2026-09-25). Trino's grammar accepts all five, so athena-local
-  sends them to Trino and runs them, returning the same
-  `StatementType`/`SubstatementType` as the unquoted form. (`OPTIMIZE "t" ...`
-  is rejected the same way on real Athena, and athena-local rejects every
-  `OPTIMIZE` because Trino has no such statement.) Name the table
-  without quotes to avoid depending on this difference; tracked in
+- **A quoted table name is rejected at `StartQueryExecution` before it
+  reaches Trino, the same as on real Athena.** `DESCRIBE`, `DESC`,
+  `SHOW COLUMNS FROM` / `IN`, `DROP TABLE` (with or without `IF EXISTS`),
+  `SHOW CREATE TABLE`, `ALTER TABLE` (whichever spelling reaches Trino — see
+  "Six `ALTER TABLE` spellings" below — except `ALTER TABLE IF EXISTS`),
+  `SHOW TABLES IN` with a single unqualified name, and a plain `CREATE TABLE`
+  (not a CTAS) with a single unqualified name all answer
+  `InvalidRequestException` (`AthenaErrorCode` `MALFORMED_QUERY`) with no
+  `QueryExecutionId` created, whenever the name has a double-quoted part, for
+  a name of up to three parts (measured 2026-09-25 across two rounds, 127
+  `StartQueryExecution` calls). The message is real Athena's own —
+  `no viable alternative at input '...'` or `mismatched input '...'
+  expecting {...}`, depending on which part is quoted, or
+  `Queries of this type are not supported` for `SHOW CREATE TABLE` — with the
+  position counted in UTF-16 units from the first non-whitespace character
+  (a leading comment does count). An unquoted or a backquoted name still
+  runs: Trino's grammar accepts both, and real Athena accepts the unquoted
+  form too (see the backquote item below for the one difference that
+  remains between the two engines for a quoted name).
+  A double-quoted catalog that is a `TRINO_CATALOG_MAP` alias — an S3 Tables
+  catalog written `"s3tablescatalog/my-bucket"`, for example — is rejected
+  the same way even where the alias would otherwise resolve it: `DESCRIBE`,
+  `DESC` and `SHOW COLUMNS` answer `Unsupported DDL with 2 catalogs`, and the
+  other statements above follow the general rule (measured 2026-09-25); see
+  [`TRINO_CATALOG_MAP`](configuration.md#environment-variables) for what the
+  alias covers instead. A few forms were not measured and still run here
+  unrejected: a name with more than three parts, a three-part `ALTER TABLE`
+  name quoted only in its second part, `ALTER TABLE IF EXISTS ...` with a
+  quoted name, `SHOW TABLES IN` / `CREATE TABLE` with a qualified
+  (multi-part) name, and a quoted name that contains non-ASCII characters in
+  `DESCRIBE` / `DESC`. Name the table without quotes to avoid depending on
+  any of this; tracked in
   [#204](https://github.com/aoyagikouhei/athena-local/issues/204). The other
   statements that can take a quoted name right after the keyword —
-  `CREATE TABLE "t" AS SELECT`, `CREATE VIEW "v" AS ...`,
+  `CREATE TABLE "t" AS SELECT` (a CTAS), `CREATE VIEW "v" AS ...`,
   `SHOW CREATE VIEW "v"` and `DROP VIEW "v"` — succeed on real Athena too,
-  quoted or not.
+  quoted or not, and athena-local runs them the same way. (`OPTIMIZE "t" ...`
+  is rejected the same way on real Athena, and athena-local rejects every
+  `OPTIMIZE` regardless of quoting because Trino has no such statement.)
+- **A backquoted name is one difference #204 did not close.** Real Athena
+  accepts a backquoted name (`` DESCRIBE `t` ``, `` DROP TABLE `t` ``,
+  `` SHOW CREATE TABLE `t` `` and so on), but Trino's grammar rejects a
+  backquote as a syntax error, so athena-local rejects it at the syntax
+  check where real Athena would have run the statement (measured
+  2026-09-25; out of scope for #204).
+- **An unquoted `MSCK REPAIR TABLE t` runs on real Athena** (`SubstatementType`
+  `MSCK_REPAIR`), but Trino has no `MSCK` statement at all, so athena-local
+  rejects it at the syntax check (measured 2026-09-25; out of scope for
+  #204).
+- **An unquoted `DROP DATABASE IF EXISTS x` runs on real Athena**
+  (`SubstatementType` `DROP_DATABASE`), but Trino's grammar has `DROP SCHEMA`
+  and no `DROP DATABASE`, so athena-local rejects it at the syntax check
+  (measured 2026-09-25; out of scope for #204).
+- **A plain, unquoted `CREATE TABLE x (n int)` (not a CTAS) is rejected by
+  real Athena at `StartQueryExecution`** with `No location was specified for
+  table. An S3 location must be specified` before a `QueryExecutionId` is
+  created, because an Athena table needs an explicit S3 location. Trino's
+  catalogs can supply a location on their own, so athena-local sends the
+  statement to Trino and it runs there (measured 2026-09-25; out of scope
+  for #204).
 
 ## `ALTER TABLE` and format-dependent DDL
 
@@ -106,7 +152,15 @@ Known differences between athena-local and real Athena, grouped by topic.
   against Trino 482 and MinIO on 2026-09-21). The four with no Trino spelling
   cannot be run through athena-local at all — their `SubstatementType` and
   result-file rows below record what Athena does, and are reachable here only
-  if the backend's grammar accepts the statement.
+  if the backend's grammar accepts the statement. **`ADD COLUMN` (singular,
+  unquoted) is the spelling to write to reach `ADD COLUMNS` through
+  athena-local, but real Athena itself rejects that exact statement at
+  `StartQueryExecution`**
+  (`ALTER TABLE t ADD COLUMN m int` answers `no viable alternative at input
+  'ALTER TABLE t ADD COLUMN'`, `AthenaErrorCode` `MALFORMED_QUERY`, measured
+  2026-09-25): there is no spelling of this statement both engines accept.
+  Use it to exercise athena-local's `ADD COLUMNS` behaviour locally, not as
+  SQL meant to also run on real Athena unchanged.
 - **`ALTER TABLE` classification covers eight forms.** `SET TBLPROPERTIES`,
   `ADD COLUMNS`, `DROP COLUMN`, `SET LOCATION`, `REPLACE COLUMNS`,
   `ADD PARTITION`, `DROP PARTITION` and `RENAME TO` each get the
