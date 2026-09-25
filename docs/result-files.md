@@ -133,6 +133,11 @@ rejects the trailing `;`, so athena-local fails it at the syntax check; and
 Athena rejects `SHOW SESSION` and `SHOW STATS FOR t` at `StartQueryExecution`
 (`InvalidRequestException`, `no viable alternative`), while Trino runs them, so
 athena-local writes their `<id>.txt` with the `binary/octet-stream` default.
+A known difference, not related to keyword spacing: `SELECT (1)`, a
+parenthesised literal, is `binary/octet-stream` on real Athena but
+`application/octet-stream` here, because athena-local's literals-only check
+does not look inside parentheses
+([#205](https://github.com/aoyagikouhei/athena-local/issues/205)).
 `SHOW CREATE VIEW` is `binary/octet-stream` for both the `.txt` and its
 `.metadata`, with `SubstatementType` `SHOW_CREATE_VIEW`, unlike
 `SHOW CREATE TABLE` on a Hive table (measured 2026-09-24, also with a `/* c */` between
