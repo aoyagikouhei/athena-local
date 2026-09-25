@@ -88,7 +88,10 @@ pub(crate) fn strip_open_parens(words: &[String]) -> impl Iterator<Item = &str> 
         .filter(|word| !word.is_empty())
 }
 
-/// `CREATE [OR REPLACE] TABLE ... AS SELECT | WITH | (`。words は大文字にした単語の並び。
+/// `CREATE [OR REPLACE] TABLE ... AS [(...] SELECT | WITH | VALUES | TABLE`。words は大文字にした単語の並び。
+/// 本物は `AS` の後ろの括弧の有無・`AS(` と続けた形・`VALUES`・`TABLE` のどれも CTAS にする
+/// （2026-09-25 実測。#199）。語ごとに先頭の `(` を外し、`AS(` は `AS` と残りに分けてから見るので、
+/// 先頭の `(` を剥がした語の並び（`classification`）と剥がしていない並び（`ResultFile::of`）で同じ答えになる。
 pub(crate) fn is_create_table_as(words: &[String]) -> bool {
     let rest = match words.get(1).map(String::as_str) {
         Some("OR") => &words[words.len().min(3)..],
@@ -98,11 +101,20 @@ pub(crate) fn is_create_table_as(words: &[String]) -> bool {
         return false;
     }
 
-    rest.windows(2).any(|pair| {
+    let tokens: Vec<&str> = rest
+        .iter()
+        .flat_map(|word| match word.strip_prefix("AS(") {
+            Some(after) => ["AS", after],
+            None => [word.as_str(), ""],
+        })
+        .map(|word| word.trim_start_matches('('))
+        .filter(|word| !word.is_empty())
+        .collect();
+    tokens.windows(2).any(|pair| {
         pair[0] == "AS"
-            && (pair[1].starts_with("SELECT")
-                || pair[1].starts_with("WITH")
-                || pair[1].starts_with('('))
+            && ["SELECT", "WITH", "VALUES", "TABLE"]
+                .iter()
+                .any(|head| pair[1].starts_with(head))
     })
 }
 

@@ -1,6 +1,6 @@
 # 文の種類
 
-`StatementType`／`SubstatementType` の判定（先頭のコメント、キーワードの間のコメント、個別の文）、本物だけが実行時に弾く形、`EXPLAIN` の行の分け方と変種、`CREATE OR REPLACE TABLE ... AS`。書き方は [README.md](README.md)。
+`StatementType`／`SubstatementType` の判定（先頭のコメント、キーワードの間のコメント、個別の文）、本物だけが実行時に弾く形、`EXPLAIN` の行の分け方と変種、`CREATE OR REPLACE TABLE ... AS`、CTAS の `AS` の後ろ（括弧・`VALUES`・`TABLE`）。書き方は [README.md](README.md)。
 
 対応する利用者向けの章: [docs/api.md](../../api.md)、[docs/caveats.md](../../caveats.md) の「SQL dialect」と「`ALTER TABLE` and format-dependent DDL」。
 
@@ -214,3 +214,20 @@
 - 投げたもの: `CREATE OR REPLACE TABLE ... AS`（Trino だけの構文）
 - 返ったもの: 本物は構文エラー（`mismatched input 'TABLE'`）で受け付けないので、ファイル名は存在しない
 - 備考: #26 の「未実測のまま残るもの」に取り消し線で追記されたもの。詳細は #93 のノート。
+
+## CTAS の `AS` の後ろ（括弧・`VALUES`・`TABLE`）
+
+### 括弧付きのクエリ・`VALUES`・`TABLE` を持つ CTAS
+- 日付: 2026-09-25（13:51〜13:59 JST、ユーザーが実行） ／ issue: #199 ／ スクリプト: `tools/measure/ctas-parenthesized-query.sh` ／ 生データ: `$HOME/athena-ctas-parenthesized-measurements/run-20260925-045112`
+- 相手: 本物の Athena（StartQueryExecution 28 回。DDL は下の 9 テーブルの CTAS と DROP だけ）
+- 投げたもの（`t` = `<DB>.athena_local_probe_199_<項目>`、Hive の既定。WITH も LOCATION も無し）: c0 `CREATE TABLE t AS SELECT 1 AS n`、c1 `AS (SELECT 1 AS n)`、c2 `AS(SELECT 1 AS n)`（空白なし）、v1 `AS (VALUES 1)`、v2 `CREATE TABLE t (n) AS (VALUES 1)`、v3 `AS VALUES 1`、v4 `CREATE TABLE t (n) AS VALUES 1`、t1 `AS (TABLE <c0>)`、t2 `AS TABLE <c0>`
+- 返ったもの:
+
+  | 項目 | State | StatementType / SubstatementType | OutputLocation | `.metadata` | `<id>` を含む key |
+  |---|---|---|---|---|---|
+  | c0・c1・c2・t1・t2 | SUCCEEDED | DDL / CREATE_TABLE_AS_SELECT | `<OUTPUT>tables/<id>` | 81B application/octet-stream（update_count 1） | 4 件（`tables/<id>.metadata`、`tables/<id>-manifest.csv`、`tables/<id>/<データ>`、`<id>/`） |
+  | v1・v2・v3・v4 | FAILED | DDL / CREATE_TABLE_AS_SELECT | `<OUTPUT>tables/<id>` | 無し | 0 件 |
+
+  - v1〜v4 の StateChangeReason は 4 件とも `MISSING_COLUMN_NAME: line 1:1: Column name not specified at position 1. You may need to manually clean the data at location '<OUTPUT>tables/<id>' before retrying. Athena will not delete data in your account.`（ErrorCategory 2、ErrorType 1100、Retryable false）。列の別名（`(n)`）を付けた v2・v4 も同じ文言
+  - c0・c1・c2・t1・t2 は SHOW CREATE TABLE でテーブルができていることと Hive であることを確かめた
+- 備考: 本物は `AS` の後ろの括弧の有無・`AS(` と続けた形・`SELECT`／`VALUES`／`TABLE` のどれでも、失敗しても CTAS として分類し `tables/<id>` にする。athena-local は `AS (VALUES` / `AS (TABLE` をファイル名だけ CTAS、`AS VALUES` / `AS TABLE` / `AS(SELECT` を両方とも CTAS でない扱いにしていたので、#199 で `is_create_table_as` を本物に揃えた。手元の Trino 482（memory カタログ）は v1・v3 を同じ `Column name not specified at position 1` で弾き、v2・v4 は通した（v2・v4 は athena-local では成功し、本物では失敗する）

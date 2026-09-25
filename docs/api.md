@@ -122,7 +122,9 @@ Behaviour that matches real Athena:
   `VALUES` / `TABLE` are `DML` / `SELECT`, `EXPLAIN` is `DML` / `EXPLAIN`, `SHOW TABLES` is
   `UTILITY` / `SHOW_TABLES`, `SHOW FUNCTIONS` is `UTILITY` / `SHOW_FUNCTIONS`
   (measured 2026-09-23), `CREATE TABLE ... AS SELECT` is `DDL` /
-  `CREATE_TABLE_AS_SELECT`, and so on. Trino spellings map to Athena's
+  `CREATE_TABLE_AS_SELECT` (so are `AS VALUES`, `AS TABLE` and a
+  parenthesised query such as `AS (VALUES 1)` or `AS(SELECT 1)`, measured
+  2026-09-25), and so on. Trino spellings map to Athena's
   (`CREATE SCHEMA` is `CREATE_DATABASE`, `SHOW SCHEMAS` is `SHOW_DATABASES`;
   Athena accepts `SHOW SCHEMAS` too and classifies it the same way, measured
   2026-09-24). `DESC` is `UTILITY` / `DESCRIBE_TABLE` like `DESCRIBE`.
