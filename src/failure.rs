@@ -71,6 +71,8 @@ fn measured_error_type(name: &str) -> Option<i32> {
         // 本物は構文エラーを StartQueryExecution で弾くので FAILED にはならない。
         // 一覧の「Syntax error」で、列が見つからないときと同じ番号。
         "SYNTAX_ERROR" | "COLUMN_NOT_FOUND" => 1006,
+        // 本物は Context の Catalog が無いとき、表を読む SELECT・EXPLAIN をこの番号で失敗させた（2026-09-25 実測。#214）。
+        "CATALOG_NOT_FOUND" => 1006,
         "INVALID_CAST_ARGUMENT" | "NUMERIC_VALUE_OUT_OF_RANGE" | "INVALID_PARAMETER_USAGE" => 1100,
         "INVALID_FUNCTION_ARGUMENT" => 1106,
         // 本物は Iceberg のテーブルを二重に作ると 1110 を返した（メッセージは Athena 独自）。
@@ -98,6 +100,7 @@ mod tests {
     fn 実測したエラー名はその_error_type_になる() {
         for (name, expected) in [
             ("COLUMN_NOT_FOUND", 1006),
+            ("CATALOG_NOT_FOUND", 1006),
             ("TABLE_NOT_FOUND", 1301),
             ("SCHEMA_NOT_FOUND", 1301),
             ("FUNCTION_NOT_FOUND", 1303),

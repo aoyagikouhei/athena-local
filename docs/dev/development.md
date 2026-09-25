@@ -20,7 +20,7 @@ tools/dev.sh tools/e2e/minio/verify.sh             # 検証の足場（tools/e2e
 
 ルートの `Cargo.toml` は workspace を兼ね、`default-members` に内部 crate（`crates/athena-sql`）も入れているので、上のコマンドは `-p`／`--workspace` なしで crate にも効く（`cargo test` の出力に crate の `unittests` と `Doc-tests` の行が足される）。`--test <名前>` は athena-local の結合テストだけ、`--lib <パス>` は両方の lib で走る（crate 側は filtered out）。`Cargo.lock` はルートの 1 つだけで、crate の版は追わない（[decisions.md](decisions.md) の「SQL の内部 crate（athena-sql）」）。
 
-CI（`.github/workflows/ci.yml`）の `check` ジョブはホストランナーで直に cargo を回す。`e2e` ジョブは toolbox の中で request-errors と paging-validation と quoted-names（#207）を流し、`cargo test --locked` を回す（amd64 の toolbox で通すため。#184）（toolbox のイメージは GHA キャッシュ、cargo は `.toolbox/target/release` だけキャッシュ）。
+CI（`.github/workflows/ci.yml`）の `check` ジョブはホストランナーで直に cargo を回す。`e2e` ジョブは toolbox の中で request-errors と paging-validation と quoted-names（#207）と context-catalog（#214）を流し、`cargo test --locked` を回す（amd64 の toolbox で通すため。#184）（toolbox のイメージは GHA キャッシュ、cargo は `.toolbox/target/release` だけキャッシュ）。
 
 ## 検証の足場（toolbox）
 
@@ -92,7 +92,7 @@ rootless docker（同じマシンに `dockerd-rootless-setuptool.sh install --fo
 
 ## テスト
 
-テストは本物のルーターを、同じプロセス内に立てた偽 Trino と偽 S3 に向けて動かす。そのため Athena のワイヤ上の形（ヘッダ行、`UpdateCount`、ページング、エラーの写し方）、パラメータの分類、そしてパラメータの無い SQL がカタログの別名を除いて書き換えずに渡されることを確かめられる。CI は main への push とプルリクエストのたびに（手動でも起動できる）`fmt`、`clippy`、`test` と、軽い e2e の足場 3 本（request-errors、paging-validation、quoted-names）を回す。
+テストは本物のルーターを、同じプロセス内に立てた偽 Trino と偽 S3 に向けて動かす。そのため Athena のワイヤ上の形（ヘッダ行、`UpdateCount`、ページング、エラーの写し方）、パラメータの分類、そしてパラメータの無い SQL がカタログの別名を除いて書き換えずに渡されることを確かめられる。CI は main への push とプルリクエストのたびに（手動でも起動できる）`fmt`、`clippy`、`test` と、軽い e2e の足場 4 本（request-errors、paging-validation、quoted-names、context-catalog）を回す。
 
 ## リリース
 

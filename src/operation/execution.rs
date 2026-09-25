@@ -20,6 +20,7 @@ use crate::store::{Execution, Fingerprint, Submission, SubmitOutcome};
 use crate::trino::{Outcome, QueryError, Trino};
 
 use super::completion;
+use super::context_catalog;
 use super::entity_check::{self, Check};
 use super::format_probe;
 use super::quoted_names;
@@ -78,12 +79,19 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
         return invalid_request_with_code(message, "MALFORMED_QUERY");
     }
     // 本物は DESCRIBE・SHOW COLUMNS の対象の存在を開始時に確かめ、無ければ弾き、ビューなら引用符付きの
-    // 名前でも実行する（2026-09-25 実測。#207）。
-    let check = entity_check::check(
+    // 名前でも実行する（2026-09-25 実測。#207）。Context の Catalog が実在しなければ、既定のカタログで確かめる（#214）。
+    let resolved = context_catalog::resolve(
         &app.trino,
         &app.config,
         &request.query_string,
         catalog.as_deref(),
+    )
+    .await;
+    let check = entity_check::check(
+        &app.trino,
+        &app.config,
+        &request.query_string,
+        resolved.as_deref(),
         database.as_deref(),
     )
     .await;
@@ -277,10 +285,15 @@ async fn run(
 ) -> Result<(Outcome, Option<FormatOverride>, Option<&'static str>), QueryError> {
     // 省略した Catalog / Database にはここで既定を当てる（実行情報には残さない。#167）。
     // Trino に送るのは別名を当てた名前。実行情報には受け取った名前が残る。
-    let raw_catalog = execution
-        .catalog
-        .as_deref()
-        .or(config.default_catalog.as_deref());
+    // 実在しない Catalog は、メタデータの文だけ既定のカタログに差し替える（#214）。
+    let resolved = context_catalog::resolve(
+        trino,
+        config,
+        &execution.query,
+        execution.catalog.as_deref(),
+    )
+    .await;
+    let raw_catalog = resolved.as_deref().or(config.default_catalog.as_deref());
     let catalog = raw_catalog.map(|catalog| config.trino_catalog(catalog));
     let database = execution
         .database

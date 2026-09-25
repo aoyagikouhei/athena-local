@@ -103,6 +103,10 @@ later name the date they were measured on.
   and `SHOW COLUMNS` exists, the same way real Athena does, and runs it
   (quoted name included) when the target is a view (measured 2026-09-25)
   ([docs](docs/caveats.md#sql-dialect), [docs](docs/caveats.md#failed-queries)).
+- A `QueryExecutionContext.Catalog` that does not exist in Trino now falls back
+  to the `AwsDataCatalog` alias (or `TRINO_CATALOG`) for metadata statements,
+  and `CATALOG_NOT_FOUND` fails with `ErrorType` 1006, as on real Athena
+  (measured 2026-09-25) ([docs](docs/caveats.md#sql-dialect)).
 - `StartQueryExecution` now also rejects `SHOW CREATE TABLE` and a plain
   `CREATE TABLE` with four parts or more and `SHOW TABLES IN` with three
   parts or more, and lower-cases quoted parts in `Invalid table name`, as real

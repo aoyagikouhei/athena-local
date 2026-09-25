@@ -117,11 +117,24 @@ pub(super) async fn probe_format(
 /// `system.jdbc.tables` を使うのは `table_cat` / `table_schem` / `table_name` を全部リテラルで書けるため
 /// （識別子のクォートを手書きしなくて済む）。
 pub(super) fn probe_sql(catalog: &str, schema: &str, table: &str) -> String {
-    let catalog_literal = quote_literal(catalog);
     format!(
-        "SELECT (SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = {catalog_literal}), (SELECT table_type FROM system.jdbc.tables WHERE table_cat = {catalog_literal} AND table_schem = {} AND table_name = {})",
+        "SELECT ({}), (SELECT table_type FROM system.jdbc.tables WHERE table_cat = {} AND table_schem = {} AND table_name = {})",
+        connector_name_sql(catalog),
+        quote_literal(catalog),
         quote_literal(schema),
         quote_literal(table),
+    )
+}
+
+/// カタログの有無だけを確かめる（`context_catalog::resolve`。#214）。無ければ `_col0` が null の 1 行。
+pub(super) fn catalog_exists_sql(catalog: &str) -> String {
+    format!("SELECT ({})", connector_name_sql(catalog))
+}
+
+fn connector_name_sql(catalog: &str) -> String {
+    format!(
+        "SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = {}",
+        quote_literal(catalog)
     )
 }
 

@@ -88,12 +88,30 @@ Known differences between athena-local and real Athena, grouped by topic.
   four parts or more, a `TRINO_CATALOG_MAP` alias catalog, a Trino error, or
   a response this check does not recognize are all left alone — the check
   only rejects a table it can prove is missing, and everything else runs, or
-  falls through to the quoted-name check below, as before. A missing
-  context catalog (`QueryExecutionContext.Catalog`) is not rejected either,
-  the same as real Athena (measured 2026-09-25); real Athena then resolves
-  the name in its default catalog and succeeds, whereas athena-local runs the
-  statement against the missing Trino catalog, where it fails — tracked in
-  [#214](https://github.com/aoyagikouhei/athena-local/issues/214).
+  falls through to the quoted-name check below, as before.
+- **A `QueryExecutionContext.Catalog` that does not exist falls back to the
+  default catalog for metadata statements only, as on real Athena.** Real
+  Athena resolves `DESCRIBE` / `DESC`, `SHOW COLUMNS`, `SHOW TABLES`,
+  `SHOW DATABASES` / `SCHEMAS`, `SHOW CREATE TABLE` and `DROP TABLE` in its
+  default catalog when the context catalog does not exist, while a query
+  that reads a table (`SELECT * FROM t`, `EXPLAIN`, a CTAS) fails (measured
+  2026-09-25). For those metadata statements athena-local asks Trino whether
+  the context catalog exists (one extra query in `StartQueryExecution` and
+  again before running, only when the catalog is given and is not a
+  `TRINO_CATALOG_MAP` alias) and, if it does not, sends the `AwsDataCatalog`
+  alias from `TRINO_CATALOG_MAP` instead, or `TRINO_CATALOG` when there is no
+  such alias; the existence check above then looks the table up there, so a
+  missing table still answers `Entity Not Found`. If neither is set, or Trino
+  cannot answer, the name is sent as before. `GetQueryExecution` still
+  returns the catalog as sent, lower-cased. Other statements are sent with
+  the missing catalog as before: a `SELECT` or `EXPLAIN` fails with
+  `CATALOG_NOT_FOUND` and `ErrorType` 1006 like real Athena, but Trino words
+  it `Catalog '<name>' not found` where Athena says `does not exist`, and a
+  CTAS fails the same way where real Athena answers `ErrorType` 1300 with
+  `NOT_FOUND: Session property catalog does not exist: <name>. ...`. How real
+  Athena treats a missing context catalog for `INSERT`, `ALTER TABLE`, a
+  plain `CREATE TABLE`, `SHOW PARTITIONS`, `CREATE VIEW` and the other
+  statements was not measured; athena-local sends the name as before.
 - **A quoted table name is rejected at `StartQueryExecution` before it
   reaches Trino, the same as on real Athena.** `DESCRIBE`, `DESC`,
   `SHOW COLUMNS FROM` / `IN`, `DROP TABLE` (with or without `IF EXISTS`),
@@ -453,7 +471,8 @@ Known differences between athena-local and real Athena, grouped by topic.
   athena-local does the same for a table or schema it can prove is missing
   (see the existence check under [SQL dialect](#sql-dialect)); when that
   check cannot decide — a `TRINO_CATALOG_MAP` alias catalog, a default
-  catalog that does not exist in Trino, or a Trino error — it accepts the
+  catalog that does not exist in Trino (and has no fallback, see
+  [SQL dialect](#sql-dialect)), or a Trino error — it accepts the
   call, the query becomes `FAILED`, and it writes `<id>.txt` as described
   above.
 - **`GetQueryResults` on a failed query always fails.** On Athena the answer

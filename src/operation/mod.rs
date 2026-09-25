@@ -2,6 +2,7 @@
 
 mod classification;
 mod completion;
+mod context_catalog;
 mod entity_check;
 mod execution;
 mod format_probe;
