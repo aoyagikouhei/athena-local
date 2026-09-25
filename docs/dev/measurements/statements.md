@@ -331,3 +331,55 @@ Content-Type と `.metadata` を含む置き場所は本項が主で、[result-f
   - `DESCRIBE "日本"`（存在しない非 ASCII の名前）は `Entity Not Found (Service: AmazonDataCatalog; … Request ID: <毎回違う>)`。構文の文言にならず、再現できない Request ID を含むので athena-local では再現しない（弾かない＝実行する）
 
 - 備考: 範囲外（本物だけ受ける／本物だけ弾く。無引用）: 無引用の `ALTER TABLE t ADD COLUMN m int`（Trino の綴り、単数）は本物が開始時に弾く（`no viable alternative at input 'ALTER TABLE t ADD COLUMN'`）。バッククォートの名前（`` DESCRIBE `t` `` など）は本物が受けるが Trino の構文エラーで athena-local は弾く。無引用の `MSCK REPAIR TABLE t` は本物が受ける（`MSCK_REPAIR`）が Trino に構文が無く athena-local は弾く。無引用の `DROP DATABASE` は本物が受ける（`DROP_DATABASE`）が Trino には `DROP SCHEMA` しか無く athena-local は弾く。無引用の素の `CREATE TABLE x (n int)` は本物が `No location was specified for table. An S3 location must be specified` で開始時に弾くが、athena-local は Trino が作ってしまう。これら 5 つはいずれも #204 の対象（引用符付きの名前）の外なので直さず、[docs/caveats.md](../../caveats.md) に記載した。
+
+### 引用符付きの名前と存在の確認（#207、ラウンド 3・4）
+- 日付: 2026-09-25（ラウンド 3） ／ issue: #207 ／ スクリプト: `tools/measure/quoted-names.sh`（`ROUND=3`） ／ 生データ: `$HOME/athena-quoted-names-measurements/run-20260925-104713`
+- 日付: 2026-09-25（ラウンド 4） ／ issue: #207 ／ スクリプト: 同上（`ROUND=4`） ／ 生データ: `$HOME/athena-quoted-names-measurements/run-20260925-111003`
+- 相手: 本物の Athena（S3 Tables のカタログを含む構成）
+- 投げたもの: #204 のラウンド 1・2 で未実測のまま残った形。ラウンド 3（72 本、V1〜V7）は 3 部の `ALTER TABLE` 名で 2 番目だけ引用符付き、4 部以上の名前（DESCRIBE・DROP・ALTER）、`SHOW TABLES IN`／CTAS でない `CREATE TABLE` の 2 部以上、`CREATE TABLE IF NOT EXISTS` に引用符付きの名前、DROP・ALTER・SHOW CREATE TABLE・SHOW TABLES IN・CREATE TABLE の引用符付きの部分に非 ASCII を含む形（存在する名前・存在しない名前の両方）。ラウンド 4（41 本、W1〜W5）は DESCRIBE・DESC・SHOW COLUMNS の対象の存在の確認（テーブル不在・スキーマ不在・カタログ不在・大文字の名前・ビュー・存在する非 ASCII 名）と、S3 Tables の対照 `SELECT` を通した状態での DESCRIBE・SHOW CREATE TABLE・DROP・SHOW COLUMNS の再確認
+- 返ったもの:
+
+  **4 部以上の名前（V2・W2・W3）**
+
+  | 文 | 結果 |
+  |---|---|
+  | `DESCRIBE`・`DESC`・`SHOW COLUMNS FROM`／`IN` | 引用符の有無・位置によらず `Invalid table name <各部の値を . でつないだもの>`（`MALFORMED_QUERY`）。各部は無引用なら小文字、引用符付きなら中身（`""` → `"`、`"x.y"` → `x.y`）。1 部目が S3 Tables の別名（`"s3tablescatalog/<bucket>"`）でもこちらが先に決まる |
+  | `DROP TABLE`（`IF EXISTS` も）・`ALTER TABLE` | 引用符付きの部分が 1〜3 部目にあれば 3 部の名前と同じ規則（DROP は `mismatched input`、ALTER は `no viable alternative`）。無引用、または引用符付きの部分が 4 部目以降だけなら、3 つ目の `.` の位置で弾かれる: DROP は `line L:C: mismatched input '.' expecting {<EOF>, 'PURGE'}`、ALTER は `line L:C: no viable alternative at input '<文の最初の語から 3 つ目の . まで>'` |
+  | `SHOW CREATE TABLE`・`SHOW TABLES IN`・`CREATE TABLE` | 未実測のまま |
+
+  **3 部の名前で 2 番目だけ引用符付き（V1）**
+
+  `ALTER TABLE awsdatacatalog."db".nope RENAME TO x` は `no viable alternative at input 'ALTER TABLE awsdatacatalog."db"'`。3 部の一般の規則（NV(文の最初の語 … 引用符付きの部分)）と同じで、2 番目を除外していた #204 の判定は誤りだったと判明した。
+
+  **`SHOW TABLES IN`／CTAS でない `CREATE TABLE` の 2 部以上（V3）**
+
+  | 文 | 結果 |
+  |---|---|
+  | `SHOW TABLES IN "cat"."db"`・`"cat".db`・`cat."db"` | 最初の引用符付きの部分で `mismatched input`（1 部と同じ規則） |
+  | `CREATE TABLE "db"."nope3" (n int)`・`db."nope3"`・`awsdatacatalog."db".nope3` | 文の最初の語から最初の引用符付きの部分まで `no viable alternative` |
+  | `CREATE TABLE IF NOT EXISTS "t" (n int)` | `line 1:28: no viable alternative at input 'CREATE TABLE IF NOT EXISTS "t"'`（input は `CREATE TABLE IF NOT EXISTS` を含む文の最初から） |
+  | `SHOW TABLES IN a.b."c"`（3 部） | 未実測のまま |
+
+  **非 ASCII の名前（V5・V6）**
+
+  `DROP TABLE "日本"`・`ALTER TABLE "日本" RENAME TO x`・`SHOW CREATE TABLE "日本"`・`SHOW TABLES IN "日本"`・`CREATE TABLE "日本" (n int)` はいずれも実在しない名前でも一般の規則どおり（構文の文言）だった。存在する非 ASCII 名（`t_日本`）への `DESCRIBE "t_日本"`・`DESCRIBE db."t_日本"`・`SHOW COLUMNS FROM "t_日本"` も同じく構文の文言（`no viable alternative`／`mismatched input`）。`DESCRIBE "日本"`（実在しない非 ASCII 名）だけは下の「存在の確認」が先に決め、`Entity Not Found` になる。**非 ASCII かどうかではなく対象の存在の有無が `Entity Not Found` と構文の文言を分けていたと判明した**（#204 のユーザーの判断 D2 が前提にしていた「非 ASCII は弾かない」を撤回。下の「覆した事前判断」を参照）。
+
+  **DESCRIBE・DESC・SHOW COLUMNS の存在の確認（Glue、開始時。W1・W4・W5）**
+
+  | 対象 | `StartQueryExecution` の応答 |
+  |---|---|
+  | テーブル不在（1〜3 部、無引用・引用符付き・非 ASCII） | `InvalidRequestException` / `INVALID_INPUT`: `Entity Not Found (Service: AmazonDataCatalog; Status Code: 400; Error Code: EntityNotFoundException; Request ID: <毎回違う UUID>; Proxy: null)` |
+  | スキーマ不在 | 同上 |
+  | 文脈の Database 不在（既定のスキーマを省略） | 同上 |
+  | カタログ不在（名前に 3 部まで書いた形、例 `<存在しないカタログ>.<db>.t`） | `InvalidRequestException` / `DATACATALOG_NOT_FOUND`: `Catalog '<name>' does not exist` |
+  | 大文字の無引用（`T`・`<DB>.T`、実在は小文字） | `SUCCEEDED`（本物は大文字でも実在のテーブルを見つける） |
+  | ビュー（`DESCRIBE v`・`DESCRIBE "v"`・`SHOW COLUMNS FROM v`・`SHOW COLUMNS FROM "v"`） | すべて `SUCCEEDED`（`DESC_VIEW`）。**引用符付きの名前の構文の文言が出るのはテーブルだけ** |
+  | S3 Tables（対照 `SELECT` が通る状態。W4） | DESCRIBE・DESC・SHOW COLUMNS・実在しないテーブルへの DESCRIBE はいずれも `Unsupported DDL with 2 catalogs`、SHOW CREATE TABLE は `not supported`、DROP は 1 部目で `mismatched input`、ALTER は `no viable alternative`（ラウンド 1・2 と同じ） |
+
+  判定の順序（DESCRIBE・SHOW COLUMNS）: 構文エラー（Trino）→ 4 部以上 → S3 Tables の別名 → カタログ不在 → テーブル不在 → ビューなら実行 → テーブルで引用符付きなら構文の文言。
+
+  **`ALTER TABLE IF EXISTS "t"`（ラウンド 2 の `u2-ifq` を読み直し）**
+
+  無引用の `ALTER TABLE IF EXISTS t ...` と同じ文言（`line 1:16: no viable alternative at input 'ALTER TABLE IF EXISTS'`）で弾かれており、引用符の有無を問わない。#204 で「範囲外」と記載済みの差と同じなので、athena-local 側は変えていない。
+
+- 備考: S3 Tables への対照 `SELECT * FROM "<cat>".<ns>.<t> LIMIT 1` はラウンド 1・2 とも `SCHEMA_NOT_FOUND` で失敗していた（アカウント固有の名前空間の指定の綴り違いとみられる）。ラウンド 4 では名前空間の指定を直して対照 `SELECT` を通した状態で DESCRIBE・SHOW CREATE TABLE・DROP・SHOW COLUMNS の拒否を測り直し、ラウンド 1・2 と同じ結果を確認した。athena-local はこの実測を受けて `quoted_names.rs` の一致条件を広げ（4 部以上、3 部の 2 番目、`SHOW TABLES IN`／`CREATE TABLE` の 2 部以上、`CREATE TABLE IF NOT EXISTS`）、非 ASCII の除外を撤回し、新モジュール `entity_check.rs` で DESCRIBE・SHOW COLUMNS の存在の確認を実装した（[docs/caveats.md](../../caveats.md) の「SQL dialect」に記載）。

@@ -117,14 +117,21 @@ Behaviour that matches real Athena:
   Athena does. The message is Trino's, with positions counted in the original SQL
   (also when `ExecutionParameters` are given). athena-local asks Trino to `PREPARE`
   the statement first, which parses without executing and adds one round trip
-  (about 10–20 ms). Right after that check, `StartQueryExecution` also rejects
+  (about 10–20 ms). Right after that check, for `DESCRIBE`, `DESC` and
+  `SHOW COLUMNS FROM` / `IN`, `StartQueryExecution` also checks whether the
+  target exists, the same way real Athena does: a table or schema it can
+  prove is missing answers `InvalidRequestException` / `AthenaErrorCode`
+  `INVALID_INPUT` with Athena's `Entity Not Found` message, and a three-part
+  name whose catalog does not exist in Trino answers
+  `InvalidRequestException` / `AthenaErrorCode` `DATACATALOG_NOT_FOUND`; a
+  view runs even with a quoted name. Then `StartQueryExecution` rejects
   `DESCRIBE`, `DESC`, `SHOW COLUMNS`, `DROP TABLE`, `SHOW CREATE TABLE`,
   `ALTER TABLE`, `SHOW TABLES IN` and a plain `CREATE TABLE` whose table name
   has a double-quoted part, with `InvalidRequestException` /
   `AthenaErrorCode` `MALFORMED_QUERY` and real Athena's own message, the same
-  way real Athena does; no `QueryExecutionId` is created either. See
-  [Caveats](caveats.md#sql-dialect) for exactly which forms and the message
-  rules.
+  way real Athena does; no `QueryExecutionId` is created for either check.
+  See [Caveats](caveats.md#sql-dialect) for exactly which forms and the
+  message rules.
 - `StatementType` and `SubstatementType` follow Athena: `SELECT` / `WITH` /
   `VALUES` / `TABLE` are `DML` / `SELECT`, `EXPLAIN` is `DML` / `EXPLAIN`, `SHOW TABLES` is
   `UTILITY` / `SHOW_TABLES`, `SHOW FUNCTIONS` is `UTILITY` / `SHOW_FUNCTIONS`

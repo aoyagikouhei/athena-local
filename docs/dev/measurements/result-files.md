@@ -341,7 +341,7 @@
 | cancelled-select | 長い SELECT を RUNNING で停止 | CANCELLED | 無し（404） | 無し | - | `RESULT_NOT_FOUND` |
 | stopped-after-succeeded(-after-stop) | `SELECT 1 AS i` の成功後に停止 | SUCCEEDED | `.csv` 8B のまま | 73B のまま | binary/octet-stream | 成功。止めても消えない |
 
-- 備考: `SHOW COLUMNS` / `DESCRIBE` の対象不在で本物は `StartQueryExecution` が `INVALID_INPUT` になる（athena-local は FAILED になり `<id>.txt` を置く。README Caveats に書く判断）。本物は失敗した Hive 経由 DDL でも `GetQueryResults` が 200 で `ResultSetMetadata: null` の空 `ResultSet` を返す（athena-local は `INVALID_QUERY_EXECUTION_STATE`）。取り消しの長い SELECT は `tools/measure/client-request-token-extra.sh`（旧 `3-measure-client-request-token-extra.sh:118`） の `LONG_QUERY_SQL`（30000×30000 の `UNNEST(sequence)` CROSS JOIN。5000×5000 は速すぎて取り消せなかった）を使った。それまで README の「a cancelled query write nothing, also as on Athena」は未実測のまま書かれていたが、ここで実測された。
+- 備考: `SHOW COLUMNS` / `DESCRIBE` の対象不在で本物は `StartQueryExecution` が `INVALID_INPUT` になる（athena-local は FAILED になり `<id>.txt` を置く。README Caveats に書く判断）。athena-local は #207（2026-09-25）でこの表と同じ形（`INVALID_INPUT` の Entity Not Found）に開始時点で合わせた（`entity_check.rs`。対象が確かめられなかったときはこの表のとおり FAILED のまま）。本物は失敗した Hive 経由 DDL でも `GetQueryResults` が 200 で `ResultSetMetadata: null` の空 `ResultSet` を返す（athena-local は `INVALID_QUERY_EXECUTION_STATE`）。取り消しの長い SELECT は `tools/measure/client-request-token-extra.sh`（旧 `3-measure-client-request-token-extra.sh:118`） の `LONG_QUERY_SQL`（30000×30000 の `UNNEST(sequence)` CROSS JOIN。5000×5000 は速すぎて取り消せなかった）を使った。それまで README の「a cancelled query write nothing, also as on Athena」は未実測のまま書かれていたが、ここで実測された。
 
 ### 失敗した `.txt` の中身（1 回目のラウンドから）
 - 日付: 2026-09-17 ／ issue: #6 ／ スクリプト: `tools/measure/failed-query-results.sh`（旧 `6-measure-failed.sh`） ／ 生データ: `$HOME/athena-failed-measurements/run-20260917-212623`

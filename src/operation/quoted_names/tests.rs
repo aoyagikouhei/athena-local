@@ -344,9 +344,13 @@ fn drop_table_と_alter_table_は_4_部以上なら引用符の位置で規則�
 }
 
 #[test]
-fn 非_ascii_の名前も_describe_と_show_columns_以外は一般の規則で弾く() {
-    // 2026-09-25 実測 V5（#207）。実在しない "日本" でも構文の文言だった。
+fn 非_ascii_の名前も一般の規則で弾く() {
+    // 2026-09-25 実測 V5・V6（#207）。DESCRIBE・SHOW COLUMNS は実在するテーブルなら構文の文言（実在しなければ
+    // 先に entity_check が Entity Not Found にする）、ほかの文は実在しない "日本" でも構文の文言だった。
     let cases = [
+        (r#"DESCRIBE "t_日本""#, nv("1:10", r#"DESCRIBE "t_日本""#)),
+        (r#"DESCRIBE db."t_日本""#, nv("1:13", r#"db."t_日本""#)),
+        (r#"SHOW COLUMNS FROM "t_日本""#, mm("1:19", r#""t_日本""#)),
         (r#"DROP TABLE "日本""#, mm("1:12", r#""日本""#)),
         (
             r#"ALTER TABLE "日本" RENAME TO x"#,
@@ -406,9 +410,6 @@ fn 本物が通す形と実測していない形は弾かない() {
         r#"CREATE VIEW "v" AS SELECT 1"#,
         r#"SELECT * FROM "t""#,
         r#"INSERT INTO "t" VALUES (1)"#,
-        // 引用符付きの部分に非 ASCII がある DESCRIBE・SHOW COLUMNS は、実在しなければ本物が Entity Not Found を返す。
-        r#"DESCRIBE "日本""#,
-        r#"SHOW COLUMNS FROM db."日本""#,
         "",
         "DESCRIBE",
     ] {

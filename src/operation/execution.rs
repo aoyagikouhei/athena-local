@@ -20,6 +20,7 @@ use crate::store::{Execution, Fingerprint, Submission, SubmitOutcome};
 use crate::trino::{Outcome, QueryError, Trino};
 
 use super::completion;
+use super::entity_check::{self, Check};
 use super::format_probe;
 use super::quoted_names;
 use super::result_output;
@@ -76,11 +77,26 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
     if let Some(message) = app.trino.syntax_error(&request.query_string).await {
         return invalid_request_with_code(message, "MALFORMED_QUERY");
     }
+    // 本物は DESCRIBE・SHOW COLUMNS の対象の存在を開始時に確かめ、無ければ弾き、ビューなら引用符付きの
+    // 名前でも実行する（2026-09-25 実測。#207）。
+    let check = entity_check::check(
+        &app.trino,
+        &app.config,
+        &request.query_string,
+        catalog.as_deref(),
+        database.as_deref(),
+    )
+    .await;
+    if let Check::Reject(response) = check {
+        return *response;
+    }
     // Trino は受けるが本物は開始時に弾く、引用符付きの名前を取る DDL 系の文（2026-09-25 実測。#204）。
     // 本物も Trino が構文エラーにする形では Trino の文言を返したので、構文チェックの後に見る。
-    if let Some(message) = quoted_names::rejection(&request.query_string, |catalog| {
-        app.config.catalog_map.contains_key(catalog)
-    }) {
+    if !matches!(check, Check::Run)
+        && let Some(message) = quoted_names::rejection(&request.query_string, |catalog| {
+            app.config.catalog_map.contains_key(catalog)
+        })
+    {
         return invalid_request_with_code(message, "MALFORMED_QUERY");
     }
 

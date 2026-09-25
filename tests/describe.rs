@@ -81,6 +81,8 @@ async fn run_describe_query(
     assert_eq!(
         harness.trino_sqls(),
         [
+            // 開始時の存在の確認（#207）と実行時の形式の問い合わせで、同じ問い合わせを 2 回送る。
+            probe_sql("default_catalog", "default_schema", "t"),
             probe_sql("default_catalog", "default_schema", "t"),
             query.to_string()
         ]
@@ -139,6 +141,8 @@ async fn run_iceberg_describe(
     assert_eq!(
         harness.trino_sqls(),
         [
+            // 開始時の存在の確認（#207）と実行時の形式の問い合わせで、同じ問い合わせを 2 回送る。
+            probe_sql("default_catalog", "default_schema", "t"),
             probe_sql("default_catalog", "default_schema", "t"),
             query.to_string(),
             "SHOW CREATE TABLE t".to_string()
@@ -401,6 +405,8 @@ async fn run_show_columns(connector_name: &str, s3: bool, response: Value) -> (H
     assert_eq!(
         harness.trino_sqls(),
         [
+            // 開始時の存在の確認（#207）と実行時の形式の問い合わせで、同じ問い合わせを 2 回送る。
+            probe_sql("default_catalog", "default_schema", "t"),
             probe_sql("default_catalog", "default_schema", "t"),
             "SHOW COLUMNS FROM t".to_string()
         ]
@@ -672,6 +678,8 @@ async fn run_view(query: &str, connector_name: &str) -> (Harness, Value) {
     assert_eq!(
         harness.trino_sqls(),
         [
+            // 開始時の存在の確認（#207）と実行時の形式の問い合わせで、同じ問い合わせを 2 回送る。
+            probe_sql("default_catalog", "default_schema", "v"),
             probe_sql("default_catalog", "default_schema", "v"),
             query.to_string()
         ]

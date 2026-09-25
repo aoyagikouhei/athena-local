@@ -116,7 +116,7 @@ pub(super) async fn probe_format(
 /// `table_type`。無ければ null、テーブルは `TABLE`、ビューは `VIEW`）を 1 つの SELECT にまとめる。
 /// `system.jdbc.tables` を使うのは `table_cat` / `table_schem` / `table_name` を全部リテラルで書けるため
 /// （識別子のクォートを手書きしなくて済む）。
-fn probe_sql(catalog: &str, schema: &str, table: &str) -> String {
+pub(super) fn probe_sql(catalog: &str, schema: &str, table: &str) -> String {
     let catalog_literal = quote_literal(catalog);
     format!(
         "SELECT (SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = {catalog_literal}), (SELECT table_type FROM system.jdbc.tables WHERE table_cat = {catalog_literal} AND table_schem = {} AND table_name = {})",

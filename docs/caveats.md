@@ -66,45 +66,82 @@ Known differences between athena-local and real Athena, grouped by topic.
   `ErrorType` 1003 with the reason written to `<id>.txt`; `SHOW PARTITIONS`,
   `SHOW TBLPROPERTIES`, `SHOW COLUMNS FROM`, `SHOW CREATE VIEW` and
   `CREATE EXTERNAL TABLE` with the same comment succeed (measured 2026-09-24).
+- **`StartQueryExecution` checks whether the target of `DESCRIBE`, `DESC` and
+  `SHOW COLUMNS FROM` / `IN` exists, right after the syntax check and before
+  the quoted-name check below, the same as real Athena does.** It asks Trino
+  the same question the table-format probe (below, under
+  "`ALTER TABLE` and format-dependent DDL") asks at execution time — one
+  query for `connector_name` and `table_type`, with the schema and table
+  lower-cased — so for these three statements the query goes to Trino twice.
+  A missing table or schema, quoted or not and ASCII or not, answers
+  `InvalidRequestException` (`AthenaErrorCode` `INVALID_INPUT`) with Athena's
+  Glue message, `Entity Not Found (Service: AmazonDataCatalog; Status Code:
+  400; Error Code: EntityNotFoundException; Request ID: <a fresh UUID each
+  time>; Proxy: null)`; a three-part name whose catalog does not exist in
+  Trino answers `InvalidRequestException` (`AthenaErrorCode`
+  `DATACATALOG_NOT_FOUND`), `Catalog '<name>' does not exist`; and a
+  **view** runs even with a quoted name, because this check decides before
+  the quoted-name check below gets to see it (measured 2026-09-25 across two
+  rounds and confirmed against a local Trino; see
+  [#207](https://github.com/aoyagikouhei/athena-local/issues/207)). A name of
+  four parts or more, a `TRINO_CATALOG_MAP` alias catalog, a Trino error, or
+  a response this check does not recognize are all left alone — the check
+  only rejects a table it can prove is missing, and everything else runs, or
+  falls through to the quoted-name check below, as before. A missing default
+  or context catalog was not measured and still runs.
 - **A quoted table name is rejected at `StartQueryExecution` before it
   reaches Trino, the same as on real Athena.** `DESCRIBE`, `DESC`,
   `SHOW COLUMNS FROM` / `IN`, `DROP TABLE` (with or without `IF EXISTS`),
   `SHOW CREATE TABLE`, `ALTER TABLE` (whichever spelling reaches Trino — see
   "Six `ALTER TABLE` spellings" below — except `ALTER TABLE IF EXISTS`),
-  `SHOW TABLES IN` with a single unqualified name, and a plain `CREATE TABLE`
-  (not a CTAS) with a single unqualified name all answer
-  `InvalidRequestException` (`AthenaErrorCode` `MALFORMED_QUERY`) with no
-  `QueryExecutionId` created, whenever the name has a double-quoted part, for
-  a name of up to three parts (measured 2026-09-25 across two rounds, 127
-  `StartQueryExecution` calls). The message is real Athena's own —
-  `no viable alternative at input '...'` or `mismatched input '...'
-  expecting {...}`, depending on which part is quoted, or
-  `Queries of this type are not supported` for `SHOW CREATE TABLE` — with the
-  position counted in UTF-16 units from the first non-whitespace character
-  (a leading comment does count). An unquoted or a backquoted name still
-  runs: Trino's grammar accepts both, and real Athena accepts the unquoted
-  form too (see the backquote item below for the one difference that
-  remains between the two engines for a quoted name).
+  `SHOW TABLES IN` with a one- or two-part name, and a plain `CREATE TABLE`
+  (not a CTAS) with a one-, two- or three-part name, `CREATE TABLE IF NOT
+  EXISTS` included, all answer `InvalidRequestException` (`AthenaErrorCode`
+  `MALFORMED_QUERY`) with no `QueryExecutionId` created, whenever the name
+  has a double-quoted part, non-ASCII characters included (measured
+  2026-09-25 across four rounds of `StartQueryExecution` calls). The
+  message is real Athena's own — `no viable alternative at input '...'` or
+  `mismatched input '...' expecting {...}`, depending on which part is
+  quoted, or `Queries of this type are not supported` for
+  `SHOW CREATE TABLE` — with the position counted in UTF-16 units from the
+  first non-whitespace character (a leading comment does count). An
+  unquoted or a backquoted name of up to three parts still runs: Trino's
+  grammar accepts both, and real Athena accepts the unquoted form too (see
+  the backquote item below for the one difference that remains between the
+  two engines for a quoted name).
+  A name of **four parts or more** is rejected differently, and even when
+  every part is unquoted: `DESCRIBE`, `DESC` and `SHOW COLUMNS FROM` / `IN`
+  answer `Invalid table name <name>` (each part lower-cased if unquoted or
+  unwrapped if quoted, joined with `.`), checked ahead of the
+  `TRINO_CATALOG_MAP` alias case below; `DROP TABLE` and `ALTER TABLE`
+  follow the three-part message rule above when the quoted part falls
+  within the first three parts, and otherwise are rejected at the third
+  `.` (`mismatched input '.' expecting {<EOF>, 'PURGE'}` for `DROP TABLE`,
+  `no viable alternative at input '...'` from the start of the statement to
+  that `.` for `ALTER TABLE`). `SHOW CREATE TABLE`, `SHOW TABLES IN` and
+  `CREATE TABLE` with four parts or more were not measured and still run
+  here unrejected.
   A double-quoted catalog that is a `TRINO_CATALOG_MAP` alias — an S3 Tables
   catalog written `"s3tablescatalog/my-bucket"`, for example — is rejected
   the same way even where the alias would otherwise resolve it: `DESCRIBE`,
-  `DESC` and `SHOW COLUMNS` answer `Unsupported DDL with 2 catalogs`, and the
-  other statements above follow the general rule (measured 2026-09-25); see
-  [`TRINO_CATALOG_MAP`](configuration.md#environment-variables) for what the
-  alias covers instead. A few forms were not measured and still run here
-  unrejected: a name with more than three parts, a three-part `ALTER TABLE`
-  name quoted only in its second part, `ALTER TABLE IF EXISTS ...` with a
-  quoted name, `CREATE TABLE IF NOT EXISTS` with a quoted name,
-  `SHOW TABLES IN` / `CREATE TABLE` with a qualified (multi-part) name, and a
-  quoted part that contains non-ASCII characters in any of these statements
-  (for `DESCRIBE` real Athena answered a Glue `Entity Not Found` with a
-  per-request ID instead of a syntax error). Name the table without quotes to
-  avoid depending on any of this; tracked in
-  [#207](https://github.com/aoyagikouhei/athena-local/issues/207). The other
-  statements that can take a quoted name right after the keyword —
+  `DESC` and `SHOW COLUMNS` answer `Unsupported DDL with 2 catalogs` (unless
+  the name has four parts or more, which the check above catches first), and
+  the other statements above follow the general rule (measured 2026-09-25);
+  see [`TRINO_CATALOG_MAP`](configuration.md#environment-variables) for what
+  the alias covers instead. A few forms were not measured and still run
+  here unrejected: `SHOW CREATE TABLE`, `SHOW TABLES IN` and `CREATE TABLE`
+  with four parts or more, `SHOW TABLES IN` with three parts, the message
+  real Athena gives for `DESCRIBE` / `DESC` / `SHOW COLUMNS` when the
+  default or context catalog itself does not exist in Trino, and how an
+  upper-case quoted part reads in the `Invalid table name` message above.
+  Name the table without quotes to avoid depending on any of this; tracked
+  in [#212](https://github.com/aoyagikouhei/athena-local/issues/212). The
+  other statements that can take a quoted name right after the keyword —
   `CREATE TABLE "t" AS SELECT` (a CTAS), `CREATE VIEW "v" AS ...`,
   `SHOW CREATE VIEW "v"` and `DROP VIEW "v"` — succeed on real Athena too,
-  quoted or not, and athena-local runs them the same way. (`OPTIMIZE "t" ...`
+  quoted or not, and athena-local runs them the same way, as does
+  `DESCRIBE` / `SHOW COLUMNS` on a view, quoted name included, because the
+  existence check above decides before this check runs. (`OPTIMIZE "t" ...`
   is rejected the same way on real Athena, and athena-local rejects every
   `OPTIMIZE` regardless of quoting because Trino has no such statement.)
 - **A backquoted name is one difference #204 did not close.** Real Athena
@@ -397,11 +434,17 @@ Known differences between athena-local and real Athena, grouped by topic.
   reason comes from Trino instead (`TABLE_NOT_FOUND: line 1:15: ...`), so it
   prefixes `FAILED: ` to mark the file as a failure, which makes the file longer
   than `StateChangeReason` by exactly that prefix.
-- **`SHOW COLUMNS` and `DESCRIBE` on a missing table fail later than on Athena.**
-  Athena rejects them in `StartQueryExecution` with `InvalidRequestException`
-  (`AthenaErrorCode` `INVALID_INPUT`, message `Entity Not Found`) and creates no
-  execution at all (measured 2026-09-17). athena-local accepts the call, the
-  query becomes `FAILED`, and it writes `<id>.txt` as described above.
+- **`SHOW COLUMNS` and `DESCRIBE` on a missing table fail in
+  `StartQueryExecution`, as on Athena, only when athena-local can prove the
+  table is missing.** Athena rejects them in `StartQueryExecution` with
+  `InvalidRequestException` (`AthenaErrorCode` `INVALID_INPUT`, message
+  `Entity Not Found`) and creates no execution at all (measured 2026-09-17).
+  athena-local does the same for a table or schema it can prove is missing
+  (see the existence check under [SQL dialect](#sql-dialect)); when that
+  check cannot decide — a `TRINO_CATALOG_MAP` alias catalog, a default
+  catalog that does not exist in Trino, or a Trino error — it accepts the
+  call, the query becomes `FAILED`, and it writes `<id>.txt` as described
+  above.
 - **`GetQueryResults` on a failed query always fails.** On Athena the answer
   depends on the statement: DDL that runs through Hive returns HTTP 200 with an
   empty `ResultSet` whose `ResultSetMetadata` is null, `SELECT`, DML and CTAS

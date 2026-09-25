@@ -10,7 +10,8 @@ const EXPECTING: &str = "{'SELECT', 'FROM', 'ADD', 'AS', 'ALL', 'DISTINCT', 'WHE
 
 /// 本物が開始時に弾く形なら、その文言を返す。`is_alias` は `TRINO_CATALOG_MAP` の別名（S3 Tables の
 /// カタログ名）かどうか。構文チェックの後で呼ぶ: 本物は Trino が構文エラーにする形（`ALTER TABLE "t" ADD
-/// COLUMNS` など）には Trino の文言を返した（2026-09-25 実測）。
+/// COLUMNS` など）には Trino の文言を返した（2026-09-25 実測）。DESCRIBE・SHOW COLUMNS の対象が実在しないときと
+/// ビューのときは、先に `entity_check` が決める（本物は存在を先に確かめる。#207）。
 ///
 /// 本物は、下の文の名前に引用符付きの部分が 1 つでもあると、その部分を Hive 系のパーサが読めずに弾く。
 /// 無引用とバッククォートは通る。4 部以上の名前は無引用でも弾く（#207）。弾くのは実測した形だけで、
@@ -61,14 +62,6 @@ pub(super) fn rejection(query: &str, is_alias: impl Fn(&str) -> bool) -> Option<
         }
     };
     let (start, end) = part(quoted);
-    // 引用符付きの部分に非 ASCII があると、実在しない名前への DESCRIBE・SHOW COLUMNS は構文の文言でなく
-    // Glue の Entity Not Found（毎回違う Request ID 付き）になる（2026-09-25 実測）。ほかの文は非 ASCII でも
-    // 構文の文言だった（V5。#207）。
-    if matches!(statement, Statement::Describe | Statement::ShowColumns)
-        && !sql[start..end].is_ascii()
-    {
-        return None;
-    }
     let name_start = part(0).0;
     let no_viable = |from: usize| Some(no_viable_alternative(sql, start, &sql[from..end]));
     let mismatched = || Some(mismatched_input(sql, start, &sql[start..end]));

@@ -168,7 +168,8 @@ async fn 引用符付きの名前の_describe_は構文チェックの後に本�
         r#"line 1:10: no viable alternative at input 'DESCRIBE "t"'"#
     );
     assert_eq!(harness.syntax_checks(), [query], "構文チェックは先に送る");
-    assert!(harness.trino_requests().is_empty(), "実行は作らない");
+    // 存在の問い合わせ（#207）は送るが、応答が問い合わせの形でないので存在は分からず、構文の文言になる。
+    assert_eq!(harness.trino_sqls().len(), 1, "探索だけで、実行は作らない");
 }
 
 /// Trino が構文エラーにする形は、本物も Trino の文言を返した（`ALTER TABLE "t" ADD COLUMNS`。2026-09-25 実測）。
