@@ -18,14 +18,10 @@ pub(super) async fn iceberg_partition_specs(
     database: Option<&str>,
     cancel: &Cancel,
 ) -> Vec<String> {
-    let Some(after) = athena_sql::skip_keyword(query, "DESCRIBE")
-        .or_else(|| athena_sql::skip_keyword(query, "DESC"))
-    else {
+    let Some(name) = describe_target_name(query) else {
         return Vec::new();
     };
-    let start = after.len() - athena_sql::skip_leading_trivia(after).len();
-    let end = athena_sql::skip_qualified_name(after, start);
-    let sql = format!("SHOW CREATE TABLE {}", &after[start..end]);
+    let sql = format!("SHOW CREATE TABLE {name}");
     let sql = alias_qualified_names(&sql, &config.catalog_map);
     let Ok(outcome) = trino.execute(&sql, catalog, database, cancel).await else {
         return Vec::new();
@@ -34,6 +30,15 @@ pub(super) async fn iceberg_partition_specs(
         Some(serde_json::Value::String(ddl)) => super::iceberg_partitions::parse_partitioning(ddl),
         _ => Vec::new(),
     }
+}
+
+/// DESCRIBE の対象の名前の、元の SQL での範囲。`iceberg_partition_specs` が Trino に投げる名前。
+pub(super) fn describe_target_name(query: &str) -> Option<&str> {
+    let after = athena_sql::skip_keyword(query, "DESCRIBE")
+        .or_else(|| athena_sql::skip_keyword(query, "DESC"))?;
+    let start = after.len() - athena_sql::skip_leading_trivia(after).len();
+    let end = athena_sql::skip_qualified_name(after, start);
+    Some(&after[start..end])
 }
 
 /// EXPLAIN の結果を本物と同じくプランの行ごとに分ける。Trino は `Query Plan` 列の 1 行に改行入りの
