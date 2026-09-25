@@ -18,7 +18,8 @@ const NO_LOCATION: &str = "No location was specified for table. An S3 location m
 /// 無いときだけ、列の並びを読む（名前が引用符付きか 4 部以上なら `quoted_names` の担当か未実測）。
 ///
 /// `s3_tables` は QueryExecutionContext の Catalog が S3 Tables か。S3 Tables は場所を要らないので、本物は
-/// 場所の無い形を作り、No location にしない（列の並びと `WITH (` の NV は同じ。2026-09-26 実測 h1〜h7。#221）。
+/// 1〜2 部の名前の場所の無い形を作り、No location にしない（列の並びと `WITH (` の NV は同じ。2026-09-26 実測
+/// h1〜h7。#221）。
 pub(super) fn rejection(query: &str, s3_tables: bool) -> Option<String> {
     if substatement_type(query) != Some("CREATE_TABLE") {
         return None;
@@ -35,8 +36,11 @@ pub(super) fn rejection(query: &str, s3_tables: bool) -> Option<String> {
         return None;
     }
     let statement_start = sql.len() - skip_leading_trivia(sql).len();
+    // 無引用の 3 部の名前は S3 Tables の Context でも別のカタログを指す（S3 Tables のカタログ名は `/` を含み引用符が
+    // 要る）。本物は `Unsupported ddl with 2 catalogs` で弾く（h8）ので、No location のまま弾く（文言の差は #224）。
+    let creates = s3_tables && name.parts.len() < 3;
     columns(sql, statement_start, &mut cursor)
-        .filter(|message| !(s3_tables && message == NO_LOCATION))
+        .filter(|message| !(creates && message == NO_LOCATION))
 }
 
 /// 列 1 つを処理した結果。

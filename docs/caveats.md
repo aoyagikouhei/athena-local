@@ -362,8 +362,10 @@ Known differences between athena-local and real Athena, grouped by topic.
   as they did on real Athena (measured 2026-09-26). Real Athena rejects a
   name in another catalog under that context
   (`CREATE TABLE awsdatacatalog.<db>.<t> (n int)`) with
-  `Unsupported ddl with 2 catalogs: <the statement>`; athena-local does not
-  reject that yet ([#224](https://github.com/aoyagikouhei/athena-local/issues/224)).
+  `Unsupported ddl with 2 catalogs: <the statement>`; athena-local still
+  answers `No location` for an unquoted three-part name there, so it is
+  rejected but with a different message
+  ([#224](https://github.com/aoyagikouhei/athena-local/issues/224)).
   Other non-default catalogs (federated ones) were not measured and are
   treated like `AwsDataCatalog`.
 - **Forms not listed above still run on Trino unchanged.** A table name with

@@ -247,6 +247,8 @@ fn s3_tables_の_context_では_no_location_を返さず_no_viable_alternative_�
         ("CREATE TABLE IF NOT EXISTS t (n int)", None),
         ("CREATE TABLE ns.t (n int)", None),
         ("CREATE TABLE t (n string)", None),
+        // 無引用の 3 部は別のカタログを指す。本物は 2 catalogs で弾く（h8）ので、弾くことだけは揃える（#224）。
+        ("CREATE TABLE awsdatacatalog.db.t (n int)", no_location()),
         (
             "CREATE TABLE t (n int NOT NULL)",
             nv("1:23", "CREATE TABLE t (n int NOT"),
