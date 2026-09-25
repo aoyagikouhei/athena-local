@@ -11,6 +11,9 @@ later name the date they were measured on.
 
 ### Changed
 
+- `DESCRIBE`, `DESC` and `SHOW COLUMNS` now check the target table when the
+  context catalog is a `TRINO_CATALOG_MAP` alias such as `AwsDataCatalog`
+  ([docs](docs/caveats.md#sql-dialect)).
 - A `QueryExecutionContext.Catalog` that does not exist in Trino now also falls
   back for a plain `CREATE TABLE`, `ALTER TABLE ... ADD COLUMN`, views and
   `CREATE` / `DROP SCHEMA`, as on real Athena (measured 2026-09-26)

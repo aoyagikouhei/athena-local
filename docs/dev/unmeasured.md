@@ -13,6 +13,7 @@
 
 ## 文の種類と構文（[measurements/statements.md](measurements/statements.md)）
 
+- [ ] `QueryExecutionContext` の Catalog が S3 Tables（`s3tablescatalog/<bucket>`）のとき、1〜2 部の名前の `DESCRIBE`・`SHOW COLUMNS` を本物がどう扱うか（実在しない表で Entity Not Found か、`Unsupported DDL with 2 catalogs` か）。測ったのは名前の 1 部目に S3 Tables のカタログを書いた形だけ。athena-local は Context から来た別名を種類によらず Trino 側の名前で存在を確かめ、実在しない表なら Entity Not Found にする（#216、2026-09-26）
 - [ ] CTAS の 4 部以上の修飾名（`a.b.c.d`）と、引用符付きの部分が 3 部目までに無い `CREATE TABLE IF NOT EXISTS` の 4 部以上（3 つ目の `.` の文言）。athena-local は今までどおり実行する（#212 で CTAS でない `CREATE TABLE` の 4 部以上は測って弾くようにしたが、この 2 つは測っていない。引用符付きの部分が 3 部目までにある IF NOT EXISTS は 3 部と同じ規則で弾く。2026-09-25）
 - [ ] `SHOW TABLES IN` の 3 部以上で、2 つ目の `.` の直後が `LIKE` やバッククォートの名前の形（`SHOW TABLES IN a.b.like`・``SHOW TABLES IN a.b.`c` ``）。#212 で直後が無引用の名前なら `mismatched input '.'`、引用符付きなら `extraneous input '.'` と測った。athena-local は `"` で始まらない形をすべて `mismatched input '.'` にする（2026-09-25）
 

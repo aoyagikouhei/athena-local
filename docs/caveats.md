@@ -84,9 +84,13 @@ Known differences between athena-local and real Athena, grouped by topic.
   **view** runs even with a quoted name, because this check decides before
   the quoted-name check below gets to see it (measured 2026-09-25 across two
   rounds and confirmed against a local Trino; see
-  [#207](https://github.com/aoyagikouhei/athena-local/issues/207)). A name of
-  four parts or more, a `TRINO_CATALOG_MAP` alias catalog, a Trino error, or
-  a response this check does not recognize are all left alone — the check
+  [#207](https://github.com/aoyagikouhei/athena-local/issues/207)). When the
+  catalog comes from `QueryExecutionContext` or the default and is a
+  `TRINO_CATALOG_MAP` alias (such as `AwsDataCatalog=hive`), the table is
+  looked up under the Trino catalog the alias points to. A name of four parts
+  or more, a three-part name whose catalog is written as a `TRINO_CATALOG_MAP`
+  alias, a Trino error, or a response this check does not recognize are all
+  left alone — the check
   only rejects a table it can prove is missing, and everything else runs, or
   falls through to the quoted-name check below, as before.
 - **A `QueryExecutionContext.Catalog` that does not exist falls back to the
@@ -478,7 +482,8 @@ Known differences between athena-local and real Athena, grouped by topic.
   `Entity Not Found`) and creates no execution at all (measured 2026-09-17).
   athena-local does the same for a table or schema it can prove is missing
   (see the existence check under [SQL dialect](#sql-dialect)); when that
-  check cannot decide — a `TRINO_CATALOG_MAP` alias catalog, a default
+  check cannot decide — a `TRINO_CATALOG_MAP` alias written as the catalog
+  of the name, a default
   catalog that does not exist in Trino (and has no fallback, see
   [SQL dialect](#sql-dialect)), or a Trino error — it accepts the
   call, the query becomes `FAILED`, and it writes `<id>.txt` as described
