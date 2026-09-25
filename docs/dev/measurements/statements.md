@@ -508,3 +508,29 @@ Content-Type と `.metadata` を含む置き場所は本項が主で、[result-f
 
 - 採用した判断: Trino 482 が受理する形のうち、上の 2 つの表で文言が決まったものを athena-local も開始時に同じ文言で弾く（[decisions.md](../decisions.md)）。CREATE TABLE は「列の名前 → 型（識別子。後ろに数字だけの括弧か `<...>`）→ `COMMENT` か `,` か `)`」を Hive の読み方として一般化し、型の後ろの語は NV(その語)、`.` は NV(`.`)、`型名(` の中の最初の語は NV(その語) で弾く（`LIKE` はこの規則に含まれる）。Trino が構文エラーにする形は今までどおり Trino の文言を返す
 - 備考: 既知の実測（`ALTER TABLE IF EXISTS <t> RENAME TO <t2>` の `line 1:16`、`ALTER TABLE IF EXISTS <db>.<t> ADD COLUMNS` の Trino 形、`ALTER TABLE <t> ADD COLUMN` の NV(COLUMN)、場所の無い `CREATE TABLE` の `No location`）と食い違いは無かった
+
+### #208 で残った CREATE TABLE の形（#221）
+- 日付: 2026-09-26（UTC 2026-09-25 23:36）／ issue: #221 ／ スクリプト: `tools/measure/unquoted-ddl.sh`（`ROUND=3`）／ 生データ: `$HOME/athena-unquoted-ddl-measurements/run-20260925-233600`
+- 相手: 本物の Athena（`AwsDataCatalog` と、S3 Tables のカタログ `s3tablescatalog/<bucket>`）
+- 投げたもの: 29 項目。H 群（Context を `Catalog=s3tablescatalog/<bucket>,Database=<ns>` にした CTAS でない `CREATE TABLE` 9 本と疎通の `SELECT 1`、対照として既定の Context の同じ文 1 本）、Q 群（列名・型名が引用符付きの `CREATE TABLE` 8 本と対照 1 本）、P 群（4 部以上の `CREATE TABLE IF NOT EXISTS` と CTAS 8 本と対照 1 本）。作られた表はその場で消した（後始末の残りは無い）。手元の Trino（compose の trino）の構文チェックにも同じ形を通した
+- 返ったもの（開始時に弾かれたものはすべて `InvalidRequestException`・AthenaErrorCode `MALFORMED_QUERY`。NV の書き方は上の #208 と同じ）:
+
+  | 文 | 本物 | 手元の Trino |
+  |---|---|---|
+  | S3 Tables の Context で `CREATE TABLE <t> (n int)`・`IF NOT EXISTS`・`TBLPROPERTIES ('table_type' = 'iceberg')`・`<ns>.<t>`・`(n string)` | 開始でき、`SUCCEEDED`（DDL / CREATE_TABLE）。表が作られた | — |
+  | S3 Tables の Context で `(n int NOT NULL)`・`(n int) WITH (format = 'PARQUET')` | NV(NOT)・NV(`WITH` の後の `(`)（既定の Context と同じ） | — |
+  | S3 Tables の Context で `CREATE TABLE awsdatacatalog.<db>.<t> (n int)` | `Unsupported ddl with 2 catalogs: CREATE TABLE awsdatacatalog.<db>.<t> (n int)`（`ddl` は小文字、後ろに文が付く） | — |
+  | 既定の Context で `CREATE TABLE <t> (n int)`（対照 2 本） | `No location ...` | 受理 |
+  | `CREATE TABLE <t> ("n" int)`・`("n" int NOT NULL)`・`IF NOT EXISTS <t> ("n" int)` | NV(`"n"`)（input は `"n"` の終わりまで） | 受理 |
+  | `CREATE TABLE <t> (n int, "m" int)` | NV(`"m"`) | 受理 |
+  | `CREATE TABLE <t> (n row("f" int))` | NV(`"f"`) | 受理 |
+  | `CREATE TABLE <t> (n "int")` | NV(`"int"`) | 受理 |
+  | ``CREATE TABLE <t> (`n` int)`` | `No location ...` | 構文エラー（バッククォート） |
+  | `CREATE TABLE <t> (n struct<"f":int>)` | `line 1:54: mismatched input '<'. Expecting: ')', ','`（Trino 形） | 同じ文言の構文エラー |
+  | `CREATE TABLE awsdatacatalog.<db>.<t>.n (n int)`（対照。#212 と同じ） | 3 つ目の `.` で `mismatched input '.' expecting {<EOF>, '(', 'SELECT', …}` | 受理（実行時に `Too many dots in table name`） |
+  | `CREATE TABLE IF NOT EXISTS` + `awsdatacatalog.<db>.<t>.n`・`x.y.<t>.n`・`awsdatacatalog.<db>.<t>.n.m`・`awsdatacatalog.<db>.<t>."n"` | 対照と同じ（3 つ目の `.`、同じ一覧） | 受理（実行時に `Too many dots in table name`） |
+  | CTAS `CREATE TABLE awsdatacatalog.<db>.<t>.n AS SELECT 1 AS n`・`IF NOT EXISTS` 付き・`WITH (format = 'PARQUET')` 付き | `Invalid table name awsdatacatalog.<db>.<t>.n`（位置なし） | 受理（実行時に `Too many dots in table name`） |
+  | `CREATE TABLE IF NOT EXISTS <t> (n int)`（対照） | `No location ...` | 受理 |
+
+- 採用した判断: S3 Tables の Context（`s3tablescatalog/` で始まる Catalog）では No location だけを返さず、NV は既定の Context と同じに弾く。引用符付きの列名・型名・型名の括弧の中の最初の語は NV(その語) で弾く。`IF NOT EXISTS` の 4 部以上は `IF NOT EXISTS` の無い形と同じ規則で弾き、4 部以上の無引用の CTAS は `Invalid table name` で弾く（名前は DESCRIBE の規則に合わせて小文字でつなぐ。測ったのは小文字の名前だけ）。別カタログの名前の `Unsupported ddl with 2 catalogs` は周辺が未実測なので #224 に分けた。`struct<"f":int>` は手元の Trino が同じ文言で先に弾くので手を入れない。バッククォートの列名は Trino の構文チェックが先に弾く既知の差（#204）のまま
+- 備考: #208・#212 の実測（場所の無い形の `No location`、4 部の CTAS でない `CREATE TABLE` の 3 つ目の `.`）と食い違いは無かった

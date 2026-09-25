@@ -24,6 +24,11 @@ later name the date they were measured on.
 - A CTAS-less, unquoted `CREATE TABLE` whose column list Trino's grammar
   accepts is rejected at `StartQueryExecution` with real Athena's message
   ([docs](docs/caveats.md#plain-create-table)).
+- A plain `CREATE TABLE` with a double-quoted column or type name, a
+  four-part `CREATE TABLE IF NOT EXISTS` and a four-part unquoted CTAS are
+  rejected at `StartQueryExecution` as on real Athena, and an S3 Tables
+  context catalog no longer gets `No location` (measured 2026-09-26)
+  ([docs](docs/caveats.md#plain-create-table)).
 
 - `GetQueryResults` returns `SHOW CREATE TABLE` and `SHOW CREATE VIEW` one row
   per line, as real Athena does (measured 2026-09-16 and 2026-09-24), instead

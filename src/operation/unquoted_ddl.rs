@@ -21,11 +21,13 @@ use super::target_table::{if_follows, table_name_start};
 /// `SET AUTHORIZATION`・`EXECUTE`・`ALTER COLUMN`・`DROP COLUMN IF EXISTS`（以上 R-B2）を弾く
 /// （設計判断 D2・D5）。名前が引用符付きなら、`IF EXISTS` が無い限り `quoted_names::rejection` が必ず
 /// 先に弾くので、ここでは None にする（無引用の名前だけを見る。#204 の粒度）。
-pub(super) fn rejection(query: &str) -> Option<String> {
+///
+/// `s3_tables` は QueryExecutionContext の Catalog が S3 Tables か（`create_table::rejection` にだけ効く。#221）。
+pub(super) fn rejection(query: &str, s3_tables: bool) -> Option<String> {
     // 本物は先頭の空白・タブ・改行を数えずに位置を出す（先頭のコメントは数える。quoted_names.rs と同じ）。
     let sql = query.trim_start_matches([' ', '\t', '\r', '\n']);
     let Some(rest) = table_name_start(sql, &["ALTER", "TABLE"]) else {
-        return create_table::rejection(query);
+        return create_table::rejection(query, s3_tables);
     };
     let mut cursor = Cursor::new(rest);
     let name = cursor.qualified_name()?;

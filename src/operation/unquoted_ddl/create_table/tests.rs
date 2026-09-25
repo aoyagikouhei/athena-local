@@ -4,7 +4,7 @@
 use super::*;
 
 fn rejected(query: &str) -> Option<String> {
-    rejection(query)
+    rejection(query, false)
 }
 
 fn nv(position: &str, input: &str) -> Option<String> {
@@ -198,16 +198,65 @@ fn ctas_や_create_or_replace_や_4_部以上や引用符付きの名前は_none
     }
 }
 
-/// 列 0 個、列の名前か型名の括弧の中の最初の語が引用符付きなら None（未実測。#204 の粒度で quoted_names
-/// には持ち込まない。括弧の中は #208 の独立レビューより）。
+/// 列 0 個は None（未実測）。
 #[test]
-fn 列が_0_個か列名や型の括弧の中が引用符付きなら_none() {
-    for query in [
-        "CREATE TABLE t ()",
-        r#"CREATE TABLE t ("n" int)"#,
-        r#"CREATE TABLE t (n row("f" int))"#,
+fn 列が_0_個なら_none() {
+    assert_eq!(rejected("CREATE TABLE t ()"), None);
+}
+
+/// 列名・型名・型名の括弧の中の最初の語が引用符付きなら、その語の NV（input は文の最初の語から引用符付きの語の
+/// 終わりまで）。2 列目・IF NOT EXISTS・後ろの NOT NULL でも同じ（2026-09-26 実測 q1〜q3・q5・q6・q8。#221）。
+#[test]
+fn 列名や型名や型名の括弧の中が引用符付きならその語の_no_viable_alternative() {
+    for (query, expected) in [
+        (
+            r#"CREATE TABLE t ("n" int)"#,
+            nv("1:17", r#"CREATE TABLE t ("n""#),
+        ),
+        (
+            r#"CREATE TABLE t (n int, "m" int)"#,
+            nv("1:24", r#"CREATE TABLE t (n int, "m""#),
+        ),
+        (
+            r#"CREATE TABLE t ("n" int NOT NULL)"#,
+            nv("1:17", r#"CREATE TABLE t ("n""#),
+        ),
+        (
+            r#"CREATE TABLE IF NOT EXISTS t ("n" int)"#,
+            nv("1:31", r#"CREATE TABLE IF NOT EXISTS t ("n""#),
+        ),
+        (
+            r#"CREATE TABLE t (n row("f" int))"#,
+            nv("1:23", r#"CREATE TABLE t (n row("f""#),
+        ),
+        (
+            r#"CREATE TABLE t (n "int")"#,
+            nv("1:19", r#"CREATE TABLE t (n "int""#),
+        ),
     ] {
-        assert_eq!(rejected(query), None, "{query}");
+        assert_eq!(rejected(query), expected, "{query}");
+    }
+}
+
+/// QueryExecutionContext の Catalog が S3 Tables なら、場所の無い CREATE TABLE は本物が作るので No location に
+/// しない。列の NOT NULL・WITH ( の NV は既定の Context と同じ（2026-09-26 実測 h1〜h7。#221）。
+#[test]
+fn s3_tables_の_context_では_no_location_を返さず_no_viable_alternative_は返す() {
+    for (query, expected) in [
+        ("CREATE TABLE t (n int)", None),
+        ("CREATE TABLE IF NOT EXISTS t (n int)", None),
+        ("CREATE TABLE ns.t (n int)", None),
+        ("CREATE TABLE t (n string)", None),
+        (
+            "CREATE TABLE t (n int NOT NULL)",
+            nv("1:23", "CREATE TABLE t (n int NOT"),
+        ),
+        (
+            "CREATE TABLE t (n int) WITH (format = 'PARQUET')",
+            nv("1:29", "CREATE TABLE t (n int) WITH ("),
+        ),
+    ] {
+        assert_eq!(rejection(query, true), expected, "{query}");
     }
 }
 

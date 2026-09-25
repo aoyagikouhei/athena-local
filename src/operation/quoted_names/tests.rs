@@ -447,10 +447,42 @@ fn ctas_でない_create_table_の_4_部以上は引用符が無ければ_3_つ�
             r#"CREATE TABLE IF NOT EXISTS a."b".c.d (n int)"#,
             nv("1:30", r#"CREATE TABLE IF NOT EXISTS a."b""#),
         ),
-        // IF NOT EXISTS の 3 つ目の `.` と CTAS の 4 部以上は実測していない。
-        ("CREATE TABLE IF NOT EXISTS a.b.c.d (n int)", None),
-        (r#"CREATE TABLE IF NOT EXISTS a.b.c."d" (n int)"#, None),
-        ("CREATE TABLE a.b.c.d AS SELECT 1", None),
+        // IF NOT EXISTS も、無引用か引用符付きの部分が 4 部目以降だけなら 3 つ目の `.`（2026-09-26 実測 p1〜p4。#221）。
+        (
+            "CREATE TABLE IF NOT EXISTS awsdatacatalog.db.nope3.n (n int)",
+            dot("1:51"),
+        ),
+        ("CREATE TABLE IF NOT EXISTS a.b.c.d (n int)", dot("1:33")),
+        ("CREATE TABLE IF NOT EXISTS a.b.c.d.e (n int)", dot("1:33")),
+        (
+            r#"CREATE TABLE IF NOT EXISTS a.b.c."d" (n int)"#,
+            dot("1:33"),
+        ),
+    ];
+    for (query, expected) in cases {
+        assert_eq!(rejected(query), expected, "{query:?}");
+    }
+}
+
+/// CTAS の 4 部以上の無引用の名前は、WITH・IF NOT EXISTS の有無によらず位置の無い Invalid table name
+/// （2026-09-26 実測 p5〜p7。#221）。引用符付きの部分がある 4 部以上は実測していない。
+#[test]
+fn ctas_の_4_部以上の無引用の名前は_invalid_table_name() {
+    let cases = [
+        (
+            "CREATE TABLE awsdatacatalog.db.nope.n AS SELECT 1 AS n",
+            Some("Invalid table name awsdatacatalog.db.nope.n".to_string()),
+        ),
+        (
+            "CREATE TABLE IF NOT EXISTS awsdatacatalog.db.nope.n AS SELECT 1 AS n",
+            Some("Invalid table name awsdatacatalog.db.nope.n".to_string()),
+        ),
+        (
+            "CREATE TABLE awsdatacatalog.db.nope.n WITH (format = 'PARQUET') AS SELECT 1 AS n",
+            Some("Invalid table name awsdatacatalog.db.nope.n".to_string()),
+        ),
+        (r#"CREATE TABLE a.b.c."d" AS SELECT 1"#, None),
+        ("CREATE TABLE a.b.c AS SELECT 1", None),
     ];
     for (query, expected) in cases {
         assert_eq!(rejected(query), expected, "{query:?}");

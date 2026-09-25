@@ -15,8 +15,8 @@ const EXPECTING: &str = "{'SELECT', 'FROM', 'ADD', 'AS', 'ALL', 'DISTINCT', 'WHE
 ///
 /// 本物は、下の文の名前に引用符付きの部分が 1 つでもあると、その部分を Hive 系のパーサが読めずに弾く。
 /// 無引用とバッククォートは通る。4 部以上の名前（SHOW TABLES IN は 3 部以上）は無引用でも弾く（#207・#212）。
-/// 弾くのは実測した形だけで、実測していない形（`ALTER TABLE IF EXISTS`、CTAS の 4 部以上、引用符付きの部分が
-/// 3 部目までに無い `CREATE TABLE IF NOT EXISTS` の 4 部以上）は今までどおり実行する。
+/// 弾くのは実測した形だけで、実測していない形（`ALTER TABLE IF EXISTS`、引用符付きの部分がある CTAS の 4 部以上）は
+/// 今までどおり実行する。
 pub(super) fn rejection(query: &str, is_alias: impl Fn(&str) -> bool) -> Option<String> {
     // 本物は先頭の空白・タブ・改行を数えずに位置を出す（先頭のコメントは数える）。
     let sql = query.trim_start_matches([' ', '\t', '\r', '\n']);
@@ -83,16 +83,21 @@ pub(super) fn rejection(query: &str, is_alias: impl Fn(&str) -> bool) -> Option<
             (Statement::AlterTable, _) => {
                 return Some(no_viable_alternative(sql, dot, &sql[statement_start..=dot]));
             }
-            (Statement::CreateTable, _)
-                // IF NOT EXISTS の 3 つ目の `.` は実測していない（引用符付きの部分が 3 部目までにあれば、4 部目を
-                // 読む前に文言が決まるので、上の腕で 3 部と同じ規則を当てる）。
-                if substatement_type(query) == Some("CREATE_TABLE")
-                    && !if_follows(sql, "CREATE") =>
-            {
+            // IF NOT EXISTS も同じ（2026-09-26 実測 p1〜p4。#221）。
+            (Statement::CreateTable, _) if substatement_type(query) == Some("CREATE_TABLE") => {
                 let (line, column) = position(sql, dot);
                 return Some(format!(
                     "line {line}:{column}: mismatched input '.' expecting {CREATE_TABLE_EXPECTING}"
                 ));
+            }
+            // CTAS は WITH・IF NOT EXISTS の有無によらず Invalid table name（2026-09-26 実測 p5〜p7。#221）。
+            // 名前の書き方は DESCRIBE と同じく小文字でつなぐ（測ったのは小文字の名前だけ）。引用符付きの部分が
+            // ある形は実測していない。
+            (Statement::CreateTable, None)
+                if substatement_type(query) == Some("CREATE_TABLE_AS_SELECT") =>
+            {
+                let name: Vec<String> = parts.iter().map(|part| part.text.to_lowercase()).collect();
+                return Some(format!("Invalid table name {}", name.join(".")));
             }
             _ => return None,
         }
