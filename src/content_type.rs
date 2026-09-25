@@ -294,7 +294,8 @@ mod tests {
             ("( SHOW FUNCTIONS )", BINARY, false, false),
             ("(SHOW FUNCTIONS)", BINARY, false, false),
             ("CREATE TABLE t AS (VALUES 1)", APPLICATION, false, false),
-            ("CREATE TABLE t AS(SELECT 1)", BINARY, false, false),
+            // p17 は #199 で CTAS に揃え、本物の `.metadata` と同じ application にした（2026-09-25 実測）。
+            ("CREATE TABLE t AS(SELECT 1)", APPLICATION, false, false),
             // 空・トリビアだけ・多バイト（e1・e3・e5・e6・e7・e10・e11）
             ("", BINARY, false, false),
             ("-- only", BINARY, false, false),

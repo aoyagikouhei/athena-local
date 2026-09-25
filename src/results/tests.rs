@@ -512,7 +512,8 @@ fn 結果ファイルの種類は_crate_の_api_に寄せる前と同じ() {
         ("CREATE TABLE t AS (TABLE x)", ResultFile::Table),
         ("CREATE OR REPLACE TABLE t AS (VALUES 1)", ResultFile::Table),
         ("CREATE TABLE t AS ( SELECT 1)", ResultFile::Table),
-        ("CREATE TABLE t AS(SELECT 1)", ResultFile::Text),
+        // p17 は #199 で本物に揃えて Table にした（2026-09-25 実測）。
+        ("CREATE TABLE t AS(SELECT 1)", ResultFile::Table),
         (
             "CREATE TABLE t AS (WITH x AS (SELECT 1) SELECT * FROM x)",
             ResultFile::Table,
@@ -560,5 +561,29 @@ fn 結果ファイルの種類は_crate_の_api_に寄せる前と同じ() {
     ];
     for &(query, expected) in cases {
         assert_eq!(ResultFile::of(query), expected, "{query:?}");
+    }
+}
+
+#[test]
+fn ctas_は_as_の後ろの括弧や_values_table_によらず_tables_に置く() {
+    // 本物はこの 9 形をどれも `tables/<id>` にした。列名の無い VALUES（v1・v3）と列の別名つき（v2・v4）は
+    // MISSING_COLUMN_NAME で FAILED になったが、置き場所は同じだった（2026-09-25 実測。#199）。
+    for query in [
+        "CREATE TABLE t AS SELECT 1 AS n",
+        "CREATE TABLE t AS (SELECT 1 AS n)",
+        "CREATE TABLE t AS(SELECT 1 AS n)",
+        "CREATE TABLE t AS (VALUES 1)",
+        "CREATE TABLE t (n) AS (VALUES 1)",
+        "CREATE TABLE t AS VALUES 1",
+        "CREATE TABLE t (n) AS VALUES 1",
+        "CREATE TABLE t AS (TABLE c)",
+        "CREATE TABLE t AS TABLE c",
+        // 実測した形の空白と括弧の変種。
+        "CREATE TABLE t AS ( VALUES 1)",
+        "CREATE TABLE t AS ((VALUES 1))",
+        "CREATE TABLE t AS( VALUES 1)",
+        "CREATE TABLE t AS((TABLE c))",
+    ] {
+        assert_eq!(ResultFile::of(query), ResultFile::Table, "{query:?}");
     }
 }

@@ -520,34 +520,35 @@ fn 分類は_crate_の_api_に寄せる前と同じ結果を返す() {
         ),
         ("(SHOW FUNCTIONS)", "UTILITY", None, None),
         ("(ALTER TABLE t ADD COLUMN c int)", "DDL", None, None),
+        // p11〜p15・p17 は #199 で本物に揃えて CREATE_TABLE_AS_SELECT にした（2026-09-25 実測）。
         (
             "CREATE TABLE t AS (VALUES 1)",
             "DDL",
-            Some("CREATE_TABLE"),
+            Some("CREATE_TABLE_AS_SELECT"),
             None,
         ),
         (
             "CREATE TABLE t AS ( VALUES 1)",
             "DDL",
-            Some("CREATE_TABLE"),
+            Some("CREATE_TABLE_AS_SELECT"),
             None,
         ),
         (
             "CREATE TABLE t AS ((VALUES 1))",
             "DDL",
-            Some("CREATE_TABLE"),
+            Some("CREATE_TABLE_AS_SELECT"),
             None,
         ),
         (
             "CREATE TABLE t AS (TABLE x)",
             "DDL",
-            Some("CREATE_TABLE"),
+            Some("CREATE_TABLE_AS_SELECT"),
             None,
         ),
         (
             "CREATE OR REPLACE TABLE t AS (VALUES 1)",
             "DDL",
-            Some("CREATE_TABLE"),
+            Some("CREATE_TABLE_AS_SELECT"),
             None,
         ),
         (
@@ -559,7 +560,7 @@ fn 分類は_crate_の_api_に寄せる前と同じ結果を返す() {
         (
             "CREATE TABLE t AS(SELECT 1)",
             "DDL",
-            Some("CREATE_TABLE"),
+            Some("CREATE_TABLE_AS_SELECT"),
             None,
         ),
         (
@@ -660,6 +661,36 @@ fn 分類は_crate_の_api_に寄せる前と同じ結果を返す() {
                 fixed_column(query)
             ),
             (statement, substatement, fixed),
+            "{query:?}"
+        );
+    }
+}
+
+#[test]
+fn ctas_は_as_の後ろの括弧や_values_table_によらず_create_table_as_select_になる() {
+    // 本物はこの 9 形をどれも DDL / CREATE_TABLE_AS_SELECT にした。列名の無い VALUES（v1・v3）と
+    // 列の別名つき（v2・v4）は MISSING_COLUMN_NAME で FAILED になったが、分類は同じだった
+    // （2026-09-25 実測。#199）。
+    for query in [
+        "CREATE TABLE t AS SELECT 1 AS n",
+        "CREATE TABLE t AS (SELECT 1 AS n)",
+        "CREATE TABLE t AS(SELECT 1 AS n)",
+        "CREATE TABLE t AS (VALUES 1)",
+        "CREATE TABLE t (n) AS (VALUES 1)",
+        "CREATE TABLE t AS VALUES 1",
+        "CREATE TABLE t (n) AS VALUES 1",
+        "CREATE TABLE t AS (TABLE c)",
+        "CREATE TABLE t AS TABLE c",
+        // 実測した形の空白と括弧の変種。
+        "CREATE TABLE t AS ( VALUES 1)",
+        "CREATE TABLE t AS ((VALUES 1))",
+        "CREATE TABLE t AS( VALUES 1)",
+        "CREATE TABLE t AS((TABLE c))",
+    ] {
+        assert_eq!(statement_type(query), "DDL", "{query:?}");
+        assert_eq!(
+            substatement_type(query),
+            Some("CREATE_TABLE_AS_SELECT"),
             "{query:?}"
         );
     }

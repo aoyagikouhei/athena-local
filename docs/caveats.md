@@ -25,7 +25,11 @@ Known differences between athena-local and real Athena, grouped by topic.
   `ALTER TABLE ... RENAME COLUMN ... TO ...` are the same: Trino runs both, but
   Athena's grammar has no such form and answers `mismatched input` before the
   statement starts (measured 2026-09-21), so athena-local executes them on
-  Trino where Athena would have rejected the call outright. For an incomplete
+  Trino where Athena would have rejected the call outright. A CTAS with a
+  column list, such as `CREATE TABLE t (n) AS VALUES 1`, runs on Trino, while
+  Athena accepts the call and then fails the query with `MISSING_COLUMN_NAME:
+  line 1:1: Column name not specified at position 1` (measured 2026-09-25).
+  Name the columns in the query instead (`AS SELECT 1 AS n`). For an incomplete
   statement (`SELECT * FROM`) Athena answers `Queries of this type are not
   supported`; athena-local returns Trino's syntax error.
 - **Iceberg maintenance statements differ.** Athena's `OPTIMIZE ... REWRITE DATA`

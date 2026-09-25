@@ -12,7 +12,7 @@ on the location makes no difference. The file name depends on the statement:
 | `SELECT` / `WITH` / `VALUES` / `TABLE` / `SHOW FUNCTIONS` | `s3://bucket/prefix/<id>.csv` |
 | `UPDATE` / `DELETE` / `MERGE` | `s3://bucket/prefix/<id>.csv` (only the `.metadata` companion is written) |
 | `INSERT` | `s3://bucket/prefix/<id>` (only the `.metadata` companion is written) |
-| `CREATE TABLE ... AS SELECT` | `s3://bucket/prefix/tables/<id>` (only the `.metadata` companion is written) |
+| `CREATE TABLE ... AS` followed by `SELECT` / `WITH` / `VALUES` / `TABLE`, with or without parentheses (CTAS) | `s3://bucket/prefix/tables/<id>` (only the `.metadata` companion is written) |
 | Other DDL, `SHOW` (except `SHOW FUNCTIONS`), `DESCRIBE`, ... | `s3://bucket/prefix/<id>.txt` |
 
 `DROP TABLE` and `ALTER TABLE ... ADD COLUMNS` keep the `<id>.txt` name above;
