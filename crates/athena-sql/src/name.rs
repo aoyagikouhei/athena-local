@@ -103,4 +103,12 @@ mod tests {
             "ALTER TABLE cat.ns.t".len()
         );
     }
+
+    #[test]
+    fn unquote_は両端の引用符を外し重ねた引用符を戻す() {
+        assert_eq!(unquote(r#""a""b""#), r#"a"b"#);
+        assert_eq!(unquote("abc"), "abc");
+        // 閉じていなければ外さない。
+        assert_eq!(unquote(r#""abc"#), r#""abc"#);
+    }
 }

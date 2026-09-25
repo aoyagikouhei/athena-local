@@ -50,18 +50,7 @@ pub fn comment_end(bytes: &[u8], start: usize) -> Option<usize> {
 /// 扱わず `line 1:1` でそこの `/` を読むという違いがあるが（2026-09-18 実測）、どちらも構文エラーに
 /// なって実行が作られないので、この差も観測できない。
 pub fn skip_leading_trivia(sql: &str) -> &str {
-    let bytes = sql.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b' ' | b'\t' | b'\r' | b'\n' => i += 1,
-            _ => match comment_end(bytes, i) {
-                Some(end) => i = end,
-                None => break,
-            },
-        }
-    }
-    &sql[i..]
+    &sql[skip_trivia(sql.as_bytes(), 0)..]
 }
 
 /// 空白とコメントを読み飛ばした位置を返す。`skip_leading_trivia` は文字列を返すが、
@@ -125,5 +114,25 @@ mod tests {
     #[test]
     fn 非_ascii_のコメントでもバイト単位の走査が途中を切らない() {
         assert_eq!(skip_leading_trivia("-- あ\nSELECT 1"), "SELECT 1");
+    }
+
+    #[test]
+    fn skip_quoted_は重ねた引用符を中身として読み閉じていなければ末尾を返す() {
+        assert_eq!(skip_quoted(b"'it''s' x", 0), "'it''s'".len());
+        assert_eq!(skip_quoted(br#""a""b" x"#, 0), r#""a""b""#.len());
+        // 開いた引用符と違う種類の引用符は閉じにならない。
+        assert_eq!(skip_quoted(br#"'a"b' x"#, 0), r#"'a"b'"#.len());
+        assert_eq!(skip_quoted(b"'abc", 0), "'abc".len());
+    }
+
+    #[test]
+    fn comment_end_は行コメントを改行の手前までブロックコメントを閉じの後ろまでとし閉じていなければ末尾まで()
+     {
+        assert_eq!(comment_end(b"--c\nx", 0), Some("--c".len()));
+        assert_eq!(comment_end(b"/**/x", 0), Some("/**/".len()));
+        // 開きの `/*` の `*` を閉じの `*/` に数えない。
+        assert_eq!(comment_end(b"/*/ x */", 0), Some("/*/ x */".len()));
+        assert_eq!(comment_end(b"/* x", 0), Some("/* x".len()));
+        assert_eq!(comment_end(b"-x", 0), None);
     }
 }
