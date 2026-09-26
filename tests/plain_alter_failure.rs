@@ -158,7 +158,7 @@ async fn rename_to_は無い表なら_table_not_found_で_failed_になる() {
 }
 
 #[tokio::test]
-async fn iceberg_表とビューは今までどおり_trino_に送る() {
+async fn iceberg_表とビューと_hive_でも_iceberg_でもないコネクタの表は今までどおり_trino_に送る() {
     // Iceberg 表は本物も成功する（#39・#43・#244 a17）。ビューはコメント無しの形を測っていない。
     for (sql, response) in [
         (
@@ -174,6 +174,15 @@ async fn iceberg_表とビューは今までどおり_trino_に送る() {
             probe_response("hive", "VIEW"),
         ),
         ("ALTER TABLE t RENAME TO u", probe_response("hive", "VIEW")),
+        // hive でも iceberg でもないコネクタの表は形式を判定しない（decisions.md の #39。#264）。
+        (
+            "ALTER TABLE t DROP COLUMN n",
+            probe_response("memory", "TABLE"),
+        ),
+        (
+            "ALTER TABLE t RENAME TO u",
+            probe_response("memory", "TABLE"),
+        ),
     ] {
         let harness = Harness::builder(select_response())
             .route(&probe_sql(DEFAULT_CATALOG, DEFAULT_SCHEMA, "t"), response)

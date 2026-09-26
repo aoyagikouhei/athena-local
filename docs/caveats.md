@@ -216,6 +216,11 @@ Trino has no grammar for, its syntax check), and fails it the same way
 | `ALTER TABLE ... ADD COLUMNS` | a Hive table, a view, a missing table | — (Athena runs it on an Iceberg table, but Trino has no `ADD COLUMNS`, so athena-local still rejects it at the syntax check) |
 | `ALTER TABLE ... DROP COLUMN`, `RENAME TO` | a Hive table, a view, a missing table | an Iceberg table |
 
+A table whose Trino connector is neither `hive` nor `iceberg` (for example
+`memory`) has no Athena counterpart, so athena-local does not check its format
+and sends the statement to Trino, as it does when the catalog does not exist
+or the lookup fails.
+
 The comment has to come first, or between the keywords, or right before the
 table name (`SHOW /* c */ CREATE TABLE t`, `MSCK REPAIR TABLE /* c */ t`,
 `/* c */ ALTER TABLE t ADD COLUMNS (c int)`, and so on). A comment inside or
@@ -355,7 +360,8 @@ respectively. `MSCK REPAIR TABLE` on an Iceberg table, with or without a comment
   `SemanticException [Error 10001]: Table not found <database>.<table>` on a
   missing table. Both are `ErrorCategory` 2, `ErrorType` 1006, write the reason
   to `<id>.txt` and no `.metadata`, and `RENAME TO` reports `ErrorMessage`
-  `Query type not supported by DDL engine.`. Views, statements containing a
+  `Query type not supported by DDL engine.`. Views, tables whose Trino
+  connector is neither `hive` nor `iceberg`, statements containing a
   comment other than the ones in
   [Block comments Athena's Hive parser rejects](#block-comments-athenas-hive-parser-rejects),
   and the other combinations above are still sent to Trino (not measured, or

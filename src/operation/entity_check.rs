@@ -10,7 +10,7 @@ use crate::config::Config;
 use crate::response::invalid_request_with_code;
 use crate::trino::{Cancel, Trino};
 
-use super::table_format::{self, TargetStatement};
+use super::table_format::{self, TableFormat, TargetStatement};
 use super::target_table;
 
 /// 存在を確かめた結果、開始時にどうするか。
@@ -20,9 +20,9 @@ pub(super) enum Check {
     /// ビュー。本物は引用符付きの名前でも実行するので、`quoted_names` を見ずに実行する（2026-09-25 実測 W4）。
     Run,
     /// 表。`quoted_names` に進む（Continue と同じ）。表への DESCRIBE の Query から修飾を落とすのに使う（#242）。
-    /// `iceberg` は `probe` の結果（追加の問い合わせはしない）。Iceberg 表への DESCRIBE の直後のブロックコメントは
+    /// `format` は `probe` の結果（追加の問い合わせはしない）。Iceberg 表への DESCRIBE の直後のブロックコメントは
     /// 本物が成功させる（`start_checks.rs` のブロックコメントの判定の対象外にする。2026-09-26 実測 d1。#244）。
-    Table { iceberg: bool },
+    Table { format: Option<TableFormat> },
     /// 対象外の文・確かめられなかった。`quoted_names` に進む（今までどおり）。
     Continue,
 }
@@ -35,8 +35,9 @@ pub(super) enum Probe {
     Missing,
     /// ビュー。
     View,
-    /// 表。`iceberg` はコネクタ名（`probe_sql` の `_col0`）が `iceberg` かどうか。
-    Table { iceberg: bool },
+    /// 表。`format` はコネクタ名（`probe_sql` の `_col0`）を `table_format::parse_probe_result` で読んだもの。
+    /// hive でも iceberg でもないコネクタ（memory など）は None で、判定せず今までどおり Trino に送る（#39。#264）。
+    Table { format: Option<TableFormat> },
     /// 問い合わせが失敗した・応答の形が違う（偽 Trino が本体の応答を返すときも）。
     Unknown,
 }
@@ -95,7 +96,7 @@ pub(super) async fn check(
             "INVALID_INPUT",
         ))),
         Probe::View => Check::Run,
-        Probe::Table { iceberg } => Check::Table { iceberg },
+        Probe::Table { format } => Check::Table { format },
         Probe::Unknown => Check::Continue,
     }
 }
@@ -132,38 +133,15 @@ pub(super) async fn probe(
         (true, _) => Probe::NoCatalog,
         (false, None) if row[1].is_null() => Probe::Missing,
         (false, Some("VIEW")) => Probe::View,
-        (false, Some("TABLE")) => table_probe(&row[0]),
+        // 応答の形はここまでで `probe_sql` のものと確かめてあるので、形式の対応表は `table_format` のものを使う。
+        (false, Some("TABLE")) => Probe::Table {
+            format: table_format::parse_probe_result(&outcome),
+        },
         _ => Probe::Unknown,
-    }
-}
-
-/// `row[1]` が `TABLE`（表）だったときの `Probe`。`row[0]`（`probe_sql` の `_col0`、コネクタ名）が
-/// `"iceberg"` かどうかを `Probe::Table` に持たせる。
-fn table_probe(connector: &serde_json::Value) -> Probe {
-    Probe::Table {
-        iceberg: connector.as_str() == Some("iceberg"),
     }
 }
 
 /// 名前にカタログまで書いてあるか（3 部の名前）。既定を渡さずに読めるのは 3 部のときだけ。
 fn names_catalog(query: &str, statement: TargetStatement) -> bool {
     target_table::parse_target_table(query, statement, None, Some("")).is_some()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn table_probe_は_コネクタ名が_iceberg_かどうかで_iceberg_を決める() {
-        assert!(matches!(
-            table_probe(&json!("iceberg")),
-            Probe::Table { iceberg: true }
-        ));
-        assert!(matches!(
-            table_probe(&json!("hive")),
-            Probe::Table { iceberg: false }
-        ));
-    }
 }

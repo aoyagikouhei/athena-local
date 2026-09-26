@@ -187,6 +187,13 @@ later name the date they were measured on.
   parts or more, and lower-cases quoted parts in `Invalid table name`, as real
   Athena does (measured 2026-09-25) ([docs](docs/caveats.md#sql-dialect)).
 
+### Fixed
+
+- A table whose Trino connector is neither `hive` nor `iceberg` (for example
+  `memory`) is no longer failed as a Hive table by the block-comment and plain
+  `DROP COLUMN` / `RENAME TO` checks; the statement is sent to Trino
+  ([docs](docs/caveats.md#block-comments-athenas-hive-parser-rejects)).
+
 ## [0.5.0] - 2026-09-23
 
 ### Added
