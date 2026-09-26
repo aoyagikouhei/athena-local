@@ -20,7 +20,7 @@
 #     → line 1:68: no viable alternative at input 'CREATE TABLE <db>.<t> (n int NOT'
 #
 # tools/measure/quoted-names.sh（#204・#207・#212）を雛形にし、次の関数をそのまま
-# （ほぼ無改変で）流用している: redact・mask_names・hide・sanitize・first_err_line・
+# （ほぼ無改変で）流用している: hide（#224 で redact・mask_names をまとめた）・sanitize・first_err_line・
 # is_transient_error・start_query_retry・poll_until_terminal・get_state_once・
 # read_attempts・emit_row・skip・run・write_reason・reason_first_line・
 # athena_error_fields_of・read_execution_fields・start_err_message・start_err_code・
@@ -376,39 +376,31 @@ trap cleanup EXIT
 # アカウント ID は、前後が数字でない 12 桁の数字として伏せる（quoted-names.sh の実測より）。
 OUTPUT_BUCKET=${OUTPUT#s3://}
 OUTPUT_BUCKET=${OUTPUT_BUCKET%%/*}
-redact() {
-  local s=$1
-  s=${s//$DB/<DB>}
-  s=${s//$OUTPUT/<OUTPUT>}
-  s=${s//$OUTPUT_BUCKET/<BUCKET>}
-  printf '%s' "$s" | sed -E 's/(^|[^0-9])[0-9]{12}([^0-9]|$)/\1<ACCOUNT_ID>\2/g'
+# 伏せる実名と置き換える印を「長さ<TAB>実名<TAB>印」で 1 行ずつ出す（空の実名は出さない）。
+hide_pairs() {
+  local value mark
+  while IFS=$'\t' read -r value mark; do
+    [ -n "$value" ] && printf '%s\t%s\t%s\n' "${#value}" "$value" "$mark"
+  done <<EOF
+$DB	<DB>
+$OUTPUT	<OUTPUT>
+$OUTPUT_BUCKET	<BUCKET>
+$PROBE_PREFIX	<PROBE>
+$S3TABLES_CATALOG	<S3TABLES_CATALOG>
+$S3TABLES_BUCKET	<S3TABLES_BUCKET>
+$S3TABLES_NS	<S3TABLES_NS>
+EOF
 }
 
-# 標準入力から、乱数入りの接頭辞と S3 Tables の実名（設定されていれば）を置換して隠す。
-mask_names() {
-  local s
-  s=$(cat)
-  s=${s//$PROBE_PREFIX/<PROBE>}
-  if [ -n "$S3TABLES_CATALOG" ]; then
-    s=${s//$S3TABLES_CATALOG/<S3TABLES_CATALOG>}
-    if [ -n "$S3TABLES_BUCKET" ]; then
-      s=${s//$S3TABLES_BUCKET/<S3TABLES_BUCKET>}
-    fi
-  fi
-  if [ -n "$S3TABLES_NS" ]; then
-    s=${s//$S3TABLES_NS/<S3TABLES_NS>}
-  fi
-  printf '%s' "$s"
-}
-
-# redact と mask_names を両方かけて、実名をすべて伏せる。S3 Tables の名前が DB 名を含むと
-# redact が先に一部だけ置き換えて mask_names が一致しなくなるので、mask_names を先にかける
-# （#221 の summary で名前空間の実名の一部が残った。#224）。
+# 実名をすべて伏せる。実名どうしが入れ子になる（S3 Tables の名前空間が DB 名を含む、DB 名が S3 Tables の
+# バケット名を含む、など）と、短い方を先に置き換えた時点で長い方が一致しなくなって一部が残るので、長い実名
+# から先に置き換える（#221 の summary で名前空間の実名の一部が残った。#224）。
 hide() {
-  local s
-  s=$(printf '%s' "$1" | mask_names)
-  s=$(redact "$s")
-  printf '%s' "$s"
+  local s=$1 value mark
+  while IFS=$'\t' read -r _ value mark; do
+    s=${s//"$value"/$mark}
+  done < <(hide_pairs | sort -t $'\t' -k1,1nr)
+  printf '%s' "$s" | sed -E 's/(^|[^0-9])[0-9]{12}([^0-9]|$)/\1<ACCOUNT_ID>\2/g'
 }
 
 # 制御文字を落として短くする。note・summary に入れる前に必ず通す。
