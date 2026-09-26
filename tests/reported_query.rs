@@ -190,28 +190,44 @@ async fn 表への_describe_は修飾を落とした文を実行し_query_と_da
     }
 }
 
+/// SELECT などの `awsdatacatalog.` は Query から落とさない（m30〜m41）。Trino には別名を当てて送る（#246）。
 #[tokio::test]
-async fn カタログ部分を落とさない文と形は受け取ったまま送る() {
+async fn カタログ部分を落とさない文と形は_query_を受け取ったまま返す() {
     let harness = harness().await;
-    for (query, context) in [
-        ("SELECT * FROM awsdatacatalog.db.t", context()),
-        ("INSERT INTO awsdatacatalog.db.t VALUES (1)", context()),
+    for (query, context, sent) in [
+        (
+            "SELECT * FROM awsdatacatalog.db.t",
+            context(),
+            "SELECT * FROM \"hive\"        .db.t",
+        ),
+        (
+            "INSERT INTO awsdatacatalog.db.t VALUES (1)",
+            context(),
+            "INSERT INTO \"hive\"        .db.t VALUES (1)",
+        ),
         (
             "CREATE TABLE awsdatacatalog.db.t3 AS SELECT 1 AS n",
             context(),
+            "CREATE TABLE \"hive\"        .db.t3 AS SELECT 1 AS n",
         ),
         (
             "CREATE VIEW awsdatacatalog.db.v AS SELECT 1 AS n",
             context(),
+            "CREATE VIEW \"hive\"        .db.v AS SELECT 1 AS n",
         ),
-        ("EXPLAIN SELECT * FROM awsdatacatalog.db.t", context()),
+        (
+            "EXPLAIN SELECT * FROM awsdatacatalog.db.t",
+            context(),
+            "EXPLAIN SELECT * FROM \"hive\"        .db.t",
+        ),
         // Context の Catalog が AwsDataCatalog 以外（測っていない）。
         (
             "SHOW TABLES IN awsdatacatalog.db",
             json!({ "Catalog": "other", "Database": "db" }),
+            "SHOW TABLES IN awsdatacatalog.db",
         ),
         // 1 部目が awsdatacatalog でない。
-        ("SHOW TABLES IN db", context()),
+        ("SHOW TABLES IN db", context(), "SHOW TABLES IN db"),
     ] {
         let execution = run(&harness, query, context).await;
         assert_eq!(execution["Query"], query, "{query}");
@@ -219,7 +235,7 @@ async fn カタログ部分を落とさない文と形は受け取ったまま�
             execution["QueryExecutionContext"]["Database"], "db",
             "{query}"
         );
-        assert_eq!(harness.trino_sqls().last(), Some(&query.to_string()));
+        assert_eq!(harness.trino_sqls().last(), Some(&sent.to_string()));
     }
 }
 

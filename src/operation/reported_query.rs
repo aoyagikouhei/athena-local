@@ -87,7 +87,7 @@ fn drop_first_part(
     ))
 }
 
-fn is_aws_data_catalog(name: &str) -> bool {
+pub(super) fn is_aws_data_catalog(name: &str) -> bool {
     name.eq_ignore_ascii_case("awsdatacatalog")
 }
 
