@@ -145,10 +145,11 @@ Behaviour that matches real Athena:
     kept (`DESCRIBE db./* c */t` becomes `DESCRIBE /* c */t`). On a view the
     name keeps its database, and the catalog stays in `Query` although the
     statement runs without it.
-  - Whenever the database or the catalog is dropped, `GetQueryExecution`
-    reports the name's database, spelled as written, as
+  - Whenever the database or the catalog is dropped from `Query`,
+    `GetQueryExecution` reports the name's database, spelled as written, as
     `QueryExecutionContext.Database`, even when the request sent another
-    database or none.
+    database or none. On a view, where `Query` keeps the name, `Database` is
+    the one the request sent (measured only with the same database in both).
   - `DESCRIBE` on a table followed right away by a block comment
     (`DESCRIBE /* c */ t`, and `DESCRIBE db./* c */t` once the database is
     dropped) is not sent to Trino: it fails as on real Athena with
