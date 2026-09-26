@@ -374,11 +374,14 @@ Known differences between athena-local and real Athena, grouped by topic.
   athena-local starts the query and fails it without sending it to Trino, as
   real Athena does (`Cannot find or access the specified table`,
   `ErrorCategory` 2, `ErrorType` 1100, no result file and no `.metadata`).
-  When the namespace exists, athena-local still answers `No location`, since
-  creating the table there would mean rewriting the statement; write the name
-  as `<namespace>.<table>` instead
-  ([#227](https://github.com/aoyagikouhei/athena-local/issues/227), measured
-  2026-09-26). An unquoted two-part `<namespace>.<table>` whose namespace does
+  When the namespace exists, athena-local creates the table there, as real
+  Athena does: it sends Trino the statement with the first part and its `.`
+  replaced by spaces (line breaks kept, so Trino's error positions still match
+  the statement you sent), while `Query` stays as sent. It does the same when
+  it cannot tell whether the namespace exists
+  ([#227](https://github.com/aoyagikouhei/athena-local/issues/227),
+  [#237](https://github.com/aoyagikouhei/athena-local/issues/237), measured
+  2026-09-26; `IF NOT EXISTS` with an existing namespace is not measured). An unquoted two-part `<namespace>.<table>` whose namespace does
   not exist in the context catalog fails the same way, without being sent to
   Trino ([#231](https://github.com/aoyagikouhei/athena-local/issues/231),
   measured 2026-09-26).

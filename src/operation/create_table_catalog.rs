@@ -3,7 +3,10 @@
 //! （`Catalog '<書いたとおり>' does not exist`）で弾いた。NV はそれより先（2026-09-26 実測 i3・j5〜j7・j10・j14）。
 //! S3 Tables の Context で 1 部目が小文字ちょうどでない `awsdatacatalog`（`AwsDataCatalog` など）なら、1 部目を無視して
 //! 2 部目を S3 Tables の名前空間として作り、名前空間が無ければ開始して FAILED にした（j1〜j4・j9）。
+//! 名前空間があれば、1 部目を空白にした文を Trino に送る（j1・j4。#237）。
 //! S3 Tables の Context の無引用の 2 部の名前も、1 部目の名前空間が無ければ同じ FAILED にした（i2・j12。#231）。
+
+use std::ops::Range;
 
 use axum::response::Response;
 
@@ -24,6 +27,8 @@ pub(super) enum Outcome {
     Reject(Box<Response>),
     /// 開始は受け、Trino に送らずにこの失敗で終える（S3 Tables の名前空間が無い）。
     FailAtRuntime(Failure),
+    /// 開始は受け、この文を Trino に送る（S3 Tables の名前空間がある。1 部目を空白にした文）。
+    Rewrite(String),
 }
 
 /// `unquoted_ddl::rejection` が No location を返した文についてだけ呼ぶ。`context_catalog` は QueryExecutionContext の
@@ -36,7 +41,7 @@ pub(super) async fn check(
     query: &str,
     context_catalog: Option<&str>,
 ) -> Outcome {
-    let Some((catalog, namespace)) = three_part_name(query) else {
+    let Some((catalog, namespace, first_part)) = three_part_name(query) else {
         return Outcome::Continue;
     };
     if !catalog.eq_ignore_ascii_case("awsdatacatalog") {
@@ -52,7 +57,7 @@ pub(super) async fn check(
     }
     // S3 Tables の Context でだけ、本物は 2 部目を Context のカタログの名前空間として引いた（小文字ちょうどの
     // `awsdatacatalog` は 2 catalogs が先に決まるのでここへ来ない）。無いと確かめられたときだけ FAILED にし、
-    // あれば（本物は作る）今までどおり No location。
+    // あれば（本物は作る）1 部目を空白にして Trino に送る。確かめられないときも 2 部の名前（#231）と同じく送る。
     let Some(s3_tables) = context_catalog
         .filter(|catalog| catalog.to_ascii_lowercase().starts_with("s3tablescatalog/"))
     else {
@@ -61,8 +66,18 @@ pub(super) async fn check(
     if namespace_missing(trino, config, s3_tables, namespace).await {
         Outcome::FailAtRuntime(Failure::cannot_find_table())
     } else {
-        Outcome::Continue
+        Outcome::Rewrite(blank_out(query, first_part))
     }
+}
+
+/// `query` の `range` の各文字を空白にする（改行は残す）。文字数と行を保つので、Trino のエラー位置は受け取った
+/// 文の位置のまま（`catalog.rs` の別名置換と同じく桁は文字数で揃える）。
+fn blank_out(query: &str, range: Range<usize>) -> String {
+    let blanks: String = query[range.clone()]
+        .chars()
+        .map(|c| if matches!(c, '\n' | '\r') { c } else { ' ' })
+        .collect();
+    format!("{}{blanks}{}", &query[..range.start], &query[range.end..])
 }
 
 /// S3 Tables の Context（`s3_tables` は受け取ったままの Catalog）で `unquoted_ddl::rejection` が弾かない、無引用の

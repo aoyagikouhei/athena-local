@@ -1,6 +1,8 @@
 //! 本物の Athena が StartQueryExecution の時点で弾く、CTAS でない無引用の `CREATE TABLE` の文言
 //! （2026-09-26 実測。#208）。
 
+use std::ops::Range;
+
 use athena_sql::{Cursor, QualifiedName, skip_leading_trivia};
 
 use super::super::classification::substatement_type;
@@ -34,7 +36,7 @@ pub(super) fn rejection(query: &str, s3_tables: bool) -> Option<String> {
         return None;
     }
     let sql = query.trim_start_matches([' ', '\t', '\r', '\n']);
-    let (name, mut cursor) = table_name(sql)?;
+    let (name, mut cursor, _) = table_name(sql)?;
     if name.parts.len() >= 4 || name.parts.iter().any(|part| part.text.starts_with('"')) {
         return None;
     }
@@ -60,17 +62,24 @@ pub(super) fn rejection(query: &str, s3_tables: bool) -> Option<String> {
     }
 }
 
-/// `rejection` が No location を返す文の、無引用の 3 部の名前の 1 部目と 2 部目（書いたとおり）。
-/// 3 部でないか引用符付きの部分があれば None。名前は `rejection` と同じ `table_name` で読む（#227）。
-pub(in crate::operation) fn three_part_name(query: &str) -> Option<(&str, &str)> {
+/// `rejection` が No location を返す文の、無引用の 3 部の名前の 1 部目と 2 部目（書いたとおり）と、`query` の
+/// 1 部目の先頭から 2 部目の直前まで（`.`・空白・コメントを含む）の範囲（#237）。3 部でないか引用符付きの部分が
+/// あれば None。名前は `rejection` と同じ `table_name` で読む（#227）。
+pub(in crate::operation) fn three_part_name(query: &str) -> Option<(&str, &str, Range<usize>)> {
     let sql = query.trim_start_matches([' ', '\t', '\r', '\n']);
-    match table_name(sql)?.0.parts.as_slice() {
+    let (name, _, offset) = table_name(sql)?;
+    let offset = offset + query.len() - sql.len();
+    match name.parts.as_slice() {
         [catalog, namespace, _]
             if ![catalog, namespace]
                 .iter()
                 .any(|part| part.text.starts_with('"')) =>
         {
-            Some((catalog.text, namespace.text))
+            Some((
+                catalog.text,
+                namespace.text,
+                offset + catalog.start..offset + namespace.start,
+            ))
         }
         _ => None,
     }
@@ -89,13 +98,14 @@ pub(in crate::operation) fn two_part_namespace(query: &str) -> Option<&str> {
     }
 }
 
-/// `CREATE TABLE` か `CREATE TABLE IF NOT EXISTS` の直後の名前と、名前の直後の位置の cursor。
-fn table_name(sql: &str) -> Option<(QualifiedName<'_>, Cursor<'_>)> {
+/// `CREATE TABLE` か `CREATE TABLE IF NOT EXISTS` の直後の名前と、名前の直後の位置の cursor と、名前の部品の
+/// `start`・`end` を `sql` の位置にするために足す値。
+fn table_name(sql: &str) -> Option<(QualifiedName<'_>, Cursor<'_>, usize)> {
     let rest = table_name_start(sql, &["CREATE", "TABLE"])
         .or_else(|| table_name_start(sql, &["CREATE", "TABLE", "IF", "NOT", "EXISTS"]))?;
     let mut cursor = Cursor::new(rest);
     let name = cursor.qualified_name()?;
-    Some((name, cursor))
+    Some((name, cursor, sql.len() - rest.len()))
 }
 
 /// 列 1 つを処理した結果。
