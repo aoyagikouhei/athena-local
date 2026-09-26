@@ -1,6 +1,9 @@
 //! Athena のオペレーション。実行は Trino に委ね、状態は Store に持つ。
 
+mod background_execution;
 mod classification;
+mod comment_parse_check;
+mod comment_parse_error;
 mod completion;
 mod context_catalog;
 mod create_table_catalog;
@@ -12,6 +15,7 @@ mod query_execution;
 mod quoted_names;
 mod reported_query;
 mod result_output;
+mod start_request;
 mod table_format;
 mod target_table;
 mod type_spelling;

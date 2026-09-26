@@ -30,6 +30,17 @@ fn probe_response(table_type: &str) -> Value {
     })
 }
 
+/// 対象が存在し、形式が iceberg の表である応答（`tests/table_format.rs` の `probe_response(connector_name)` と同じ形）。
+fn probe_response_iceberg() -> Value {
+    json!({
+        "columns": [
+            { "name": "_col0", "type": "varchar" },
+            { "name": "_col1", "type": "varchar" }
+        ],
+        "data": [["iceberg", "TABLE"]]
+    })
+}
+
 /// Context が `AwsDataCatalog`（別名 hive）・`db` の harness。db.t・db2.t2 は表、db.v はビュー。
 async fn harness() -> Harness {
     builder().start().await
@@ -330,6 +341,34 @@ async fn describe_の直後のブロックコメントは本物と同じ_parse_e
         .await["QueryExecution"]
         .clone();
     assert_eq!(execution["Status"]["State"], "SUCCEEDED", "{execution}");
+}
+
+/// 本物は Iceberg 表への `DESCRIBE` の直後のブロックコメントを ParseException にせず成功させた
+/// （2026-09-26 実測 d1。#244）。Hive・無い表・ビューだけ弾き、Iceberg 表は Trino に送って実行する。
+#[tokio::test]
+async fn describe_の直後のブロックコメントは_iceberg_表なら成功して_trino_に送る() {
+    let harness = builder()
+        .route(&probe_sql("hive", "db", "i"), probe_response_iceberg())
+        .start()
+        .await;
+
+    let execution = harness
+        .run_query(json!({
+            "QueryString": "DESCRIBE /* c */ i",
+            "QueryExecutionContext": context(),
+        }))
+        .await["QueryExecution"]
+        .clone();
+
+    assert_eq!(execution["Status"]["State"], "SUCCEEDED", "{execution}");
+    assert!(
+        harness
+            .trino_sqls()
+            .iter()
+            .any(|sql| sql.starts_with("DESCRIBE")),
+        "Iceberg 表なら Trino に DESCRIBE を送る: {:?}",
+        harness.trino_sqls()
+    );
 }
 
 /// 4 部以上の名前は本物が名前の形だけで弾く（`Invalid table name`。2026-09-25 実測）。カタログを落として

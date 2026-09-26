@@ -12,10 +12,12 @@ use super::classification::substatement_type;
 use super::table_format::catalog_exists_sql;
 
 /// 本物が実在しない Catalog でも既定のカタログで成功させた文（2026-09-25 実測 #214、2026-09-26 実測 #217）。
-/// SHOW TBLPROPERTIES・SHOW VIEWS・SHOW PARTITIONS・MSCK REPAIR TABLE・ALTER TABLE の ADD/DROP PARTITION・
+/// SHOW TBLPROPERTIES・SHOW VIEWS・SHOW PARTITIONS・ALTER TABLE の ADD/DROP PARTITION・
 /// SET TBLPROPERTIES・VACUUM も成功したが、Trino に無い構文で athena-local からは届かないので載せない。
 /// OPTIMIZE も成功したが、分類が CTAS と同じ（本物は CTAS を失敗させた）ので載せない。SHOW FUNCTIONS は
 /// Trino が実在しないカタログでも成功させるので要らない。INSERT（1300）と DELETE・UPDATE・MERGE（1301）は本物も失敗させた。
+/// MSCK REPAIR TABLE は #244 で構文チェックの前に判定するので、実在しない Catalog でも解決の対象に載せる
+/// （#217 で実在しないカタログでも成功と実測済み）。
 const RESOLVED_STATEMENTS: &[&str] = &[
     "DESCRIBE_TABLE",
     "SHOW_COLUMNS",
@@ -30,6 +32,7 @@ const RESOLVED_STATEMENTS: &[&str] = &[
     "DROP_VIEW",
     "CREATE_DATABASE",
     "DROP_DATABASE",
+    "MSCK_REPAIR",
 ];
 
 /// Trino に送るカタログの元になる名前を返す。差し替えたときは Trino 側の名前（別名の値か、`TRINO_CATALOG` に
@@ -108,5 +111,15 @@ mod tests {
     fn 既定が別名のキーなら_trino_側の名前にする() {
         let aliased = map(&[("Default", "memory")]);
         assert_eq!(fallback(&aliased, Some("Default")), Some("memory"));
+    }
+
+    /// MSCK REPAIR TABLE は #244 で構文チェックの前に判定するので、実在しない Context のカタログでも
+    /// 解決の対象になる（`resolve` が使う判定そのもの）。
+    #[test]
+    fn msck_repair_table_は解決の対象になる() {
+        assert!(
+            substatement_type("MSCK REPAIR TABLE t")
+                .is_some_and(|kind| RESOLVED_STATEMENTS.contains(&kind))
+        );
     }
 }

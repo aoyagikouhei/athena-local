@@ -830,6 +830,25 @@ fn 分類は_crate_の_api_に寄せる前と同じ結果を返す() {
     }
 }
 
+/// `MSCK REPAIR TABLE` は 3 語そろったときだけ `DDL`／`MSCK_REPAIR`（本物の実測。
+/// docs/dev/measurements/statements.md の MSCK の行、2026-09-24・2026-09-26 実測。#244）。
+/// `MSCK` だけ・`MSCK REPAIR` だけは今までどおり `UTILITY`／`None`。
+#[test]
+fn msck_repair_table_は_3_語そろったときだけ_ddl_msck_repair_になる() {
+    for query in [
+        "MSCK REPAIR TABLE t",
+        "MSCK REPAIR /* c */ TABLE t",
+        "msck repair table t",
+    ] {
+        assert_eq!(statement_type(query), "DDL", "{query:?}");
+        assert_eq!(substatement_type(query), Some("MSCK_REPAIR"), "{query:?}");
+    }
+    for query in ["MSCK", "MSCK REPAIR"] {
+        assert_eq!(statement_type(query), "UTILITY", "{query:?}");
+        assert_eq!(substatement_type(query), None, "{query:?}");
+    }
+}
+
 #[test]
 fn ctas_は_as_の後ろの括弧や_values_table_によらず_create_table_as_select_になる() {
     // 本物はこの 9 形をどれも DDL / CREATE_TABLE_AS_SELECT にした。列名の無い VALUES（v1・v3）と

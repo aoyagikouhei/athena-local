@@ -9,8 +9,12 @@ pub const USER: i32 = 2;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Failure {
-    /// StateChangeReason と AthenaError.ErrorMessage（本物は同じ文字列を入れる）。
+    /// StateChangeReason。
     pub reason: String,
+    /// AthenaError.ErrorMessage。`None` は `reason` と同じ（本物は StateChangeReason と
+    /// AthenaError.ErrorMessage に同じ文字列を入れるが、ALTER TABLE の RENAME TO・DROP COLUMN の
+    /// ブロックコメントの失敗だけ別（2026-09-26 実測。#244））。
+    pub error_message: Option<String>,
     pub category: i32,
     pub error_type: i32,
     pub retryable: bool,
@@ -25,6 +29,7 @@ impl Failure {
             // 「Internal service error」を当て、再試行で通りうるものとして返す。
             return Self {
                 reason,
+                error_message: None,
                 category: SYSTEM,
                 error_type: 100,
                 retryable: true,
@@ -44,6 +49,7 @@ impl Failure {
 
         Self {
             reason,
+            error_message: None,
             category,
             error_type,
             // 実測したユーザーのエラーはすべて false。システムのエラーは実測していないので同じく false。
@@ -56,6 +62,7 @@ impl Failure {
     pub fn cannot_find_table() -> Self {
         Self {
             reason: "Cannot find or access the specified table".to_string(),
+            error_message: None,
             category: USER,
             error_type: 1100,
             retryable: false,
@@ -70,21 +77,21 @@ impl Failure {
                 "Database {database} not found. Please check your query. You may need to manually clean the data \
                  at location '{location}' before retrying. Athena will not delete data in your account."
             ),
+            error_message: None,
             category: USER,
             error_type: 1301,
             retryable: false,
         }
     }
 
-    /// DESCRIBE の直後のブロックコメントを本物の Hive のパーサが読めなかった（2026-09-22 実測 `DESCRIBE /* c */ t`、
-    /// 2026-09-26 実測 m10。#242）。本物の StateChangeReason は `FAILED: ` から始まる。
-    pub fn describe_parse_error(keyword: &str) -> Self {
+    /// MSCK REPAIR TABLE の対象が Iceberg 表のときに本物が返した固定の文言（ブロックコメントの有無・位置に
+    /// よらず。`.txt` も `.metadata` も置かない。2026-09-26 実測 m1〜m4。#244）。
+    pub fn msck_iceberg() -> Self {
         Self {
-            reason: format!(
-                "FAILED: ParseException line 1:0 cannot recognize input near '{keyword}' '/' '*' in describe statement"
-            ),
-            category: SYSTEM,
-            error_type: 1003,
+            reason: "Query type not supported by Athena Iceberg at this time".to_string(),
+            error_message: None,
+            category: USER,
+            error_type: 1200,
             retryable: false,
         }
     }
@@ -94,6 +101,7 @@ impl Failure {
     pub fn result_write(reason: String) -> Self {
         Self {
             reason,
+            error_message: None,
             category: SYSTEM,
             error_type: 401,
             retryable: true,

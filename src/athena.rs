@@ -19,7 +19,7 @@ pub struct StartQueryExecutionRequest {
     #[serde(default)]
     pub work_group: Option<String>,
     /// 本物と同じく必須（省略は INVALID_INPUT。2026-09-17 実測）。`Option` なのは、
-    /// serde の欠落エラーではなく operation/execution.rs が実測した文言で自前のエラーを返すため。
+    /// serde の欠落エラーではなく operation/start_request.rs が実測した文言で自前のエラーを返すため。
     #[serde(default)]
     pub client_request_token: Option<String>,
 }

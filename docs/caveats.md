@@ -39,34 +39,19 @@ Known differences between athena-local and real Athena, grouped by topic.
   `ALTER TABLE ... EXECUTE ...` at `StartQueryExecution` the same as real
   Athena (see [`ALTER TABLE` and format-dependent DDL](#alter-table-and-format-dependent-ddl)),
   so neither spelling runs Iceberg maintenance through athena-local.
-- **A block comment before `SHOW CREATE TABLE` can succeed here but fails on
-  Athena.** `StatementType`/`SubstatementType`/`OutputLocation` are classified
-  correctly either way (comments are skipped for classification), but Athena's
-  parser for this statement rejects a leading `/* ... */` at execution time
-  (measured 2026-09-18): the query fails with `FAILED: ParseException line 1:0
-  cannot recognize input near '/' '*' 'c'` and `ErrorCategory` 1 /
-  `ErrorType` 1003. A leading `-- ...` line comment is fine on both. The same
-  happens with a block comment between the keywords: `SHOW /* c */ CREATE
-  TABLE t` and `SHOW CREATE /* c */ TABLE t` are classified as
-  `SHOW_CREATE_TABLE` but fail with a `ParseException` (`ErrorCategory` 1 /
-  `ErrorType` 1003), and `ALTER /* c */ TABLE t ADD COLUMNS (c int)` against
-  a table that does not exist fails with `ParseException line 1:0 cannot
-  recognize input near 'ALTER' '/' '*'` where the uncommented statement fails
-  with `Table not found`; the same statement against an existing Iceberg
-  table succeeds, and `ALTER -- c\nTABLE ...` is fine on both (measured
-  2026-09-22). `DROP /* c */ TABLE`, `CREATE /* c */ TABLE ... AS SELECT`,
-  `SHOW /* c */ TABLES` and `CREATE` / `DROP /* c */ DATABASE` all succeed on
-  Athena. Since athena-local sends the SQL to Trino unmodified, and Trino
-  accepts a comment anywhere whitespace is allowed, every block-comment form
-  can succeed here where it would fail on real Athena. One more statement
-  fails on Athena with a block comment after the verb: `MSCK REPAIR /* c */
-  TABLE t` (`ParseException line 1:12 missing EOF at '/' near 'REPAIR'`,
-  `ErrorCategory` 1 / `ErrorType` 1003 with the reason written to `<id>.txt`).
-  `DESCRIBE /* c */ t` on a table is the exception: athena-local fails it the
-  way Athena does (see [Supported API](api.md)). Reproducing the others is
-  [#244](https://github.com/aoyagikouhei/athena-local/issues/244). `SHOW PARTITIONS`,
-  `SHOW TBLPROPERTIES`, `SHOW COLUMNS FROM`, `SHOW CREATE VIEW` and
-  `CREATE EXTERNAL TABLE` with the same comment succeed (measured 2026-09-24).
+- **A block comment in `SHOW CREATE TABLE`, `MSCK REPAIR TABLE`, `ALTER
+  TABLE` and `DESCRIBE` fails the way Athena fails it.** Athena hands these
+  statements to its Hive parser, which rejects a `/* ... */` before or between
+  the keywords, while Trino accepts a comment anywhere whitespace is allowed.
+  athena-local does not send such a statement to Trino and fails it with
+  Athena's `ParseException` instead — see
+  [Block comments Athena's Hive parser rejects](#block-comments-athenas-hive-parser-rejects).
+  A `-- ...` line comment is fine on both. `DROP /* c */ TABLE`,
+  `CREATE /* c */ TABLE ... AS SELECT`, `SHOW /* c */ TABLES`, `CREATE` /
+  `DROP /* c */ DATABASE`, `SHOW PARTITIONS`, `SHOW TBLPROPERTIES`,
+  `SHOW COLUMNS FROM`, `SHOW CREATE VIEW` and `CREATE EXTERNAL TABLE` with the
+  same comment succeed on Athena and are sent to Trino as written (measured
+  2026-09-22 and 2026-09-24).
 - **`StartQueryExecution` checks whether the target of `DESCRIBE`, `DESC` and
   `SHOW COLUMNS FROM` / `IN` exists, right after the syntax check and before
   the quoted-name check below, the same as real Athena does.** It asks Trino
@@ -199,7 +184,9 @@ Known differences between athena-local and real Athena, grouped by topic.
 - **An unquoted `MSCK REPAIR TABLE t` runs on real Athena** (`SubstatementType`
   `MSCK_REPAIR`), but Trino has no `MSCK` statement at all, so athena-local
   rejects it at the syntax check (measured 2026-09-25; out of scope for
-  #204).
+  #204). On an Iceberg table, or with a block comment, Athena fails it, and so
+  does athena-local — see
+  [Block comments Athena's Hive parser rejects](#block-comments-athenas-hive-parser-rejects).
 - **An unquoted `DROP DATABASE IF EXISTS x` runs on real Athena**
   (`SubstatementType` `DROP_DATABASE`), but Trino's grammar has `DROP SCHEMA`
   and no `DROP DATABASE`, so athena-local rejects it at the syntax check
@@ -210,6 +197,62 @@ Known differences between athena-local and real Athena, grouped by topic.
   explicit S3 location, while Trino's catalogs can supply one on their own.
   athena-local rejects the same forms real Athena does, with Athena's own
   message — see [Plain `CREATE TABLE`](#plain-create-table).
+
+## Block comments Athena's Hive parser rejects
+
+Real Athena starts these queries and then fails them at run time: the
+statement is classified as usual (`StatementType`, `SubstatementType` and a
+`<id>.txt` `OutputLocation` are the same as without the comment), but
+`Status.State` is `FAILED`. athena-local looks up the table's format in Trino,
+does not send the statement itself (nor, for `MSCK` and `ADD COLUMNS`, which
+Trino has no grammar for, its syntax check), and fails it the same way
+(measured 2026-09-26):
+
+| Statement | Fails on | Runs on |
+| --- | --- | --- |
+| `SHOW CREATE TABLE` | a Hive table, a view, a missing table | an Iceberg table |
+| `DESCRIBE`, `DESC` | a Hive table | an Iceberg table, a view |
+| `MSCK REPAIR TABLE` | a Hive table, a view, a missing table | — (an Iceberg table fails differently, below) |
+| `ALTER TABLE ... ADD COLUMNS` | a Hive table, a view, a missing table | — (Athena runs it on an Iceberg table, but Trino has no `ADD COLUMNS`, so athena-local still rejects it at the syntax check) |
+| `ALTER TABLE ... DROP COLUMN`, `RENAME TO` | a Hive table, a view, a missing table | an Iceberg table |
+
+The comment has to come first, or between the keywords, or right before the
+table name (`SHOW /* c */ CREATE TABLE t`, `MSCK REPAIR TABLE /* c */ t`,
+`/* c */ ALTER TABLE t ADD COLUMNS (c int)`, and so on). A comment inside or
+after the table name was not measured and is sent to Trino as written. So is
+`ALTER /* c */ TABLE t` with `ADD PARTITION`, `DROP PARTITION` or `SET
+TBLPROPERTIES`, which succeed on Athena (those spellings are Trino syntax
+errors anyway — see [`ALTER TABLE` and format-dependent DDL](#alter-table-and-format-dependent-ddl)).
+
+The failure is `ErrorCategory` 1 / `ErrorType` 1003 with a `ParseException`
+reason, and `<id>.txt` holds that reason with no `.metadata`:
+
+| Comment | `StateChangeReason` |
+| --- | --- |
+| first | `FAILED: ParseException line L:C cannot recognize input near '/' '*' 'c'` |
+| after `SHOW` | `FAILED: ParseException line L:C cannot recognize input near 'SHOW' '/' '*' in ddl statement` |
+| after `SHOW CREATE` | `FAILED: ParseException line L:C mismatched input '/' expecting TABLE near 'CREATE' in show statement` |
+| after `MSCK` / `MSCK REPAIR` | `FAILED: ParseException line L:C missing EOF at '/' near 'MSCK'` / `near 'REPAIR'` |
+| before the table name | `FAILED: ParseException line L:C cannot recognize input near '/' '*' 'c' in table name` |
+| after `ALTER` | `FAILED: ParseException line 1:0 cannot recognize input near 'ALTER' '/' '*' in alter statement` |
+| after `DESCRIBE` / `DESC` | `FAILED: ParseException line 1:0 cannot recognize input near 'DESCRIBE' '/' '*' in describe statement` |
+
+The keywords in the message are spelled as written (`near 'show'` for
+`show /* c */ create table t`). `'c'` stands for the first token inside the
+comment (`abc` for `/* abc */`, `1.5` for `/* 1.5 */`, `'x'` for `/* 'x' */`,
+`a` for `/* a.b */`, `*` for `/**/`). `L:C` is the line (from 1) and column
+(from 0) of the `/`, counted after every run of two or more whitespace
+characters (newlines included) is squeezed into one space: `SHOW\n/* c */` is
+`2:0`, but `SHOW\n\n/* c */` and `SHOW  /* c */` are both `1:5`.
+
+Two `ALTER TABLE` actions differ: with `DROP COLUMN` and `RENAME TO` the
+failure is `ErrorCategory` 2 / `ErrorType` 1006, and `AthenaError.ErrorMessage`
+is not the reason but what Athena reports for the same statement without the
+comment — `line 1:N: mismatched input 'COLUMN' expecting 'PARTITION'` (`N`
+counts the comment) and `Query type not supported by DDL engine.`
+respectively. `MSCK REPAIR TABLE` on an Iceberg table, with or without a comment, fails with
+`Query type not supported by Athena Iceberg at this time` (`ErrorCategory` 2 /
+`ErrorType` 1200) and writes no `<id>.txt`.
 
 ## `ALTER TABLE` and format-dependent DDL
 

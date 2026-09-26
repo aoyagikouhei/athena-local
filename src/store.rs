@@ -153,7 +153,7 @@ pub struct Submission {
     pub database: Option<String>,
     pub result_location: Option<ResultLocation>,
     pub work_group: String,
-    /// ClientRequestToken。operation/execution.rs が必須項目として検証済みなので常に有効な値。
+    /// ClientRequestToken。operation/start_request.rs が必須項目として検証済みなので常に有効な値。
     pub token: String,
     pub fingerprint: Fingerprint,
     /// 開始時点で決まった失敗（`Execution::immediate_failure`）。
@@ -335,6 +335,7 @@ mod tests {
     fn user_failure(reason: &str) -> Failure {
         Failure {
             reason: reason.to_string(),
+            error_message: None,
             category: crate::failure::USER,
             error_type: 1301,
             retryable: false,

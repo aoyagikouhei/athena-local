@@ -46,8 +46,32 @@ pub(super) fn parse_target_table(
     let name = keywords(statement)
         .iter()
         .find_map(|keywords| table_name_start(query, keywords))?;
-    let parts = parse_qualified_name(name)?;
+    parts_to_target(parse_qualified_name(name)?, default_catalog, default_schema)
+}
 
+/// `MSCK REPAIR TABLE` の対象。`table_format::TargetStatement` に MSCK の腕は無い（結果ファイルの
+/// 書き方などには使わないので、対象を広げない）。名前が引用符付きの部品を含むか 4 部以上なら None
+/// （構文チェックの前の判定だけが使う。開始時の判定に任せる。2026-09-26 実測。#244）。
+pub(super) fn parse_msck_target(
+    query: &str,
+    default_catalog: Option<&str>,
+    default_schema: Option<&str>,
+) -> Option<TargetTable> {
+    let name = table_name_start(query, &["MSCK", "REPAIR", "TABLE"])?;
+    let parts = athena_sql::Cursor::new(name).qualified_name()?.parts;
+    if parts.len() >= 4 || parts.iter().any(|part| part.text.starts_with('"')) {
+        return None;
+    }
+    parts_to_target(parse_qualified_name(name)?, default_catalog, default_schema)
+}
+
+/// `.` で区切った名前の並びから `TargetTable` を組み立てる（`parse_target_table`・`parse_msck_target` で共有）。
+/// 4 部以上は `<[String; N]>::try_from` がすべて失敗するのでここで None になる。
+fn parts_to_target(
+    parts: Vec<String>,
+    default_catalog: Option<&str>,
+    default_schema: Option<&str>,
+) -> Option<TargetTable> {
     let (catalog, schema, table) = match <[String; 1]>::try_from(parts.clone()) {
         Ok([table]) => (None, None, table),
         Err(_) => match <[String; 2]>::try_from(parts.clone()) {

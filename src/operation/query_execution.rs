@@ -9,6 +9,7 @@ use crate::athena::{
     Statistics, Status, StopQueryExecutionRequest, StopQueryExecutionResponse,
 };
 use crate::convert;
+use crate::failure::Failure;
 use crate::handler::App;
 use crate::request::parse;
 use crate::response::{invalid_request_with_code, ok};
@@ -199,7 +200,7 @@ fn to_query_execution(id: &str, execution: &Execution) -> QueryExecution {
                 error_category: failure.category,
                 error_type: failure.error_type,
                 retryable: failure.retryable,
-                error_message: failure.reason.clone(),
+                error_message: athena_error_message(failure),
             }),
         },
         statistics: statistics(
@@ -209,6 +210,16 @@ fn to_query_execution(id: &str, execution: &Execution) -> QueryExecution {
         ),
         work_group: execution.work_group.clone(),
     }
+}
+
+/// Status.AthenaError.ErrorMessage。`Failure::error_message` が無ければ StateChangeReason と同じ `reason`
+/// （本物は ALTER TABLE の RENAME TO・DROP COLUMN のブロックコメントの失敗だけ別の文言を返す。
+/// 2026-09-26 実測。#244）。
+fn athena_error_message(failure: &Failure) -> String {
+    failure
+        .error_message
+        .clone()
+        .unwrap_or_else(|| failure.reason.clone())
 }
 
 /// 投入 → 実行開始 → 完了の時刻から時間を出す。まだ来ていない区切りの時間は 0。
@@ -243,6 +254,19 @@ fn unknown_execution(id: &str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn failure(reason: &str) -> Failure {
+        crate::failure::Failure::result_write(reason.to_string())
+    }
+
+    #[test]
+    fn athena_error_message_は_error_message_が_none_なら_reason_some_ならその値になる() {
+        let mut failure = failure("理由");
+        assert_eq!(athena_error_message(&failure), "理由");
+
+        failure.error_message = Some("別の文言".to_string());
+        assert_eq!(athena_error_message(&failure), "別の文言");
+    }
 
     #[test]
     fn 統計は待ち時間と実行時間に分かれ足すと全体になる() {

@@ -97,6 +97,47 @@
   - `MSCK REPAIR TABLE`（対照）の `GetQueryResults` は 1 行（本体と同じ文字列）を返すが、`ColumnInfo` は空で `UpdateCount` も無い
 - 備考: #17・#52 の `SHOW CREATE TABLE`（`/* c */ SHOW CREATE TABLE`・`SHOW CREATE /* c */ TABLE` が ParseException、ErrorCategory 1 / ErrorType 1003）と同じ形の失敗が `DESCRIBE` と `MSCK REPAIR TABLE` にもあった。一方 `SHOW CREATE /* c */ VIEW` は成功し、#52 の `SHOW CREATE /* c */ TABLE` と割れた。`summary.txt` の `x1-show-partitions-comment` の行で QueryExecutionId の一部が `<ACCOUNT_ID>` になっているのは、12 桁の数字を一律に伏せるマスクの副作用（アカウント ID ではない）
 
+### ブロックコメントの ParseException が出る表と位置（#244）
+- 日付: 2026-09-26（UTC 2026-09-26 11:41）／ issue: #244 ／ スクリプト: `tools/measure/block-comment-parse-error.sh`（既定のラウンド）／ 生データ: `$HOME/athena-block-comment-parse-error-measurements/run-20260926-114123`（#17・#52・#146 の生データも読み直した: `athena-comment-measurements/run-20260918-090622`・`athena-keyword-comment-measurements/run-20260922-180816`・`athena-unmeasured-batch-measurements/run-20260924-004554/x1`）
+- 相手: 本物の Athena（engine version 3、Context は `Catalog=AwsDataCatalog,Database=<db>`）
+- 投げたもの: 67 項目と準備・後始末。Hive 表 `<H>`（`CREATE EXTERNAL TABLE ... PARTITIONED BY (p string)`）・Iceberg 表 `<I>`・ビュー `<V>` を作り、形式を `SHOW CREATE TABLE` で裏取りし、最後に 3 つとも消した（後始末の残りは無い）。無い表 `<M>` は作らない。StartQueryExecution は 69 回
+- 返ったもの（失敗は書いたもの以外 ErrorCategory 1 / ErrorType 1003・Retryable false・ErrorMessage は StateChangeReason と同じ・`<id>.txt` の中身は StateChangeReason（application/octet-stream）・`.metadata` 無し。44 項目で中身まで突き合わせた。StatementType・SubstatementType・OutputLocation はコメント無しと同じ）:
+
+  | 文 | Hive 表 | 無い表 | ビュー | Iceberg 表 |
+  |---|---|---|---|---|
+  | SHOW CREATE TABLE（コメントが先頭・SHOW の後・CREATE の後・TABLE の後） | FAILED | FAILED | FAILED（CREATE の後だけ測った） | **SUCCEEDED**（4 位置とも） |
+  | `describe /* c */`・`DESC /* c */`・`/* c */ DESCRIBE` | FAILED | — | `DESCRIBE /* c */` は SUCCEEDED（DESC_VIEW） | `DESCRIBE /* c */` は **SUCCEEDED** |
+  | `DESCRIBE -- c\n<t>` | SUCCEEDED | — | — | — |
+  | MSCK REPAIR TABLE（先頭・MSCK の後・REPAIR の後・TABLE の後） | FAILED | FAILED（REPAIR の後だけ測った） | — | REPAIR の後: FAILED、`Query type not supported by Athena Iceberg at this time`、2/1200、本体なし |
+  | `ALTER /* c */ TABLE ... ADD COLUMNS` | FAILED | FAILED | FAILED | **SUCCEEDED** |
+  | `/* c */ ALTER TABLE ... ADD COLUMNS`・`ALTER TABLE /* c */ ... ADD COLUMNS` | — | FAILED | — | — |
+  | `ALTER /* c */ TABLE ... ADD PARTITION`・`DROP PARTITION`・`SET TBLPROPERTIES` | **SUCCEEDED** | — | — | — |
+  | `ALTER /* c */ TABLE ... RENAME TO` | — | FAILED、ただし 2/1006 で ErrorMessage は `Query type not supported by DDL engine.` | — | — |
+  | `ALTER /* c */ TABLE ... DROP COLUMN` | FAILED、ただし 2/1006 で ErrorMessage は `line 1:<C+1>: mismatched input 'COLUMN' expecting 'PARTITION'`（`<C>` は `COLUMN` の 0 始まりの位置。コメントも数える） | 同じ | — | SUCCEEDED |
+
+  文言（StateChangeReason）の形。`<k>` は書いた綴りのキーワード（小文字で書けば小文字）、`L:C` は `/` の行（1 始まり）と列（0 始まり）:
+
+  | コメントの位置 | StateChangeReason |
+  |---|---|
+  | 先頭（SHOW CREATE TABLE・MSCK・ALTER・DESCRIBE 共通） | `FAILED: ParseException line L:C cannot recognize input near '/' '*' '<x>'`。`<x>` はコメントの中身の最初の字句: `/* c */`→`c`、`/* abc */`→`abc`、`/* a b */`→`a`、`/**/`→`*`、`/* , */`→`,` |
+  | SHOW の後 | `FAILED: ParseException line L:C cannot recognize input near '<SHOW>' '/' '*' in ddl statement` |
+  | SHOW CREATE の後 | `FAILED: ParseException line L:C mismatched input '/' expecting TABLE near '<CREATE>' in show statement` |
+  | MSCK の後・MSCK REPAIR の後 | `FAILED: ParseException line L:C missing EOF at '/' near '<MSCK>'`・`near '<REPAIR>'` |
+  | 名前の直前（`SHOW CREATE TABLE`・`MSCK REPAIR TABLE`・`ALTER TABLE` の後） | `FAILED: ParseException line L:C cannot recognize input near '/' '*' '<x>' in table name` |
+  | ALTER の後 | `FAILED: ParseException line 1:0 cannot recognize input near '<ALTER>' '/' '*' in alter statement`（空白 2 つ・改行でも 1:0） |
+  | DESCRIBE・DESC の後 | `FAILED: ParseException line 1:0 cannot recognize input near '<DESCRIBE>' '/' '*' in describe statement` |
+
+  - 列は、同じ行の空白の連続を 1 つに畳んで数えた値と合う（`SHOW  /* c */` → 1:5、`SHOW CREATE  /* c */` → 1:12、`MSCK REPAIR  /* c */` → 1:12）。改行の後は `line 2:0`（`SHOW\n/* c */`・`SHOW CREATE\n/* c */`・`MSCK REPAIR\n/* c */`・`-- x\n/* c */ SHOW ...`）。`/* c */\nSHOW ...` は 1:0。コメント 2 つ（`SHOW /* a */ /* b */`）は 1 つと同じ
+- 2 ラウンド目（UTC 2026-09-26 12:14、`ROUND=2`、生データ `run-20260926-121452`、48 項目と準備・後始末で 60 回、後始末の残りは無い）:
+  - 位置: 2 文字以上続く空白（空白・タブ・改行）だけが 1 つの空白に畳まれ、1 文字の空白はそのまま数える。`SHOW  CREATE /* c */ TABLE` → 1:12（畳まなければ 13）、`SHOW\t/* c */` → 1:5、`SHOW\t\t/* c */` → 1:5、`SHOW\n\n/* c */` → **1:5**、`SHOW CREATE\n  /* c */ TABLE` → **1:12**（1 ラウンド目の `SHOW\n/* c */` → 2:0 と合わせ、改行 1 つだけが行を進める）、`SHOW  CREATE  TABLE  /* c */` → 1:18、`   /* c */ SHOW ...` → 1:0、`MSCK  REPAIR /* c */` → 1:12、`ALTER TABLE  /* c */`・`ALTER  TABLE /* c */` → 1:12
+  - 先頭のコメントの 3 語目: `/* 1 */`→`1`、`/* 'x' */`→`'x'`、`/* a.b */`→`a`、`/* _a1 */`→`_a1`、`/*+ x */`→`+`、`/* あ */`→`*`（非 ASCII は飛ばされ閉じの `*`）、`/* 1a */`→`1a`、`/*\nc */`→`c`、`/* "q" */`→`"q"`、`/* ) */`→`)`、`/* 1.5 */`→`1.5`、`/* a-b */`→`a`。名前の直前の `SHOW CREATE TABLE /* 1 */ <H>` → `near '/' '*' '1' in table name`
+  - MSCK REPAIR TABLE: Iceberg 表はコメント無し・先頭・MSCK の後・TABLE の後のどれも `Query type not supported by Athena Iceberg at this time`（2/1200、本体なし）。ビューはコメント入り（REPAIR の後）で ParseException、コメント無しは `FAILED: Execution Error, return code 1 from org.apache.hadoop.hive.ql.exec.DDLTask. Can not create a Path from an empty string`（2/1100、`.txt` あり）。無い表のコメント無しは SUCCEEDED
+  - ALTER TABLE ... RENAME TO: Hive 表・ビュー・無い表（先頭・ALTER の後・TABLE の後）とも 2/1006、ErrorMessage `Query type not supported by DDL engine.`、StateChangeReason は位置の形の ParseException
+  - ALTER TABLE ... DROP COLUMN: Hive 表（先頭・ALTER の後・TABLE の後）・ビュー・無い表とも 2/1006、ErrorMessage `line 1:<N>: mismatched input 'COLUMN' expecting 'PARTITION'`。`N` は上と同じく畳んだ文での `COLUMN` の位置 + 1（`ALTER  /* c */ TABLE <M> DROP COLUMN c` → 1:70。畳まなければ 71）。`'COLUMN'` は書いた綴り（小文字なら `'column'`）
+  - Iceberg 表の `/* c */ DESCRIBE`・`DESC /* c */`・`/* c */ ALTER TABLE ... ADD COLUMNS`・`ALTER TABLE /* c */ ... ADD COLUMNS` は SUCCEEDED。ビューの `/* c */ DESCRIBE` は SUCCEEDED、`SHOW CREATE TABLE /* c */ <V>` は FAILED。Hive 表の `/* c */ ALTER TABLE ... ADD COLUMNS`・`ALTER TABLE /* c */ ... ADD COLUMNS` は FAILED
+- 採用した判断: 実装は #244 の PR（.claude/issue-notes/244.md の設計判断）
+- 備考: #17 の `/* c */ SHOW CREATE TABLE`、#52 の `SHOW /* c */ CREATE TABLE`・`SHOW CREATE /* c */ TABLE`・無い表への `ALTER /* c */ TABLE`、#146 の `MSCK REPAIR /* c */ TABLE` と食い違いは無かった。#52 の「Iceberg への `ALTER /* c */ TABLE` は成功」もこのラウンドの a3 で再現した。コメント無しの DROP COLUMN・RENAME TO の Hive 表・無い表の失敗（#39・#43・#204・#208・#217 の生データ）は ErrorMessage がコメント入りと同じで、athena-local との差は #256
+
 ## 本物だけが実行時に弾く形（`/* c */ SHOW CREATE TABLE`）
 
 ### 範囲外の発見（同じラウンド）
