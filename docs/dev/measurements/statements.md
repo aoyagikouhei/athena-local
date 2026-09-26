@@ -597,3 +597,26 @@ Content-Type と `.metadata` を含む置き場所は本項が主で、[result-f
 
 - 採用した判断: 引用符（`'`・`"`）とコメントの外の `;` で区切り、空白（空白・タブ・CR・LF）だけの片を除いて 2 つ以上あれば、構文チェックの前に `Only one sql statement is allowed. Got: <末尾の空白を落とした文>` で弾く。コメントだけの片は数える。末尾の `;` だけの文は本物では通るが、athena-local は今までどおり Trino の構文チェックで弾く（#240 に分けた）
 - 備考: #224 の i10 と食い違いは無かった。#76 の `SELECT 1;`（SUCCEEDED）とも合う
+
+### 末尾の `;` だけの文と前後の空白（#240）
+- 日付: 2026-09-26（UTC 2026-09-26 04:05）／ issue: #240 ／ スクリプト: `tools/measure/unquoted-ddl.sh`（`ROUND=7`）／ 生データ: `$HOME/athena-unquoted-ddl-measurements/run-20260926-040524`（#228 の `run-20260926-033720` の k6〜k12・k28 と、#76 の g2-semicolon と合わせて読む）
+- 相手: 本物の Athena（Context は書いたもの以外 `Catalog=AwsDataCatalog,Database=<db>`。l13 は S3 Tables のカタログ `s3tablescatalog/<bucket>`）
+- 投げたもの: 29 項目（l0〜l28）。l16 の CTAS で作った表は l20 の DROP で消した（後始末の残りは無い）。l22〜l26 は同じ ClientRequestToken で続けて投げた
+- 返ったもの（開始時に弾かれたものは `InvalidRequestException`。文と Query は repr で読んだ）:
+
+  | 文 | 本物 |
+  |---|---|
+  | `SELECT 1`（l0）・`  SELECT 1;`（l1）・`SELECT 1  `（l2）・`\n\nSELECT 1\n`（l3）・`  SELECT 1  ;  `（l4）・`SELECT 1\t;`（l5）・`;SELECT 1`（l6）・`; SELECT 1`（l7） | SUCCEEDED（DML / SELECT・`.csv`）。Query はすべて `SELECT 1`（`;` の有無によらず前後の空白が落ち、先頭の `;` も落ちる） |
+  | `-- c\nSELECT\n  1 ;\n`（l28） | SUCCEEDED。Query は `-- c\nSELECT\n  1`（先頭のコメントと中の改行は残る） |
+  | `;`（l8） | `Empty sql statement: ;`（MALFORMED_QUERY） |
+  | `SELECT;`（l9）・`SELECT 1 +;`（l27） | `line 1:7: mismatched input '<EOF>'. Expecting: '*', 'ALL', 'DISTINCT', <expression>`・`line 1:11: mismatched input '<EOF>'. Expecting: <expression>`（MALFORMED_QUERY。`;` を落とした文を読んだ位置と文言） |
+  | `SELECT 1\nFROM;`（l10） | `Queries of this type are not supported`（INVALID_INPUT。`;` の無い不完全な文と同じ） |
+  | `DESCRIBE <db>.<実在しない表>;`（l11） | `Entity Not Found (Service: AmazonDataCatalog; ...)`（MALFORMED_QUERY。`;` の無い形と同じ） |
+  | `CREATE TABLE <db>.<t> (n int NOT NULL);`（l12） | `line 1:66: no viable alternative at input 'CREATE TABLE <db>.<t> (n int NOT'`（`;` の無い形と同じ） |
+  | S3 Tables の Context で `CREATE TABLE awsdatacatalog.<db>.<t> (n int);`（l13） | `Unsupported ddl with 2 catalogs: CREATE TABLE awsdatacatalog.<db>.<t> (n int)`（引用した文に `;` は無い） |
+  | `SHOW TABLES;`（l14）・`EXPLAIN SELECT 1;`（l15）・`CREATE TABLE <db>.<t> AS SELECT 1 AS n;`（l16）・`INSERT INTO <db>.<t> VALUES (2);`（l17）・`SHOW CREATE TABLE <db>.<t>;`（l19）・`DROP TABLE IF EXISTS <db>.<t>;`（l20）・`SELECT ?;`（l21。ExecutionParameters `1`） | SUCCEEDED。StatementType・SubstatementType・出力先の拡張子は `;` の無い形と同じ。Query は `;` を落とした文 |
+  | `DESCRIBE <db>.<t>;`（l18。実在する表） | SUCCEEDED（UTILITY / DESCRIBE_TABLE・`.txt`）。Query は `DESCRIBE <t>`（DB 名が落ちた。#242） |
+  | 同じ ClientRequestToken で `SELECT 1;`（l22）の後に `SELECT 1`（l23）・`SELECT 1;;`（l24）・`SELECT 1 `（l25）・`SELECT 2;`（l26） | l22 は SUCCEEDED、l23〜l26 はすべて `Idempotent parameters do not match`（冪等の比較は受け取ったままの文） |
+
+- 採用した判断: 引用符とコメントの外の `;` で区切り、空白（空白・タブ・CR・LF）だけでない片がちょうど 1 つなら、その片の前後の空白を落とした文を、構文チェック・開始時の判定・実行・GetQueryExecution の Query に使う（`;` の無い文も前後の空白を落とす）。空白だけでない片が 0 で `;` があれば `Empty sql statement: <末尾の空白を落とした受け取った文>`（MALFORMED_QUERY）で弾く。冪等の指紋は受け取ったままの文で作る
+- 備考: #228 の k6〜k12・k28（Query から末尾の `;` と前後の空白が落ちる）、#76 の g2-semicolon（`.csv` と `.metadata` が `SELECT 1` と同じ）と食い違いは無かった。#208 の「位置は先頭の空白を数えない」（上の #208 の節）も、前後の空白を落とした文で位置を数えると読めば同じ規則になる
