@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # issue #208 で作成。issue #221 で ROUND=3、issue #224 で ROUND=4、issue #227 で ROUND=5、
-# issue #228 で ROUND=6、issue #240 で ROUND=7 を追加
+# issue #228 で ROUND=6、issue #240 で ROUND=7、issue #242 で ROUND=8 を追加
 # 本物の Athena が StartQueryExecution の時点で弾く、無引用の DDL 3 種
 # （ALTER TABLE IF EXISTS、ALTER TABLE ... ADD COLUMN（単数）、場所の無い CREATE TABLE）の
 # 弾かれ方の規則（`line L:C` の位置、`no viable alternative at input '...'` の input の範囲、
@@ -123,6 +123,9 @@
 #   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=7 \
 #     S3TABLES_CATALOG=s3tablescatalog/your-bucket S3TABLES_NS=your_ns \
 #     bash tools/measure/unquoted-ddl.sh
+#   ラウンド 8（issue #242。DESCRIBE・DESC の Query から修飾が落ちる範囲と QueryExecutionContext.Database の
+#   書き換え、ほかの文で awsdatacatalog. が落ちる範囲だけを測る。S3TABLES_* は使わない）:
+#   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=8 bash tools/measure/unquoted-ddl.sh
 #   （資格情報はホストのシェルで AWS_ACCESS_KEY_ID などを export してから。または ~/.aws/credentials）
 #
 # 必要な環境変数:
@@ -145,6 +148,8 @@
 #                    6 は K 群（複数の文・末尾の `;`。issue #228）だけ。実在する表は作らない。
 #                    7 は L 群（末尾の `;` だけの文の見え方。issue #240）だけ。実在する表は作らず、
 #                    l16 の CTAS で作った表を l20 で消す。
+#                    8 は M 群（DESCRIBE の修飾落ちとカタログ部分の落ち。issue #242）だけ。表・ビュー・
+#                    別の DB を作り、最後に消す。
 #   CATALOG          既定 AwsDataCatalog
 #   REGION           既定 ap-northeast-1
 #   OUT_DIR          既定 ${DEV_HOST_HOME:-$HOME}/athena-unquoted-ddl-measurements
@@ -312,6 +317,12 @@
 #   [GetQueryExecution]
 #   開始できた項目だけ終端状態までポーリングし、終端後にもう 1 回まとめて取得する。
 #
+# == ROUND=8（M 群のみ。issue #242。preflight・DB 確認は共通、実在する表 <PROBE>_real は作らない） ==
+#
+#   [StartQueryExecution]
+#   preflight 2 + 準備 4（表・ビュー・別の DB・その表）+ M 群 36 + 後始末 6 = 48。
+#   DDL: 表 <PROBE>_m・ビュー <PROBE>_mv・DB <PROBE>_db2・表 <PROBE>_db2.<PROBE>_m2・m35 の表・m36 のビューを作って消す。
+#
 # == ROUND=7（L 群のみ。issue #240。preflight・DB 確認は共通、実在する表は作らない） ==
 #
 #   [StartQueryExecution]
@@ -372,9 +383,9 @@ set -uo pipefail
 : "${DB:?DB にデータベース名を設定してください}"
 ROUND=${ROUND:-1}
 case "$ROUND" in
-  1 | 2 | 3 | 4 | 5 | 6 | 7) ;;
+  1 | 2 | 3 | 4 | 5 | 6 | 7 | 8) ;;
   *)
-    echo "ROUND には 1・2・3・4・5・6・7 のどれかを指定してください（既定 1）" >&2
+    echo "ROUND には 1・2・3・4・5・6・7・8 のどれかを指定してください（既定 1）" >&2
     exit 1
     ;;
 esac
@@ -468,8 +479,16 @@ cleanup() {
   fi
   local key
   for key in "${!PENDING_DROPS_CTX[@]}"; do
-    cleanup_drop_in_ctx "${key%|*}" "DROP TABLE IF EXISTS ${key##*|}"
+    # ROUND=8 のビュー（<PROBE>_mv・<PROBE>_m36）は DROP VIEW で消す（#242）。
+    case "${key##*|}" in
+      "${PROBE_PREFIX}_mv" | "${PROBE_PREFIX}_m36") cleanup_drop_in_ctx "${key%|*}" "DROP VIEW IF EXISTS ${key##*|}" ;;
+      *) cleanup_drop_in_ctx "${key%|*}" "DROP TABLE IF EXISTS ${key##*|}" ;;
+    esac
   done
+  # ROUND=8 で作った別の DB が残っていれば、中の表ごと消す（#242）。
+  if [ "${M_DB2_OK:-0}" = 1 ] && ! grep -qs "^State: SUCCEEDED" "$RUN_DIR/m-drop-db2.reason.txt"; then
+    cleanup_drop "DROP DATABASE IF EXISTS ${PROBE_PREFIX}_db2 CASCADE"
+  fi
 }
 trap cleanup EXIT
 
@@ -490,6 +509,7 @@ $PROBE_PREFIX	<PROBE>
 $S3TABLES_CATALOG	<S3TABLES_CATALOG>
 $S3TABLES_BUCKET	<S3TABLES_BUCKET>
 $S3TABLES_NS	<S3TABLES_NS>
+${DB^^}	<DB_UPPER>
 EOF
 }
 
@@ -1422,6 +1442,121 @@ run_in_ctx "$DEFAULT_CTX" l28 $'-- c\nSELECT\n  1 ;\n'
 
 fi # ROUND=7
 
+# ROUND=8 だけ、M 群を投げる（issue #242）。
+if [ "$ROUND" = 8 ]; then
+
+DEFAULT_CTX="Catalog=$CATALOG,Database=$DB"
+# M 群のラベル一覧（setup・cleanup を除く）。ALL_LABELS と summary の repr の節から参照する。
+M_LABELS="m0 m1 m2 m3 m4 m5 m6 m7 m8 m9 m10 m11 m12 m13 m14 m20 m21 m22 m23 m24 m25 m26 m27 m28 m30 m31 m32 m33 m34 m35 m36 m37 m38 m39 m41 m42"
+T="$(new_name m)"
+V="$(new_name mv)"
+DB2="$(new_name db2)"
+T2="$(new_name m2)"
+DB2_CTX="Catalog=$CATALOG,Database=$DB2"
+
+# --- 準備: 表 <DB>.<T>・ビュー <DB>.<V>・別の DB <DB2> と表 <DB2>.<T2> ------------------------
+# 作ったものは最後の後始末で消す。途中で止めても trap（PENDING_DROPS・PENDING_DROPS_CTX）が消しにいく。
+PENDING_DROPS[$T]=1
+run_in_ctx "$DEFAULT_CTX" m-setup-t "CREATE TABLE $DB.$T AS SELECT 1 AS n, 'x' AS s"
+PENDING_DROPS_CTX["$DEFAULT_CTX|$V"]=1
+run_in_ctx "$DEFAULT_CTX" m-setup-v "CREATE VIEW $DB.$V AS SELECT 1 AS n"
+M_DB2_OK=0
+if run_in_ctx "$DEFAULT_CTX" m-setup-db2 "CREATE DATABASE $DB2"; then
+  M_DB2_OK=1
+  PENDING_DROPS_CTX["$DB2_CTX|$T2"]=1
+  run_in_ctx "$DB2_CTX" m-setup-t2 "CREATE TABLE $DB2.$T2 AS SELECT 2 AS n"
+fi
+
+# --- DESCRIBE・DESC（表は修飾が落ちるか、Context.Database が変わるか） ---------------------------
+# m0 は疎通。m1 は過去の実測（DESCRIBE <db>.<t> → DESCRIBE <t>）の再現。m2・m3・m6・m13 は Context と
+# 違う実在の DB、m4 は Context に Database が無い、m5 は大文字混じりのカタログ、m7・m8 は EXTENDED と列、
+# m9・m10 は名前の部品の間の空白・コメント、m11 はビュー（残る見込み）、m12 は DB の大文字（Database の書き換えの
+# 再現）、m14 は m13 の対照。
+run_in_ctx "$DEFAULT_CTX" m0 "SELECT 1"
+run_in_ctx "$DEFAULT_CTX" m1 "DESCRIBE $DB.$T"
+if [ "$M_DB2_OK" = 1 ]; then
+  run_in_ctx "$DEFAULT_CTX" m2 "DESCRIBE $DB2.$T2"
+  run_in_ctx "$DEFAULT_CTX" m3 "DESC $DB2.$T2"
+else
+  skip m2 "別の DB を作れなかったため"
+  skip m3 "別の DB を作れなかったため"
+fi
+run_in_ctx "Catalog=$CATALOG" m4 "DESCRIBE $DB.$T"
+run_in_ctx "$DEFAULT_CTX" m5 "DESCRIBE AwsDataCatalog.$DB.$T"
+if [ "$M_DB2_OK" = 1 ]; then
+  run_in_ctx "$DEFAULT_CTX" m6 "DESCRIBE awsdatacatalog.$DB2.$T2"
+else
+  skip m6 "別の DB を作れなかったため"
+fi
+run_in_ctx "$DEFAULT_CTX" m7 "DESCRIBE EXTENDED $DB.$T"
+run_in_ctx "$DEFAULT_CTX" m8 "DESCRIBE $DB.$T n"
+run_in_ctx "$DEFAULT_CTX" m9 "DESCRIBE $DB . $T"
+run_in_ctx "$DEFAULT_CTX" m10 "DESCRIBE $DB./* c */$T"
+run_in_ctx "$DEFAULT_CTX" m11 "DESCRIBE $DB.$V"
+run_in_ctx "$DEFAULT_CTX" m12 "DESCRIBE ${DB^^}.$T"
+if [ "$M_DB2_OK" = 1 ]; then
+  run_in_ctx "$DB2_CTX" m13 "DESCRIBE $DB.$T"
+  run_in_ctx "$DB2_CTX" m14 "DESCRIBE $T2"
+else
+  skip m13 "別の DB を作れなかったため"
+  skip m14 "別の DB を作れなかったため"
+fi
+
+# --- カタログ部分の落ち（DESCRIBE 以外の文。過去の実測では awsdatacatalog. だけ落ちて DB は残った） -----------
+# m20・m24・m26 は過去の実測の再現。m21・m25・m27・m31 は大文字混じりのカタログ、m22・m27 は別の DB、m23 は IN、
+# m28・m30〜m36・m41・m42 はまだ見ていない文の種類、m37 はビュー、m38 は部品の間の空白、m39 は Context に Database が無い。
+run_in_ctx "$DEFAULT_CTX" m20 "SHOW COLUMNS FROM awsdatacatalog.$DB.$T"
+run_in_ctx "$DEFAULT_CTX" m21 "SHOW COLUMNS FROM AwsDataCatalog.$DB.$T"
+if [ "$M_DB2_OK" = 1 ]; then
+  run_in_ctx "$DEFAULT_CTX" m22 "SHOW COLUMNS FROM awsdatacatalog.$DB2.$T2"
+else
+  skip m22 "別の DB を作れなかったため"
+fi
+run_in_ctx "$DEFAULT_CTX" m23 "SHOW COLUMNS IN awsdatacatalog.$DB.$T"
+run_in_ctx "$DEFAULT_CTX" m24 "SHOW CREATE TABLE awsdatacatalog.$DB.$T"
+run_in_ctx "$DEFAULT_CTX" m25 "SHOW CREATE TABLE AwsDataCatalog.$DB.$T"
+run_in_ctx "$DEFAULT_CTX" m26 "SHOW TABLES IN awsdatacatalog.$DB"
+if [ "$M_DB2_OK" = 1 ]; then
+  run_in_ctx "$DEFAULT_CTX" m27 "SHOW TABLES IN AwsDataCatalog.$DB2"
+else
+  skip m27 "別の DB を作れなかったため"
+fi
+run_in_ctx "$DEFAULT_CTX" m28 "SHOW TBLPROPERTIES awsdatacatalog.$DB.$T"
+run_in_ctx "$DEFAULT_CTX" m30 "SELECT * FROM awsdatacatalog.$DB.$T"
+run_in_ctx "$DEFAULT_CTX" m31 "SELECT * FROM AwsDataCatalog.$DB.$T"
+run_in_ctx "$DEFAULT_CTX" m32 "INSERT INTO awsdatacatalog.$DB.$T VALUES (2, 'y')"
+run_in_ctx "$DEFAULT_CTX" m33 "ALTER TABLE awsdatacatalog.$DB.$T SET TBLPROPERTIES ('athena_local_probe'='242')"
+run_in_ctx "$DEFAULT_CTX" m34 "DROP TABLE IF EXISTS awsdatacatalog.$DB.$NOPE"
+PENDING_DROPS["$(new_name m35)"]=1
+run_in_ctx "$DEFAULT_CTX" m35 "CREATE TABLE awsdatacatalog.$DB.$(new_name m35) AS SELECT 1 AS n"
+PENDING_DROPS_CTX["$DEFAULT_CTX|$(new_name m36)"]=1
+run_in_ctx "$DEFAULT_CTX" m36 "CREATE VIEW awsdatacatalog.$DB.$(new_name m36) AS SELECT 1 AS n"
+run_in_ctx "$DEFAULT_CTX" m37 "SHOW COLUMNS FROM awsdatacatalog.$DB.$V"
+run_in_ctx "$DEFAULT_CTX" m38 "SHOW CREATE TABLE awsdatacatalog . $DB . $T"
+run_in_ctx "Catalog=$CATALOG" m39 "SHOW COLUMNS FROM awsdatacatalog.$DB.$T"
+run_in_ctx "$DEFAULT_CTX" m41 "EXPLAIN SELECT * FROM awsdatacatalog.$DB.$T"
+run_in_ctx "$DEFAULT_CTX" m42 "SHOW VIEWS IN awsdatacatalog.$DB"
+
+# --- 後始末（作ったものを逆順に消す） ---------------------------------------------------------------
+run_in_ctx "$DEFAULT_CTX" m-drop-v36 "DROP VIEW IF EXISTS $DB.$(new_name m36)"
+succeeded m-drop-v36 && unset "PENDING_DROPS_CTX[$DEFAULT_CTX|$(new_name m36)]"
+run_in_ctx "$DEFAULT_CTX" m-drop-t35 "DROP TABLE IF EXISTS $DB.$(new_name m35)"
+succeeded m-drop-t35 && unset "PENDING_DROPS[$(new_name m35)]"
+run_in_ctx "$DEFAULT_CTX" m-drop-v "DROP VIEW IF EXISTS $DB.$V"
+succeeded m-drop-v && unset "PENDING_DROPS_CTX[$DEFAULT_CTX|$V]"
+run_in_ctx "$DEFAULT_CTX" m-drop-t "DROP TABLE IF EXISTS $DB.$T"
+succeeded m-drop-t && unset "PENDING_DROPS[$T]"
+if [ "$M_DB2_OK" = 1 ]; then
+  run_in_ctx "$DB2_CTX" m-drop-t2 "DROP TABLE IF EXISTS $DB2.$T2"
+  succeeded m-drop-t2 && unset "PENDING_DROPS_CTX[$DB2_CTX|$T2]"
+  run_in_ctx "$DEFAULT_CTX" m-drop-db2 "DROP DATABASE IF EXISTS $DB2"
+  if ! succeeded m-drop-db2; then
+    echo "== 別の DB <PROBE>_db2 を消せませんでした。手で DROP DATABASE IF EXISTS してください。"
+  fi
+fi
+
+fi # ROUND=8
+
 # --- 後始末（実在する表） ----------------------------------------------------------
 
 if [ "$REAL_SETUP_OK" = 1 ]; then
@@ -1460,6 +1595,9 @@ elif [ "$ROUND" = 4 ]; then
   for l in i1 i2 i3 i4 i5 i6 i7 i8 i9 i10 i11 i12 i13 i14 i15 i16 i17 i18 i19 i20 i21 i22; do
     ALL_LABELS="$ALL_LABELS $l $l-cleanup"
   done
+elif [ "$ROUND" = 8 ]; then
+  ALL_LABELS="$ALL_LABELS m-setup-t m-setup-v m-setup-db2 m-setup-t2 $M_LABELS"
+  ALL_LABELS="$ALL_LABELS m-drop-v36 m-drop-t35 m-drop-v m-drop-t m-drop-t2 m-drop-db2"
 elif [ "$ROUND" = 7 ]; then
   for l in $L_LABELS; do
     case "$l" in
@@ -1537,6 +1675,21 @@ write_summary_txt() {
       echo "#   i2・i19・i20 は S3 Tables の Context で DROP TABLE IF EXISTS）。i14・i15 の LOCATION は"
       echo "#   <OUTPUT>athena-local-probe-224/<PROBE>_<項目>/（空のプレフィックス。データは置かない）。"
       echo "# 課金: スキャンの無いクエリだけ（CREATE は 0〜1 行、DROP はメタデータのみ）。"
+      echo "# 注意: これは実測した本物の Athena の挙動であり、将来の Athena の変更で変わりうる。"
+      echo "#   実測値は既定とは限らない。"
+    elif [ "$ROUND" = 8 ]; then
+      echo "# issue #242（#208 ラウンド 8）: DESCRIBE・DESC の GetQueryExecution の Query から修飾が落ちる範囲と"
+      echo "#             QueryExecutionContext.Database の書き換え、ほかの文で awsdatacatalog. のカタログ部分が"
+      echo "#             落ちる範囲を実測"
+      echo "# 実行日時: $(date -Iseconds)"
+      echo "# StartQueryExecution の見込み本数: 48（preflight 2 + 準備 4 + M 群 36 + 後始末 6）。"
+      echo "#   別の DB を作れなければ m2・m3・m6・m13・m14・m22・m27 と準備・後始末の 3 本が減る。"
+      echo "#   このスクリプトの実測値: $(wc -l < "$START_CALL_FILE" | tr -d ' ') 回"
+      echo "# DDL: <DB> に表 <PROBE>_m（CTAS 1 行）とビュー <PROBE>_mv、別の DB <PROBE>_db2 とその表 <PROBE>_m2 を作り、"
+      echo "#   m32 で <PROBE>_m に 1 行 INSERT し m33 で TBLPROPERTIES を足す。m35（CTAS）・m36（VIEW）も作る。"
+      echo "#   最後にすべて DROP する（途中で止まっても trap が消しにいく。DB は CASCADE）。"
+      echo "#   DROP TABLE IF EXISTS（m34）は実在しない名前（<PROBE>_nope）にだけ投げる。"
+      echo "# 課金: スキャンは 1〜2 行の表だけ（SELECT・INSERT・CTAS）、ほかはメタデータのみ。"
       echo "# 注意: これは実測した本物の Athena の挙動であり、将来の Athena の変更で変わりうる。"
       echo "#   実測値は既定とは限らない。"
     elif [ "$ROUND" = 7 ]; then
@@ -1703,8 +1856,12 @@ PYEOF
         echo
       fi
     done
-    if [ "$ROUND" = 6 ] || [ "$ROUND" = 7 ]; then
-      if [ "$ROUND" = 6 ]; then REPR_LABELS=$K_LABELS; else REPR_LABELS=$L_LABELS; fi
+    if [ "$ROUND" = 6 ] || [ "$ROUND" = 7 ] || [ "$ROUND" = 8 ]; then
+      case "$ROUND" in
+        6) REPR_LABELS=$K_LABELS ;;
+        7) REPR_LABELS=$L_LABELS ;;
+        *) REPR_LABELS=$M_LABELS ;;
+      esac
       echo
       echo "## 文と開始時の文言・Query（Python の repr。前後の空白・改行・CR を区別する。実名は伏せる）"
       for label in $REPR_LABELS; do
@@ -1731,6 +1888,8 @@ if not text:
     status = q.get("Status", {})
     location = q.get("ResultConfiguration", {}).get("OutputLocation", "")
     print("- Query: " + repr(q.get("Query")))
+    # 返った QueryExecutionContext（ROUND=8。DESCRIBE で Database が文中の綴りに変わるか。#242）。
+    print("- Context: " + repr(q.get("QueryExecutionContext")))
     print("- id: %s state: %s type: %s/%s output: %s" % (
         q.get("QueryExecutionId"), status.get("State"), q.get("StatementType"),
         q.get("SubstatementType"), location.rsplit("/", 1)[-1].split(".", 1)[-1] if "." in location.rsplit("/", 1)[-1] else "(拡張子なし)"))
