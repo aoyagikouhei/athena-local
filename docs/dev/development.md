@@ -56,7 +56,7 @@ aws を呼ばず保存済みの実測データを検算するだけなので、�
 
 | サービス | 中身 | 足場からの宛先 |
 |---|---|---|
-| `trino` | `trinodb/trino`（既定 482）。カタログは hive / iceberg / memory | `trino:8080` |
+| `trino` | `trinodb/trino`（既定 482）。カタログは hive / iceberg / memory。hive / iceberg のデータはコンテナ内の `/tmp/hive`・`/tmp/iceberg`（volume は無く、作り直すと消える） | `trino:8080` |
 | `minio` | S3 互換ストレージ | `minio:9000` |
 | `minio-init` | バケット `athena-results` を作って終わる使い捨て | — |
 | `tls-proxy` | nginx。Athena JDBC 3.x の前で TLS を終端し、`dev:8087`（athena-local）と MinIO に中継する | `tls-proxy:8443`（athena-local）、`tls-proxy:9443`（MinIO） |
@@ -71,7 +71,7 @@ athena-local 自身は dev の中のプロセスで、足場は `127.0.0.1:<port
 - **同じプロジェクト名で 2 つの足場は流せない**（片方の開始時の `down -v` が、もう片方の Trino を走行の途中で消す）。開始時に「同じプロジェクトで別の足場が動いている」と出して止まる足場がある（jdbc 系 3 本（jdbc-drivers・jdbc-metadata・jdbc-show-metadata）、python-clients、retention、trino-probe の versions.sh）。
 - 同時に流すなら、プロジェクト名をホストの環境変数で分ける: `COMPOSE_PROJECT_NAME=athena-local-b tools/dev.sh tools/e2e/minio/verify.sh`。dev もその中の足場も同じ別プロジェクト（別のネットワーク・コンテナ・named volume）で動く。`tools/dev.sh COMPOSE_PROJECT_NAME=... <コマンド>` の形では dev 自身が既定のプロジェクトに入り、足場だけが別のプロジェクトになるので効かない。
 - プロジェクトを分けても同時に流せないもの: jdbc 系の 3 本（`tools/e2e/jdbc-drivers/verify.sh`、`tools/measure/jdbc-metadata.sh`、`tools/measure/jdbc-show-metadata.sh`）は、どのプロジェクトからも `tools/compose/jdbc-client/target` を bind するので、同時に 1 本だけ。
-- named volume（Trino のデータ、MinIO のデータ、maven のキャッシュ `jdbc-client-m2`）はプロジェクトごとに別。共有されるのは `.toolbox/`（cargo はロックで直列にする）と `/tmp`（証跡は `mktemp` で一意）だけ。
+- named volume（MinIO のデータ、maven のキャッシュ `jdbc-client-m2`）と Trino のコンテナ（データはその中）はプロジェクトごとに別。共有されるのは `.toolbox/`（cargo はロックで直列にする）と `/tmp`（証跡は `mktemp` で一意）だけ。
 - jdbc 系の足場の走行中に、同じプロジェクト名で `tools/dev.sh cargo test` のような足場でないコマンドを動かすのはかまわない。そのあいだ compose のネットワークでは `dev` が 2 つのアドレスに解決されるが、tls-proxy の nginx は `resolver` 無しで `dev:8087` を書いているので名前解決は起動時の 1 回だけで、jdbc 系の足場は開始時に tls-proxy を作り直し、preflight で別の dev がいれば止まる。つまり nginx が掴む `dev` は足場の dev の 1 つだけになる（#131）。
 
 ### 確かめた環境

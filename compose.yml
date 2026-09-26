@@ -68,10 +68,9 @@ services:
     # trino-probe/versions.sh が TRINO_TAG と CATALOG_DIR で版とカタログを差し替える（古い版は fs の設定が違う）。
     image: trinodb/trino:${TRINO_TAG:-482}
     volumes:
-      # hive / iceberg（データはコンテナ内の /data。MinIO は指さない）と memory（sdk-retry・retention）。相対パスはこのファイルの場所が基準。
+      # hive / iceberg（データはコンテナ内の /tmp/hive・/tmp/iceberg。MinIO は指さない）と memory（sdk-retry・retention）。相対パスはこのファイルの場所が基準。
+      # データの volume は置かない（足場は毎回 down -v で作り直す。volume は root の持ち物で trino が書けず、使われていなかった。#233）。
       - ${CATALOG_DIR:-./tools/compose/catalog}:/etc/trino/catalog:ro
-      - trino-hive-data:/data/hive
-      - trino-iceberg-data:/data/iceberg
 
   minio:
     image: docker.io/pgsty/silo:latest
@@ -134,7 +133,5 @@ services:
     command: ["sleep infinity"]
 
 volumes:
-  trino-hive-data:
-  trino-iceberg-data:
   minio-data:
   jdbc-client-m2:
