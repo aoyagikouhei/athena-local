@@ -12,7 +12,7 @@ READ_EXT_RE='\.txt'
 # 失敗した DDL の例外メッセージに含まれる Trino の失敗理由。実測（2026-09-23、全版・4 文とも）は
 # `Query execution failed: TABLE_NOT_FOUND: line 1:1: Table '...' does not exist` だったのでそれに絞る。
 REASON_RE='NOT_FOUND|does not exist'
-FAILED_DDL_LABELS="DROP_TABLE_iceberg SHOW_COLUMNS_hive DESCRIBE_hive ALTER_TABLE_DROP_COLUMN_hive"
+FAILED_DDL_LABELS="DROP_TABLE_iceberg DROP_TABLE_hive ALTER_TABLE_RENAME_hive ALTER_TABLE_DROP_COLUMN_hive"
 SHOW_LABELS=("SHOW_TABLES(対照)" "SHOW_SCHEMAS" "SHOW_COLUMNS")
 
 declare -a RESULT_NAMES=() RESULT_STATUS=() RESULT_DETAIL=()
