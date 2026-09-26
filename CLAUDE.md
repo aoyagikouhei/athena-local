@@ -35,7 +35,7 @@ CI（`.github/workflows/ci.yml`）の中身とリリース（`v*` タグで `doc
 
 壊すと事故になる不変条件:
 
-- 書き換えの条件（パラメータ、`TRINO_CATALOG_MAP` の別名に一致する修飾名、文の前後の空白と `;`、DESCRIBE などの `awsdatacatalog.` と表への DESCRIBE の DB、S3 Tables の Context の `CREATE TABLE AwsDataCatalog.<名前空間>.<表>` の 1 部目を空白にするもの）のどれにも当たらなければ、Trino に送る SQL は受け取った SQL と 1 文字も違わない（テストで保証）。条件を足したら、この一覧と `docs/configuration.md` の "not rewritten" の約束も直す。
+- 書き換えの条件（パラメータ、`TRINO_CATALOG_MAP` の別名に一致する修飾名、文の前後の空白と `;`、DESCRIBE などの `awsdatacatalog.` と表への DESCRIBE の DB、S3 Tables の Context の `CREATE TABLE AwsDataCatalog.<名前空間>.<表>` の 1 部目を空白にするもの、S3 Tables の Context の CTAS の `awsdatacatalog.<DB>.<表>` の 1 部目を `AwsDataCatalog` の Trino 名にするもの）のどれにも当たらなければ、Trino に送る SQL は受け取った SQL と 1 文字も違わない（テストで保証）。条件を足したら、この一覧と `docs/configuration.md` の "not rewritten" の約束も直す。
 - 構文チェックは `PREPARE athena_local_syntax_check FROM\n<sql>` で、Trino のエラー位置を 1 行戻す。前置きを変えるときは `src/trino.rs` と偽 Trino（`tests/common/mod.rs`）の `SYNTAX_CHECK_PREFIX` を両方直す。
 - 結果ファイル（本体、次に `.metadata`）を置いてから `SUCCEEDED` にする（クライアントは SUCCEEDED を見た直後に S3 を読む）。
 - `Store::finish` は終端状態では何もしない（先に `CANCELLED` になったクエリにあとから届いた結果は捨てる）。取り消しは `Store::cancel` で同期に `CANCELLED` にし、実行中のタスクがページ境界でフラグを見て `nextUri` に `DELETE` を送る。

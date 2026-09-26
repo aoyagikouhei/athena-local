@@ -575,7 +575,7 @@ Content-Type と `.metadata` を含む置き場所は本項が主で、[result-f
   | 既定の Context で `CREATE TABLE nosuchcatalog227.<db>.<t> (n int)`（j14） | `DATACATALOG_NOT_FOUND`、`Catalog 'nosuchcatalog227' does not exist` |
   | 既定の Context で `CREATE TABLE AwsDataCatalog.<db>.<t> (n int)`（j15）・`AWSDATACATALOG.<db>.<t>`（j16） | `No location ...` |
 
-- 採用した判断: 無引用の 3 部の名前で No location になる形は、1 部目のカタログが無ければ Context によらず `DATACATALOG_NOT_FOUND`（実在は `DESCRIBE` と同じく Trino に問い合わせ、`awsdatacatalog` は大文字小文字によらず実在）。S3 Tables の Context で 1 部目が小文字ちょうどでない `awsdatacatalog` なら、2 部目の名前空間が無ければ Trino に送らずに本物と同じ FAILED（ファイルも置かない）、あれば No location のまま（本物は作るが、SQL の書き換えが要る。ユーザーの判断）。2 部の `<db>.<t>` は #231、CTAS は #232
+- 採用した判断: 無引用の 3 部の名前で No location になる形は、1 部目のカタログが無ければ Context によらず `DATACATALOG_NOT_FOUND`（実在は `DESCRIBE` と同じく Trino に問い合わせ、`awsdatacatalog` は大文字小文字によらず実在）。S3 Tables の Context で 1 部目が小文字ちょうどでない `awsdatacatalog` なら、2 部目の名前空間が無ければ Trino に送らずに本物と同じ FAILED（ファイルも置かない）、あれば No location のまま（本物は作るが、SQL の書き換えが要る。ユーザーの判断）。2 部の `<db>.<t>` は #231、CTAS は #232（→ #232 で、j13 と i12 から CTAS は 1 部目の綴りによらず 2 部目を Glue の DB として引くとみて、DB が無ければ j13 と同じ FAILED（`.metadata` は中身が未実測なので置かない）、あれば 1 部目を `AwsDataCatalog` の別名の Trino 名に差し替えて送るようにした。2026-09-26）
 - 備考: #224 の i2・i4 と食い違いは無かった。仮説（大文字混じりの 1 部目は無視され、2 部目が S3 Tables の名前空間として引かれる）は j1・j4 と j2・j3 の対で確かめた
 
 

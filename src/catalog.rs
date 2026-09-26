@@ -62,7 +62,7 @@ fn next_is_dot(bytes: &[u8], i: usize) -> bool {
 
 /// Trino の名前を引用符で包み、元の識別子より短ければ空白で埋めて同じ文字数にする。
 /// Trino の桁位置は文字単位で数えるので、バイト数ではなく文字数で揃える。
-fn replacement(identifier: &str, trino: &str) -> String {
+pub(crate) fn replacement(identifier: &str, trino: &str) -> String {
     let mut quoted = format!("\"{}\"", trino.replace('"', "\"\""));
     let padding = identifier
         .chars()

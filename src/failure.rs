@@ -62,6 +62,20 @@ impl Failure {
         }
     }
 
+    /// S3 Tables の Context の CTAS で、1 部目が `awsdatacatalog` の類の名前の 2 部目（Glue の DB）が無いときに本物が
+    /// 返した文言（2026-09-26 実測 j13。#232）。`location` は結果の置き場所（`<OutputLocation>tables/<id>`）。
+    pub fn database_not_found(database: &str, location: &str) -> Self {
+        Self {
+            reason: format!(
+                "Database {database} not found. Please check your query. You may need to manually clean the data \
+                 at location '{location}' before retrying. Athena will not delete data in your account."
+            ),
+            category: USER,
+            error_type: 1301,
+            retryable: false,
+        }
+    }
+
     /// DESCRIBE の直後のブロックコメントを本物の Hive のパーサが読めなかった（2026-09-22 実測 `DESCRIBE /* c */ t`、
     /// 2026-09-26 実測 m10。#242）。本物の StateChangeReason は `FAILED: ` から始まる。
     pub fn describe_parse_error(keyword: &str) -> Self {

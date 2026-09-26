@@ -192,6 +192,28 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
             failure,
             writes_result_file: false,
         });
+    } else if s3_tables {
+        // S3 Tables の Context の CTAS は、1 部目が `awsdatacatalog` の類なら本物は 2 部目を Glue の DB として引いた
+        // （2026-09-26 実測 i12・j13。#232）。DB が無ければ開始して FAILED（`.metadata` は中身が未実測なので置かない）、
+        // あれば 1 部目を AwsDataCatalog の Trino 名にして送り、Query は受け取ったまま返す。
+        let location = result_location.as_ref().map(ResultLocation::uri);
+        match create_table_catalog::ctas(&app.trino, &app.config, &query, location.as_deref()).await
+        {
+            create_table_catalog::Outcome::FailAtRuntime(failure) => {
+                immediate_failure = Some(ImmediateFailure {
+                    failure,
+                    writes_result_file: false,
+                });
+            }
+            create_table_catalog::Outcome::Rewrite(rewritten) => {
+                reported = Some(Reported {
+                    query: query.clone(),
+                    database: database.clone(),
+                });
+                statement = rewritten;
+            }
+            _ => {}
+        }
     }
 
     // 本物は DESCRIBE の直後のブロックコメントを Hive の ParseException で FAILED にする（#242）。表と分かったとき
