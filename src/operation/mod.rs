@@ -2,6 +2,7 @@
 
 mod background_execution;
 mod classification;
+mod comment_parse_check;
 mod comment_parse_error;
 mod completion;
 mod context_catalog;

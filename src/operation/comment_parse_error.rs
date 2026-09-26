@@ -1,7 +1,7 @@
 //! 本物の Hive のパーサが、SHOW CREATE TABLE・DESCRIBE／DESC・MSCK REPAIR TABLE・ALTER TABLE の
 //! キーワードの間や名前の直前のブロックコメントで失敗させる ParseException を判定する
 //! （2026-09-26 実測 ラウンド 2・3。#244）。#242 の `reported_query::describe_parse_error` を置き換える
-//! 広い版。配線は `execution.rs` の `comment_parse_error_failure`。
+//! 広い版。配線は `comment_parse_check.rs`（構文チェックの前の `pre_syntax_check_failure` と後の `comment_parse_error_failure`）。
 //!
 //! ここは**純粋な字句判定**だけを持つ: 対象の表が Iceberg かどうか・実在するかどうかは見ない。本物は
 //! 表が Iceberg なら SHOW CREATE TABLE・DESCRIBE・ALTER の ADD COLUMNS／DROP COLUMN は成功させ、MSCK は
