@@ -558,3 +558,23 @@ Content-Type と `.metadata` を含む置き場所は本項が主で、[result-f
 
 - 採用した判断: S3 Tables の Context で、無引用の 3 部の名前の 1 部目がちょうど小文字の `awsdatacatalog` で、列の並びの判定が No location になるときだけ、`Unsupported ddl with 2 catalogs: <前後の空白（空白・タブ・改行）を落とした文>` で弾く。NV は今までどおり先に返す。大文字混じりの `AwsDataCatalog` と実在しないカタログは No location のまま据え置き（人間の判断。#227）。末尾の `;` と LOCATION は Trino の構文チェックが先に弾く形で、#228・#229 に分けた
 - 備考: #221 の h8 と食い違いは無かった。前後の空白を落とす文字の範囲は、測ったのが空白だけなので、athena-local は先頭の判定と同じ空白・タブ・CR・LF にした
+
+### S3 Tables の Context と既定の Context で、カタログ名の大文字小文字と実在しないカタログの CREATE TABLE（#227）
+- 日付: 2026-09-26（UTC 2026-09-26 01:25）／ issue: #227 ／ スクリプト: `tools/measure/unquoted-ddl.sh`（`ROUND=5`）／ 生データ: `$HOME/athena-unquoted-ddl-measurements/run-20260926-012516`（#224 の `run-20260926-004013` の i2〜i4 と合わせて読む）
+- 相手: 本物の Athena（`AwsDataCatalog` と、S3 Tables のカタログ `s3tablescatalog/<bucket>`）
+- 投げたもの: 17 項目（S3 Tables の Context の疎通 `SELECT 1` と `CREATE TABLE` 13 本、既定の Context の `CREATE TABLE` 3 本）。FAILED の項目は結果ファイルの本体と `.metadata` の有無も取得した。作られた表（j1・j4・j11）はその場で消した（後始末の残りは無い）
+- 返ったもの（開始時に弾かれたものは `InvalidRequestException`）:
+
+  | 文（Context は書いたもの以外 `Catalog=s3tablescatalog/<bucket>,Database=<ns>`） | 本物 |
+  |---|---|
+  | `CREATE TABLE AwsDataCatalog.<ns>.<t> (n int)`（j1）・`AWSDATACATALOG.<ns>.<t>`（j4）・対照の 2 部 `<ns>.<t>`（j11） | 開始でき、SUCCEEDED（DDL / CREATE_TABLE）。S3 Tables の名前空間 `<ns>` に作られた（1 部目は無視される） |
+  | `CREATE TABLE AwsDataCatalog.<db>.<t> (n int)`（j2。i4 の再現）・`AWSDATACATALOG.<db>.<t>`（j3）・`IF NOT EXISTS AwsDataCatalog.<db>.<t>`（j9）・2 部の `<db>.<t>`（j12。i2 の再現） | 開始でき、FAILED（StateChangeReason・ErrorMessage `Cannot find or access the specified table`、ErrorCategory 2・ErrorType 1100・Retryable false、DDL / CREATE_TABLE）。結果ファイルの本体も `.metadata` も無かった（どちらも 404） |
+  | `CREATE TABLE nosuchcatalog227.<ns>.<t> (n int)`（j5）・`NoSuchCatalog227.<db>.<t>`（j6）・`IF NOT EXISTS nosuchcatalog227.<db>.<t>`（j10） | `DATACATALOG_NOT_FOUND`、`Catalog '<書いたとおり>' does not exist`（j6 は `NoSuchCatalog227` のまま） |
+  | `CREATE TABLE nosuchcatalog227.<db>.<t> (n int NOT NULL)`（j7）・`AwsDataCatalog.<db>.<t> (n int NOT NULL)`（j8） | NV(NOT)（`MALFORMED_QUERY`。カタログの判定より先） |
+  | `CREATE TABLE AwsDataCatalog.<ns>.<t> AS SELECT 1 AS n`（j13。CTAS） | 開始でき、FAILED（2/1301、`Database <ns> not found. Please check your query. You may need to manually clean the data at location '<OUTPUT>tables/<id>' before retrying. Athena will not delete data in your account.`）。`.metadata` だけ 81 バイト置かれた（#232） |
+  | 既定の Context で `CREATE TABLE nosuchcatalog227.<db>.<t> (n int)`（j14） | `DATACATALOG_NOT_FOUND`、`Catalog 'nosuchcatalog227' does not exist` |
+  | 既定の Context で `CREATE TABLE AwsDataCatalog.<db>.<t> (n int)`（j15）・`AWSDATACATALOG.<db>.<t>`（j16） | `No location ...` |
+
+- 採用した判断: 無引用の 3 部の名前で No location になる形は、1 部目のカタログが無ければ Context によらず `DATACATALOG_NOT_FOUND`（実在は `DESCRIBE` と同じく Trino に問い合わせ、`awsdatacatalog` は大文字小文字によらず実在）。S3 Tables の Context で 1 部目が小文字ちょうどでない `awsdatacatalog` なら、2 部目の名前空間が無ければ Trino に送らずに本物と同じ FAILED（ファイルも置かない）、あれば No location のまま（本物は作るが、SQL の書き換えが要る。ユーザーの判断）。2 部の `<db>.<t>` は #231、CTAS は #232
+- 備考: #224 の i2・i4 と食い違いは無かった。仮説（大文字混じりの 1 部目は無視され、2 部目が S3 Tables の名前空間として引かれる）は j1・j4 と j2・j3 の対で確かめた
+

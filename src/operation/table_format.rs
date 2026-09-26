@@ -131,6 +131,16 @@ pub(super) fn catalog_exists_sql(catalog: &str) -> String {
     format!("SELECT ({})", connector_name_sql(catalog))
 }
 
+/// 名前空間（スキーマ）の有無だけを確かめる（`create_table_catalog`。#227）。無ければ `_col0` が null の 1 行。
+/// `system.jdbc.schemas` を使うのは `probe_sql` と同じく、名前を全部リテラルで書けるため。
+pub(super) fn schema_exists_sql(catalog: &str, schema: &str) -> String {
+    format!(
+        "SELECT (SELECT table_schem FROM system.jdbc.schemas WHERE table_catalog = {} AND table_schem = {})",
+        quote_literal(catalog),
+        quote_literal(schema),
+    )
+}
+
 fn connector_name_sql(catalog: &str) -> String {
     format!(
         "SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = {}",

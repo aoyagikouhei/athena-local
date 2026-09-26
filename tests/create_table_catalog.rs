@@ -2,6 +2,11 @@
 //! 開始時に `DATACATALOG_NOT_FOUND`（`Catalog '<書いたとおり>' does not exist`）で弾いた（2026-09-26 実測 i3・j5・j6・
 //! j10・j14。#227）。athena-local は `awsdatacatalog`（大文字小文字によらず）を実在とし、それ以外は `DESCRIBE` と同じく
 //! Trino にカタログがあるかを問い合わせる。確かめられなければ今までどおり No location。
+//!
+//! S3 Tables の Context で 1 部目が小文字ちょうどでない `awsdatacatalog`（`AwsDataCatalog` など）なら、本物は 1 部目を
+//! 無視して 2 部目を S3 Tables の名前空間として作り、名前空間が無ければ開始して FAILED にした（結果ファイルも置かない。
+//! 2026-09-26 実測 j1〜j4・j9）。athena-local は名前空間が無ければ Trino に送らずに同じ FAILED にし、あれば
+//! 今までどおり No location（本物どおりに作るには SQL の書き換えが要る）。
 
 mod common;
 
@@ -23,6 +28,13 @@ fn catalog_exists_response(connector_name: Option<&str>) -> Value {
         "columns": [{ "name": "_col0", "type": "varchar" }],
         "data": [[connector_name]]
     })
+}
+
+/// 名前空間の有無の問い合わせ（`src/operation/table_format.rs` の `schema_exists_sql` と同じ形）。
+fn schema_exists_sql(catalog: &str, schema: &str) -> String {
+    format!(
+        "SELECT (SELECT table_schem FROM system.jdbc.schemas WHERE table_catalog = '{catalog}' AND table_schem = '{schema}')"
+    )
 }
 
 fn select_response() -> Value {
@@ -169,4 +181,108 @@ async fn 別名のキーは大文字小文字によらず当てて_trino_側の�
     assert_eq!(code, 400, "{error}");
     assert_eq!(error["Message"], NO_LOCATION);
     assert_eq!(harness.trino_sqls(), [catalog_exists_sql("pg")]);
+}
+
+fn s3_tables_request(query: &str) -> Value {
+    json!({
+        "QueryString": query,
+        "QueryExecutionContext": { "Catalog": "s3tablescatalog/b", "Database": "ns" },
+        "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+    })
+}
+
+/// 名前空間は小文字にして引き（Trino は小文字で持つ）、無ければ Trino に本体を送らずに FAILED で終える。理由と
+/// AthenaError・文の種類は本物と同じで、結果ファイルの本体も `.metadata` も置かない（j2・j3・j9）。
+#[tokio::test]
+async fn s3_tables_の_context_で名前空間が無ければ開始して_trino_に送らず_failed_にする() {
+    let probe = schema_exists_sql("iceberg", "missing");
+    let harness = Harness::builder(select_response())
+        .catalog_map(&[("s3tablescatalog/b", "iceberg")])
+        .route(&probe, catalog_exists_response(None))
+        .results_s3()
+        .start()
+        .await;
+
+    for query in [
+        "CREATE TABLE AwsDataCatalog.Missing.t (n int)",
+        "CREATE TABLE IF NOT EXISTS AWSDATACATALOG.missing.t (n int)",
+    ] {
+        let execution = harness.run_query(s3_tables_request(query)).await;
+        let execution = &execution["QueryExecution"];
+        let status = &execution["Status"];
+        assert_eq!(status["State"], "FAILED", "{query}: {execution}");
+        assert_eq!(
+            status["StateChangeReason"],
+            "Cannot find or access the specified table"
+        );
+        assert_eq!(
+            status["AthenaError"],
+            json!({
+                "ErrorCategory": 2,
+                "ErrorType": 1100,
+                "Retryable": false,
+                "ErrorMessage": "Cannot find or access the specified table"
+            })
+        );
+        assert_eq!(execution["StatementType"], "DDL");
+        assert_eq!(execution["SubstatementType"], "CREATE_TABLE");
+    }
+    assert_eq!(harness.trino_sqls(), vec![probe; 2], "本体は送らない");
+    assert!(harness.s3_puts().is_empty(), "{:?}", harness.s3_puts());
+}
+
+/// 名前空間があるとき（本物は作る）と、問い合わせが確かめられないときは、今までどおり No location。
+#[tokio::test]
+async fn s3_tables_の_context_で名前空間があれば_no_location_のまま() {
+    let harness = Harness::builder(select_response())
+        .catalog_map(&[("s3tablescatalog/b", "iceberg")])
+        .route(
+            &schema_exists_sql("iceberg", "ns"),
+            catalog_exists_response(Some("ns")),
+        )
+        .start()
+        .await;
+
+    for query in [
+        "CREATE TABLE AwsDataCatalog.ns.t (n int)",
+        // 問い合わせに偽 Trino の既定の応答（形が違う）が返る。
+        "CREATE TABLE AwsDataCatalog.other.t (n int)",
+    ] {
+        let (code, error) = start(&harness, query, Some("s3tablescatalog/b")).await;
+        assert_eq!(code, 400, "{query}: {error}");
+        assert_eq!(error["AthenaErrorCode"], "MALFORMED_QUERY", "{query}");
+        assert_eq!(error["Message"], NO_LOCATION, "{query}");
+    }
+    assert_eq!(
+        harness.trino_sqls(),
+        [
+            schema_exists_sql("iceberg", "ns"),
+            schema_exists_sql("iceberg", "other")
+        ]
+    );
+}
+
+/// 名前空間を問い合わせるのは 1 部目が `awsdatacatalog` の類のときだけ。Trino にある他のカタログ（本物は未実測）は
+/// カタログの有無だけ確かめて No location のまま。
+#[tokio::test]
+async fn s3_tables_の_context_でも_awsdatacatalog_以外の実在するカタログは名前空間を問い合わせない()
+{
+    let harness = Harness::builder(select_response())
+        .catalog_map(&[("s3tablescatalog/b", "iceberg")])
+        .route(
+            &catalog_exists_sql("iceberg"),
+            catalog_exists_response(Some("iceberg")),
+        )
+        .start()
+        .await;
+
+    let (code, error) = start(
+        &harness,
+        "CREATE TABLE iceberg.missing.t (n int)",
+        Some("s3tablescatalog/b"),
+    )
+    .await;
+    assert_eq!(code, 400, "{error}");
+    assert_eq!(error["Message"], NO_LOCATION);
+    assert_eq!(harness.trino_sqls(), [catalog_exists_sql("iceberg")]);
 }

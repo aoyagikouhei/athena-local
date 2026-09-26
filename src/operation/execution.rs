@@ -105,6 +105,7 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
     // 本物も Trino が構文エラーにする形では Trino の文言を返したので、構文チェックの後に見る。
     // 引用符付きの名前の文言を先に試す（quoted_names が None を返すのは無引用のときと ALTER TABLE IF
     // EXISTS のときだけで、後者は unquoted_ddl が引き取る）。
+    let mut immediate_failure = None;
     if !matches!(check, Check::Run)
         && let Some(message) = quoted_names::rejection(&request.query_string, |catalog| {
             app.config.catalog_map.contains_key(catalog)
@@ -117,14 +118,28 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
             unquoted_ddl::rejection(&request.query_string, s3_tables)
         })
     {
-        // No location になった無引用の 3 部の名前は、1 部目のカタログが無ければ本物は別の文言で弾く（#227）。
-        if message == unquoted_ddl::NO_LOCATION
-            && let create_table_catalog::Outcome::Reject(response) =
-                create_table_catalog::check(&app.trino, &app.config, &request.query_string).await
-        {
-            return *response;
+        // No location になった無引用の 3 部の名前は、1 部目のカタログしだいで本物は別の文言で弾くか、開始して
+        // FAILED にする（#227）。
+        let outcome = if message == unquoted_ddl::NO_LOCATION {
+            create_table_catalog::check(
+                &app.trino,
+                &app.config,
+                &request.query_string,
+                catalog.as_deref(),
+            )
+            .await
+        } else {
+            create_table_catalog::Outcome::Continue
+        };
+        match outcome {
+            create_table_catalog::Outcome::Reject(response) => return *response,
+            create_table_catalog::Outcome::FailAtRuntime(failure) => {
+                immediate_failure = Some(failure);
+            }
+            create_table_catalog::Outcome::Continue => {
+                return invalid_request_with_code(message, "MALFORMED_QUERY");
+            }
         }
-        return invalid_request_with_code(message, "MALFORMED_QUERY");
     }
 
     let work_group = request
@@ -142,6 +157,7 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
             work_group,
             token,
             fingerprint,
+            immediate_failure,
         },
     );
 
@@ -266,6 +282,12 @@ fn spawn_query(app: App, id: String) {
         };
         // 投入直後に止められていれば Trino には何も送らない。
         if !app.store.mark_running(&id) {
+            return;
+        }
+        // 開始時点で FAILED と決まっていれば Trino に送らない。本物は結果ファイルも `.metadata` も置かないので、
+        // write_failure も呼ばない（#227）。
+        if let Some(failure) = execution.immediate_failure {
+            app.store.finish(&id, Err(failure));
             return;
         }
 

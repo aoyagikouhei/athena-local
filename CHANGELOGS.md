@@ -33,6 +33,10 @@ later name the date they were measured on.
   `awsdatacatalog.<db>.<t>` is rejected with real Athena's
   `Unsupported ddl with 2 catalogs: <statement>` instead of `No location`
   (measured 2026-09-26) ([docs](docs/caveats.md#plain-create-table)).
+- A plain `CREATE TABLE` whose three-part name names a catalog that does not
+  exist is rejected with `DATACATALOG_NOT_FOUND`, and under an S3 Tables context
+  catalog `AwsDataCatalog.<namespace>.<t>` with a missing namespace starts and
+  fails as on real Athena (measured 2026-09-26) ([docs](docs/caveats.md#plain-create-table)).
 
 - `GetQueryResults` returns `SHOW CREATE TABLE` and `SHOW CREATE VIEW` one row
   per line, as real Athena does (measured 2026-09-16 and 2026-09-24), instead

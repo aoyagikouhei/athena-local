@@ -366,12 +366,31 @@ Known differences between athena-local and real Athena, grouped by topic.
   the statement follows with its leading and trailing whitespace removed,
   comments and line breaks kept), unless a `no viable alternative` row above
   applies first ([#224](https://github.com/aoyagikouhei/athena-local/issues/224),
-  measured 2026-09-26). Any other unquoted three-part name there still answers
-  `No location`, where real Athena starts `AwsDataCatalog.<db>.<t>` and fails it
-  with `Cannot find or access the specified table`, and answers a catalog that
-  does not exist with `DATACATALOG_NOT_FOUND`
-  ([#227](https://github.com/aoyagikouhei/athena-local/issues/227)). Other non-default catalogs
-  (federated ones) were not measured and are treated like `AwsDataCatalog`.
+  measured 2026-09-26). With any other spelling of `awsdatacatalog` as the
+  first part (`AwsDataCatalog`, `AWSDATACATALOG`), real Athena ignores the
+  first part and creates the table in the S3 Tables namespace named by the
+  second part; when that namespace does not exist in the context catalog,
+  athena-local starts the query and fails it without sending it to Trino, as
+  real Athena does (`Cannot find or access the specified table`,
+  `ErrorCategory` 2, `ErrorType` 1100, no result file and no `.metadata`).
+  When the namespace exists, athena-local still answers `No location`, since
+  creating the table there would mean rewriting the statement; write the name
+  as `<namespace>.<table>` instead
+  ([#227](https://github.com/aoyagikouhei/athena-local/issues/227), measured
+  2026-09-26).
+- **A three-part name whose catalog does not exist is rejected with
+  `DATACATALOG_NOT_FOUND`.** For an unquoted three-part name that would
+  otherwise answer `No location`, under any context catalog, real Athena
+  answers `InvalidRequestException` (`AthenaErrorCode`
+  `DATACATALOG_NOT_FOUND`), `Catalog '<the first part as written>' does not
+  exist`; a `no viable alternative` row above still applies first (measured
+  2026-09-26). athena-local treats `awsdatacatalog` (in any case) as existing
+  and asks Trino about any other first part, after mapping it through
+  `TRINO_CATALOG_MAP` (keys compared case-insensitively), the same way
+  `DESCRIBE` does. A catalog Trino has but real Athena would not know (a
+  Trino-only catalog, or a federated catalog) was not measured; athena-local
+  treats it as existing and answers `No location`
+  ([#227](https://github.com/aoyagikouhei/athena-local/issues/227)).
 - **Forms not listed above still run on Trino unchanged.** A table name with
   four parts or more and a table name with a quoted part are not rejected
   here — the quoted-name check above rejects them first where it was
