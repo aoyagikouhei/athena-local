@@ -780,6 +780,41 @@ async fn db_が無い_ctas_の問い合わせ部分が失敗すればそのエ�
     assert!(harness.s3_puts().is_empty(), "{:?}", harness.s3_puts());
 }
 
+/// `AS` より前（`WITH (prop = ?)`）の `?` の値は問い合わせ部分に当てない（その数だけ読み飛ばす）。
+#[tokio::test]
+async fn db_が無い_ctas_の問い合わせ部分には_as_より前の値を当てない() {
+    let probe = schema_probe_sql("hive", "missing");
+    let harness = Harness::builder(select_response())
+        .catalog_map(&[("AwsDataCatalog", "hive")])
+        .route(
+            &probe,
+            trino_error(
+                "SCHEMA_NOT_FOUND",
+                "line 1:1: Schema 'missing' does not exist",
+            ),
+        )
+        .results_s3()
+        .start()
+        .await;
+
+    let execution = harness
+        .run_query(json!({
+            "QueryString": "CREATE TABLE awsdatacatalog.missing.t WITH (format = ?) AS SELECT ? AS n",
+            "QueryExecutionContext": { "Database": "db" },
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" },
+            "ExecutionParameters": ["'ORC'", "7"]
+        }))
+        .await;
+    let status = &execution["QueryExecution"]["Status"];
+    assert_eq!(status["State"], "FAILED", "{execution}");
+    assert_eq!(status["AthenaError"]["ErrorType"], 1301);
+    assert_eq!(
+        harness.trino_sqls().last().map(String::as_str),
+        Some("EXECUTE IMMEDIATE 'SELECT ? AS n' USING 7")
+    );
+    assert_eq!(harness.s3_puts().len(), 1);
+}
+
 /// ExecutionParameters の値は、本体と同じく分類してから問い合わせ部分に当てて投げる（2026-09-27 実測 t15。#251）。
 /// 結果を書かない構成でも、問い合わせ部分は投げる（失敗すればそのエラーが先に出るので、結果を使う）が、
 /// `.metadata` は置かない。

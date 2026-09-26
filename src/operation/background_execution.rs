@@ -104,7 +104,7 @@ async fn ctas_rows(
     let outcome = execute_bound(
         trino,
         &query[part.range],
-        &bound,
+        bound.get(part.leading_parameters..).unwrap_or_default(),
         catalog,
         database,
         &execution.cancel,

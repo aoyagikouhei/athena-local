@@ -13,6 +13,8 @@ pub(super) struct QueryPart {
     pub(super) range: Range<usize>,
     /// 末尾が `WITH NO DATA` か（本物は行を書かず、`.metadata` の件数は 0。t9）。
     pub(super) no_data: bool,
+    /// 範囲より前（`WITH (prop = ?)` など）にある `?` の個数。ExecutionParameters はその数だけ読み飛ばして当てる。
+    pub(super) leading_parameters: usize,
 }
 
 /// `CREATE [OR REPLACE] TABLE ... AS [(...] SELECT | WITH | VALUES | TABLE ...` の問い合わせ部分。`AS` の見つけ方は
@@ -39,6 +41,11 @@ pub(super) fn query_part(sql: &str) -> Option<QueryPart> {
     (last > at + 1).then(|| QueryPart {
         range: words[at + 1].start..words[last - 1].end,
         no_data,
+        leading_parameters: upper[..at]
+            .iter()
+            .filter(|word| !word.starts_with(['\'', '"']))
+            .map(|word| word.matches('?').count())
+            .sum(),
     })
 }
 
@@ -105,6 +112,25 @@ mod tests {
             part("CREATE TABLE db.t AS SELECT 1 AS n with data"),
             Some(("SELECT 1 AS n", false))
         );
+    }
+
+    /// 範囲より前の `?` を数える。記号が続くと 1 語（`?,`）になるので語の中の `?` を数え、引用符で始まる語（文字列や
+    /// 引用符付きの名前）の中は数えない。
+    #[test]
+    fn 範囲より前の_placeholder_を数える() {
+        for (sql, expected) in [
+            ("CREATE TABLE db.t AS SELECT ? AS n", 0),
+            (
+                "CREATE TABLE db.t WITH (format = ?, location = '?') AS SELECT ? AS n",
+                1,
+            ),
+        ] {
+            assert_eq!(
+                query_part(sql).map(|part| part.leading_parameters),
+                Some(expected),
+                "{sql}"
+            );
+        }
     }
 
     #[test]
