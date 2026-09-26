@@ -9,10 +9,10 @@ use axum::response::Response;
 use crate::config::Config;
 use crate::failure::Failure;
 use crate::response::invalid_request_with_code;
-use crate::trino::Trino;
+use crate::trino::{Cancel, Trino};
 
 use super::context_catalog::missing;
-use super::table_format::{catalog_exists_sql, schema_exists_sql};
+use super::table_format::{catalog_exists_sql, schema_probe_sql};
 use super::unquoted_ddl::three_part_name;
 
 /// 開始時にどうするか。
@@ -57,15 +57,24 @@ pub(super) async fn check(
     else {
         return Outcome::Continue;
     };
-    let sql = schema_exists_sql(
+    let sql = schema_probe_sql(
         &config.trino_catalog(s3_tables).to_lowercase(),
         &namespace.to_lowercase(),
     );
-    if missing(trino, &sql).await {
+    if schema_missing(trino, &sql).await {
         Outcome::FailAtRuntime(Failure::cannot_find_table())
     } else {
         Outcome::Continue
     }
+}
+
+/// `schema_probe_sql` が `SCHEMA_NOT_FOUND` で失敗したときだけ真。成功（ある）とほかの失敗（確かめられない）は偽で、
+/// 呼び出し側は今までどおりに倒す。修飾名で引くので、セッションのカタログ・スキーマは付けない。
+async fn schema_missing(trino: &Trino, sql: &str) -> bool {
+    matches!(
+        trino.execute(sql, None, None, &Cancel::default()).await,
+        Err(error) if error.name.as_deref() == Some("SCHEMA_NOT_FOUND")
+    )
 }
 
 /// SQL に書いた無引用の 1 部目の Trino 側の名前。無引用の名前は大文字小文字を区別しないので、`TRINO_CATALOG_MAP`

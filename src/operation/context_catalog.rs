@@ -58,7 +58,7 @@ pub(super) async fn resolve(
         .or(unchanged)
 }
 
-/// 有無の問い合わせ（`table_format::catalog_exists_sql`・`schema_exists_sql`）で、無いと確かめられたときだけ真。
+/// カタログの有無の問い合わせ（`table_format::catalog_exists_sql`）で、無いと確かめられたときだけ真。
 /// 問い合わせの失敗・応答の形が違う（偽 Trino が本体の応答を返すときも）・あるなら偽（呼び出し側は今までどおりに倒す）。
 pub(super) async fn missing(trino: &Trino, sql: &str) -> bool {
     // system.* を修飾名で引くので、セッションのカタログ・スキーマは付けない。

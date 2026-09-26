@@ -5,7 +5,7 @@
 //! #160 は DESCRIBE × Iceberg を対象に足す（2026-09-24 実測。SHOW CREATE TABLE と同じ割れ方）。
 //! #173 は対象がビューかどうかも同じ問い合わせで確かめる（2026-09-24 実測 d5）。
 
-use crate::statement::quote_literal;
+use crate::statement::{quote_identifier, quote_literal};
 use crate::trino::{Cancel, Outcome, Trino};
 
 /// 対象にする文の種類。
@@ -131,13 +131,14 @@ pub(super) fn catalog_exists_sql(catalog: &str) -> String {
     format!("SELECT ({})", connector_name_sql(catalog))
 }
 
-/// 名前空間（スキーマ）の有無だけを確かめる（`create_table_catalog`。#227）。無ければ `_col0` が null の 1 行。
-/// `system.jdbc.schemas` を使うのは `probe_sql` と同じく、名前を全部リテラルで書けるため。
-pub(super) fn schema_exists_sql(catalog: &str, schema: &str) -> String {
+/// 名前空間（スキーマ）の有無だけを確かめる（`create_table_catalog`。#227）。無ければ Trino が `SCHEMA_NOT_FOUND` で
+/// 失敗し、あれば 0 行で成功する（`LIKE ''` で表を列挙しない）。一覧（`system.jdbc.schemas`・`SHOW SCHEMAS`）は
+/// file メタストアの compose の Trino で `CREATE SCHEMA` した名前空間を返さなかったので使わず、名前空間を直接引く。
+pub(super) fn schema_probe_sql(catalog: &str, schema: &str) -> String {
     format!(
-        "SELECT (SELECT table_schem FROM system.jdbc.schemas WHERE table_catalog = {} AND table_schem = {})",
-        quote_literal(catalog),
-        quote_literal(schema),
+        "SHOW TABLES FROM {}.{} LIKE ''",
+        quote_identifier(catalog),
+        quote_identifier(schema),
     )
 }
 
