@@ -295,3 +295,79 @@ async fn s3_tables_の_context_でも_awsdatacatalog_以外の実在するカタ
     assert_eq!(error["Message"], NO_LOCATION);
     assert_eq!(harness.trino_sqls(), [catalog_exists_sql("iceberg")]);
 }
+
+/// S3 Tables の Context の無引用の 2 部の名前（本物は 1 部目の名前空間に作る）も、本物は名前空間が無ければ開始して
+/// 3 部と同じ FAILED にした（2026-09-26 実測 i2・j12。#231）。名前空間は小文字にして引き、本体は Trino に送らない。
+#[tokio::test]
+async fn s3_tables_の_context_で_2_部の名前空間が無ければ開始して_trino_に送らず_failed_にする() {
+    let probe = schema_probe_sql("iceberg", "missing");
+    let harness = Harness::builder(select_response())
+        .catalog_map(&[("s3tablescatalog/b", "iceberg")])
+        .route(
+            &probe,
+            trino_error(
+                "SCHEMA_NOT_FOUND",
+                "line 1:1: Schema 'missing' does not exist",
+            ),
+        )
+        .results_s3()
+        .start()
+        .await;
+
+    for query in [
+        "CREATE TABLE Missing.t (n int)",
+        "CREATE TABLE IF NOT EXISTS missing.t (n int)",
+    ] {
+        let execution = harness.run_query(s3_tables_request(query)).await;
+        let execution = &execution["QueryExecution"];
+        let status = &execution["Status"];
+        assert_eq!(status["State"], "FAILED", "{query}: {execution}");
+        assert_eq!(
+            status["StateChangeReason"],
+            "Cannot find or access the specified table"
+        );
+        assert_eq!(status["AthenaError"]["ErrorType"], 1100);
+        assert_eq!(execution["SubstatementType"], "CREATE_TABLE");
+    }
+    assert_eq!(harness.trino_sqls(), vec![probe; 2], "本体は送らない");
+    assert!(harness.s3_puts().is_empty(), "{:?}", harness.s3_puts());
+}
+
+/// 名前空間があるとき（本物は作る）と確かめられないときは、今までどおり Trino に送る。1 部の名前（名前空間は
+/// Context の Database）は測っていないので問い合わせない。
+#[tokio::test]
+async fn s3_tables_の_context_で_2_部の名前空間があれば_trino_に送る() {
+    let harness = Harness::builder(select_response())
+        .catalog_map(&[("s3tablescatalog/b", "iceberg")])
+        .route(&schema_probe_sql("iceberg", "ns"), show_tables_response())
+        .route(
+            &schema_probe_sql("iceberg", "other"),
+            trino_error("GENERIC_INTERNAL_ERROR", "boom"),
+        )
+        .results_s3()
+        .start()
+        .await;
+
+    let queries = [
+        "CREATE TABLE ns.t (n int)",
+        "CREATE TABLE other.t (n int)",
+        "CREATE TABLE t (n int)",
+    ];
+    for query in queries {
+        let execution = harness.run_query(s3_tables_request(query)).await;
+        assert_eq!(
+            execution["QueryExecution"]["Status"]["State"], "SUCCEEDED",
+            "{query}: {execution}"
+        );
+    }
+    assert_eq!(
+        harness.trino_sqls(),
+        [
+            schema_probe_sql("iceberg", "ns"),
+            queries[0].to_string(),
+            schema_probe_sql("iceberg", "other"),
+            queries[1].to_string(),
+            queries[2].to_string(),
+        ]
+    );
+}

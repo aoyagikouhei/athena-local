@@ -381,3 +381,28 @@ fn three_part_name_は_no_location_になる_3_部の名前で必ず_1_部目と
         assert_eq!(three_part_name(query), None, "{query}");
     }
 }
+
+/// `two_part_namespace` は S3 Tables でない Context で No location になる無引用の 2 部の名前の 1 部目を書いたとおりに
+/// 返し（S3 Tables の Context では `rejection` が弾かない）、NV になる形・1 部・3 部・引用符付きの名前では None（#231）。
+#[test]
+fn two_part_namespace_は_no_location_になる_2_部の名前の_1_部目を返す() {
+    for (query, expected) in [
+        ("CREATE TABLE Ns.t (n int)", "Ns"),
+        ("CREATE TABLE IF NOT EXISTS ns.t (n int)", "ns"),
+        ("/* c */\n  create table db . t (n int) COMMENT 'c'", "db"),
+    ] {
+        assert_eq!(rejection(query, true), None, "{query}");
+        assert_eq!(two_part_namespace(query), Some(expected), "{query}");
+    }
+    for query in [
+        "CREATE TABLE t (n int)",
+        "CREATE TABLE cat.db.t (n int)",
+        r#"CREATE TABLE "db".t (n int)"#,
+        r#"CREATE TABLE db."t" (n int)"#,
+        "CREATE TABLE db.t (n int NOT NULL)",
+        "CREATE TABLE db.t (n int) WITH (format = 'PARQUET')",
+        "CREATE TABLE db.t AS SELECT 1",
+    ] {
+        assert_eq!(two_part_namespace(query), None, "{query}");
+    }
+}

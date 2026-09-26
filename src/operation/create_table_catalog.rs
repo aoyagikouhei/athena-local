@@ -3,6 +3,7 @@
 //! （`Catalog '<書いたとおり>' does not exist`）で弾いた。NV はそれより先（2026-09-26 実測 i3・j5〜j7・j10・j14）。
 //! S3 Tables の Context で 1 部目が小文字ちょうどでない `awsdatacatalog`（`AwsDataCatalog` など）なら、1 部目を無視して
 //! 2 部目を S3 Tables の名前空間として作り、名前空間が無ければ開始して FAILED にした（j1〜j4・j9）。
+//! S3 Tables の Context の無引用の 2 部の名前も、1 部目の名前空間が無ければ同じ FAILED にした（i2・j12。#231）。
 
 use axum::response::Response;
 
@@ -13,7 +14,7 @@ use crate::trino::{Cancel, Trino};
 
 use super::context_catalog::missing;
 use super::table_format::{catalog_exists_sql, schema_probe_sql};
-use super::unquoted_ddl::three_part_name;
+use super::unquoted_ddl::{three_part_name, two_part_namespace};
 
 /// 開始時にどうするか。
 pub(super) enum Outcome {
@@ -57,15 +58,41 @@ pub(super) async fn check(
     else {
         return Outcome::Continue;
     };
-    let sql = schema_probe_sql(
-        &config.trino_catalog(s3_tables).to_lowercase(),
-        &namespace.to_lowercase(),
-    );
-    if schema_missing(trino, &sql).await {
+    if namespace_missing(trino, config, s3_tables, namespace).await {
         Outcome::FailAtRuntime(Failure::cannot_find_table())
     } else {
         Outcome::Continue
     }
+}
+
+/// S3 Tables の Context（`s3_tables` は受け取ったままの Catalog）で `unquoted_ddl::rejection` が弾かない、無引用の
+/// 2 部の名前の場所の無い `CREATE TABLE`（本物は作る）。1 部目の名前空間が無いと確かめられたときだけ、Trino に
+/// 送らずに終える失敗を返す。あれば（確かめられなければ）None で、今までどおり Trino に送る。
+pub(super) async fn two_part_failure(
+    trino: &Trino,
+    config: &Config,
+    query: &str,
+    s3_tables: &str,
+) -> Option<Failure> {
+    let namespace = two_part_namespace(query)?;
+    namespace_missing(trino, config, s3_tables, namespace)
+        .await
+        .then(Failure::cannot_find_table)
+}
+
+/// S3 Tables のカタログ（受け取ったまま）に名前空間が無いと確かめられたときだけ真。どちらも小文字にして引く
+/// （Trino は小文字で持つ）。
+async fn namespace_missing(
+    trino: &Trino,
+    config: &Config,
+    s3_tables: &str,
+    namespace: &str,
+) -> bool {
+    let sql = schema_probe_sql(
+        &config.trino_catalog(s3_tables).to_lowercase(),
+        &namespace.to_lowercase(),
+    );
+    schema_missing(trino, &sql).await
 }
 
 /// `schema_probe_sql` が `SCHEMA_NOT_FOUND` で失敗したときだけ真。成功（ある）とほかの失敗（確かめられない）は偽で、

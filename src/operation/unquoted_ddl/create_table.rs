@@ -76,6 +76,19 @@ pub(in crate::operation) fn three_part_name(query: &str) -> Option<(&str, &str)>
     }
 }
 
+/// S3 Tables でない Context なら `rejection` が No location を返す文の、無引用の 2 部の名前の 1 部目（書いたとおり）。
+/// S3 Tables の Context では `rejection` が弾かず、本物は 1 部目の名前空間に作る（#231）。
+pub(in crate::operation) fn two_part_namespace(query: &str) -> Option<&str> {
+    if rejection(query, false)? != NO_LOCATION {
+        return None;
+    }
+    let sql = query.trim_start_matches([' ', '\t', '\r', '\n']);
+    match table_name(sql)?.0.parts.as_slice() {
+        [namespace, _] => Some(namespace.text),
+        _ => None,
+    }
+}
+
 /// `CREATE TABLE` か `CREATE TABLE IF NOT EXISTS` の直後の名前と、名前の直後の位置の cursor。
 fn table_name(sql: &str) -> Option<(QualifiedName<'_>, Cursor<'_>)> {
     let rest = table_name_start(sql, &["CREATE", "TABLE"])
