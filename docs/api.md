@@ -164,7 +164,10 @@ Behaviour that matches real Athena:
   Athena does. The message is Trino's, with positions counted in the original SQL
   (also when `ExecutionParameters` are given). athena-local asks Trino to `PREPARE`
   the statement first, which parses without executing and adds one round trip
-  (about 10–20 ms). Right after that check, for `DESCRIBE`, `DESC` and
+  (about 10–20 ms). Under an S3 Tables context catalog, a Hive-style
+  `CREATE TABLE` with `LOCATION` or `CREATE EXTERNAL TABLE` is rejected with
+  real Athena's message before that check
+  ([caveats](caveats.md#plain-create-table)). Right after that check, for `DESCRIBE`, `DESC` and
   `SHOW COLUMNS FROM` / `IN`, `StartQueryExecution` also checks whether the
   target exists, the same way real Athena does: a table or schema it can
   prove is missing answers `InvalidRequestException` / `AthenaErrorCode`

@@ -648,3 +648,29 @@ Content-Type と `.metadata` を含む置き場所は本項が主で、[result-f
 
 - 採用した判断: Context の Catalog が省略か AwsDataCatalog のとき、DESCRIBE・DESC・SHOW COLUMNS・SHOW CREATE TABLE・ALTER TABLE・DROP TABLE の無引用のちょうど 3 部（SHOW TABLES IN は 2 部）の名前の 1 部目の `awsdatacatalog`（大文字小文字によらない）と直後の `.`・空白を、開始時の確認・実行・Query から落とし、Context の Database を修飾の DB（文中の綴り）にする。構文と開始時の文言の判定は受け取った文で行う。表への DESCRIBE・DESC は開始時の確認で表と分かったら DB も落とす。ビューは Query を受け取った文のまま返す（実行はカタログを落とした文）。DESCRIBE の直後のブロックコメント（`DESCRIBE /* c */ t`（2026-09-22 実測）と m10）は Trino に送らず本物と同じ ParseException で FAILED にし、`.txt` だけ置く。ほかの文の同じ形は #244
 - 備考: 過去の生データ（#204 の d-n7・w1-desc-upper2・w1-showcol-n7・c-n7、#224 の i4、#173 の d5 など）と食い違いは無かった。Context の Catalog が実在しないとき修飾が残るのは #212・#214 の生データ（z-desc-nodbctx・y3-desc-2）で、このラウンドでは測っていない
+
+### S3 Tables の Context の LOCATION・EXTERNAL 付きの CREATE TABLE（#229）
+- 日付: 2026-09-26（UTC 2026-09-26 07:52）／ issue: #229 ／ スクリプト: `tools/measure/unquoted-ddl.sh`（`ROUND=9`）／ 生データ: `$HOME/athena-unquoted-ddl-measurements/run-20260926-075143`（#224 の `run-20260926-004013` の i14・i15 と合わせて読む）
+- 相手: 本物の Athena（`AwsDataCatalog` と、S3 Tables のカタログ `s3tablescatalog/<bucket>`）
+- 投げたもの: 33 項目（S3 Tables の Context の疎通 `SELECT 1` と `CREATE TABLE` 31 本、既定の Context の `CREATE EXTERNAL TABLE` 1 本）。Context はとくに書かない限り `Catalog=s3tablescatalog/<bucket>,Database=<ns>`。`<L>` は `'s3://<bucket>/<prefix>/'`（空のプレフィックス）。StartQueryExecution は後始末込みで 38 回。作られた表（n26・n27・n31）はその場で消した（後始末の残りは無い）
+- 返ったもの（開始時に弾かれたものはすべて `InvalidRequestException`。AthenaErrorCode は書いたもの以外 `MALFORMED_QUERY`）:
+
+  | 文 | 本物 |
+  |---|---|
+  | `CREATE TABLE awsdatacatalog.<db>.<t> (n int) LOCATION <L>`（n1。i14 の再現）・1 部（n2）・2 部の名前空間（n3）・2 部の Glue の DB（n4）・`AwsDataCatalog.<db>.<t>`（n5） | `Table location can not be specified for tables hosted in S3 table buckets`（位置なし） |
+  | `CREATE EXTERNAL TABLE <t> (n int) LOCATION <L>`（n10）・`<db>.<t>`（n28） | 同じ |
+  | `(n int) PARTITIONED BY (p string) LOCATION <L>`（n19）・`(n int) ROW FORMAT DELIMITED FIELDS TERMINATED BY ',' STORED AS TEXTFILE LOCATION <L> TBLPROPERTIES ('a'='b')`（n20） | 同じ |
+  | `IF NOT EXISTS`（n23）・`create table ... location`（n24）・`(n int) /* c */ LOCATION`（n25）・列の並びの無い `CREATE TABLE <t> LOCATION <L>`（n30）・Context に Database の無い形（n32） | 同じ |
+  | `CREATE EXTERNAL TABLE <t> (n int)`（n11）・`CREATE EXTERNAL TABLE awsdatacatalog.<db>.<t> (n int)`（n12）（LOCATION 無し） | `External keyword not supported for table type ICEBERG`（位置なし。n12 は 2 catalogs より先） |
+  | `CREATE TABLE nosuchcatalog229.<db>.<t> (n int) LOCATION <L>`（n6） | `DATACATALOG_NOT_FOUND`、`Catalog 'nosuchcatalog229' does not exist` |
+  | 引用符付きの 3 部 `"<S3 Tables のカタログ>".<ns>.<t>`（n7）・引用符付きの 1 部（n8）・4 部（n9）、+ `(n int) LOCATION <L>` | Trino の `line 1:<LOCATION の列>: mismatched input 'LOCATION'. Expecting: 'COMMENT', 'WITH', <EOF>` |
+  | `(n int NOT NULL)`（n13）・`("n" int)`（n14）・3 部 + `NOT NULL`（n15）、+ `LOCATION <L>` | 同じ Trino の文言（NV ではない） |
+  | `LOCATION <L> garbage`（n16）・引用符の無い値 `LOCATION s3path`（n17）・値の無い `LOCATION`（n18） | 同じ Trino の文言（位置は `LOCATION`） |
+  | `(n int) TBLPROPERTIES ('table_type'='ICEBERG') LOCATION <L>`（n22。順番が逆） | Trino の `mismatched input 'TBLPROPERTIES'. Expecting: 'COMMENT', 'WITH', <EOF>` |
+  | `(n int) STORED AS PARQUET`（n21。LOCATION 無し） | 開始でき、FAILED（DDL / CREATE_TABLE、ErrorCategory 2・ErrorType 1200、`Iceberg create table statement does not allow STORED AS/BY`） |
+  | `(location string)`（n26。列名）・`(n int) COMMENT 'LOCATION'`（n27。文字列の中） | SUCCEEDED |
+  | `... LOCATION <L>; -- c`（n29） | `Only one sql statement is allowed. Got: <文>`（#228 の判定が先） |
+  | 既定の Context で `CREATE EXTERNAL TABLE <t> (n int) LOCATION <L>`（n31。対照） | SUCCEEDED |
+
+- 採用した判断: 本物は Hive の DDL の構文で読めた文にだけ S3 Tables の LOCATION・EXTERNAL の判定を当て、読めなければ Trino の構文エラー（手元の Trino と同じ文言・位置）を返すと読んだ。athena-local は S3 Tables の Context で、上の表で `Table location` と `External keyword` が返った形だけを構文チェックの前に読んで弾き、それ以外は今までどおり Trino の構文チェックに任せる。n6（DATACATALOG_NOT_FOUND）と n21（開始して FAILED）は範囲外にした
+- 備考: #224 の i14・i15 と食い違いは無かった。#221 で既定の Context に投げた `CREATE TABLE <名前> (n int) LOCATION '...'` の `External keyword required for table type HIVE` とは別の文言

@@ -84,6 +84,15 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
         Ok(statement) => statement.to_string(),
         Err(message) => return invalid_request_with_code(message, "MALFORMED_QUERY"),
     };
+    // S3 Tables のカタログは `s3tablescatalog/<バケット>` の形で見分ける（大文字小文字は区別しない。#157）。
+    let s3_tables = catalog
+        .as_deref()
+        .is_some_and(|catalog| catalog.to_ascii_lowercase().starts_with("s3tablescatalog/"));
+    // S3 Tables の Context では、本物は Hive の CREATE TABLE として読める文の LOCATION・EXTERNAL を開始時に弾く。
+    // Trino には両方とも無いので構文チェックより前に見る（2026-09-26 実測 n1〜n32。#229）。
+    if s3_tables && let Some(message) = unquoted_ddl::s3_tables_rejection(&query) {
+        return invalid_request_with_code(message, "MALFORMED_QUERY");
+    }
     // 本物は構文エラーを StartQueryExecution で弾き、実行を作らない（ExecutionParameters があっても元の SQL で数える）。
     // 文言は Trino のもの、コードは 2026-09-14 に実測した MALFORMED_QUERY。
     if let Some(message) = app.trino.syntax_error(&query).await {
@@ -139,13 +148,7 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
         && let Some(message) = quoted_names::rejection(&query, |catalog| {
             app.config.catalog_map.contains_key(catalog)
         })
-        .or_else(|| {
-            // S3 Tables のカタログは `s3tablescatalog/<バケット>` の形で見分ける（大文字小文字は区別しない。#157）。
-            let s3_tables = catalog.as_deref().is_some_and(|catalog| {
-                catalog.to_ascii_lowercase().starts_with("s3tablescatalog/")
-            });
-            unquoted_ddl::rejection(&query, s3_tables)
-        })
+        .or_else(|| unquoted_ddl::rejection(&query, s3_tables))
     {
         // No location になった無引用の 3 部の名前は、1 部目のカタログしだいで本物は別の文言で弾くか、開始して
         // FAILED にする（#227）。

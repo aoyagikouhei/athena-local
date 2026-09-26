@@ -7,6 +7,10 @@ use super::super::classification::substatement_type;
 use super::super::target_table::table_name_start;
 use super::{end_of, no_viable_alternative, start_of};
 
+mod hive;
+
+pub(in crate::operation) use hive::s3_tables_rejection;
+
 /// 場所を指定しない `CREATE TABLE` に本物が返す固定文言（位置なし）。
 pub(in crate::operation) const NO_LOCATION: &str =
     "No location was specified for table. An S3 location must be specified";

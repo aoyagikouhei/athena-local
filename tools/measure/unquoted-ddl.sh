@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # issue #208 で作成。issue #221 で ROUND=3、issue #224 で ROUND=4、issue #227 で ROUND=5、
-# issue #228 で ROUND=6、issue #240 で ROUND=7、issue #242 で ROUND=8 を追加
+# issue #228 で ROUND=6、issue #240 で ROUND=7、issue #242 で ROUND=8、issue #229 で ROUND=9 を追加
 # 本物の Athena が StartQueryExecution の時点で弾く、無引用の DDL 3 種
 # （ALTER TABLE IF EXISTS、ALTER TABLE ... ADD COLUMN（単数）、場所の無い CREATE TABLE）の
 # 弾かれ方の規則（`line L:C` の位置、`no viable alternative at input '...'` の input の範囲、
@@ -81,6 +81,17 @@
 #     になった項目は GetQueryExecution の OutputLocation から結果ファイル本体と
 #     `.metadata` を `aws s3 cp` で読み出して保存する（fetch_failed_attachments。
 #     読み取りのみで、書き込みは行わない）。
+#   - 【issue #229 で追加】ROUND=9 は、ROUND=4 の I 群（i14・i15）で見つけた事実（QueryExecutionContext の
+#     Catalog が S3 Tables のとき、`CREATE TABLE awsdatacatalog.<db>.<t> (n int) LOCATION '...'` と
+#     `CREATE EXTERNAL TABLE ...` が同じ形で開始時に InvalidRequestException・MALFORMED_QUERY、
+#     `Table location can not be specified for tables hosted in S3 table buckets` で弾かれた）の
+#     周辺を測る N 群だけを測る。preflight・DB 確認は共通で走るが、実在する表は作らない
+#     （ROUND=3〜7 と同じ）。i14 と同じ LOCATION の組み立て（`probe_location`。空のプレフィックス）と、
+#     受理されたら同じ Context で消す run_create_then_drop_ctx をそのまま流用する。S3 Tables に
+#     作られうる項目は S3 Tables の Context で、AwsDataCatalog に作られうる項目（n1・n5・n6・n12・n15・n31）は
+#     既定の Context で DROP する（i 群の後始末と同じ考え方）。n32 だけ Context に Database を含めない
+#     （Catalog=<S3TABLES_CATALOG> だけ）。S3TABLES_* が無ければ、既定の Context だけで測れる n31 を
+#     除いて未測定として残す。
 #
 # 使い方:
 #   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db bash tools/measure/unquoted-ddl.sh
@@ -126,6 +137,12 @@
 #   ラウンド 8（issue #242。DESCRIBE・DESC の Query から修飾が落ちる範囲と QueryExecutionContext.Database の
 #   書き換え、ほかの文で awsdatacatalog. が落ちる範囲だけを測る。S3TABLES_* は使わない）:
 #   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=8 bash tools/measure/unquoted-ddl.sh
+#   ラウンド 9（issue #229。#224 の i14・i15 で見つけた「QueryExecutionContext の Catalog が S3 Tables のとき、
+#   LOCATION 付きの CREATE TABLE・CREATE EXTERNAL TABLE が Table location can not be specified で弾かれる」
+#   範囲だけを測る。S3TABLES_* が無ければ n31 以外の N 群は未測定として残す）:
+#   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=9 \
+#     S3TABLES_CATALOG=s3tablescatalog/your-bucket S3TABLES_NS=your_ns \
+#     bash tools/measure/unquoted-ddl.sh
 #   （資格情報はホストのシェルで AWS_ACCESS_KEY_ID などを export してから。または ~/.aws/credentials）
 #
 # 必要な環境変数:
@@ -150,6 +167,8 @@
 #                    l16 の CTAS で作った表を l20 で消す。
 #                    8 は M 群（DESCRIBE の修飾落ちとカタログ部分の落ち。issue #242）だけ。表・ビュー・
 #                    別の DB を作り、最後に消す。
+#                    9 は N 群（S3 Tables の Context の LOCATION 付き CREATE TABLE。issue #229）だけ。
+#                    実在する表は作らない。
 #   CATALOG          既定 AwsDataCatalog
 #   REGION           既定 ap-northeast-1
 #   OUT_DIR          既定 ${DEV_HOST_HOME:-$HOME}/athena-unquoted-ddl-measurements
@@ -160,9 +179,10 @@
 #   S3TABLES_CATALOG S3 Tables のカタログ名（例 s3tablescatalog/my-bucket）。
 #   S3TABLES_NS      S3 Tables の名前空間。
 #                    この 2 つが揃ったときだけ、ROUND=1 の C20（S3 Tables への場所の無い
-#                    CREATE TABLE）と ROUND=3 の H 群（h0〜h9）、ROUND=5 の J 群（j0〜j13）を
-#                    測る。1 つでも欠けていれば「未測定（S3TABLES_* 未設定）」として summary に
-#                    残す（ROUND=5 は j14〜j16 だけ測る）。ROUND=2 では使わない。
+#                    CREATE TABLE）と ROUND=3 の H 群（h0〜h9）、ROUND=5 の J 群（j0〜j13）、
+#                    ROUND=9 の N 群（n0〜n30・n32）を測る。1 つでも欠けていれば
+#                    「未測定（S3TABLES_* 未設定）」として summary に残す（ROUND=5 は j14〜j16、
+#                    ROUND=9 は n31 だけ測る）。ROUND=2 では使わない。
 #
 # ** このスクリプトが本物に対して行う破壊的な操作 **
 #   - 実在する表 <db>.athena_local_probe_208_<乱数>_real を 1 つ CTAS で作り、
@@ -227,12 +247,24 @@
 #   - ROUND=7: 実在する表 <接頭辞>_real は作らない。l16 の CTAS で <接頭辞>_l16（1 行）を作り、l17 で
 #     1 行 INSERT し、l20 の DROP TABLE IF EXISTS（末尾 `;`）で消す。l20 が SUCCEEDED にならなければ trap が
 #     もう一度 DROP を投げる。l12・l13 の CREATE TABLE は run_create_then_drop_ctx で、受理されたら消す。
+#   - ROUND=9: 実在する表 <接頭辞>_real は作らない。N 群の CREATE TABLE（n0 の SELECT 1 を除く）は
+#     すべて run_create_then_drop_ctx で投げ、想定外に（あるいは LOCATION 無しの項目は想定どおり）
+#     受理されたらその場で無引用 + IF EXISTS の DROP TABLE を投げて消す。結果は確かめ、SUCCEEDED に
+#     ならなければ trap がもう一度ベストエフォートで投げる。作られうるテーブルと、消すときの Context：
+#       n1・n5・n6・n12・n15・n31（AwsDataCatalog に作られうる。n31 は既定の Context で作る対照）
+#                                     → 既定の Context で DROP TABLE IF EXISTS <接頭辞>_nN
+#       n2〜n4・n7〜n11・n13・n14・n16〜n30（S3 Tables の Context。i14・i15 と同様、大半は
+#       LOCATION 指定で開始時に弾かれる見込みだが、n11・n12・n21・n26・n27 は LOCATION 無しで
+#       受理されうる）             → S3 Tables の Context で DROP TABLE IF EXISTS <接頭辞>_nN
+#       n32（Context は Catalog=<S3TABLES_CATALOG> だけ、Database 無し）
+#                                     → 同じ Context で DROP TABLE IF EXISTS <接頭辞>_n32
+#     LOCATION は <OUTPUT>athena-local-probe-229/<接頭辞>_<項目>/（空のプレフィックス。データは置かない）。
 #
 # 課金について: ALTER TABLE・DROP TABLE はメタデータだけを見る／書く文で、実データの
 # スキャンは無い。CREATE TABLE（実在する表の準備・C3・C20・C21・C22・C23、E・F 群、
-# ROUND=3 の H・Q・P 群、ROUND=5 の J 群。いずれも 0〜1 行）もスキャンや書き込みは軽微。
-# Athena の最小課金 × クエリ数の見込み。ROUND=5 の結果ファイルの読み出し（aws s3 cp）は
-# Athena のクエリではなく S3 の GetObject で、課金には乗らない。
+# ROUND=3 の H・Q・P 群、ROUND=5 の J 群、ROUND=9 の N 群。いずれも 0〜1 行）もスキャンや
+# 書き込みは軽微。Athena の最小課金 × クエリ数の見込み。ROUND=5 の結果ファイルの読み出し
+# （aws s3 cp）は Athena のクエリではなく S3 の GetObject で、課金には乗らない。
 #
 # 本物への呼び出し回数の見込み（内訳。実際の回数は下で更新される。GetQueryExecution は
 # poll_until_terminal のポーリング + 終端後の 1 回で、開始できた項目の数 × 数回のオーダー。
@@ -358,6 +390,19 @@
 #   （aws s3 cp、それぞれ 1 回）を追加で呼ぶ（最大で J 群の項目数 × 2 回）。Athena の
 #   API ではないので上の StartQueryExecution・GetQueryExecution の回数には含めない。
 #
+# == ROUND=9（N 群のみ。issue #229。preflight・DB 確認は共通、実在する表は作らない） ==
+#
+#   [StartQueryExecution]
+#   preflight（SELECT 1 + SHOW TABLES）2
+#   + N 群のうち S3TABLES_* が揃うときだけ（n0 の SELECT 1 と n1〜n30・n32 の CREATE TABLE の 32）
+#   + n31（既定の Context。S3TABLES_* によらず常に投げる）1
+#   = 35（S3TABLES_* あり）／3（無し）。
+#   受理された CREATE TABLE ごとに、その場で DROP する後始末が 1 本ずつ増える（最大 +32）。
+#   LOCATION 無しの n11・n12・n21・n26・n27 と、既定の Context の対照 n31 は受理されうる。
+#
+#   [GetQueryExecution]
+#   開始できた項目だけ終端状態までポーリングし、終端後にもう 1 回まとめて取得する。
+#
 # 実行ごとに $OUT_DIR/run-<日時>/ を作り、その中だけに書く。前の回の結果と混ざらない。
 #
 # 項目ごとに次を保存する（取れたものだけ）。
@@ -383,9 +428,9 @@ set -uo pipefail
 : "${DB:?DB にデータベース名を設定してください}"
 ROUND=${ROUND:-1}
 case "$ROUND" in
-  1 | 2 | 3 | 4 | 5 | 6 | 7 | 8) ;;
+  1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9) ;;
   *)
-    echo "ROUND には 1・2・3・4・5・6・7・8 のどれかを指定してください（既定 1）" >&2
+    echo "ROUND には 1・2・3・4・5・6・7・8・9 のどれかを指定してください（既定 1）" >&2
     exit 1
     ;;
 esac
@@ -1557,6 +1602,106 @@ fi
 
 fi # ROUND=8
 
+# ROUND=9 だけ、N 群を投げる（issue #229）。
+if [ "$ROUND" = 9 ]; then
+
+DEFAULT_CTX="Catalog=$CATALOG,Database=$DB"
+# LOCATION 付きの項目の置き場。結果の出力先の下の、項目ごとの空のプレフィックス（i14 と同じ形）。
+probe_location() { printf '%sathena-local-probe-229/%s/' "$OUTPUT" "$(new_name "$1")"; }
+
+# --- N 群（QueryExecutionContext の Catalog が S3 Tables で、LOCATION 付きの CREATE TABLE） ----
+# #224 の i14・i15（S3 Tables の Context で `CREATE TABLE awsdatacatalog.<db>.<t> (n int) LOCATION '...'`・
+# `CREATE EXTERNAL TABLE ...同...` が開始時に InvalidRequestException・MALFORMED_QUERY、
+# `Table location can not be specified for tables hosted in S3 table buckets` で弾かれた）の周辺。
+# n0 は疎通、n1 は i14 の再現（対照）。n2〜n9 は名前の形（1〜4 部、S3 Tables の名前空間・Glue の DB 名・
+# 大文字混じり・実在しないカタログ・引用符付き）、n10〜n12 は EXTERNAL（LOCATION の有無）、n13〜n15 は
+# NOT NULL・引用符付き列名との順番、n16〜n30 は LOCATION の書かれ方・他の判定との順番（ごみ・引用符無し・
+# 値無し・PARTITIONED BY・Hive の句・STORED AS・TBLPROPERTIES の前後・大文字小文字・コメント・列名が
+# location・文字列の中の LOCATION・複数の文・列の並び無し）、n31 は既定の Context の対照
+# （CREATE EXTERNAL TABLE + LOCATION が本物の書き方として通る見込み）、n32 は Database 無しの
+# Catalog だけの Context。AwsDataCatalog に作られうる項目（n1・n5・n6・n12・n15・n31）は既定の
+# Context で、それ以外は S3 Tables の Context（n32 は Database 無しの Context）で消す。
+if [ -n "$S3TABLES_CATALOG" ] && [ -n "$S3TABLES_NS" ]; then
+  S3T_CTX="Catalog=$S3TABLES_CATALOG,Database=$S3TABLES_NS"
+  S3T_CTX_NO_NS="Catalog=$S3TABLES_CATALOG"
+
+  run_in_ctx "$S3T_CTX" n0 "SELECT 1"
+
+  run_create_then_drop_ctx "$S3T_CTX" "$DEFAULT_CTX" n1 \
+    "CREATE TABLE awsdatacatalog.$DB.$(new_name n1) (n int) LOCATION '$(probe_location n1)'" "$(new_name n1)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" n2 \
+    "CREATE TABLE $(new_name n2) (n int) LOCATION '$(probe_location n2)'" "$(new_name n2)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" n3 \
+    "CREATE TABLE $S3TABLES_NS.$(new_name n3) (n int) LOCATION '$(probe_location n3)'" "$(new_name n3)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" n4 \
+    "CREATE TABLE $DB.$(new_name n4) (n int) LOCATION '$(probe_location n4)'" "$DB.$(new_name n4)"
+  run_create_then_drop_ctx "$S3T_CTX" "$DEFAULT_CTX" n5 \
+    "CREATE TABLE AwsDataCatalog.$DB.$(new_name n5) (n int) LOCATION '$(probe_location n5)'" "$(new_name n5)"
+  run_create_then_drop_ctx "$S3T_CTX" "$DEFAULT_CTX" n6 \
+    "CREATE TABLE nosuchcatalog229.$DB.$(new_name n6) (n int) LOCATION '$(probe_location n6)'" "$(new_name n6)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" n7 \
+    "CREATE TABLE \"$S3TABLES_CATALOG\".$S3TABLES_NS.$(new_name n7) (n int) LOCATION '$(probe_location n7)'" "$(new_name n7)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" n8 \
+    "CREATE TABLE \"$(new_name n8)\" (n int) LOCATION '$(probe_location n8)'" "$(new_name n8)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" n9 \
+    "CREATE TABLE a229.b229.c229.$(new_name n9) (n int) LOCATION '$(probe_location n9)'" "$(new_name n9)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" n10 \
+    "CREATE EXTERNAL TABLE $(new_name n10) (n int) LOCATION '$(probe_location n10)'" "$(new_name n10)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" n11 \
+    "CREATE EXTERNAL TABLE $(new_name n11) (n int)" "$(new_name n11)"
+  run_create_then_drop_ctx "$S3T_CTX" "$DEFAULT_CTX" n12 \
+    "CREATE EXTERNAL TABLE awsdatacatalog.$DB.$(new_name n12) (n int)" "$(new_name n12)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" n13 \
+    "CREATE TABLE $(new_name n13) (n int NOT NULL) LOCATION '$(probe_location n13)'" "$(new_name n13)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" n14 \
+    "CREATE TABLE $(new_name n14) (\"n\" int) LOCATION '$(probe_location n14)'" "$(new_name n14)"
+  run_create_then_drop_ctx "$S3T_CTX" "$DEFAULT_CTX" n15 \
+    "CREATE TABLE awsdatacatalog.$DB.$(new_name n15) (n int NOT NULL) LOCATION '$(probe_location n15)'" "$(new_name n15)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" n16 \
+    "CREATE TABLE $(new_name n16) (n int) LOCATION '$(probe_location n16)' garbage" "$(new_name n16)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" n17 \
+    "CREATE TABLE $(new_name n17) (n int) LOCATION s3path" "$(new_name n17)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" n18 \
+    "CREATE TABLE $(new_name n18) (n int) LOCATION" "$(new_name n18)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" n19 \
+    "CREATE TABLE $(new_name n19) (n int) PARTITIONED BY (p string) LOCATION '$(probe_location n19)'" "$(new_name n19)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" n20 \
+    "CREATE TABLE $(new_name n20) (n int) ROW FORMAT DELIMITED FIELDS TERMINATED BY ',' STORED AS TEXTFILE LOCATION '$(probe_location n20)' TBLPROPERTIES ('a'='b')" "$(new_name n20)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" n21 \
+    "CREATE TABLE $(new_name n21) (n int) STORED AS PARQUET" "$(new_name n21)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" n22 \
+    "CREATE TABLE $(new_name n22) (n int) TBLPROPERTIES ('table_type'='ICEBERG') LOCATION '$(probe_location n22)'" "$(new_name n22)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" n23 \
+    "CREATE TABLE IF NOT EXISTS $(new_name n23) (n int) LOCATION '$(probe_location n23)'" "$(new_name n23)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" n24 \
+    "create table $(new_name n24) (n int) location '$(probe_location n24)'" "$(new_name n24)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" n25 \
+    "CREATE TABLE $(new_name n25) (n int) /* c */ LOCATION '$(probe_location n25)'" "$(new_name n25)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" n26 \
+    "CREATE TABLE $(new_name n26) (location string)" "$(new_name n26)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" n27 \
+    "CREATE TABLE $(new_name n27) (n int) COMMENT 'LOCATION'" "$(new_name n27)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" n28 \
+    "CREATE EXTERNAL TABLE $DB.$(new_name n28) (n int) LOCATION '$(probe_location n28)'" "$DB.$(new_name n28)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" n29 \
+    "CREATE TABLE $(new_name n29) (n int) LOCATION '$(probe_location n29)'; -- c" "$(new_name n29)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" n30 \
+    "CREATE TABLE $(new_name n30) LOCATION '$(probe_location n30)'" "$(new_name n30)"
+  run_create_then_drop_ctx "$S3T_CTX_NO_NS" "$S3T_CTX_NO_NS" n32 \
+    "CREATE TABLE $(new_name n32) (n int) LOCATION '$(probe_location n32)'" "$(new_name n32)"
+else
+  skip n0 "未測定（S3TABLES_* 未設定）"
+  for l in n1 n2 n3 n4 n5 n6 n7 n8 n9 n10 n11 n12 n13 n14 n15 n16 n17 n18 n19 n20 n21 n22 n23 n24 n25 n26 n27 n28 n29 n30 n32; do
+    skip "$l" "未測定（S3TABLES_* 未設定）"
+    skip "$l-cleanup" "CREATE TABLE を投げていないため後始末不要"
+  done
+fi
+# n31: 既定の Context の対照（S3TABLES_* によらず常に投げる）。
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" n31 \
+  "CREATE EXTERNAL TABLE $(new_name n31) (n int) LOCATION '$(probe_location n31)'" "$(new_name n31)"
+
+fi # ROUND=9
+
 # --- 後始末（実在する表） ----------------------------------------------------------
 
 if [ "$REAL_SETUP_OK" = 1 ]; then
@@ -1593,6 +1738,11 @@ elif [ "$ROUND" = 3 ]; then
 elif [ "$ROUND" = 4 ]; then
   ALL_LABELS="$ALL_LABELS i0"
   for l in i1 i2 i3 i4 i5 i6 i7 i8 i9 i10 i11 i12 i13 i14 i15 i16 i17 i18 i19 i20 i21 i22; do
+    ALL_LABELS="$ALL_LABELS $l $l-cleanup"
+  done
+elif [ "$ROUND" = 9 ]; then
+  ALL_LABELS="$ALL_LABELS n0"
+  for l in n1 n2 n3 n4 n5 n6 n7 n8 n9 n10 n11 n12 n13 n14 n15 n16 n17 n18 n19 n20 n21 n22 n23 n24 n25 n26 n27 n28 n29 n30 n31 n32; do
     ALL_LABELS="$ALL_LABELS $l $l-cleanup"
   done
 elif [ "$ROUND" = 8 ]; then
@@ -1674,6 +1824,30 @@ write_summary_txt() {
       echo "#   DROP して消す（AwsDataCatalog に作られうるものは既定の Context、S3 Tables に作られうる"
       echo "#   i2・i19・i20 は S3 Tables の Context で DROP TABLE IF EXISTS）。i14・i15 の LOCATION は"
       echo "#   <OUTPUT>athena-local-probe-224/<PROBE>_<項目>/（空のプレフィックス。データは置かない）。"
+      echo "# 課金: スキャンの無いクエリだけ（CREATE は 0〜1 行、DROP はメタデータのみ）。"
+      echo "# 注意: これは実測した本物の Athena の挙動であり、将来の Athena の変更で変わりうる。"
+      echo "#   実測値は既定とは限らない。"
+    elif [ "$ROUND" = 9 ]; then
+      echo "# issue #229（#208 ラウンド 9）: QueryExecutionContext の Catalog が S3 Tables のとき、"
+      echo "#             LOCATION 付きの CREATE TABLE・CREATE EXTERNAL TABLE が StartQueryExecution の時点で"
+      echo "#             どう弾かれるか（#224 の i14・i15 で見つけた InvalidRequestException・MALFORMED_QUERY、"
+      echo "#             Table location can not be specified for tables hosted in S3 table buckets の範囲と、"
+      echo "#             他の判定との順番）を実測"
+      echo "# 実行日時: $(date -Iseconds)"
+      if [ -n "$S3TABLES_CATALOG" ] && [ -n "$S3TABLES_NS" ]; then
+        echo "# S3TABLES_*: 設定あり（N 群 n0〜n30・n32 を測る）"
+      else
+        echo "# S3TABLES_*: 未設定（n31 以外の N 群は未測定）"
+      fi
+      echo "# StartQueryExecution の見込み本数: 35（S3TABLES_* あり）／3（無し）"
+      echo "#   （preflight 2 + N 群のうち S3TABLES_* が揃うときだけの 32（n0 の SELECT 1 と"
+      echo "#   n1〜n30・n32）+ 常に投げる n31 の 1）。"
+      echo "#   このスクリプトの実測値: $(wc -l < "$START_CALL_FILE" | tr -d ' ') 回"
+      echo "#   受理された CREATE TABLE ごとに、その場で DROP する後始末が 1 本ずつ増える（最大 +32）。"
+      echo "# DDL: 実在する表 <PROBE>_real は作らない。N 群の CREATE TABLE は、受理されたらその場で"
+      echo "#   DROP して消す（AwsDataCatalog に作られうる n1・n5・n6・n12・n15・n31 は既定の Context、"
+      echo "#   それ以外は S3 Tables の Context（n32 は Database 無しの Catalog だけ）で DROP TABLE IF EXISTS）。"
+      echo "#   LOCATION は <OUTPUT>athena-local-probe-229/<PROBE>_<項目>/（空のプレフィックス。データは置かない）。"
       echo "# 課金: スキャンの無いクエリだけ（CREATE は 0〜1 行、DROP はメタデータのみ）。"
       echo "# 注意: これは実測した本物の Athena の挙動であり、将来の Athena の変更で変わりうる。"
       echo "#   実測値は既定とは限らない。"

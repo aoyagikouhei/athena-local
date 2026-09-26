@@ -379,6 +379,36 @@ Known differences between athena-local and real Athena, grouped by topic.
   as `<namespace>.<table>` instead
   ([#227](https://github.com/aoyagikouhei/athena-local/issues/227), measured
   2026-09-26).
+- **With an S3 Tables context catalog, Hive's `LOCATION` and `EXTERNAL` are
+  rejected with real Athena's messages.** Trino's grammar has neither, so under
+  any other context catalog such a statement gets Trino's syntax error. When
+  `QueryExecutionContext.Catalog` is `s3tablescatalog/<bucket>`, real Athena
+  reads the statement as Hive DDL first, and athena-local does the same for the
+  forms that were measured, before the syntax check
+  ([#229](https://github.com/aoyagikouhei/athena-local/issues/229), measured
+  2026-09-26):
+
+  | Form | Message |
+  | --- | --- |
+  | `CREATE [EXTERNAL] TABLE [IF NOT EXISTS] <name> [(<columns>)] [PARTITIONED BY (<columns>)] [ROW FORMAT DELIMITED FIELDS TERMINATED BY '<c>'] [STORED AS <format>] LOCATION '<path>' [TBLPROPERTIES ('<k>'='<v>', ...)]` | `Table location can not be specified for tables hosted in S3 table buckets` |
+  | `CREATE EXTERNAL TABLE <name> (<columns>)` (no other clause; `<name>` one-part, or three-part with `awsdatacatalog` in lower case) | `External keyword not supported for table type ICEBERG` |
+
+  Both answer `InvalidRequestException` / `AthenaErrorCode` `MALFORMED_QUERY`
+  with no `QueryExecutionId` created, and nothing is sent to Trino. `<name>`
+  is an unquoted one- or two-part name, or a three-part one whose first part
+  is `awsdatacatalog` in any case; the columns are read as in the table above.
+  Real Athena answered Trino's own syntax error (`mismatched input
+  'LOCATION'`), which athena-local still returns from its syntax check, when
+  the statement is not valid Hive DDL: a double-quoted or four-part name,
+  `NOT NULL` or a double-quoted column name, anything after the `LOCATION`
+  path, an unquoted or missing path, or `TBLPROPERTIES` before `LOCATION`.
+  Not handled yet: a three-part name whose catalog does not exist (real
+  Athena answers `DATACATALOG_NOT_FOUND`), and `STORED AS` without `LOCATION`
+  (real Athena starts the query and fails it with `Iceberg create table
+  statement does not allow STORED AS/BY`); both still get Trino's syntax
+  error ([#248](https://github.com/aoyagikouhei/athena-local/issues/248)). Other clauses, or `EXTERNAL` without `LOCATION` but with a clause,
+  were not measured and also get Trino's syntax error, as does `EXTERNAL`
+  without `LOCATION` on a two-part name or on `AwsDataCatalog.<db>.<t>`.
 - **A three-part name whose catalog does not exist is rejected with
   `DATACATALOG_NOT_FOUND`.** For an unquoted three-part name that would
   otherwise answer `No location`, under any context catalog, real Athena
