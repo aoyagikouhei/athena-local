@@ -636,3 +636,39 @@ async fn msck_repair_table_は_context_のカタログが実在しなければ�
         "Query type not supported by Athena Iceberg at this time"
     );
 }
+
+/// 本物は ALTER TABLE の名前の 1 部目の `awsdatacatalog.` を Context のカタログとして落とす（2026-09-26 実測 m33。
+/// #242）。構文チェックの前の判定も、落とした後の名前（`db.t`）で表を確かめる。落とさずに `awsdatacatalog` を
+/// Trino のカタログとして引くと、カタログが無いと判定して今までどおり構文エラーになってしまう（#244 の最終パス）。
+#[tokio::test]
+async fn alter_table_add_columns_複数形_のブロックコメントは名前の_awsdatacatalog_を落として表を確かめる()
+ {
+    let sql = "ALTER /* c */ TABLE awsdatacatalog.db.t ADD COLUMNS (c int)";
+    let harness = Harness::builder(select_response())
+        .catalog_map(&[("AwsDataCatalog", "hive")])
+        .route(
+            &probe_sql("hive", "db", "t"),
+            probe_response("hive", "TABLE"),
+        )
+        .start()
+        .await;
+
+    let execution = harness
+        .run_query(json!({
+            "QueryString": sql,
+            "QueryExecutionContext": { "Catalog": "AwsDataCatalog", "Database": "other" }
+        }))
+        .await["QueryExecution"]
+        .clone();
+
+    assert_eq!(execution["Status"]["State"], "FAILED", "{execution}");
+    assert_eq!(
+        execution["Status"]["StateChangeReason"],
+        "FAILED: ParseException line 1:0 cannot recognize input near 'ALTER' '/' '*' in alter statement"
+    );
+    assert!(
+        !harness.syntax_checks().contains(&sql.to_string()),
+        "構文チェックへ進まない: {:?}",
+        harness.syntax_checks()
+    );
+}

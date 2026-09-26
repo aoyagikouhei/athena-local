@@ -213,7 +213,8 @@ Trino has no grammar for, its syntax check), and fails it the same way
 | `SHOW CREATE TABLE` | a Hive table, a view, a missing table | an Iceberg table |
 | `DESCRIBE`, `DESC` | a Hive table | an Iceberg table, a view |
 | `MSCK REPAIR TABLE` | a Hive table, a view, a missing table | — (an Iceberg table fails differently, below) |
-| `ALTER TABLE ... ADD COLUMNS`, `DROP COLUMN`, `RENAME TO` | a Hive table, a view, a missing table | an Iceberg table |
+| `ALTER TABLE ... ADD COLUMNS` | a Hive table, a view, a missing table | — (Athena runs it on an Iceberg table, but Trino has no `ADD COLUMNS`, so athena-local still rejects it at the syntax check) |
+| `ALTER TABLE ... DROP COLUMN`, `RENAME TO` | a Hive table, a view, a missing table | an Iceberg table |
 
 The comment has to come first, or between the keywords, or right before the
 table name (`SHOW /* c */ CREATE TABLE t`, `MSCK REPAIR TABLE /* c */ t`,

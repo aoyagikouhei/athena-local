@@ -627,6 +627,12 @@ run_new_behavior_cases() {
     "$at7_sql" AwsDataCatalog "$SCHEMA" \
     "$reason" 2 1006 "$at7_errmsg" DDL ALTER_TABLE_DROP_COLUMN same
 
+  # AT8: 名前の 1 部目の awsdatacatalog. は落として表を確かめる（#244 の最終パスで直した。#242 の m33）。
+  reason="FAILED: ParseException line 1:0 cannot recognize input near 'ALTER' '/' '*' in alter statement"
+  case_failed "AT8" "ALTER /* c */ TABLE awsdatacatalog.<db>.<t> ADD COLUMNS（Hive）" \
+    "ALTER /* c */ TABLE awsdatacatalog.$SCHEMA.$H ADD COLUMNS (c int)" AwsDataCatalog "$SCHEMA" \
+    "$reason" 1 1003 "$reason" DDL ALTER_TABLE_ADD_COLUMN same
+
   # DS1〜DS4: DESCRIBE/DESC。UTILITY/DESCRIBE_TABLE。実装前に PASS するのは DS1（#242 の既存）だけで、
   # DS2（DESC）・DS3（先頭コメント）・DS4（Iceberg は成功）は #244 で直す。
   reason="FAILED: ParseException line 1:0 cannot recognize input near 'DESCRIBE' '/' '*' in describe statement"
@@ -681,6 +687,11 @@ run_regression_cases() {
 
   case_start_reject "REG10" "ALTER TABLE ADD COLUMNS（コメント無し・Trino に無い構文）" \
     "ALTER TABLE $H ADD COLUMNS (c int)" AwsDataCatalog "$SCHEMA"
+
+  # 本物は Iceberg 表への ADD COLUMNS をコメント入りでも成功させた（2026-09-26 実測 a3）が、Trino に
+  # ADD COLUMNS の文法が無いので athena-local は今までどおり構文チェックで弾く（偽 Trino では確かめられない）。
+  case_start_reject "REG11" "ALTER /* c */ TABLE ADD COLUMNS（Iceberg・Trino に無い構文のまま）" \
+    "ALTER /* c */ TABLE $I ADD COLUMNS (c int)" iceberg "$SCHEMA"
 }
 
 GATE_STATUS=""

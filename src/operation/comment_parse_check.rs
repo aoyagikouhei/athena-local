@@ -10,6 +10,7 @@ use super::classification;
 use super::comment_parse_error;
 use super::context_catalog;
 use super::entity_check::{self, Probe};
+use super::reported_query;
 use super::table_format::TargetStatement;
 use super::target_table;
 
@@ -30,6 +31,14 @@ pub(super) async fn pre_syntax_check_failure(
 ) -> Option<ImmediateFailure> {
     use comment_parse_error::Target;
 
+    // 本物は ALTER TABLE の名前の 1 部目の `awsdatacatalog.` を Context のカタログとして落とす（2026-09-26 実測 m33。
+    // #242）。構文チェックの後の判定と同じく、落とした後の文と修飾の DB で確かめる。MSCK REPAIR TABLE の
+    // `awsdatacatalog.` は測っていないので落とさない（名前のカタログとして引き、無ければ今までどおり）。
+    let rewritten = reported_query::drop_catalog(query, catalog);
+    let (query, database) = match &rewritten {
+        Some(rewritten) => (rewritten.query.as_str(), Some(rewritten.database.as_str())),
+        None => (query, database),
+    };
     let is_msck = classification::substatement_type(query) == Some("MSCK_REPAIR");
     let comment = comment_parse_error::detect(query);
     let add_columns_comment = comment
