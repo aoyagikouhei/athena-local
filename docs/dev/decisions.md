@@ -130,7 +130,7 @@ SQL の字句解析と文の認識を `crates/athena-sql` に集める計画（�
 - Content-Type は「ファイルの種類 × SQL」で決め、`src/content_type.rs` に集める。`ResultFile::of` は「文の種類だけで決まり SQL の残りは見ない」をファイル名の判定として守り、SQL の残りを見る判定は別の関数に置く。（#70、2026-09-23）
 - `.metadata` の Content-Type は本体に追従させる（`ResultLocation` に持たせ、`metadata()` が引き継ぐ）。失敗ファイルは application 固定。テーブル形式に依存する DDL の上書きは本体と `.metadata` の両方に同じ値を渡す。（#70・#76、2026-09-23）
 - リテラルだけの `SELECT` は実測した形だけを受け、ほかは application に落とす（本物が binary にする形を取りこぼす方向にだけ外れる）。（#70、2026-09-23、ユーザーの選択。#76 で実測した形を足した。#205、2026-09-25 で括弧で包んだリテラルと `- 1` を足した）
-- `SELECT 1;` は本物では binary だが、Trino が弾くので判定を変えない。（#76、2026-09-23）
+- `SELECT 1;` は本物では binary だが、Trino が弾くので判定を変えない。（#76、2026-09-23）#240 で入口で `;` を落とすようになり、判定には `SELECT 1` が届いて binary になる（判定そのものは変えていない。2026-09-26）
 - `.txt` の判定は先頭の語で、`DESCRIBE`／`DESC`、`EXPLAIN`、`SHOW CREATE TABLE`（3 語目まで見る）が application、それ以外の `.txt`（`SHOW CREATE VIEW` を含む `SHOW` 系・DDL）が binary。`DESCRIBE`／`DESC`／`SHOW CREATE TABLE` の組は `.metadata` の先頭に QueryExecutionId を載せる組と同じなので、1 つの述語 `content_type::carries_execution_id` に集約して Content-Type と `metadata_query_id` の両方から呼ぶ（#151、2026-09-24。それまでは 2 語目までの同じ組を 2 か所に書いて「片方を変えたら両方を直す」としていた）。`SHOW CREATE TABLE` 以外の `SHOW CREATE ...` は Athena の構文に無く未実測なので既定の binary に落とす。INSERT・CTAS（`Manifest`／`Table`）は application。（#70、2026-09-23）
 - `.csv` の `text/csv` は 0.3.0 からの未実測の推測値で、2026-09-17 の実測（6 件中 5 件が application、残る 1 件は `SELECT 1`）を根拠に `application/octet-stream` へ置き換えた。多数決で丸めていたことは #70 の規則で解消した。（#5、2026-09-17）
 
