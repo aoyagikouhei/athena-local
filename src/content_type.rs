@@ -92,7 +92,9 @@ pub(crate) fn carries_execution_id(query: &str) -> bool {
 /// 「キーワードの大文字小文字」だけ。測って application だった形（`LIMIT`、`DATE '...'` のような
 /// 型付きリテラル、式、`ARRAY[1]`、`(SELECT 1)`、`VALUES 1`、`(1, 2)`、`(NULL)`）と測っていない形は false にして
 /// application に落とす（本物が binary にする形を取りこぼす向きにだけ外れる）。
-fn is_literal_only_select(query: &str) -> bool {
+/// 本物は同じ文の `.metadata` の先頭（field 1）に QueryExecutionId を載せる（2026-09-23／25 実測。#210）ので、
+/// `operation/result_output.rs` の `metadata_query_id` もこの述語を使う。
+pub(crate) fn is_literal_only_select(query: &str) -> bool {
     let mut cursor = Cursor::new(query);
     if !cursor.keyword("SELECT") {
         return false;

@@ -166,6 +166,36 @@ async fn select_は_csv_の隣に_csv_metadata_を置く() {
 }
 
 #[tokio::test]
+async fn リテラルだけの_select_の_metadata_は先頭が実行_id_になる() {
+    // 本体が binary/octet-stream になる文は、`.metadata` の field 1 も QueryExecutionId
+    // （2026-09-23 実測。#70/#76。2026-09-25 実測。#200・#205。#210）。
+    let harness = Harness::builder(select_response())
+        .results_s3()
+        .start()
+        .await;
+
+    let execution = harness
+        .run_query(json!({
+            "QueryString": "SELECT (1)",
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+        }))
+        .await;
+    let id = execution_id(&execution);
+
+    let puts = harness.s3_puts();
+    assert_eq!(puts.len(), 2, "{puts:?}");
+    assert_eq!(puts[1].key, format!("athena/{id}.csv.metadata"));
+    assert_eq!(puts[1].content_type.as_deref(), Some("binary/octet-stream"));
+    assert_eq!(
+        hex_of(&puts[1].body),
+        hex(&format!(
+            "{}{COLUMN_ID_INTEGER}{COLUMN_NAME_VARCHAR}",
+            execution_id_field(&id)
+        ))
+    );
+}
+
+#[tokio::test]
 async fn show_は_txt_の隣に_txt_metadata_を置く() {
     let harness = Harness::builder(select_response())
         .route("SHOW TABLES IN db", show_response())
