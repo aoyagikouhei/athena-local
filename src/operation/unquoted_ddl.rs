@@ -4,7 +4,8 @@
 mod create_table;
 
 pub(super) use create_table::{
-    NO_LOCATION, s3_tables_rejection, three_part_name, two_part_namespace,
+    NO_LOCATION, location_catalog, s3_tables_rejection, s3_tables_stored_as, three_part_name,
+    two_part_namespace,
 };
 
 use athena_sql::{Cursor, skip_leading_trivia};

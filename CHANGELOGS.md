@@ -11,6 +11,16 @@ later name the date they were measured on.
 
 ### Changed
 
+- Under an S3 Tables context catalog, more Hive `CREATE TABLE` forms (`COMMENT`,
+  `CLUSTERED BY`, `ROW FORMAT SERDE`, other `DELIMITED` terminators, several
+  `TBLPROPERTIES`, a backquoted name, `EXTERNAL` without `LOCATION` on more
+  names) get real Athena's `Table location` / `External keyword` messages, and
+  `STORED AS` without `LOCATION` fails like real Athena
+  ([docs](docs/caveats.md#plain-create-table)).
+- A Hive `CREATE TABLE <catalog>.<db>.<table> ... LOCATION` whose catalog does
+  not exist is rejected with `DATACATALOG_NOT_FOUND` under any context catalog
+  ([docs](docs/caveats.md#plain-create-table)).
+
 - An unquoted `awsdatacatalog.<database>.<table>` in `SELECT`, `INSERT`, CTAS,
   `CREATE VIEW` and `EXPLAIN` now runs through the `AwsDataCatalog` alias
   ([docs](docs/caveats.md#parameters-and-catalog-aliases)).

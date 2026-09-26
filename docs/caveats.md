@@ -449,29 +449,46 @@ respectively. `MSCK REPAIR TABLE` on an Iceberg table, with or without a comment
   reads the statement as Hive DDL first, and athena-local does the same for the
   forms that were measured, before the syntax check
   ([#229](https://github.com/aoyagikouhei/athena-local/issues/229), measured
-  2026-09-26):
+  2026-09-26; [#248](https://github.com/aoyagikouhei/athena-local/issues/248),
+  measured 2026-09-27):
 
   | Form | Message |
   | --- | --- |
-  | `CREATE [EXTERNAL] TABLE [IF NOT EXISTS] <name> [(<columns>)] [PARTITIONED BY (<columns>)] [ROW FORMAT DELIMITED FIELDS TERMINATED BY '<c>'] [STORED AS <format>] LOCATION '<path>' [TBLPROPERTIES ('<k>'='<v>', ...)]` | `Table location can not be specified for tables hosted in S3 table buckets` |
-  | `CREATE EXTERNAL TABLE <name> (<columns>)` (no other clause; `<name>` one-part, or three-part with `awsdatacatalog` in lower case) | `External keyword not supported for table type ICEBERG` |
+  | `CREATE [EXTERNAL] TABLE [IF NOT EXISTS] <name> [(<columns>)] [COMMENT '<c>'] [PARTITIONED BY (<columns>)] [CLUSTERED BY (<column>, ...) INTO <n> BUCKETS] [ROW FORMAT SERDE '<class>' \| ROW FORMAT DELIMITED <terminators>] [STORED AS <format>] LOCATION '<path>' [TBLPROPERTIES ('<k>'='<v>', ...)]` | `Table location can not be specified for tables hosted in S3 table buckets` |
+  | `CREATE EXTERNAL TABLE [IF NOT EXISTS] <name> (<columns>) [STORED AS <format>] [TBLPROPERTIES ('<k>'='<v>', ...)]` (no `LOCATION`) | `External keyword not supported for table type ICEBERG` |
 
   Both answer `InvalidRequestException` / `AthenaErrorCode` `MALFORMED_QUERY`
   with no `QueryExecutionId` created, and nothing is sent to Trino. `<name>`
   is an unquoted one- or two-part name, or a three-part one whose first part
-  is `awsdatacatalog` in any case; the columns are read as in the table above.
+  is `awsdatacatalog` in any case; with `LOCATION` it may also be a one-part
+  name in backquotes. The columns are read as in the table above, and
+  `<terminators>` is one or more of `FIELDS TERMINATED BY`, `COLLECTION ITEMS
+  TERMINATED BY`, `MAP KEYS TERMINATED BY`, `LINES TERMINATED BY` and `NULL
+  DEFINED AS`, in that order. The clauses must come in the order shown.
   Real Athena answered Trino's own syntax error (`mismatched input
   'LOCATION'`), which athena-local still returns from its syntax check, when
   the statement is not valid Hive DDL: a double-quoted or four-part name,
-  `NOT NULL` or a double-quoted column name, anything after the `LOCATION`
-  path, an unquoted or missing path, or `TBLPROPERTIES` before `LOCATION`.
-  Not handled yet: a three-part name whose catalog does not exist (real
-  Athena answers `DATACATALOG_NOT_FOUND`), and `STORED AS` without `LOCATION`
-  (real Athena starts the query and fails it with `Iceberg create table
-  statement does not allow STORED AS/BY`); both still get Trino's syntax
-  error ([#248](https://github.com/aoyagikouhei/athena-local/issues/248)). Other clauses, or `EXTERNAL` without `LOCATION` but with a clause,
-  were not measured and also get Trino's syntax error, as does `EXTERNAL`
-  without `LOCATION` on a two-part name or on `AwsDataCatalog.<db>.<t>`.
+  `NOT NULL` or a double-quoted column name, a nested `row(...)` column type,
+  anything after the `LOCATION` path, an unquoted or missing path, or
+  `TBLPROPERTIES` before `LOCATION`.
+  `CREATE TABLE <name> (<columns>) STORED AS <format>` without `LOCATION` and
+  without other clauses, on an unquoted one-part name, is accepted and fails
+  like real Athena with `Iceberg create table statement does not allow STORED
+  AS/BY` (`ErrorCategory` 2, `ErrorType` 1200), without being sent to Trino
+  and without result files. `EXTERNAL` without `LOCATION` but with another
+  clause (`COMMENT`, `ROW FORMAT`, ...), and `STORED AS` without `LOCATION` on
+  other names or with other clauses, were not measured and still get Trino's
+  syntax error.
+- **A three-part name whose catalog does not exist is rejected with
+  `DATACATALOG_NOT_FOUND` also with `LOCATION`.** Under any context catalog,
+  `CREATE TABLE <catalog>.<database>.<table> (<columns>) LOCATION '<path>'`
+  whose unquoted first part is not `awsdatacatalog` answers `Catalog '<the
+  first part as written>' does not exist` when Trino has no such catalog,
+  before the syntax check
+  ([#248](https://github.com/aoyagikouhei/athena-local/issues/248), measured
+  2026-09-27). Only that form was measured: with `EXTERNAL`, `IF NOT EXISTS`
+  or another clause, and with a catalog Trino does have (including a
+  `TRINO_CATALOG_MAP` alias), the statement still gets Trino's syntax error.
 - **A three-part name whose catalog does not exist is rejected with
   `DATACATALOG_NOT_FOUND`.** For an unquoted three-part name that would
   otherwise answer `No location`, under any context catalog, real Athena

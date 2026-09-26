@@ -21,7 +21,7 @@ use super::classification::substatement_type;
 use super::context_catalog::missing;
 use super::table_format::{catalog_exists_sql, schema_probe_sql};
 use super::target_table::if_follows;
-use super::unquoted_ddl::{three_part_name, two_part_namespace};
+use super::unquoted_ddl::{location_catalog, three_part_name, two_part_namespace};
 
 /// 開始時にどうするか。
 pub(super) enum Outcome {
@@ -49,14 +49,9 @@ pub(super) async fn check(
         return Outcome::Continue;
     };
     if !catalog.eq_ignore_ascii_case("awsdatacatalog") {
-        let sql = catalog_exists_sql(&trino_catalog(config, catalog).to_lowercase());
-        return if missing(trino, &sql).await {
-            Outcome::Reject(Box::new(invalid_request_with_code(
-                format!("Catalog '{catalog}' does not exist"),
-                "DATACATALOG_NOT_FOUND",
-            )))
-        } else {
-            Outcome::Continue
+        return match catalog_rejection(trino, config, catalog).await {
+            Some(response) => Outcome::Reject(response),
+            None => Outcome::Continue,
         };
     }
     // S3 Tables の Context でだけ、本物は 2 部目を Context のカタログの名前空間として引いた（小文字ちょうどの
@@ -72,6 +67,30 @@ pub(super) async fn check(
     } else {
         Outcome::Rewrite(blank_out(query, first_part))
     }
+}
+
+/// LOCATION 付きの Hive の `CREATE TABLE` の無引用の 3 部の名前（`unquoted_ddl::location_catalog`）で、1 部目のカタログが
+/// 無いと確かめられたときだけ、本物と同じ DATACATALOG_NOT_FOUND の応答を返す。Context によらない（2026-09-26 実測 n6・
+/// 2026-09-27 実測 s12・s13。#248）。Trino にだけあるカタログ（本物は未実測 s14）は実在として扱い、今までどおり構文
+/// チェックに任せる。
+pub(super) async fn location_rejection(
+    trino: &Trino,
+    config: &Config,
+    query: &str,
+) -> Option<Box<Response>> {
+    let catalog = location_catalog(query)?;
+    catalog_rejection(trino, config, catalog).await
+}
+
+/// `catalog`（書いたとおりの 1 部目）を Trino に問い合わせ、無いと確かめられたときだけ本物の文言で弾く応答。
+async fn catalog_rejection(trino: &Trino, config: &Config, catalog: &str) -> Option<Box<Response>> {
+    let sql = catalog_exists_sql(&trino_catalog(config, catalog).to_lowercase());
+    missing(trino, &sql).await.then(|| {
+        Box::new(invalid_request_with_code(
+            format!("Catalog '{catalog}' does not exist"),
+            "DATACATALOG_NOT_FOUND",
+        ))
+    })
 }
 
 /// S3 Tables の Context（呼び出し側が確かめる）の CTAS で、無引用の 3 部の名前の 1 部目が `awsdatacatalog`（大文字小文字に
