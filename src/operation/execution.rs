@@ -16,7 +16,7 @@ use crate::request::parse;
 use crate::response::{invalid_request_with_code, ok};
 use crate::results::ResultLocation;
 use crate::statement;
-use crate::store::{Execution, Fingerprint, Submission, SubmitOutcome};
+use crate::store::{Execution, Fingerprint, ImmediateFailure, Reported, Submission, SubmitOutcome};
 use crate::trino::{Outcome, QueryError, Trino};
 
 use super::completion;
@@ -92,6 +92,7 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
     // 本物は DESCRIBE・SHOW COLUMNS などの `awsdatacatalog.` を落とし、Context の Database を修飾の DB にする
     // （2026-09-26 実測。#242）。落とした文を開始時の確認・実行・`Query` に使い、構文と開始時の文言の判定は
     // 受け取った文で行う（文言の位置と input は受け取った文で実測している）。
+    let sent_database = database.clone();
     let (statement, database) = match reported_query::drop_catalog(&query, catalog.as_deref()) {
         Some(rewritten) => (rewritten.query, Some(rewritten.database)),
         None => (query.clone(), database),
@@ -111,6 +112,23 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
     if let Check::Reject(response) = check {
         return *response;
     }
+    // 本物は表への DESCRIBE・DESC の Query から DB も落とし、ビューはカタログも落とさずに返した（2026-09-26
+    // 実測 m1〜m13・m11・m37。#242）。ビューは実行だけカタログを落とした文で行う。
+    let mut reported = None;
+    let (statement, database) = match check {
+        Check::Table => match reported_query::drop_database(&statement, catalog.as_deref()) {
+            Some(rewritten) => (rewritten.query, Some(rewritten.database)),
+            None => (statement, database),
+        },
+        Check::Run if statement != query => {
+            reported = Some(Reported {
+                query: query.clone(),
+                database: sent_database,
+            });
+            (statement, database)
+        }
+        _ => (statement, database),
+    };
     // Trino は受けるが本物は開始時に弾く、引用符付きの名前を取る DDL 系の文（2026-09-25 実測。#204）と、
     // 無引用の ALTER TABLE の文（IF EXISTS・ADD COLUMN 単数・Trino だけにある形。2026-09-26 実測。#208）。
     // 本物も Trino が構文エラーにする形では Trino の文言を返したので、構文チェックの後に見る。
@@ -139,12 +157,26 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
         match outcome {
             create_table_catalog::Outcome::Reject(response) => return *response,
             create_table_catalog::Outcome::FailAtRuntime(failure) => {
-                immediate_failure = Some(failure);
+                immediate_failure = Some(ImmediateFailure {
+                    failure,
+                    writes_result_file: false,
+                });
             }
             create_table_catalog::Outcome::Continue => {
                 return invalid_request_with_code(message, "MALFORMED_QUERY");
             }
         }
+    }
+
+    // 本物は DESCRIBE の直後のブロックコメントを Hive の ParseException で FAILED にする（#242）。表と分かったとき
+    // だけにする（測ったのは表）。
+    if matches!(check, Check::Table)
+        && let Some(failure) = reported_query::describe_parse_error(&statement)
+    {
+        immediate_failure = Some(ImmediateFailure {
+            failure,
+            writes_result_file: true,
+        });
     }
 
     let work_group = request
@@ -163,6 +195,7 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
             token,
             fingerprint,
             immediate_failure,
+            reported,
         },
     );
 
@@ -312,10 +345,13 @@ fn spawn_query(app: App, id: String) {
         if !app.store.mark_running(&id) {
             return;
         }
-        // 開始時点で FAILED と決まっていれば Trino に送らない。本物は結果ファイルも `.metadata` も置かないので、
-        // write_failure も呼ばない（#227）。
-        if let Some(failure) = execution.immediate_failure {
-            app.store.finish(&id, Err(failure));
+        // 開始時点で FAILED と決まっていれば Trino に送らない。本物は Glue で表が引けない失敗には結果ファイルも
+        // `.metadata` も置かず（#227）、Hive の ParseException には理由の `.txt` だけを置いた（#242）。
+        if let Some(immediate) = &execution.immediate_failure {
+            if immediate.writes_result_file {
+                result_output::write_failure(&app, &execution, &immediate.failure).await;
+            }
+            app.store.finish(&id, Err(immediate.failure.clone()));
             return;
         }
 

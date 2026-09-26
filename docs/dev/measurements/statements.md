@@ -646,5 +646,5 @@ Content-Type と `.metadata` を含む置き場所は本項が主で、[result-f
   | `SHOW TBLPROPERTIES awsdatacatalog.<db>.<t>`（m28）・`ALTER TABLE awsdatacatalog.<db>.<t> SET TBLPROPERTIES (...)`（m33）・`DROP TABLE IF EXISTS awsdatacatalog.<db>.<無い表>`（m34） | カタログが落ちる | `<db>` |
   | `SELECT * FROM awsdatacatalog.<db>.<t>`（m30）・`AwsDataCatalog.`（m31）・`INSERT INTO awsdatacatalog...`（m32）・CTAS（m35）・`CREATE VIEW awsdatacatalog...`（m36）・`EXPLAIN SELECT ...`（m41）・`SHOW VIEWS IN awsdatacatalog.<db>`（m42） | 送ったまま（落ちない） | `<db>` |
 
-- 採用した判断: .claude/issue-notes/242.md の設計判断（計画で決める）
+- 採用した判断: Context の Catalog が省略か AwsDataCatalog のとき、DESCRIBE・DESC・SHOW COLUMNS・SHOW CREATE TABLE・ALTER TABLE・DROP TABLE の無引用のちょうど 3 部（SHOW TABLES IN は 2 部）の名前の 1 部目の `awsdatacatalog`（大文字小文字によらない）と直後の `.`・空白を、開始時の確認・実行・Query から落とし、Context の Database を修飾の DB（文中の綴り）にする。構文と開始時の文言の判定は受け取った文で行う。表への DESCRIBE・DESC は開始時の確認で表と分かったら DB も落とす。ビューは Query を受け取った文のまま返す（実行はカタログを落とした文）。DESCRIBE の直後のブロックコメント（`DESCRIBE /* c */ t`（2026-09-22 実測）と m10）は Trino に送らず本物と同じ ParseException で FAILED にし、`.txt` だけ置く。ほかの文の同じ形は #244
 - 備考: 過去の生データ（#204 の d-n7・w1-desc-upper2・w1-showcol-n7・c-n7、#224 の i4、#173 の d5 など）と食い違いは無かった。Context の Catalog が実在しないとき修飾が残るのは #212・#214 の生データ（z-desc-nodbctx・y3-desc-2）で、このラウンドでは測っていない

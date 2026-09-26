@@ -3,8 +3,11 @@
 //!
 //! 本物は DESCRIBE・DESC・SHOW COLUMNS・SHOW CREATE TABLE・SHOW TABLES IN・ALTER TABLE・DROP TABLE の名前の
 //! 1 部目の `awsdatacatalog`（大文字小文字によらない）と直後の `.` を落とし、Context の Database を修飾の DB に
-//! する。SELECT・INSERT・CTAS・CREATE VIEW・EXPLAIN・SHOW VIEWS IN は送ったまま。落とした文は Context の
-//! カタログで同じ表を指すので、athena-local は実行もその文で行う。
+//! する。表への DESCRIBE・DESC はさらに DB も落とす（ビューは残す）。SELECT・INSERT・CTAS・CREATE VIEW・
+//! EXPLAIN・SHOW VIEWS IN は送ったまま。落とした文は Context のカタログ・DB で同じ表を指すので、athena-local は
+//! 実行もその文で行う。
+
+use crate::failure::Failure;
 
 use super::target_table::table_name_start;
 
@@ -35,16 +38,56 @@ pub(super) fn drop_catalog(query: &str, context_catalog: Option<&str>) -> Option
     if !context_catalog.is_none_or(is_aws_data_catalog) {
         return None;
     }
-    let (name, parts) = CATALOG_DROPPED
-        .iter()
-        .find_map(|(keywords, parts)| Some((table_name_start(query, keywords)?, *parts)))?;
+    CATALOG_DROPPED.iter().find_map(|(keywords, parts)| {
+        let (query, _, database) = drop_first_part(query, keywords, *parts, is_aws_data_catalog)?;
+        Some(Rewritten { query, database })
+    })
+}
+
+/// 表への `DESCRIBE <db>.<t>`・`DESC <db>.<t>`（`drop_catalog` の後の 2 部）なら、DB と直後の `.` を落とした
+/// 文と、修飾の DB（小文字にしない。本物は文中の綴りを返した。2026-09-26 実測 m12）を返す。表かどうかは
+/// 呼び出し側が開始時の確認（`entity_check`）で決める。Context の条件は `drop_catalog` と同じ（実在しない
+/// Catalog では本物は修飾を残した。#212・#214 の実測）。
+pub(super) fn drop_database(query: &str, context_catalog: Option<&str>) -> Option<Rewritten> {
+    if !context_catalog.is_none_or(is_aws_data_catalog) {
+        return None;
+    }
+    [&["DESCRIBE"][..], &["DESC"]].iter().find_map(|keywords| {
+        let (query, database, _) = drop_first_part(query, keywords, 2, |_| true)?;
+        Some(Rewritten { query, database })
+    })
+}
+
+/// DESCRIBE の直後がブロックコメントなら、本物の Hive の ParseException（2026-09-22 実測 `DESCRIBE /* c */ t`、
+/// 2026-09-26 実測 m10 `DESCRIBE <db>./* c */<t>`）。文言の `'DESCRIBE'` は書いた綴りにする（測ったのは大文字）。
+/// 行コメント・DESC・先頭のコメントは測っていないので対象にしない。
+pub(super) fn describe_parse_error(query: &str) -> Option<Failure> {
+    let keyword = query
+        .get(..8)
+        .filter(|word| word.eq_ignore_ascii_case("DESCRIBE"))?;
+    query[8..]
+        .trim_start_matches([' ', '\t', '\r', '\n'])
+        .starts_with("/*")
+        .then(|| Failure::describe_parse_error(keyword))
+}
+
+/// `keywords` の後ろの名前がちょうど `parts` 部ですべて無引用で、1 部目が `first` に当たれば、1 部目と直後の
+/// `.`・空白を落とした文と、1 部目・2 部目の綴りを返す。引用符付きの部品を含む名前は、開始時の判定（`quoted_names`）に
+/// 任せて落とさない。
+fn drop_first_part(
+    query: &str,
+    keywords: &[&str],
+    parts: usize,
+    first: impl Fn(&str) -> bool,
+) -> Option<(String, String, String)> {
+    let name = table_name_start(query, keywords)?;
     let offset = query.len() - name.len();
     let qualified = athena_sql::Cursor::new(name).qualified_name()?;
-    let [catalog, database, ..] = qualified.parts.as_slice() else {
+    let [head, second, ..] = qualified.parts.as_slice() else {
         return None;
     };
     if qualified.parts.len() != parts
-        || !is_aws_data_catalog(catalog.text)
+        || !first(head.text)
         || qualified
             .parts
             .iter()
@@ -52,10 +95,11 @@ pub(super) fn drop_catalog(query: &str, context_catalog: Option<&str>) -> Option
     {
         return None;
     }
-    Some(Rewritten {
-        query: remove_keeping_comments(query, offset + catalog.start, offset + database.start),
-        database: database.text.to_string(),
-    })
+    Some((
+        remove_keeping_comments(query, offset + head.start, offset + second.start),
+        head.text.to_string(),
+        second.text.to_string(),
+    ))
 }
 
 fn is_aws_data_catalog(name: &str) -> bool {
@@ -147,6 +191,55 @@ mod tests {
             "DESCRIBE hive.db.t",
         ] {
             assert_eq!(dropped(query), None, "{query}");
+        }
+    }
+
+    #[test]
+    fn describe_の_2_部は_db_を落とし_綴りのまま返す() {
+        let dropped =
+            |query| drop_database(query, Some("AwsDataCatalog")).map(|r| (r.query, r.database));
+        assert_eq!(
+            dropped("DESCRIBE DB.t"),
+            Some(("DESCRIBE t".to_string(), "DB".to_string()))
+        );
+        assert_eq!(
+            dropped("DESC db./* c */t"),
+            Some(("DESC /* c */t".to_string(), "db".to_string()))
+        );
+        for query in [
+            "DESCRIBE t",
+            "DESCRIBE a.b.c",
+            "DESCRIBE \"db\".t",
+            "SHOW COLUMNS FROM db.t",
+        ] {
+            assert_eq!(dropped(query), None, "{query}");
+        }
+        assert_eq!(drop_database("DESCRIBE db.t", Some("nocatalog")), None);
+    }
+
+    #[test]
+    fn describe_の直後のブロックコメントだけ_parse_exception_にする() {
+        for query in [
+            "DESCRIBE /* c */ t",
+            "DESCRIBE /* c */t",
+            "describe\n/* c */ t",
+        ] {
+            assert!(describe_parse_error(query).is_some(), "{query}");
+        }
+        assert_eq!(
+            describe_parse_error("describe /* c */ t").map(|failure| failure.reason),
+            Some(
+                "FAILED: ParseException line 1:0 cannot recognize input near 'describe' '/' '*' in describe statement"
+                    .to_string()
+            )
+        );
+        for query in [
+            "DESCRIBE -- c\nt",
+            "DESCRIBE t /* c */",
+            "DESC /* c */ t",
+            "DESCRIBEX /* c */ t",
+        ] {
+            assert!(describe_parse_error(query).is_none(), "{query}");
         }
     }
 

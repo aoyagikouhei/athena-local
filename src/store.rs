@@ -71,10 +71,28 @@ pub struct Execution {
     pub substatement_type: Option<&'static str>,
     /// FAILED のときだけ入る。
     pub failure: Option<Failure>,
-    /// 開始時点で「Trino に送らずに FAILED にする」と決まっていれば、その失敗（#227）。
-    pub immediate_failure: Option<Failure>,
+    /// 開始時点で「Trino に送らずに FAILED にする」と決まっていれば、その失敗（#227・#242）。
+    pub immediate_failure: Option<ImmediateFailure>,
+    /// GetQueryExecution が `query`・`database` の代わりに返す値。実行は `query` で行うが、本物が受け取った文の
+    /// まま返す場合（カタログを落として実行したビューの SHOW COLUMNS。#242）に入る。
+    pub reported: Option<Reported>,
     /// StopQueryExecution が立て、実行中のタスクが見る。
     pub cancel: Arc<Cancel>,
+}
+
+/// 開始時点で決まった失敗と、失敗の理由の結果ファイル（`.txt`）を置くか。本物は Glue で表が引けない失敗には
+/// 何も置かず（#227）、Hive の ParseException には StateChangeReason と同じ `.txt` を置いた（#242）。
+#[derive(Clone)]
+pub struct ImmediateFailure {
+    pub failure: Failure,
+    pub writes_result_file: bool,
+}
+
+/// GetQueryExecution に返す Query と Context の Database（`Execution::reported`）。
+#[derive(Clone)]
+pub struct Reported {
+    pub query: String,
+    pub database: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -139,7 +157,9 @@ pub struct Submission {
     pub token: String,
     pub fingerprint: Fingerprint,
     /// 開始時点で決まった失敗（`Execution::immediate_failure`）。
-    pub immediate_failure: Option<Failure>,
+    pub immediate_failure: Option<ImmediateFailure>,
+    /// GetQueryExecution に返す値（`Execution::reported`）。
+    pub reported: Option<Reported>,
 }
 
 impl Store {
@@ -167,6 +187,7 @@ impl Store {
             token,
             fingerprint,
             immediate_failure,
+            reported,
         } = submission;
 
         let mut inner = self.lock();
@@ -196,6 +217,7 @@ impl Store {
             substatement_type: None,
             failure: None,
             immediate_failure,
+            reported,
             cancel: Arc::default(),
         };
         inner.executions.insert(id.to_string(), execution);
@@ -362,6 +384,7 @@ mod tests {
                 token: test_token("submitted"),
                 fingerprint: fingerprint("SELECT 1"),
                 immediate_failure: None,
+                reported: None,
             },
         );
         store
@@ -382,6 +405,7 @@ mod tests {
                 token: test_token("progress"),
                 fingerprint: fingerprint("SELECT ?"),
                 immediate_failure: None,
+                reported: None,
             },
         );
 
@@ -510,6 +534,7 @@ mod tests {
             token: token.to_string(),
             fingerprint: fingerprint(query),
             immediate_failure: None,
+            reported: None,
         }
     }
 

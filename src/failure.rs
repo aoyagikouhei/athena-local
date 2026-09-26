@@ -62,6 +62,19 @@ impl Failure {
         }
     }
 
+    /// DESCRIBE の直後のブロックコメントを本物の Hive のパーサが読めなかった（2026-09-22 実測 `DESCRIBE /* c */ t`、
+    /// 2026-09-26 実測 m10。#242）。本物の StateChangeReason は `FAILED: ` から始まる。
+    pub fn describe_parse_error(keyword: &str) -> Self {
+        Self {
+            reason: format!(
+                "FAILED: ParseException line 1:0 cannot recognize input near '{keyword}' '/' '*' in describe statement"
+            ),
+            category: SYSTEM,
+            error_type: 1003,
+            retryable: false,
+        }
+    }
+
     /// 結果 CSV を置けなかった。本物は書き込みで FAILED にならないので、一覧の
     /// 「Failed to write query results to Amazon S3」を当て、再試行で通りうるものとして返す。
     pub fn result_write(reason: String) -> Self {

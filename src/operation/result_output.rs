@@ -153,7 +153,12 @@ pub(super) async fn write_failure(app: &App, execution: &Execution, failure: &Fa
         return;
     };
 
-    let body = format!("FAILED: {}", failure.reason).into_bytes();
+    // 本物の文言をそのまま理由にした失敗（Hive の ParseException。#242）は、既に `FAILED: ` から始まる。
+    let body = if failure.reason.starts_with("FAILED: ") {
+        failure.reason.clone().into_bytes()
+    } else {
+        format!("FAILED: {}", failure.reason).into_bytes()
+    };
     if let Err(reason) = writer.put(&location, body, None).await {
         eprintln!("失敗の理由のファイル（.txt）の書き込みに失敗しました。無視します: {reason}");
     }

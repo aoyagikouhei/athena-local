@@ -17,7 +17,9 @@ pub(super) enum Check {
     Reject(Box<Response>),
     /// ビュー。本物は引用符付きの名前でも実行するので、`quoted_names` を見ずに実行する（2026-09-25 実測 W4）。
     Run,
-    /// 対象外の文・テーブル・確かめられなかった。`quoted_names` に進む（今までどおり）。
+    /// 表。`quoted_names` に進む（Continue と同じ）。表への DESCRIBE の Query から修飾を落とすのに使う（#242）。
+    Table,
+    /// 対象外の文・確かめられなかった。`quoted_names` に進む（今までどおり）。
     Continue,
 }
 
@@ -87,6 +89,7 @@ pub(super) async fn check(
             "INVALID_INPUT",
         ))),
         (false, Some("VIEW")) => Check::Run,
+        (false, Some("TABLE")) => Check::Table,
         _ => Check::Continue,
     }
 }

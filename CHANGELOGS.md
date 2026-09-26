@@ -13,6 +13,12 @@ later name the date they were measured on.
 
 - A `QueryString` holding more than one statement, such as `SELECT 1; -- c`, is
   rejected at `StartQueryExecution` with real Athena's message ([docs](docs/api.md)).
+- `DESCRIBE`, `SHOW COLUMNS`, `SHOW CREATE TABLE`, `SHOW TABLES IN`,
+  `ALTER TABLE` and `DROP TABLE` on an unquoted `awsdatacatalog.` name now run,
+  and `DESCRIBE` on a table reports `Query` and `Database` the way real Athena
+  does ([docs](docs/api.md)).
+- `DESCRIBE /* c */ t` on a table now fails with real Athena's `ParseException`
+  ([docs](docs/api.md)).
 - A statement ending (or starting) with `;`, such as `SELECT 1;`, now runs, and
   the `;` and the whitespace around the statement are removed from `Query` and
   from syntax error positions, as on real Athena; `;` alone is rejected with

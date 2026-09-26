@@ -59,6 +59,7 @@
 ## Trino（[measurements/trino.md](measurements/trino.md)）
 
 - [ ] Trino 470・400 のすべての値と、440 の存在するテーブルへの probe（D1・D2）と `updateType`（#111 の足場で 480・475 は測れたが、470 はローカル FS の設定名が無く、400 は cgroup v2 で JVM が落ち、440 は file メタストアに書けなかった）
+- [ ] DESCRIBE などの修飾の落とし（#242）の周り: `.` の前のコメント（`<db> /* c */ . <t>`）、2 部の別の DB の SHOW COLUMNS・ALTER・DROP（Context の Database が変わるか）、ビューへの 3 部の DESCRIBE（Query と Database）、SHOW TABLES FROM、S3 Tables・連携カタログの Context、Context の Catalog 省略時、DESCRIBE の直後の行コメント・DESC の直後のブロックコメント・ビューへのブロックコメント、ParseException の文言の `'DESCRIBE'` の綴り（小文字で書いたとき）。athena-local は Context の Catalog が AwsDataCatalog か省略で無引用・部品の数がちょうどのときだけ落とし、ビューの 3 部の DESCRIBE も SHOW COLUMNS と同じく Query を受け取った文で返し、ParseException は表への `DESCRIBE` の直後のブロックコメントだけ・文言は書いた綴りにする（2026-09-26）
 - [ ] `;` の無い空白だけの文（`   `）、`;` と空白だけの文の `Empty sql statement: <文>` の文（`;` 1 つ以外。` ; `・`;;`）、文の前後から落とす空白の文字の範囲（測ったのは空白・タブ・CR・LF。制御文字や非 ASCII の空白）。athena-local は `;` の無い空白だけの文を受け取ったまま Trino に回し、`Empty sql statement` の文は受け取った文の末尾の空白を落としたもの、落とす空白は空白・タブ・CR・LF にする（#240、2026-09-26）
 - [ ] 複数の文（`Only one sql statement is allowed`）と、`ClientRequestToken`・`OutputLocation` の検証との順番、`ExecutionParameters` 付きのとき、バッククォートの中の `;`、閉じていない引用符・コメントの中の `;`。#228 で測ったのは構文エラー・存在の確認・No location・NV・2 catalogs より先であることと、`'`・`"`・`--`・`/* */` の中の `;` が区切りにならないことだけ。athena-local はトークンと OutputLocation の後・構文チェックの前に、受け取った SQL（パラメータを当てる前）で数え、閉じていない引用符・コメントは末尾までを中身とする（2026-09-26）
 
