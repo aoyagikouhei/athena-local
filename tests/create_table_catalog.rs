@@ -91,6 +91,73 @@ async fn 実在しないカタログの_3_部は_context_によらず_datacatalo
     );
 }
 
+/// LOCATION 付きの Hive の `CREATE TABLE` でも、本物は 1 部目のカタログが実在しなければ Context によらず開始時に
+/// `DATACATALOG_NOT_FOUND` で弾いた（2026-09-26 実測 n6・2026-09-27 実測 s12・s13。#248）。Trino に LOCATION は無いので、
+/// 構文チェックより前に問い合わせる。
+#[tokio::test]
+async fn location_付きの実在しないカタログの_3_部は構文チェックより前に_datacatalog_not_found_で弾く()
+ {
+    let harness = Harness::builder(select_response())
+        .catalog_map(&[("s3tablescatalog/b", "iceberg")])
+        .route(
+            &catalog_exists_sql("nosuchcatalog248"),
+            catalog_exists_response(None),
+        )
+        .route(
+            &catalog_exists_sql("hive248"),
+            catalog_exists_response(None),
+        )
+        .start()
+        .await;
+
+    for (query, catalog, written) in [
+        (
+            "CREATE TABLE nosuchcatalog248.db.t (n int) LOCATION 's3://b/p/'",
+            None,
+            "nosuchcatalog248",
+        ),
+        (
+            "CREATE TABLE Hive248.db.t (n int) LOCATION 's3://b/p/'",
+            Some("s3tablescatalog/b"),
+            "Hive248",
+        ),
+    ] {
+        let (code, error) = start(&harness, query, catalog).await;
+        assert_eq!(code, 400, "{query}: {error}");
+        assert_eq!(error["__type"], "InvalidRequestException", "{query}");
+        assert_eq!(error["AthenaErrorCode"], "DATACATALOG_NOT_FOUND", "{query}");
+        assert_eq!(
+            error["Message"],
+            format!("Catalog '{written}' does not exist"),
+            "{query}"
+        );
+    }
+    assert!(harness.syntax_checks().is_empty(), "構文チェックを送らない");
+    assert_eq!(
+        harness.trino_sqls(),
+        [
+            catalog_exists_sql("nosuchcatalog248"),
+            catalog_exists_sql("hive248")
+        ]
+    );
+}
+
+/// カタログがある（Trino にだけあるカタログは本物で未測定）なら、今までどおり構文チェックに任せる。
+#[tokio::test]
+async fn location_付きの_trino_にあるカタログの_3_部は構文チェックに任せる() {
+    const QUERY: &str = "CREATE TABLE iceberg.db.t (n int) LOCATION 's3://b/p/'";
+    let harness = Harness::builder(select_response())
+        .route(
+            &catalog_exists_sql("iceberg"),
+            catalog_exists_response(Some("iceberg")),
+        )
+        .start()
+        .await;
+
+    start(&harness, QUERY, None).await;
+    assert_eq!(harness.syntax_checks(), [QUERY]);
+}
+
 #[tokio::test]
 async fn trino_にあるカタログの_3_部は_no_location_のまま() {
     let harness = Harness::builder(select_response())

@@ -50,6 +50,23 @@
 #   L8 S3 Tables の Context
 #      SELECT 1
 #      → 200 と QueryExecutionId（疎通。SUCCEEDED まで待つ）
+#   #248 で足したケース:
+#   L9 S3 Tables の Context
+#      CREATE TABLE t229 (n int) COMMENT 'c' LOCATION 's3://b/p/'
+#      → L1 と同じ文言（表の COMMENT も Hive の句として読む。実測 s1）
+#   L10 S3 Tables の Context
+#      CREATE TABLE t229 (c row(a int)) LOCATION 's3://b/p/'
+#      → 400、MALFORMED_QUERY／Message ちょうど
+#        "line 1:34: mismatched input 'LOCATION'. Expecting: 'COMMENT', 'WITH', <EOF>"
+#        （本物も Trino の形の文言を返した（実測 s17）。ローカルの Trino の構文チェックの文言と位置が本物と
+#        同じ形になることをここで確かめる。列位置 34 は "CREATE TABLE t229 (c row(a int)) " の文字数 + 1）
+#   L11 既定の Context
+#      CREATE TABLE nosuchcatalog248.default.t229 (n int) LOCATION 's3://b/p/'
+#      → 400、DATACATALOG_NOT_FOUND／"Catalog 'nosuchcatalog248' does not exist"（実測 s12）
+#   L12 S3 Tables の Context
+#      CREATE TABLE t229 (n int) STORED AS ORC
+#      → 開始でき FAILED、StateChangeReason
+#        "Iceberg create table statement does not allow STORED AS/BY"（実測 s15）
 #
 # 前提コマンド: tools/dev.sh 経由で動かす（toolbox に全部入っている）
 #
@@ -377,6 +394,26 @@ case_start_ok() {
   fi
 }
 
+# L12: 開始できて FAILED になり、StateChangeReason が expect_reason と一致することを確かめる。
+case_start_failed() {
+  local no="$1" name="$2" sql="$3" catalog="$4" database="$5" expect_reason="$6"
+  local start qid final state reason
+  start=$(start_raw "$sql" "$catalog" "$database")
+  qid=$(echo "$start" | jq -r '.QueryExecutionId // empty')
+  if [ -z "$qid" ]; then
+    record "$no $name" FAIL "開始できなかった: $(echo "$start" | tr -d '\n' | cut -c1-200)"
+    return
+  fi
+  final=$(athena_wait "$qid")
+  state=$(echo "$final" | jq -r '.QueryExecution.Status.State // empty')
+  reason=$(echo "$final" | jq -r '.QueryExecution.Status.StateChangeReason // empty')
+  if [ "$state" = "FAILED" ] && [ "$reason" = "$expect_reason" ]; then
+    record "$no $name" PASS "QueryExecutionId=$qid State=$state StateChangeReason=\"$reason\""
+  else
+    record "$no $name" FAIL "State=${state:-無し}(期待 FAILED) StateChangeReason=\"$reason\"(期待 \"$expect_reason\")"
+  fi
+}
+
 # --- ケース ---
 
 run_cases() {
@@ -418,6 +455,26 @@ run_cases() {
   # L8: S3 Tables の Context でも普通の SELECT は今までどおり実行できる（疎通）。
   case_start_ok "L8" "S3Tables の Context・SELECT 1 は通る" \
     "SELECT 1" "$S3_TABLES_CATALOG" "$NS"
+
+  # L9: 表の COMMENT も Hive の句として読み、LOCATION を弾く（#248）。
+  case_reject "L9" "S3Tables の Context・COMMENT 付きの LOCATION" \
+    "CREATE TABLE t229 (n int) COMMENT 'c' LOCATION 's3://b/p/'" "$S3_TABLES_CATALOG" "$NS" \
+    MALFORMED_QUERY "Table location can not be specified for tables hosted in S3 table buckets"
+
+  # L10: 入れ子の型の列は本物も Trino の形の構文エラー。ローカルの Trino の文言と位置がその形になるか（#248）。
+  case_reject "L10" "S3Tables の Context・row 型の列は Trino の構文エラー" \
+    "CREATE TABLE t229 (c row(a int)) LOCATION 's3://b/p/'" "$S3_TABLES_CATALOG" "$NS" \
+    MALFORMED_QUERY "line 1:34: mismatched input 'LOCATION'. Expecting: 'COMMENT', 'WITH', <EOF>"
+
+  # L11: 既定の Context・実在しないカタログの 3 部 + LOCATION は DATACATALOG_NOT_FOUND（#248）。
+  case_reject "L11" "既定の Context・実在しないカタログの LOCATION" \
+    "CREATE TABLE nosuchcatalog248.default.t229 (n int) LOCATION 's3://b/p/'" AwsDataCatalog default \
+    DATACATALOG_NOT_FOUND "Catalog 'nosuchcatalog248' does not exist"
+
+  # L12: S3 Tables の Context・LOCATION の無い STORED AS は開始して FAILED（#248）。
+  case_start_failed "L12" "S3Tables の Context・LOCATION の無い STORED AS" \
+    "CREATE TABLE t229 (n int) STORED AS ORC" "$S3_TABLES_CATALOG" "$NS" \
+    "Iceberg create table statement does not allow STORED AS/BY"
 }
 
 main() {

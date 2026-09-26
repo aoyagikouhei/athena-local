@@ -410,6 +410,50 @@ async fn s3_tables_の_context_では_hive_の_location_と_external_を構文�
     assert_eq!(harness.syntax_checks(), [LOCATION]);
 }
 
+/// S3 Tables の Context の LOCATION の無い `CREATE TABLE <1 部> (列) STORED AS <語>` は、本物は開始してから FAILED に
+/// した。結果ファイルの本体も `.metadata` も置かない（2026-09-26 実測 n21・2026-09-27 実測 s15。#248）。Trino の文法に
+/// STORED AS は無いので、構文チェックも本体も送らない。
+#[tokio::test]
+async fn s3_tables_の_context_の_location_の無い_stored_as_は開始して_failed_にする() {
+    let harness = Harness::builder(select_response())
+        .catalog_map(&[("s3tablescatalog/b", "iceberg")])
+        .results_s3()
+        .start()
+        .await;
+
+    for query in [
+        "CREATE TABLE t (n int) STORED AS PARQUET",
+        "CREATE TABLE t (n int) STORED AS ORC",
+    ] {
+        let execution = harness
+            .run_query(json!({
+                "QueryString": query,
+                "QueryExecutionContext": { "Catalog": "s3tablescatalog/b", "Database": "ns" },
+                "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+            }))
+            .await;
+        let execution = &execution["QueryExecution"];
+        let status = &execution["Status"];
+        let reason = "Iceberg create table statement does not allow STORED AS/BY";
+        assert_eq!(status["State"], "FAILED", "{query}: {execution}");
+        assert_eq!(status["StateChangeReason"], reason);
+        assert_eq!(
+            status["AthenaError"],
+            json!({
+                "ErrorCategory": 2,
+                "ErrorType": 1200,
+                "Retryable": false,
+                "ErrorMessage": reason
+            })
+        );
+        assert_eq!(execution["StatementType"], "DDL");
+        assert_eq!(execution["SubstatementType"], "CREATE_TABLE");
+    }
+    assert!(harness.syntax_checks().is_empty(), "構文チェックを送らない");
+    assert!(harness.trino_requests().is_empty(), "本体を送らない");
+    assert!(harness.s3_puts().is_empty(), "{:?}", harness.s3_puts());
+}
+
 /// Context の Catalog が S3 Tables（`s3tablescatalog/<バケット>`。大文字小文字は区別しない）なら、本物は場所の無い
 /// `CREATE TABLE` を作るので弾かずに実行する。列の `NOT NULL` の NV は同じく弾く（2026-09-26 実測 h1〜h7。#221）。
 #[tokio::test]

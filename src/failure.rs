@@ -99,6 +99,18 @@ impl Failure {
         }
     }
 
+    /// S3 Tables の Context の LOCATION の無い `CREATE TABLE <名前> (列) STORED AS <語>` に本物が返した固定の文言
+    /// （`.txt` も `.metadata` も置かない。2026-09-26 実測 n21・2026-09-27 実測 s15。#248）。
+    pub fn iceberg_stored_as() -> Self {
+        Self {
+            reason: "Iceberg create table statement does not allow STORED AS/BY".to_string(),
+            error_message: None,
+            category: USER,
+            error_type: 1200,
+            retryable: false,
+        }
+    }
+
     /// コメント無しの `ALTER TABLE <Hive 表> RENAME TO` に本物が返した Glue の失敗（2026-09-21 実測 #43 b1、
     /// 2026-09-25 実測 #217 n22）。Request ID は本物では毎回違う UUID なので、毎回新しく作る（#256）。
     pub fn rename_hive_table() -> Self {

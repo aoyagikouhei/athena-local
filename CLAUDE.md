@@ -47,7 +47,7 @@ CI（`.github/workflows/ci.yml`）の中身とリリース（`v*` タグで `doc
 結合テストは `tests/common/mod.rs` の `Harness`（偽 Trino・偽 S3・本物の `athena_local::router` を同じプロセスに立てる）を使う。ヘルパの一覧は docs/dev/architecture.md の「テストの足場」。
 
 - `config.rs` のテストは本物の環境変数を触らない（テストが並列に走るため）。`parse_results` に環境変数を読むクロージャを渡して差し替える。
-- ユニットテストはインラインの `#[cfg(test)] mod tests` に置く。例外は本体とテストを合わせて 400 行を超えたファイルで、テストを子モジュール `<name>/tests.rs`（`mod.rs` 無し）に出している: `src/results.rs`（#75）と、`src/operation/` の `classification.rs`・`target_table.rs`・`table_format.rs`（#162）。
+- ユニットテストはインラインの `#[cfg(test)] mod tests` に置く。例外は本体とテストを合わせて 400 行を超えたファイルで、テストを子モジュール `<name>/tests.rs`（`mod.rs` 無し）に出している: `src/results.rs`（#75）と、`src/operation/` の `classification.rs`・`target_table.rs`・`table_format.rs`（#162）、`src/operation/unquoted_ddl/create_table/hive.rs`（#248）。
 
 ## ドキュメントの置き場
 

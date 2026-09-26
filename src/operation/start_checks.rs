@@ -3,6 +3,7 @@
 
 use axum::response::Response;
 
+use crate::failure::Failure;
 use crate::handler::App;
 use crate::response::invalid_request_with_code;
 use crate::results::ResultLocation;
@@ -40,6 +41,13 @@ pub(super) async fn decide(
     // S3 Tables のカタログは `s3tablescatalog/<バケット>` の形で見分ける（大文字小文字は区別しない。#157）。
     let s3_tables =
         catalog.is_some_and(|catalog| catalog.to_ascii_lowercase().starts_with("s3tablescatalog/"));
+    // LOCATION 付きの Hive の CREATE TABLE の 3 部の名前は、本物は 1 部目のカタログが実在しなければ Context によらず
+    // 開始時に弾く。Trino に LOCATION は無いので構文チェックより前に見る（2026-09-27 実測 s12・s13。#248）。
+    if let Some(response) =
+        create_table_catalog::location_rejection(&app.trino, &app.config, &query).await
+    {
+        return Err(response);
+    }
     // S3 Tables の Context では、本物は Hive の CREATE TABLE として読める文の LOCATION・EXTERNAL を開始時に弾く。
     // Trino には両方とも無いので構文チェックより前に見る（2026-09-26 実測 n1〜n32。#229）。
     if s3_tables && let Some(message) = unquoted_ddl::s3_tables_rejection(&query) {
@@ -51,14 +59,22 @@ pub(super) async fn decide(
     // 構文チェックの前の判定: Trino に文が無い MSCK REPAIR TABLE・ALTER TABLE ... ADD COLUMNS（複数形）は
     // 構文チェックへ進むと必ず構文エラーになる。対象の表の形式やブロックコメントの位置で本物が実際に
     // 何で FAILED にするかが変わるので、構文チェックの前に確かめておく（2026-09-26 実測。#244）。
-    let pre_syntax_check_failure = pre_syntax_check_failure(
-        &app.trino,
-        &app.config,
-        &query,
-        catalog,
-        database.as_deref(),
-    )
-    .await;
+    // S3 Tables の Context の LOCATION の無い STORED AS は、本物は開始してから FAILED にした（2026-09-27 実測 s15。#248）。
+    let pre_syntax_check_failure = if s3_tables && unquoted_ddl::s3_tables_stored_as(&query) {
+        Some(ImmediateFailure {
+            failure: Failure::iceberg_stored_as(),
+            writes_result_file: false,
+        })
+    } else {
+        pre_syntax_check_failure(
+            &app.trino,
+            &app.config,
+            &query,
+            catalog,
+            database.as_deref(),
+        )
+        .await
+    };
     // 本物は構文エラーを StartQueryExecution で弾き、実行を作らない（ExecutionParameters があっても元の SQL で数える）。
     // 文言は Trino のもの、コードは 2026-09-14 に実測した MALFORMED_QUERY。
     if pre_syntax_check_failure.is_none()
