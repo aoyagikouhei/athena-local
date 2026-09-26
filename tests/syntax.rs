@@ -292,6 +292,55 @@ async fn 場所の無い_create_table_も本物の文言で開始時に弾き_�
     }
 }
 
+/// Context の Catalog が S3 Tables のとき、1 部目が `awsdatacatalog` の無引用の 3 部の名前の `CREATE TABLE` は、
+/// 本物が前後の空白を落とした文を付けて `Unsupported ddl with 2 catalogs` で弾く。1 部目が引用符付きなら
+/// 既定の Context と同じ NV（2026-09-26 実測 i1〜i22。#224）。
+#[tokio::test]
+async fn s3_tables_の_context_で_awsdatacatalog_の_3_部の_create_table_は_2_catalogs_で弾く() {
+    let harness = Harness::builder(select_response())
+        .catalog_map(&[("s3tablescatalog/b", "iceberg")])
+        .start()
+        .await;
+
+    for (query, message) in [
+        (
+            "  CREATE TABLE awsdatacatalog.db.t\n(n int)\n",
+            "Unsupported ddl with 2 catalogs: CREATE TABLE awsdatacatalog.db.t\n(n int)",
+        ),
+        (
+            "CREATE TABLE AwsDataCatalog.db.t (n int)",
+            "No location was specified for table. An S3 location must be specified",
+        ),
+        (
+            r#"CREATE TABLE "awsdatacatalog".db.t (n int)"#,
+            r#"line 1:14: no viable alternative at input 'CREATE TABLE "awsdatacatalog"'"#,
+        ),
+        (
+            r#"CREATE TABLE "s3tablescatalog/b".ns.t (n int)"#,
+            r#"line 1:14: no viable alternative at input 'CREATE TABLE "s3tablescatalog/b"'"#,
+        ),
+    ] {
+        let (code, error) = harness
+            .call(
+                "StartQueryExecution",
+                json!({
+                    "QueryString": query,
+                    "QueryExecutionContext": { "Catalog": "s3tablescatalog/b", "Database": "ns" },
+                }),
+            )
+            .await;
+
+        assert_eq!(code, 400, "{query:?}: {error}");
+        assert_eq!(error["__type"], "InvalidRequestException", "{query:?}");
+        assert_eq!(error["AthenaErrorCode"], "MALFORMED_QUERY", "{query:?}");
+        assert_eq!(error["Message"], message, "{query:?}");
+        assert!(
+            harness.trino_requests().is_empty(),
+            "{query:?}: 実行は作らない"
+        );
+    }
+}
+
 /// Context の Catalog が S3 Tables（`s3tablescatalog/<バケット>`。大文字小文字は区別しない）なら、本物は場所の無い
 /// `CREATE TABLE` を作るので弾かずに実行する。列の `NOT NULL` の NV は同じく弾く（2026-09-26 実測 h1〜h7。#221）。
 #[tokio::test]

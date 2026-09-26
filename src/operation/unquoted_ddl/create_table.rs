@@ -10,6 +10,10 @@ use super::{end_of, no_viable_alternative, start_of};
 /// 場所を指定しない `CREATE TABLE` に本物が返す固定文言（位置なし）。
 const NO_LOCATION: &str = "No location was specified for table. An S3 location must be specified";
 
+/// S3 Tables の Context で別カタログの名前の `CREATE TABLE` に本物が返す文言の前半（`ddl` は小文字。DESCRIBE の
+/// `Unsupported DDL with 2 catalogs` とは綴りが違う）。後ろに `: <文>` が付く（2026-09-26 実測。#224）。
+const TWO_CATALOGS: &str = "Unsupported ddl with 2 catalogs";
+
 /// 本物が開始時に弾く、CTAS でない無引用の `CREATE TABLE` なら、その文言を返す。
 /// `unquoted_ddl::rejection` から、ALTER TABLE でなければ呼ばれる。
 ///
@@ -19,7 +23,7 @@ const NO_LOCATION: &str = "No location was specified for table. An S3 location m
 ///
 /// `s3_tables` は QueryExecutionContext の Catalog が S3 Tables か。S3 Tables は場所を要らないので、本物は
 /// 1〜2 部の名前の場所の無い形を作り、No location にしない（列の並びと `WITH (` の NV は同じ。2026-09-26 実測
-/// h1〜h7。#221）。
+/// h1〜h7。#221）。1 部目が `awsdatacatalog` の 3 部は `Unsupported ddl with 2 catalogs: <文>`（#224）。
 pub(super) fn rejection(query: &str, s3_tables: bool) -> Option<String> {
     if substatement_type(query) != Some("CREATE_TABLE") {
         return None;
@@ -36,11 +40,22 @@ pub(super) fn rejection(query: &str, s3_tables: bool) -> Option<String> {
         return None;
     }
     let statement_start = sql.len() - skip_leading_trivia(sql).len();
+    let message = columns(sql, statement_start, &mut cursor)?;
+    if !s3_tables || message != NO_LOCATION {
+        return Some(message);
+    }
     // 無引用の 3 部の名前は S3 Tables の Context でも別のカタログを指す（S3 Tables のカタログ名は `/` を含み引用符が
-    // 要る）。本物は `Unsupported ddl with 2 catalogs` で弾く（h8）ので、No location のまま弾く（文言の差は #224）。
-    let creates = s3_tables && name.parts.len() < 3;
-    columns(sql, statement_start, &mut cursor)
-        .filter(|message| !(creates && message == NO_LOCATION))
+    // 要る）。本物は 1 部目がちょうど小文字の `awsdatacatalog` のときだけ、前後の空白を落とした文を付けて
+    // `Unsupported ddl with 2 catalogs` で弾いた。大文字混じりの `AwsDataCatalog` は開始して FAILED、実在しない
+    // カタログは DATACATALOG_NOT_FOUND だったが、どちらも No location のまま弾く（2026-09-26 実測 i1〜i22。#224）。
+    match name.parts.as_slice() {
+        [catalog, _, _] if catalog.text == "awsdatacatalog" => Some(format!(
+            "{TWO_CATALOGS}: {}",
+            sql.trim_end_matches([' ', '\t', '\r', '\n'])
+        )),
+        [_, _, _] => Some(message),
+        _ => None,
+    }
 }
 
 /// 列 1 つを処理した結果。
