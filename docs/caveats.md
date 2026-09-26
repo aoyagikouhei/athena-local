@@ -478,7 +478,9 @@ respectively. `MSCK REPAIR TABLE` on an Iceberg table, with or without a comment
   and without result files. `EXTERNAL` without `LOCATION` but with another
   clause (`COMMENT`, `ROW FORMAT`, ...), and `STORED AS` without `LOCATION` on
   other names or with other clauses, were not measured and still get Trino's
-  syntax error.
+  syntax error. So do Hive clauses not listed above (`WITH SERDEPROPERTIES`,
+  `ESCAPED BY`, `SORTED BY`, `STORED AS INPUTFORMAT ... OUTPUTFORMAT`, ...),
+  which were not measured either.
 - **A three-part name whose catalog does not exist is rejected with
   `DATACATALOG_NOT_FOUND` also with `LOCATION`.** Under any context catalog,
   `CREATE TABLE <catalog>.<database>.<table> (<columns>) LOCATION '<path>'`
