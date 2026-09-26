@@ -335,6 +335,7 @@ mod tests {
     fn user_failure(reason: &str) -> Failure {
         Failure {
             reason: reason.to_string(),
+            error_message: None,
             category: crate::failure::USER,
             error_type: 1301,
             retryable: false,

@@ -18,7 +18,10 @@ pub(super) enum Check {
     /// ビュー。本物は引用符付きの名前でも実行するので、`quoted_names` を見ずに実行する（2026-09-25 実測 W4）。
     Run,
     /// 表。`quoted_names` に進む（Continue と同じ）。表への DESCRIBE の Query から修飾を落とすのに使う（#242）。
-    Table,
+    /// `iceberg` は probe（`table_format::probe_sql`）の `_col0`（コネクタ名）が `iceberg` かどうか
+    /// （追加の問い合わせはしない）。Iceberg 表への DESCRIBE の直後のブロックコメントは本物が成功させる
+    /// （`execution.rs` の `describe_parse_error` の対象外にする。2026-09-26 実測 d1。#244）。
+    Table { iceberg: bool },
     /// 対象外の文・確かめられなかった。`quoted_names` に進む（今までどおり）。
     Continue,
 }
@@ -89,12 +92,38 @@ pub(super) async fn check(
             "INVALID_INPUT",
         ))),
         (false, Some("VIEW")) => Check::Run,
-        (false, Some("TABLE")) => Check::Table,
+        (false, Some("TABLE")) => table_check(&row[0]),
         _ => Check::Continue,
+    }
+}
+
+/// `row[1]` が `TABLE`（表）だったときの `Check`。`row[0]`（`probe_sql` の `_col0`、コネクタ名）が
+/// `"iceberg"` かどうかを `Check::Table` に持たせる。
+fn table_check(connector: &serde_json::Value) -> Check {
+    Check::Table {
+        iceberg: connector.as_str() == Some("iceberg"),
     }
 }
 
 /// 名前にカタログまで書いてあるか（3 部の名前）。既定を渡さずに読めるのは 3 部のときだけ。
 fn names_catalog(query: &str, statement: TargetStatement) -> bool {
     target_table::parse_target_table(query, statement, None, Some("")).is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn table_check_は_コネクタ名が_iceberg_かどうかで_iceberg_を決める() {
+        assert!(matches!(
+            table_check(&json!("iceberg")),
+            Check::Table { iceberg: true }
+        ));
+        assert!(matches!(
+            table_check(&json!("hive")),
+            Check::Table { iceberg: false }
+        ));
+    }
 }

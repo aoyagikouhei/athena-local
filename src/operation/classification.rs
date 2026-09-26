@@ -13,13 +13,17 @@ pub(super) fn words(query: &str) -> Vec<String> {
 
 /// 本物の StatementType（2026-09-14 実測）。EXPLAIN と VACUUM は DML、OPTIMIZE は DDL。
 /// `TABLE t`（`SELECT * FROM t` の短縮形）も本物は受け付けて DML（2026-09-22 実測。#65）。
+/// `MSCK REPAIR TABLE` は 3 語そろったときだけ DDL（`MSCK` だけ・`MSCK REPAIR` だけは UTILITY のまま。
+/// docs/dev/measurements/statements.md の MSCK の行、2026-09-24・2026-09-26 実測。#244）。
 /// 先頭のコメントは `words()` が読み飛ばして判定する（2026-09-18 実測）。
 pub(super) fn statement_type(query: &str) -> &'static str {
     let words = words(query);
-    match words.first().map(String::as_str).unwrap_or_default() {
+    let word = |index: usize| words.get(index).map(String::as_str).unwrap_or_default();
+    match word(0) {
         "SELECT" | "WITH" | "VALUES" | "TABLE" | "INSERT" | "UPDATE" | "DELETE" | "MERGE"
         | "EXPLAIN" | "VACUUM" => "DML",
         "CREATE" | "DROP" | "ALTER" | "OPTIMIZE" => "DDL",
+        "MSCK" if word(1) == "REPAIR" && word(2) == "TABLE" => "DDL",
         _ => "UTILITY",
     }
 }
@@ -44,6 +48,8 @@ pub(super) fn substatement_type(query: &str) -> Option<&'static str> {
         "VACUUM" => "VACUUM_TABLE",
         // Athena の OPTIMIZE は CTAS と同じ種類になる。
         "OPTIMIZE" => "CREATE_TABLE_AS_SELECT",
+        // MSCK REPAIR TABLE は 3 語そろったときだけ分類する（2026-09-24・2026-09-26 実測。#244）。
+        "MSCK" if word(1) == "REPAIR" && word(2) == "TABLE" => "MSCK_REPAIR",
         "SHOW" => match (word(1), word(2)) {
             ("TABLES", _) => "SHOW_TABLES",
             ("DATABASES" | "SCHEMAS", _) => "SHOW_DATABASES",

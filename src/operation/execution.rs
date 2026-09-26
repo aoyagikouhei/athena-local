@@ -103,10 +103,12 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
     // 実測 m1〜m13・m11・m37。#242）。ビューは実行だけカタログを落とした文で行う。
     let mut reported = None;
     let (mut statement, database) = match check {
-        Check::Table => match reported_query::drop_database(&statement, catalog.as_deref()) {
-            Some(rewritten) => (rewritten.query, Some(rewritten.database)),
-            None => (statement, database),
-        },
+        Check::Table { .. } => {
+            match reported_query::drop_database(&statement, catalog.as_deref()) {
+                Some(rewritten) => (rewritten.query, Some(rewritten.database)),
+                None => (statement, database),
+            }
+        }
         Check::Run if statement != query => {
             reported = Some(Reported {
                 query: query.clone(),
@@ -195,8 +197,8 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
     }
 
     // 本物は DESCRIBE の直後のブロックコメントを Hive の ParseException で FAILED にする（#242）。表と分かったとき
-    // だけにする（測ったのは表）。
-    if matches!(check, Check::Table)
+    // だけにする（測ったのは表）。Iceberg 表は本物が成功させた（2026-09-26 実測 d1。#244）ので対象外にする。
+    if matches!(check, Check::Table { iceberg: false })
         && let Some(failure) = reported_query::describe_parse_error(&statement)
     {
         immediate_failure = Some(ImmediateFailure {
