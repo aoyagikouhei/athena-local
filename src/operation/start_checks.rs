@@ -168,24 +168,39 @@ pub(super) async fn decide(
             }
         }
     } else if s3_tables
-        && let Some(failure) = create_table_catalog::two_part_failure(
+        && let Some(failure) = match create_table_catalog::two_part_failure(
             &app.trino,
             &app.config,
             &query,
             catalog.unwrap_or_default(),
         )
         .await
+        {
+            Some(failure) => Some(failure),
+            None => {
+                create_table_catalog::one_part_failure(
+                    &app.trino,
+                    &app.config,
+                    &query,
+                    catalog.unwrap_or_default(),
+                    database.as_deref(),
+                )
+                .await
+            }
+        }
     {
         // S3 Tables の Context の無引用の 2 部の名前は、本物は名前空間が無ければ 3 部と同じく開始して FAILED にした
-        // （2026-09-26 実測 i2・j12。#231）。
+        // （2026-09-26 実測 i2・j12。#231）。1 部の名前は Context の Database の名前空間で同じ（2026-09-27 実測 r1。#251）。
         immediate_failure = Some(ImmediateFailure {
             failure,
             writes_result_file: false,
         });
-    } else if s3_tables {
+    } else if s3_tables || catalog.is_none_or(reported_query::is_aws_data_catalog) {
         // S3 Tables の Context の CTAS は、1 部目が `awsdatacatalog` の類なら本物は 2 部目を Glue の DB として引いた
         // （2026-09-26 実測 i12・j13。#232）。DB が無ければ開始して FAILED（`.metadata` は中身が未実測なので置かない）、
-        // あれば 1 部目を AwsDataCatalog の Trino 名にして送り、Query は受け取ったまま返す。
+        // あれば 1 部目を AwsDataCatalog の Trino 名にして送り、Query は受け取ったまま返す。既定の Context（Catalog が
+        // AwsDataCatalog か省略。省略は未実測で #246 と同じ条件）も DB が無ければ同じ FAILED にした（2026-09-27 実測
+        // r8a・r8c。#251）が、1 部目は実行時の別名置換（#246）が当てるので差し替えは捨てる。
         let location = result_location.map(ResultLocation::uri);
         match create_table_catalog::ctas(&app.trino, &app.config, &query, location.as_deref()).await
         {
@@ -195,7 +210,7 @@ pub(super) async fn decide(
                     writes_result_file: false,
                 });
             }
-            create_table_catalog::Outcome::Rewrite(rewritten) => {
+            create_table_catalog::Outcome::Rewrite(rewritten) if s3_tables => {
                 reported = Some(Reported {
                     query: query.clone(),
                     database: database.clone(),

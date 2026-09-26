@@ -734,3 +734,24 @@ Content-Type と `.metadata` を含む置き場所は本項が主で、[result-f
 
 - 採用した判断: #229 の判断（Hive の DDL の構文で読めた文にだけ S3 Tables の判定を当てる）を広げ、句（COMMENT・PARTITIONED BY・CLUSTERED BY・ROW FORMAT SERDE／DELIMITED の各句・STORED AS・LOCATION・TBLPROPERTIES の 1 組以上）を Hive の順に 0〜1 回ずつ読む。LOCATION があれば句によらず `Table location`。LOCATION の無い EXTERNAL は、測った句（STORED AS・TBLPROPERTIES）だけのときに `External keyword`。LOCATION の無い STORED AS は測った形（無引用の 1 部の名前・列あり・ほかの句無し）だけ開始して FAILED（結果ファイルは置かない）。`(列) LOCATION '..'` だけの無引用の 3 部の名前（測った形。EXTERNAL・IF NOT EXISTS・ほかの句付きは外す）は、1 部目が `awsdatacatalog` の類でなければ Context によらず Trino にカタログを問い合わせ、無いと確かめられたときだけ構文チェックの前に `DATACATALOG_NOT_FOUND` で弾く（Trino にあるカタログは s14 が未測定なので今までどおり構文チェック）。s17・s18 は `row(` を読まずに構文チェックに任せ、compose の Trino が同じ形の文言を返すことを `tools/e2e/s3-tables-location/verify.sh` の L10 で確かめた
 - 備考: #229 の n1・n6・n11・n21 と食い違いは無かった。先行実測のノートの「s8 は既定の Context」という書き方は誤りで、生データ（`s8.context.txt`）は S3 Tables の Context
+
+### S3 Tables の Context の場所の無い CREATE TABLE の名前空間まわりと、`awsdatacatalog.<DB>.<表>` の CTAS の残り（#251）
+- 日付: 2026-09-27（UTC 2026-09-26 20:55）／ issue: #251 ／ スクリプト: `tools/measure/unquoted-ddl.sh`（`ROUND=11`）／ 生データ: `$HOME/athena-unquoted-ddl-measurements/run-20260926-205509`
+- 相手: 本物の Athena（S3 Tables のカタログ `s3tablescatalog/<bucket>` と `AwsDataCatalog`）
+- 投げたもの: 12 項目（r1〜r3 は CTAS でない `CREATE TABLE`、r4〜r8c は `AS SELECT 1 AS n` の CTAS）。FAILED の項目は結果ファイルの本体と `.metadata` の有無と中身、CTAS は理由の `location '...'` の下（`aws s3 ls --recursive`）も取得した。作られた表（r3・r6a・r7a・r8b）はその場で消した
+- 返ったもの:
+
+  | 文（Context は書いたもの以外 `Catalog=s3tablescatalog/<bucket>,Database=<ns>`） | 本物 |
+  |---|---|
+  | `CREATE TABLE <t> (n int)`、Context の Database が無い名前空間（r1） | 開始でき、FAILED（DDL / CREATE_TABLE、ErrorCategory 2・ErrorType 1100、`Cannot find or access the specified table`）。OutputLocation は `<OUTPUT><id>.txt` で、本体も `.metadata` も無い（404） |
+  | `CREATE TABLE IF NOT EXISTS <無い名前空間>.<t> (n int)`（r2） | r1 と同じ |
+  | `CREATE TABLE IF NOT EXISTS AwsDataCatalog.<ns>.<t> (n int)`（r3） | SUCCEEDED（DDL / CREATE_TABLE） |
+  | `CREATE TABLE AwsDataCatalog.<Glue に無い DB>.<t> AS SELECT 1 AS n`（r4。j13 の再現）・`IF NOT EXISTS awsdatacatalog.<無い DB>`（r6b）・小文字の `awsdatacatalog.<無い DB>`（r7b） | 開始でき、FAILED（DDL / CREATE_TABLE_AS_SELECT、ErrorCategory 2・ErrorType 1301、`Database <DB> not found. Please check your query. You may need to manually clean the data at location '<OUTPUT>tables/<id>' before retrying. Athena will not delete data in your account.`）。OutputLocation は `<OUTPUT>tables/<id>` |
+  | r4 の DB 名を大文字混じりの `<P>_R5Mixed` に（r5） | r4 と同じ形で、理由の DB 名は小文字（`<p>_r5mixed`） |
+  | `CREATE TABLE IF NOT EXISTS awsdatacatalog.<Glue にある DB>.<t> AS SELECT 1 AS n`（r6a）・`AwsDataCatalog.<ある DB>`（r7a） | SUCCEEDED（DDL / CREATE_TABLE_AS_SELECT） |
+  | Context `Catalog=AwsDataCatalog,Database=<DB>` で `AwsDataCatalog.<大文字混じりの無い DB>`（r8a）・`awsdatacatalog.<無い DB>`（r8c） | r4 と同じ FAILED（r8a の理由の DB 名は小文字） |
+  | Context `Catalog=AwsDataCatalog,Database=<DB>` で `AwsDataCatalog.<ある DB>`（r8b） | SUCCEEDED |
+
+  DB が無く FAILED になった CTAS（r4・r5・r6b・r7b・r8a・r8c）は、どれも `<OUTPUT>tables/<id>` の本体を置かず（404）、`<OUTPUT>tables/<id>.metadata`（81 バイト）・`<OUTPUT>tables/<id>-manifest.csv`（155 バイト）・データファイル `<OUTPUT>tables/<id>/<Trino のクエリ ID>_<uuid>`（257 バイト）を残した。`.metadata` の中身は field 1 がエンジン（Trino）のクエリ ID（データファイル名の接頭辞と同じ）、field 2 が `CREATE TABLE`、field 3 が 1、列 1 つ（`hive`・`rows`・`rows`・`bigint`・precision 19・scale 0・nullable 3・case sensitive 0）で、項目の間ではクエリ ID だけが違った。成功した CTAS の `.metadata`（result-files.md の #146 の Iceberg 1 回目）と同じ要素（エンジン ID・`CREATE TABLE`・件数 1・`rows bigint`）。ScannedBytes はどれも 0
+- 採用した判断: 名前空間が無いときの `Cannot find or access the specified table` は名前の部の数（1〜3 部）と `IF NOT EXISTS` によらないとみて、1 部の名前も Context の Database を名前空間として確かめる。`awsdatacatalog.<DB>.<表>` の CTAS は Context（明示の `AwsDataCatalog`・S3 Tables）・1 部目の綴り・`IF NOT EXISTS` によらず、DB が無ければ小文字の DB 名で 1301 の FAILED にし、本物と同じ形の `.metadata` を置く（本物はエンジンで SELECT を実行してから Glue で失敗している）
+- 備考: #227 の j13 と食い違いは無かった（j13 の `.metadata` 81 バイトの中身がここで分かった）。先行実測のノートの記述は生データと一致した

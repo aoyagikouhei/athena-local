@@ -28,6 +28,13 @@ later name the date they were measured on.
   `awsdatacatalog.<database>.<table>` now creates the table through the
   `AwsDataCatalog` alias, and fails like real Athena when the database does not
   exist ([docs](docs/caveats.md#parameters-and-catalog-aliases)).
+- A CTAS into a missing `awsdatacatalog.<database>` also fails like real
+  Athena with `IF NOT EXISTS` and under an `AwsDataCatalog` or omitted context
+  catalog, naming the database in lower case
+  ([docs](docs/caveats.md#parameters-and-catalog-aliases)).
+- Under an S3 Tables context catalog, a one-part `CREATE TABLE <table>` fails
+  like real Athena when the context database is not a namespace
+  ([docs](docs/caveats.md#plain-create-table)).
 - A `QueryString` holding more than one statement, such as `SELECT 1; -- c`, is
   rejected at `StartQueryExecution` with real Athena's message ([docs](docs/api.md)).
 - `DESCRIBE`, `SHOW COLUMNS`, `SHOW CREATE TABLE`, `SHOW TABLES IN`,

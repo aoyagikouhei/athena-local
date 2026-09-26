@@ -2,23 +2,28 @@
 # issue #232 の実機検証の足場（tools/e2e/create-table-catalog/verify.sh を雛形にした）。
 #
 # #232 の変更: S3 Tables の Context（QueryExecutionContext.Catalog が `s3tablescatalog/<バケット>`）の CTAS で、
-# 無引用の 3 部の名前の 1 部目が大文字小文字によらず `awsdatacatalog`（`IF NOT EXISTS` は対象外）なら、本物は
-# 2 部目を Glue（AwsDataCatalog）の DB として引いて作った（実測 i12・j13）。athena-local は
+# 無引用の 3 部の名前の 1 部目が大文字小文字によらず `awsdatacatalog`（`IF NOT EXISTS` も対象。#251 でガードを
+# 外した）なら、本物は 2 部目を Glue（AwsDataCatalog）の DB として引いて作った（実測 i12・j13）。athena-local は
 # `TRINO_CATALOG_MAP` の `AwsDataCatalog` の Trino 名（既定の compose では `hive`）で
 # `SHOW TABLES FROM "hive"."<db>" LIKE ''` を先に確かめ、
 #   - DB が無ければ Trino に本体を送らず、開始して FAILED（
-#     `Database <書いたとおりの DB 名> not found. Please check your query. You may need to manually
+#     `Database <小文字にした DB 名> not found. Please check your query. You may need to manually
 #     clean the data at location '<OutputLocation>tables/<QueryExecutionId>' before retrying.
 #     Athena will not delete data in your account.`、AthenaError ErrorCategory 2・ErrorType 1301・
-#     Retryable false）にし、結果ファイルも `.metadata` も置かない。
+#     Retryable false）にし、結果ファイル本体は置かないが `.metadata` は置く（#251。中身の検証はフェーズ 2）。
 #   - DB があれば、1 部目を `"hive"` と空白（文字数を揃える）に差し替えた文を Trino に送り、Glue 側
 #     （hive カタログ）に表ができる。GetQueryExecution の Query は受け取ったまま。
-# CTAS でない CREATE TABLE（#237 の挙動）は変わらない。
+# #251 で、既定の Context（Catalog が省略か `AwsDataCatalog`）の CTAS `awsdatacatalog.<DB>.<表>` にも同じ
+# 判定を広げた。DB が無ければ同じ FAILED（理由の DB 名は小文字）、あれば書き換えずに（1 部目の別名解決は
+# #246 の `alias_qualified_names` に任せる）Trino へ送って作る。CTAS でない CREATE TABLE（#237 の挙動）は
+# 変わらない。
 #
 # この足場は compose のローカル Trino に hive（Glue 役）と iceberg（S3 Tables 役）の 2 カタログを持たせ、
 # TRINO_CATALOG_MAP=s3tablescatalog/e2e232=iceberg,AwsDataCatalog=hive にして、athena-local の
 # StartQueryExecution／GetQueryExecution に次のケース表を流して判定する。本物の AWS には投げない
-# （compose の trino・minio だけ）。
+# （compose の trino・minio だけ）。TRINO_CATALOG=AwsDataCatalog も設定する（C6・C7 の Catalog 省略で、
+# athena-local が QueryExecutionContext.Catalog 無しのときに送る既定のカタログが必要なため。docs/configuration.md
+# の TRINO_CATALOG）。
 #
 # ケース表（TRINO_CATALOG_MAP=s3tablescatalog/e2e232=iceberg,AwsDataCatalog=hive）:
 #   C1 S3 Tables の Context（Catalog=s3tablescatalog/e2e232、Database=e2e232ns（iceberg に事前に作った名前空間））
@@ -26,13 +31,42 @@
 #      → SUCCEEDED、Query は受け取ったまま、SubstatementType CREATE_TABLE_AS_SELECT、
 #        Trino の hive.e2e232db.t232 ができていて 1 行、iceberg.e2e232ns には t232 が無い
 #   C2 同じ Context
-#      CREATE TABLE AwsDataCatalog.E2e232Missing.t232 AS SELECT 1 AS n（hive に無い DB）
+#      CREATE TABLE AwsDataCatalog.E2e232Missing.t232c2 AS SELECT 1 AS n（hive に無い DB。書いたとおり大文字混じり）
 #      → 開始は 200 と QueryExecutionId、最終 FAILED。StateChangeReason・AthenaError が上の文言と一致
-#        （DB 名は書いたとおり `E2e232Missing`、場所は `s3://<bucket>/<prefix>/tables/<id>`）、
-#        MinIO にその id の本体も `.metadata` も無い
+#        （理由の DB 名は小文字 `e2e232missing`、場所は `s3://<bucket>/<prefix>/tables/<id>`）、
+#        MinIO に本体は無いが `.metadata` はある（#251。中身の検証はフェーズ 2）
 #   C3（回帰。#237） 同じ Context
 #      CREATE TABLE AwsDataCatalog.e2e232ns.t232b (n int)（CTAS でない。e2e232ns は iceberg の名前空間）
 #      → SUCCEEDED、iceberg.e2e232ns.t232b ができる（#232 で #237 の挙動が変わっていないことの確認）
+#   C4（#251） 同じ Context
+#      CREATE TABLE IF NOT EXISTS AwsDataCatalog.E2e232Missing.t232c4 AS SELECT 1 AS n（IF NOT EXISTS・hive に無い DB）
+#      → C2 と同じ FAILED（IF NOT EXISTS でも同じ）
+#   C5（#251） 同じ Context
+#      CREATE TABLE IF NOT EXISTS awsdatacatalog.e2e232db.t232c5 AS SELECT 1 AS n（IF NOT EXISTS・hive にある DB）
+#      → SUCCEEDED、hive.e2e232db.t232c5 ができる
+#   C6（#251） 既定の Context（Catalog 省略、Database=default）
+#      CREATE TABLE awsdatacatalog.E2e232Missing.t232c6 AS SELECT 1 AS n（hive に無い DB）
+#      → C2 と同じ FAILED（既定の Context でも同じ）
+#   C7（#251） 既定の Context（Catalog 省略、Database=default）
+#      CREATE TABLE awsdatacatalog.e2e232db.t232c7 AS SELECT 1 AS n（hive にある DB）
+#      → SUCCEEDED、hive.e2e232db.t232c7 ができる。Query は受け取ったまま（Rewrite しない。#246 の別名解決任せ）
+#   C8（#251） 既定の Context（Catalog=AwsDataCatalog を明示、Database=default）
+#      CREATE TABLE awsdatacatalog.E2e232Missing.t232c8 AS SELECT 1 AS n（hive に無い DB）
+#      → C2 と同じ FAILED（Catalog を明示しても省略と同じ）
+#   C9（#251） 既定の Context（Catalog=AwsDataCatalog を明示、Database=default）
+#      CREATE TABLE awsdatacatalog.e2e232db.t232c9 AS SELECT 1 AS n（hive にある DB）
+#      → SUCCEEDED、hive.e2e232db.t232c9 ができる
+#
+# #251 の変更を入れる前にこの足場を流すと（2026-09-27 に確認、PASS=9 FAIL=5）:
+#   - FAIL（新しい挙動をまだ実装していないため）: C2（理由の DB 名が大文字混じりのまま・`.metadata` が無い）、
+#     C4（IF NOT EXISTS のガードで ctas() 自体が発火せず、Trino の生の `CATALOG_NOT_FOUND` になる）、
+#     C5（同じ理由で、あるはずの DB でも Trino に `awsdatacatalog` という名のカタログが無いとして落ちる）、
+#     C6・C8（既定の Context では s3_tables のときしか ctas() を呼ばないため、Trino の生の
+#     `NOT_FOUND: Schema ... not found`（ErrorType 1000）のまま）
+#   - PASS（回帰。#251 の前後で挙動が変わらない）: C1・C3・C7・C9
+# 既定の Context で Catalog を省略する C6・C7 は、athena-local に `TRINO_CATALOG=AwsDataCatalog` を設定して
+# 初めて Trino に送るカタログが決まる（省略のままだと C6・C7 のどちらも Trino の
+# `Schema is set but catalog is not` という無関係な 400 で落ち、CTAS の判定にすら届かない）。
 #
 # 前提コマンド: tools/dev.sh 経由で動かす（toolbox に全部入っている）
 #
@@ -68,7 +102,7 @@ OUTPUT_LOCATION="s3://${BUCKET}/${PREFIX}/"
 S3_TABLES_CATALOG="s3tablescatalog/e2e232"
 CONTEXT_NS="e2e232ns"       # S3 Tables の Context の Database（iceberg に作る名前空間。C1・C2・C3 で共通）
 HIVE_DB="e2e232db"          # hive（Glue 役）に事前に作る DB（C1 の 2 部目）
-HIVE_DB_MISSING="E2e232Missing" # hive に作らない DB（C2 の 2 部目。書いたとおりの綴りを理由文言で確かめる）
+HIVE_DB_MISSING="E2e232Missing" # hive に作らない DB（C2・C4・C6・C8 の 2 部目。大文字混じりのまま送り、理由文言は小文字で確かめる。#251）
 
 ATHENA_BIND="127.0.0.1:8140"
 ATHENA_BASE="http://${ATHENA_BIND}"
@@ -128,8 +162,7 @@ cleanup() {
   fi
 
   log "Trino の DB・名前空間を消す（無ければ何もしない）"
-  trino_exec "DROP TABLE IF EXISTS hive.${HIVE_DB}.t232" hive default >/dev/null 2>&1 || true
-  trino_exec "DROP SCHEMA IF EXISTS hive.${HIVE_DB}" hive default >/dev/null 2>&1 || true
+  trino_exec "DROP SCHEMA IF EXISTS hive.${HIVE_DB} CASCADE" hive default >/dev/null 2>&1 || true
   trino_exec "DROP SCHEMA IF EXISTS iceberg.${CONTEXT_NS} CASCADE" iceberg default >/dev/null 2>&1 || true
 
   if [ "${KEEP_UP:-0}" = "1" ]; then
@@ -251,7 +284,7 @@ build_athena_local() {
 }
 
 start_athena_local() {
-  log "athena-local を起動する（bind=$ATHENA_BIND、binary=$BINARY、TRINO_CATALOG_MAP=${S3_TABLES_CATALOG}=iceberg,AwsDataCatalog=hive、ログ: $ATHENA_LOG）"
+  log "athena-local を起動する（bind=$ATHENA_BIND、binary=$BINARY、TRINO_CATALOG_MAP=${S3_TABLES_CATALOG}=iceberg,AwsDataCatalog=hive、TRINO_CATALOG=AwsDataCatalog、ログ: $ATHENA_LOG）"
   (
     cd "$REPO_ROOT"
     exec env \
@@ -259,6 +292,7 @@ start_athena_local() {
       TRINO_URL="$TRINO_BASE" \
       TRINO_USER="athena-local-e2e232" \
       TRINO_CATALOG_MAP="${S3_TABLES_CATALOG}=iceberg,AwsDataCatalog=hive" \
+      TRINO_CATALOG="AwsDataCatalog" \
       ATHENA_LOCAL_RESULTS="s3" \
       AWS_ENDPOINT_URL_S3="$MINIO_ENDPOINT" \
       AWS_ACCESS_KEY_ID="minioadmin" \
@@ -300,12 +334,18 @@ athena_call() {
     --data "$body"
 }
 
-# QueryExecutionContext（Catalog・Database）付きの StartQueryExecution。
+# QueryExecutionContext（Catalog・Database）付きの StartQueryExecution。catalog に空文字を渡すと
+# QueryExecutionContext.Catalog そのものを省略する（C6・C7 の「既定の Context（Catalog 省略）」用）。
 start_raw() {
   local sql="$1" catalog="$2" database="$3"
   local body
-  body=$(jq -cn --arg sql "$sql" --arg catalog "$catalog" --arg db "$database" --arg token "$(uuidgen)" \
-    '{QueryString: $sql, QueryExecutionContext: {Catalog: $catalog, Database: $db}, ClientRequestToken: $token}')
+  if [ -z "$catalog" ]; then
+    body=$(jq -cn --arg sql "$sql" --arg db "$database" --arg token "$(uuidgen)" \
+      '{QueryString: $sql, QueryExecutionContext: {Database: $db}, ClientRequestToken: $token}')
+  else
+    body=$(jq -cn --arg sql "$sql" --arg catalog "$catalog" --arg db "$database" --arg token "$(uuidgen)" \
+      '{QueryString: $sql, QueryExecutionContext: {Catalog: $catalog, Database: $db}, ClientRequestToken: $token}')
+  fi
   athena_call StartQueryExecution "$body"
 }
 
@@ -415,8 +455,9 @@ case_success() {
   fi
 }
 
-# C2: 開始できて最終的に FAILED になることを確かめる。理由・AthenaError・Query・SubstatementType に加え、
-# 結果ファイル（本体・.metadata）が MinIO に無いことも見る。
+# C2・C4・C6・C8: 開始できて最終的に FAILED になることを確かめる。理由・AthenaError・Query・
+# SubstatementType に加え、結果ファイル本体が MinIO に無く `.metadata` はあることも見る（#251。`.metadata` の
+# 中身の検証はフェーズ 2）。missing_db は書いたとおりの綴り（大文字混じり）で渡し、理由文言では小文字にする。
 case_fail_at_runtime() {
   local no="$1" name="$2" sql="$3" catalog="$4" database="$5" missing_db="$6"
   if ! run_and_wait "$sql" "$catalog" "$database"; then
@@ -434,7 +475,7 @@ case_fail_at_runtime() {
   query=$(echo "$LAST_RESP" | jq -r '.QueryExecution.Query // empty')
   substmt=$(echo "$LAST_RESP" | jq -r '.QueryExecution.SubstatementType // empty')
 
-  local expect_reason="Database ${missing_db} not found. Please check your query. You may need to manually clean the data at location '${OUTPUT_LOCATION}tables/${LAST_ID}' before retrying. Athena will not delete data in your account."
+  local expect_reason="Database ${missing_db,,} not found. Please check your query. You may need to manually clean the data at location '${OUTPUT_LOCATION}tables/${LAST_ID}' before retrying. Athena will not delete data in your account."
 
   [ "$state" = "FAILED" ] || { ok=0; detail="$detail State=${state:-無し}(期待 FAILED)"; }
   [ "$reason" = "$expect_reason" ] || { ok=0; detail="$detail StateChangeReason=\"$reason\"(期待 \"$expect_reason\")"; }
@@ -451,13 +492,13 @@ case_fail_at_runtime() {
     detail="$detail 結果ファイル本体がある(期待は無し): $body_key"
   fi
   meta_stat=$(mc_stat "${body_key}.metadata")
-  if mc_exists "$meta_stat"; then
+  if ! mc_exists "$meta_stat"; then
     ok=0
-    detail="$detail .metadata がある(期待は無し): ${body_key}.metadata"
+    detail="$detail .metadata が無い(期待はある。#251): ${body_key}.metadata"
   fi
 
   if [ "$ok" = "1" ]; then
-    record "$no $name" PASS "State=$state StateChangeReason 一致 ErrorCategory=$category ErrorType=$type_ Retryable=$retryable Query 一致 SubstatementType=$substmt 結果ファイル無し [id=$LAST_ID]"
+    record "$no $name" PASS "State=$state StateChangeReason 一致 ErrorCategory=$category ErrorType=$type_ Retryable=$retryable Query 一致 SubstatementType=$substmt 結果ファイル本体無し .metadata あり [id=$LAST_ID]"
   else
     record "$no $name" FAIL "${detail# } [id=$LAST_ID]"
   fi
@@ -473,9 +514,10 @@ run_cases() {
     hive "$HIVE_DB" t232 \
     iceberg "$CONTEXT_NS" t232
 
-  # C2: 1 部目 AwsDataCatalog・2 部目 hive に無い DB。Trino に送らず FAILED。
+  # C2: 1 部目 AwsDataCatalog・2 部目 hive に無い DB。Trino に送らず FAILED（#251: 理由の DB 名は小文字、
+  # .metadata はある）。
   case_fail_at_runtime "C2" "S3Tables の Context・CTAS・hive の DB 無し" \
-    "CREATE TABLE AwsDataCatalog.${HIVE_DB_MISSING}.t232 AS SELECT 1 AS n" "$S3_TABLES_CATALOG" "$CONTEXT_NS" \
+    "CREATE TABLE AwsDataCatalog.${HIVE_DB_MISSING}.t232c2 AS SELECT 1 AS n" "$S3_TABLES_CATALOG" "$CONTEXT_NS" \
     "$HIVE_DB_MISSING"
 
   # C3（回帰）: CTAS でない CREATE TABLE。#237 どおり iceberg 側の名前空間にできる。
@@ -483,6 +525,47 @@ run_cases() {
     "CREATE TABLE AwsDataCatalog.${CONTEXT_NS}.t232b (n int)" "$S3_TABLES_CATALOG" "$CONTEXT_NS" \
     "CREATE_TABLE" \
     iceberg "$CONTEXT_NS" t232b \
+    "" "" ""
+
+  # C4（#251）: C2 と同じだが IF NOT EXISTS 付き。C2 と同じ FAILED になる想定。
+  case_fail_at_runtime "C4" "S3Tables の Context・IF NOT EXISTS の CTAS・hive の DB 無し" \
+    "CREATE TABLE IF NOT EXISTS AwsDataCatalog.${HIVE_DB_MISSING}.t232c4 AS SELECT 1 AS n" "$S3_TABLES_CATALOG" "$CONTEXT_NS" \
+    "$HIVE_DB_MISSING"
+
+  # C5（#251）: IF NOT EXISTS・hive にある DB。今は if_follows のガードで Continue になり Trino に素通しされる
+  # ため元から SUCCEEDED のはずだが、#251 でガードを外しても同じ結果になることの確認（回帰）。
+  case_success "C5" "S3Tables の Context・IF NOT EXISTS の CTAS・hive の DB あり" \
+    "CREATE TABLE IF NOT EXISTS awsdatacatalog.${HIVE_DB}.t232c5 AS SELECT 1 AS n" "$S3_TABLES_CATALOG" "$CONTEXT_NS" \
+    "CREATE_TABLE_AS_SELECT" \
+    hive "$HIVE_DB" t232c5 \
+    "" "" ""
+
+  # C6（#251）: 既定の Context（Catalog 省略）・hive に無い DB。今は Trino にそのまま送られ、Trino の生の
+  # `NOT_FOUND: Schema ... not found`（ErrorType 1000）になるので FAILED にはなるが、文言・ErrorType が
+  # 一致せず FAIL になる想定。
+  case_fail_at_runtime "C6" "既定Context(Catalog省略)・CTAS・hive の DB 無し" \
+    "CREATE TABLE awsdatacatalog.${HIVE_DB_MISSING}.t232c6 AS SELECT 1 AS n" "" default \
+    "$HIVE_DB_MISSING"
+
+  # C7（#251。回帰）: 既定の Context（Catalog 省略）・hive にある DB。TRINO_CATALOG=AwsDataCatalog があるので
+  # Trino に送るカタログが決まり、#246 の alias_qualified_names が 1 部目を hive に差し替えて送る。#251 の
+  # 前後どちらでも SUCCEEDED のはず。Query は受け取ったまま。
+  case_success "C7" "既定Context(Catalog省略)・CTAS・hive の DB あり" \
+    "CREATE TABLE awsdatacatalog.${HIVE_DB}.t232c7 AS SELECT 1 AS n" "" default \
+    "CREATE_TABLE_AS_SELECT" \
+    hive "$HIVE_DB" t232c7 \
+    "" "" ""
+
+  # C8（#251）: 既定の Context を Catalog=AwsDataCatalog で明示・hive に無い DB。C6 と同じ想定。
+  case_fail_at_runtime "C8" "既定Context(Catalog=AwsDataCatalog明示)・CTAS・hive の DB 無し" \
+    "CREATE TABLE awsdatacatalog.${HIVE_DB_MISSING}.t232c8 AS SELECT 1 AS n" AwsDataCatalog default \
+    "$HIVE_DB_MISSING"
+
+  # C9（#251。回帰）: 既定の Context を Catalog=AwsDataCatalog で明示・hive にある DB。C7 と同じ想定。
+  case_success "C9" "既定Context(Catalog=AwsDataCatalog明示)・CTAS・hive の DB あり" \
+    "CREATE TABLE awsdatacatalog.${HIVE_DB}.t232c9 AS SELECT 1 AS n" AwsDataCatalog default \
+    "CREATE_TABLE_AS_SELECT" \
+    hive "$HIVE_DB" t232c9 \
     "" "" ""
 }
 

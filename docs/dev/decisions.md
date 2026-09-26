@@ -118,6 +118,8 @@ SQL の字句解析と文の認識を `crates/athena-sql` に集める計画（�
   - 本物が j13 で置いた `.metadata`（81 バイト）は中身を測っていないので置かない（推測で埋めない）。
   - 結果の置き場所が無い（結果を書かないモードで OutputLocation も無い）ときは理由の場所を作れないので、FAILED にせず差し替えて送る（Trino の失敗で終わる）。本物は場所の無い要求を受け付けないので、実測と食い違う入力ではない。
   - 大文字小文字の 2 通りは、DB がある形を小文字で、無い形を `AwsDataCatalog` で測った。どちらも Glue の DB として引いたので、1 部目の綴りでは分けない（ユーザーの判断）。`IF NOT EXISTS` の CTAS・既定の Context の同じ形は未実測なので今までどおり受け取ったまま送る。（#232、2026-09-26、差し替えはユーザーの判断）
+  - → #251 で、`IF NOT EXISTS` の CTAS（r6a・r6b）、1 部目の綴りと DB の有無の残りの組（r7a・r7b）、既定の Context（明示の `AwsDataCatalog`。r8a〜r8c）も同じく DB が無ければ 1301 の FAILED、あれば作られ、理由の DB 名は小文字（r5・r8a）と測った。判定を `IF NOT EXISTS` にも当て、DB 名を小文字にし、既定の Context（Catalog が `AwsDataCatalog` か省略。#246 の別名置換と同じ条件で、省略は未実測。ユーザーの判断）でも `ctas` を呼ぶ。既定の Context では FAILED だけを当て、1 部目の差し替えは実行時の `alias_qualified_names`（#246）に任せる（書き換えの条件を増やさない）。そのため既定の Context の `awsdatacatalog.<DB>.<表>` の CTAS にも DB の確認の問い合わせが 1 本増える（DB の有無を知る手段がほかに無い）。（#251、2026-09-27）
+- S3 Tables の Context の場所の無い `CREATE TABLE` の 1 部の名前は、Context の Database の名前空間が無ければ、本物は 2 部・3 部と同じ `Cannot find or access the specified table` の FAILED にした（2026-09-27 実測 r1）。athena-local は 2 部の名前（#231）と同じく `namespace_missing` で Context の Database を確かめ、無ければ Trino に送らずに FAILED にする。Context の Database が無いときは名前空間が決まらないので、今までどおり送る（未実測）。（#251、2026-09-27）
 
 ## 結果ファイル
 

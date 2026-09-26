@@ -444,10 +444,15 @@ respectively. `MSCK REPAIR TABLE` on an Iceberg table, with or without a comment
   it cannot tell whether the namespace exists
   ([#227](https://github.com/aoyagikouhei/athena-local/issues/227),
   [#237](https://github.com/aoyagikouhei/athena-local/issues/237), measured
-  2026-09-26; `IF NOT EXISTS` with an existing namespace is not measured). An unquoted two-part `<namespace>.<table>` whose namespace does
-  not exist in the context catalog fails the same way, without being sent to
-  Trino ([#231](https://github.com/aoyagikouhei/athena-local/issues/231),
-  measured 2026-09-26).
+  2026-09-26, and with `IF NOT EXISTS` on 2026-09-27). An unquoted two-part
+  `<namespace>.<table>` whose namespace does not exist in the context catalog
+  fails the same way, without being sent to Trino
+  ([#231](https://github.com/aoyagikouhei/athena-local/issues/231), measured
+  2026-09-26), and so does an unquoted one-part `<table>` when the context
+  database does not exist as a namespace in the context catalog
+  ([#251](https://github.com/aoyagikouhei/athena-local/issues/251), measured
+  2026-09-27). With no context database, or with `IF NOT EXISTS` (not
+  measured for a one-part name), a one-part name is sent as written.
 - **With an S3 Tables context catalog, Hive's `LOCATION` and `EXTERNAL` are
   rejected with real Athena's messages.** Trino's grammar has neither, so under
   any other context catalog such a statement gets Trino's syntax error. When
@@ -555,31 +560,35 @@ respectively. `MSCK REPAIR TABLE` on an Iceberg table, with or without a comment
   since Trino lowercases identifiers. Error messages name the Trino catalog
   (`iceberg.db.users`), and when the Trino name is longer than the Athena name,
   error positions after it shift.
-- **Under an S3 Tables context catalog, a CTAS into
-  `awsdatacatalog.<database>.<table>` goes to the `AwsDataCatalog` alias.**
-  When `QueryExecutionContext.Catalog` is `s3tablescatalog/<bucket>`, real
-  Athena creates `CREATE TABLE awsdatacatalog.<database>.<table> AS SELECT ...`
-  in the Glue database, not in the S3 Tables namespace as it does for a plain
+- **A CTAS into `awsdatacatalog.<database>.<table>` fails like Athena when
+  the database does not exist.** When `QueryExecutionContext.Catalog` is
+  `s3tablescatalog/<bucket>`, real Athena creates
+  `CREATE TABLE awsdatacatalog.<database>.<table> AS SELECT ...` in the Glue
+  database, not in the S3 Tables namespace as it does for a plain
   `CREATE TABLE` (measured 2026-09-26). For an unquoted three-part CTAS name
-  whose first part is `awsdatacatalog` in any case, athena-local asks Trino
-  whether the database exists in the Trino catalog of the `AwsDataCatalog`
-  alias (keys compared case-insensitively; `awsdatacatalog` when there is no
-  alias), and sends Trino the statement with the first part replaced by that
-  catalog, double-quoted and padded with spaces as for quoted aliases above,
-  while `Query` stays as sent. When the database does not exist, real Athena
-  starts the query and fails it with `Database <database> not found. Please
-  check your query. You may need to manually clean the data at location
-  '<output location>tables/<id>' before retrying. Athena will not delete data
-  in your account.` (`ErrorCategory` 2, `ErrorType` 1301); athena-local fails
-  it the same way without sending it to Trino (measured with
-  `AwsDataCatalog.<namespace>.<table>`). Real Athena also leaves a
+  whose first part is `awsdatacatalog` in any case, with or without
+  `IF NOT EXISTS`, athena-local asks Trino whether the database exists in the
+  Trino catalog of the `AwsDataCatalog` alias (keys compared
+  case-insensitively; `awsdatacatalog` when there is no alias). Under an S3
+  Tables context catalog it then sends Trino the statement with the first part
+  replaced by that catalog, double-quoted and padded with spaces as for quoted
+  aliases above, while `Query` stays as sent; under an `AwsDataCatalog` or
+  omitted context catalog the alias above already applies. When the database
+  does not exist, real Athena starts the query and fails it with
+  `Database <database> not found. Please check your query. You may need to
+  manually clean the data at location '<output location>tables/<id>' before
+  retrying. Athena will not delete data in your account.` (`ErrorCategory` 2,
+  `ErrorType` 1301), with the database name in lower case, under both kinds
+  of context catalog; athena-local fails it the same way without sending the
+  statement to Trino (measured 2026-09-27 under an S3 Tables and an
+  `AwsDataCatalog` context catalog; an omitted context catalog is not
+  measured). Real Athena also leaves a
   `tables/<id>.metadata` companion there, whose content was not measured, so
   athena-local writes no file. Without an output location (results not
   written and no `OutputLocation`), or when Trino cannot tell whether the
-  database exists, the statement is sent instead. `IF NOT EXISTS`, the same
-  CTAS under other context catalogs were not measured and are sent as
-  written; the case of the database name in the message was not measured
-  either ([#232](https://github.com/aoyagikouhei/athena-local/issues/232)).
+  database exists, the statement is sent instead
+  ([#232](https://github.com/aoyagikouhei/athena-local/issues/232),
+  [#251](https://github.com/aoyagikouhei/athena-local/issues/251)).
 
 ## Value rendering
 
@@ -718,8 +727,8 @@ respectively. `MSCK REPAIR TABLE` on an Iceberg table, with or without a comment
   Hive writes `<id>.txt` holding the reason (`SHOW TABLES`, `DROP TABLE` and
   `CREATE DATABASE`, measured 2026-09-17), while statements that run on the
   query engine write no file at all, namely `SELECT`, `INSERT`, `UPDATE`,
-  `DELETE` and CTAS (measured 2026-09-17; a CTAS into a missing database
-  under an S3 Tables context catalog is the exception, see
+  `DELETE` and CTAS (measured 2026-09-17; a CTAS into a missing
+  `awsdatacatalog` database is the exception, see
   [Parameters and catalog aliases](#parameters-and-catalog-aliases); and the `INSERT` case again on
   2026-09-20: a type-mismatched `INSERT` left neither the result file nor the
   `.metadata` companion) and `ALTER TABLE` on an Iceberg table
