@@ -150,12 +150,10 @@ Behaviour that matches real Athena:
     `QueryExecutionContext.Database`, even when the request sent another
     database or none. On a view, where `Query` keeps the name, `Database` is
     the one the request sent (measured only with the same database in both).
-  - `DESCRIBE` on a table followed right away by a block comment
+  - `DESCRIBE` on a Hive table followed right away by a block comment
     (`DESCRIBE /* c */ t`, and `DESCRIBE db./* c */t` once the database is
-    dropped) is not sent to Trino: it fails as on real Athena with
-    `FAILED: ParseException line 1:0 cannot recognize input near 'DESCRIBE' '/'
-    '*' in describe statement` (`ErrorCategory` 1 / `ErrorType` 1003), and
-    `<id>.txt` holds that reason with no `.metadata`.
+    dropped) is not sent to Trino and fails as on real Athena — see
+    [Block comments Athena's Hive parser rejects](caveats.md#block-comments-athenas-hive-parser-rejects).
   The `ClientRequestToken` idempotency check still compares the request as
   sent. Syntax errors and the start-time messages below are worked out from
   the statement as sent, too.

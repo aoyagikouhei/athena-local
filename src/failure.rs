@@ -84,6 +84,18 @@ impl Failure {
         }
     }
 
+    /// MSCK REPAIR TABLE の対象が Iceberg 表のときに本物が返した固定の文言（ブロックコメントの有無・位置に
+    /// よらず。`.txt` も `.metadata` も置かない。2026-09-26 実測 m1〜m4。#244）。
+    pub fn msck_iceberg() -> Self {
+        Self {
+            reason: "Query type not supported by Athena Iceberg at this time".to_string(),
+            error_message: None,
+            category: USER,
+            error_type: 1200,
+            retryable: false,
+        }
+    }
+
     /// 結果 CSV を置けなかった。本物は書き込みで FAILED にならないので、一覧の
     /// 「Failed to write query results to Amazon S3」を当て、再試行で通りうるものとして返す。
     pub fn result_write(reason: String) -> Self {

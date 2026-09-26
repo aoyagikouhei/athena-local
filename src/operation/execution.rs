@@ -15,6 +15,7 @@ use crate::store::{ImmediateFailure, Reported, Submission, SubmitOutcome};
 use crate::trino::Trino;
 
 use super::background_execution::spawn_query;
+use super::classification;
 use super::comment_parse_error;
 use super::context_catalog;
 use super::create_table_catalog;
@@ -76,9 +77,22 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
     if s3_tables && let Some(message) = unquoted_ddl::s3_tables_rejection(&query) {
         return invalid_request_with_code(message, "MALFORMED_QUERY");
     }
+    // 構文チェックの前の判定: Trino に文が無い MSCK REPAIR TABLE・ALTER TABLE ... ADD COLUMNS（複数形）は
+    // 構文チェックへ進むと必ず構文エラーになる。対象の表の形式やブロックコメントの位置で本物が実際に
+    // 何で FAILED にするかが変わるので、構文チェックの前に確かめておく（2026-09-26 実測。#244）。
+    let pre_syntax_check_failure = pre_syntax_check_failure(
+        &app.trino,
+        &app.config,
+        &query,
+        catalog.as_deref(),
+        database.as_deref(),
+    )
+    .await;
     // 本物は構文エラーを StartQueryExecution で弾き、実行を作らない（ExecutionParameters があっても元の SQL で数える）。
     // 文言は Trino のもの、コードは 2026-09-14 に実測した MALFORMED_QUERY。
-    if let Some(message) = app.trino.syntax_error(&query).await {
+    if pre_syntax_check_failure.is_none()
+        && let Some(message) = app.trino.syntax_error(&query).await
+    {
         return invalid_request_with_code(message, "MALFORMED_QUERY");
     }
     // 本物は DESCRIBE・SHOW COLUMNS などの `awsdatacatalog.` を落とし、Context の Database を修飾の DB にする
@@ -128,7 +142,7 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
     // 本物も Trino が構文エラーにする形では Trino の文言を返したので、構文チェックの後に見る。
     // 引用符付きの名前の文言を先に試す（quoted_names が None を返すのは無引用のときと ALTER TABLE IF
     // EXISTS のときだけで、後者は unquoted_ddl が引き取る）。
-    let mut immediate_failure = None;
+    let mut immediate_failure = pre_syntax_check_failure;
     if !matches!(check, Check::Run)
         && let Some(message) = quoted_names::rejection(&query, |catalog| {
             app.config.catalog_map.contains_key(catalog)
@@ -248,6 +262,78 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
     );
 
     submit_response(app, id, outcome)
+}
+
+/// 構文チェックの前の判定: `query` が `MSCK REPAIR TABLE` か、`comment_parse_error::detect` が
+/// `AlterAddColumns`（`ALTER TABLE ... ADD COLUMNS` の複数形にブロックコメントが決め手の位置にある形）を
+/// 返すときだけ対象の存在を確かめる。対象が Iceberg 表なら、ブロックコメントの有無・位置によらず本物は
+/// 別の失敗（`Failure::msck_iceberg`）で FAILED にする。Hive・ビュー・無い表は、ブロックコメントが決め手の
+/// 位置にあるとき（`detect` が Some）だけ、その ParseException で FAILED にする。名前が引用符付きの部品を
+/// 含むか 4 部以上・カタログが無い・問い合わせが失敗したとき（`Probe::NoCatalog`・`Probe::Unknown`）は
+/// 何もせず、今までどおり構文チェックへ進む（2026-09-26 実測。#244）。問い合わせが増えるのは MSCK と、
+/// コメント入りの ADD COLUMNS のときだけ（design-checklist #39）。
+async fn pre_syntax_check_failure(
+    trino: &Trino,
+    config: &Config,
+    query: &str,
+    catalog: Option<&str>,
+    database: Option<&str>,
+) -> Option<ImmediateFailure> {
+    use comment_parse_error::Target;
+
+    let is_msck = classification::substatement_type(query) == Some("MSCK_REPAIR");
+    let comment = comment_parse_error::detect(query);
+    let add_columns_comment = comment
+        .clone()
+        .filter(|error| !is_msck && error.target == Target::AlterAddColumns);
+    if !is_msck && add_columns_comment.is_none() {
+        return None;
+    }
+
+    let resolved = context_catalog::resolve(trino, config, query, catalog).await;
+    let raw_catalog = resolved.as_deref().or(config.default_catalog.as_deref());
+    let default_database = database.or(config.default_database.as_deref());
+
+    let target = if is_msck {
+        target_table::parse_msck_target(query, raw_catalog, default_database)?
+    } else {
+        target_table::parse_target_table(
+            query,
+            TargetStatement::AlterTableAddColumns,
+            raw_catalog,
+            default_database,
+        )?
+    };
+
+    let probe = entity_check::probe(
+        trino,
+        config,
+        &target.catalog,
+        &target.schema,
+        &target.table,
+    )
+    .await;
+
+    if is_msck && matches!(probe, Probe::Table { iceberg: true }) {
+        return Some(ImmediateFailure {
+            failure: Failure::msck_iceberg(),
+            writes_result_file: false,
+        });
+    }
+
+    let comment = if is_msck {
+        comment.filter(|error| error.target == Target::MsckRepair)
+    } else {
+        add_columns_comment
+    }?;
+
+    match probe {
+        Probe::Missing | Probe::View | Probe::Table { iceberg: false } => Some(ImmediateFailure {
+            failure: comment.into(),
+            writes_result_file: true,
+        }),
+        Probe::Table { iceberg: true } | Probe::NoCatalog | Probe::Unknown => None,
+    }
 }
 
 /// 構文チェックの後の判定: `comment_parse_error::detect` が対象にした文で、本物が実際に FAILED にするか。DESCRIBE は

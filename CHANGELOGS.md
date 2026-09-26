@@ -21,8 +21,10 @@ later name the date they were measured on.
   `ALTER TABLE` and `DROP TABLE` on an unquoted `awsdatacatalog.` name now run,
   and `DESCRIBE` on a table reports `Query` and `Database` the way real Athena
   does ([docs](docs/api.md)).
-- `DESCRIBE /* c */ t` on a table now fails with real Athena's `ParseException`
-  ([docs](docs/api.md)).
+- A block comment before or between the keywords of `SHOW CREATE TABLE`,
+  `MSCK REPAIR TABLE`, `ALTER TABLE` and `DESCRIBE` now fails the query with real
+  Athena's `ParseException` on the tables where Athena fails it
+  ([docs](docs/caveats.md#block-comments-athenas-hive-parser-rejects)).
 - A statement ending (or starting) with `;`, such as `SELECT 1;`, now runs, and
   the `;` and the whitespace around the statement are removed from `Query` and
   from syntax error positions, as on real Athena; `;` alone is rejected with

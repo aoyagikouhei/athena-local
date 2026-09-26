@@ -358,3 +358,281 @@ async fn probe_でカタログが無ければ介入せず今までどおり送�
         harness.trino_sqls()
     );
 }
+
+// 構文チェックの前の判定（MSCK REPAIR TABLE・ALTER TABLE ... ADD COLUMNS は Trino に文が無く、構文チェックへ
+// 進むと必ず 400 になるので、対象の存在を先に確かめる。#244）。
+
+/// カタログの有無の問い合わせ（`src/operation/table_format.rs` の `catalog_exists_sql` と同じ形。
+/// tests/context_catalog.rs の写し）。
+fn catalog_exists_sql(catalog: &str) -> String {
+    format!(
+        "SELECT (SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = '{catalog}')"
+    )
+}
+
+fn catalog_exists_response(connector_name: Option<&str>) -> Value {
+    json!({
+        "columns": [{ "name": "_col0", "type": "varchar" }],
+        "data": [[connector_name]]
+    })
+}
+
+#[tokio::test]
+async fn msck_repair_table_のブロックコメントは_hive_無い表_ビューで本物どおり_failed_になり構文チェックへ進まない()
+ {
+    const REASON: &str = "FAILED: ParseException line 1:12 missing EOF at '/' near 'REPAIR'";
+    for (name, response) in [
+        ("t", probe_response("hive", "TABLE")),
+        ("nope", probe_response_missing()),
+        ("v", probe_response("hive", "VIEW")),
+    ] {
+        let sql = format!("MSCK REPAIR /* c */ TABLE {name}");
+        let harness = Harness::builder(select_response())
+            .route(&probe_sql(DEFAULT_CATALOG, DEFAULT_SCHEMA, name), response)
+            .results_s3()
+            .start()
+            .await;
+
+        let execution = harness
+            .run_query(json!({
+                "QueryString": sql,
+                "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+            }))
+            .await["QueryExecution"]
+            .clone();
+        let id = execution["QueryExecutionId"].as_str().expect("ID");
+
+        assert_eq!(
+            execution["Status"]["State"], "FAILED",
+            "{name}: {execution}"
+        );
+        assert_eq!(execution["Status"]["StateChangeReason"], REASON, "{name}");
+        assert_eq!(
+            execution["Status"]["AthenaError"]["ErrorCategory"], 1,
+            "{name}"
+        );
+        assert_eq!(
+            execution["Status"]["AthenaError"]["ErrorType"], 1003,
+            "{name}"
+        );
+        assert_eq!(
+            execution["Status"]["AthenaError"]["ErrorMessage"], REASON,
+            "{name}"
+        );
+        assert_eq!(execution["StatementType"], "DDL", "{name}");
+        assert_eq!(execution["SubstatementType"], "MSCK_REPAIR", "{name}");
+
+        let puts: Vec<_> = harness
+            .s3_puts()
+            .into_iter()
+            .filter(|put| put.key.contains(id))
+            .collect();
+        assert_eq!(puts.len(), 1, "{name}: .txt だけ置き .metadata は置かない");
+        assert_eq!(puts[0].key, format!("athena/{id}.txt"));
+        assert_eq!(puts[0].body, REASON.as_bytes());
+
+        assert!(
+            !harness.syntax_checks().contains(&sql),
+            "{name}: 構文チェックへ進まない: {:?}",
+            harness.syntax_checks()
+        );
+    }
+}
+
+#[tokio::test]
+async fn msck_repair_table_は_iceberg_表ならコメントの有無によらず別の失敗になり_s3_に何も置かない()
+{
+    for sql in ["MSCK REPAIR TABLE t", "/* c */ MSCK REPAIR TABLE t"] {
+        let harness = Harness::builder(select_response())
+            .route(
+                &probe_sql(DEFAULT_CATALOG, DEFAULT_SCHEMA, "t"),
+                probe_response("iceberg", "TABLE"),
+            )
+            .results_s3()
+            .start()
+            .await;
+
+        let execution = harness
+            .run_query(json!({
+                "QueryString": sql,
+                "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+            }))
+            .await["QueryExecution"]
+            .clone();
+        let id = execution["QueryExecutionId"].as_str().expect("ID");
+
+        assert_eq!(execution["Status"]["State"], "FAILED", "{sql}: {execution}");
+        assert_eq!(
+            execution["Status"]["StateChangeReason"],
+            "Query type not supported by Athena Iceberg at this time",
+            "{sql}"
+        );
+        assert_eq!(
+            execution["Status"]["AthenaError"]["ErrorCategory"], 2,
+            "{sql}"
+        );
+        assert_eq!(
+            execution["Status"]["AthenaError"]["ErrorType"], 1200,
+            "{sql}"
+        );
+        assert_eq!(execution["StatementType"], "DDL", "{sql}");
+        assert_eq!(execution["SubstatementType"], "MSCK_REPAIR", "{sql}");
+
+        let puts: Vec<_> = harness
+            .s3_puts()
+            .into_iter()
+            .filter(|put| put.key.contains(id))
+            .collect();
+        assert!(puts.is_empty(), "{sql}: S3 に何も置かない: {puts:?}");
+
+        assert!(
+            !harness.syntax_checks().contains(&sql.to_string()),
+            "{sql}: 構文チェックへ進まない"
+        );
+    }
+}
+
+#[tokio::test]
+async fn msck_repair_table_は_hive_でコメントが無ければ今までどおり構文チェックへ進む() {
+    let sql = "MSCK REPAIR TABLE t";
+    let harness = Harness::builder(select_response())
+        .route(
+            &probe_sql(DEFAULT_CATALOG, DEFAULT_SCHEMA, "t"),
+            probe_response("hive", "TABLE"),
+        )
+        .start()
+        .await;
+
+    harness
+        .call("StartQueryExecution", json!({ "QueryString": sql }))
+        .await;
+
+    assert!(
+        harness.syntax_checks().contains(&sql.to_string()),
+        "コメントが無ければ構文チェックへ進む: {:?}",
+        harness.syntax_checks()
+    );
+}
+
+#[tokio::test]
+async fn alter_table_add_columns_複数形_のブロックコメントは_hive_無い表で本物どおり_failed_になり構文チェックへ進まない()
+ {
+    const REASON: &str = "FAILED: ParseException line 1:0 cannot recognize input near 'ALTER' '/' '*' in alter statement";
+    for (name, response) in [
+        ("t", probe_response("hive", "TABLE")),
+        ("nope", probe_response_missing()),
+    ] {
+        let sql = format!("ALTER /* c */ TABLE {name} ADD COLUMNS (c int)");
+        let harness = Harness::builder(select_response())
+            .route(&probe_sql(DEFAULT_CATALOG, DEFAULT_SCHEMA, name), response)
+            .start()
+            .await;
+
+        let execution =
+            harness.run_query(json!({ "QueryString": sql })).await["QueryExecution"].clone();
+
+        assert_eq!(
+            execution["Status"]["State"], "FAILED",
+            "{name}: {execution}"
+        );
+        assert_eq!(execution["Status"]["StateChangeReason"], REASON, "{name}");
+        assert_eq!(
+            execution["Status"]["AthenaError"]["ErrorCategory"], 1,
+            "{name}"
+        );
+        assert_eq!(
+            execution["Status"]["AthenaError"]["ErrorType"], 1003,
+            "{name}"
+        );
+        assert_eq!(execution["StatementType"], "DDL", "{name}");
+        assert_eq!(
+            execution["SubstatementType"], "ALTER_TABLE_ADD_COLUMN",
+            "{name}"
+        );
+
+        assert!(
+            !harness.syntax_checks().contains(&sql),
+            "{name}: 構文チェックへ進まない: {:?}",
+            harness.syntax_checks()
+        );
+    }
+}
+
+#[tokio::test]
+async fn alter_table_add_columns_複数形_は_iceberg_表なら今までどおり構文チェックへ進む() {
+    let sql = "ALTER /* c */ TABLE t ADD COLUMNS (c int)";
+    let harness = Harness::builder(select_response())
+        .route(
+            &probe_sql(DEFAULT_CATALOG, DEFAULT_SCHEMA, "t"),
+            probe_response("iceberg", "TABLE"),
+        )
+        .start()
+        .await;
+
+    harness
+        .call("StartQueryExecution", json!({ "QueryString": sql }))
+        .await;
+
+    assert!(
+        harness.syntax_checks().contains(&sql.to_string()),
+        "Iceberg 表なら構文チェックへ進む: {:?}",
+        harness.syntax_checks()
+    );
+}
+
+#[tokio::test]
+async fn alter_table_add_columns_複数形_はコメントが無ければ_probe_を投げずに構文チェックへ進む() {
+    let sql = "ALTER TABLE t ADD COLUMNS (c int)";
+    let harness = Harness::builder(select_response()).start().await;
+
+    harness
+        .call("StartQueryExecution", json!({ "QueryString": sql }))
+        .await;
+
+    assert!(
+        harness.syntax_checks().contains(&sql.to_string()),
+        "コメントが無ければ構文チェックへ進む: {:?}",
+        harness.syntax_checks()
+    );
+    // 実行そのもの（今までどおり Trino に送る文）は数に入れない。probe（存在の確認）だけ送っていないことを見る。
+    assert!(
+        !harness
+            .trino_sqls()
+            .contains(&probe_sql(DEFAULT_CATALOG, DEFAULT_SCHEMA, "t")),
+        "コメントが無ければ probe を投げない: {:?}",
+        harness.trino_sqls()
+    );
+}
+
+#[tokio::test]
+async fn msck_repair_table_は_context_のカタログが実在しなければ既定のカタログで解決する() {
+    let sql = "MSCK REPAIR TABLE t";
+    let harness = Harness::builder(select_response())
+        .catalog_map(&[("AwsDataCatalog", "hive")])
+        .route(
+            &catalog_exists_sql("nosuchcat"),
+            catalog_exists_response(None),
+        )
+        .route(
+            &probe_sql("hive", DEFAULT_SCHEMA, "t"),
+            probe_response("iceberg", "TABLE"),
+        )
+        .results_s3()
+        .start()
+        .await;
+
+    let execution = harness
+        .run_query(json!({
+            "QueryString": sql,
+            "QueryExecutionContext": { "Catalog": "nosuchcat" },
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+        }))
+        .await["QueryExecution"]
+        .clone();
+
+    assert_eq!(execution["Status"]["State"], "FAILED", "{execution}");
+    assert_eq!(
+        execution["Status"]["StateChangeReason"],
+        "Query type not supported by Athena Iceberg at this time"
+    );
+}
