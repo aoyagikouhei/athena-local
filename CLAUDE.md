@@ -65,7 +65,7 @@ CI（`.github/workflows/ci.yml`）の中身とリリース（`v*` タグで `doc
 | `tools/measure/`、`tools/e2e/`、`tools/toolbox/`、`tools/dev.sh`、`compose.yml`、`tools/compose/` | 本物の Athena に投げる実測スクリプト、compose の実機検証の足場、足場を動かす toolbox のイメージと呼び口（dev サービス）、足場の環境（trino / minio などのサービス）とその付属物（カタログ、tls、jdbc-client） | — |
 
 - **この CLAUDE.md には、毎回の作業で要る規則と不変条件だけを書く。** モジュールの細部は docs/dev/architecture.md、決着した判断とその理由は decisions.md、手順は development.md に書き、ここには重ねない（#190）。
-- 作業中のノート（`.claude/issue-notes/<番号>.md` と、その issue の足場）は、いま進めている issue のぶんだけを置く。**新しい issue に着手したら、ブランチを切った直後に過去の issue のノートを `git rm -r .claude/issue-notes` で全部消してから進める**（Skill が新しいノートを書く前に消す。理由は decisions.md。過去のノートは git の履歴にある）。
+- 作業中のノートは `.claude/issue-notes/<番号>.md` に置く（その issue の足場も同じ場所）。
 - ノートに書いた実測の結果表は `docs/dev/measurements/` へ、後の開発でも効く設計判断は `docs/dev/decisions.md` へ、残った未実測は `docs/dev/unmeasured.md` へ、その issue の PR をマージする前に写す。ノートは PR に残してよいが、正はつねに docs/dev 側で、ノートの記述と食い違ったら docs/dev を信じる。
 - 実測スクリプトは issue 番号の接頭辞を付けず、内容で名前を付けて `tools/measure/` に置き、先頭のコメントに issue 番号を書く。
 
