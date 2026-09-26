@@ -7,6 +7,9 @@ use crate::trino::QueryError;
 pub const SYSTEM: i32 = 1;
 pub const USER: i32 = 2;
 
+/// ALTER TABLE の RENAME TO（と #244 のブロックコメントの失敗）に本物が返す AthenaError.ErrorMessage（2026-09-21 実測）。
+pub const DDL_ENGINE_UNSUPPORTED: &str = "Query type not supported by DDL engine.";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Failure {
     /// StateChangeReason。
@@ -92,6 +95,35 @@ impl Failure {
             error_message: None,
             category: USER,
             error_type: 1200,
+            retryable: false,
+        }
+    }
+
+    /// コメント無しの `ALTER TABLE <Hive 表> RENAME TO` に本物が返した Glue の失敗（2026-09-21 実測 #43 b1、
+    /// 2026-09-25 実測 #217 n22）。Request ID は本物では毎回違う UUID なので、毎回新しく作る（#256）。
+    pub fn rename_hive_table() -> Self {
+        Self {
+            reason: format!(
+                "FAILED: Execution Error, return code 1 from org.apache.hadoop.hive.ql.exec.DDLTask. Unable to alter table. Unable to change partition or table: com.amazonaws.services.datacatalog.model.InvalidInputException: Table cannot be renamed (Service: AmazonDataCatalog; Status Code: 400; Error Code: InvalidInputException; Request ID: {}; Proxy: null)",
+                uuid::Uuid::new_v4()
+            ),
+            error_message: Some(DDL_ENGINE_UNSUPPORTED.to_string()),
+            category: USER,
+            error_type: 1006,
+            retryable: false,
+        }
+    }
+
+    /// コメント無しの `ALTER TABLE <無い表> RENAME TO` に本物が返した失敗（2026-09-25 実測 #204 alt-rename-u。#256）。
+    /// 名前は `<DB>.<表>`（実測は小文字の名前だけ）。
+    pub fn rename_table_not_found(database: &str, table: &str) -> Self {
+        Self {
+            reason: format!(
+                "FAILED: SemanticException [Error 10001]: Table not found {database}.{table}"
+            ),
+            error_message: Some(DDL_ENGINE_UNSUPPORTED.to_string()),
+            category: USER,
+            error_type: 1006,
             retryable: false,
         }
     }

@@ -8,7 +8,9 @@ use crate::response::invalid_request_with_code;
 use crate::results::ResultLocation;
 use crate::store::{ImmediateFailure, Reported};
 
-use super::comment_parse_check::{comment_parse_error_failure, pre_syntax_check_failure};
+use super::comment_parse_check::{
+    comment_parse_error_failure, plain_alter_failure, pre_syntax_check_failure,
+};
 use super::comment_parse_error;
 use super::context_catalog;
 use super::create_table_catalog;
@@ -195,18 +197,32 @@ pub(super) async fn decide(
     // `axum::body::Body` が `Sync` でないせいで `dispatch` が `Handler` を実装できなくなる。判定だけ先に
     // bool にして渡す。
     let describe_table_hive = matches!(check, Check::Table { iceberg: false });
-    if let Some(parse_error) = comment_parse_error::detect(&statement)
-        && let Some(failure) = comment_parse_error_failure(
-            &app.trino,
-            &app.config,
-            &statement,
-            describe_table_hive,
-            resolved.as_deref(),
-            database.as_deref(),
-            parse_error,
-        )
-        .await
-    {
+    // コメント無しの ALTER TABLE の DROP COLUMN・RENAME TO も、本物は Hive 表・無い表で開始後に FAILED にする（#256）。
+    let failure = match comment_parse_error::detect(&statement) {
+        Some(parse_error) => {
+            comment_parse_error_failure(
+                &app.trino,
+                &app.config,
+                &statement,
+                describe_table_hive,
+                resolved.as_deref(),
+                database.as_deref(),
+                parse_error,
+            )
+            .await
+        }
+        None => {
+            plain_alter_failure(
+                &app.trino,
+                &app.config,
+                &statement,
+                resolved.as_deref(),
+                database.as_deref(),
+            )
+            .await
+        }
+    };
+    if let Some(failure) = failure {
         immediate_failure = Some(ImmediateFailure {
             failure,
             writes_result_file: true,

@@ -12,7 +12,7 @@
 
 mod position;
 
-use crate::failure::{Failure, SYSTEM, USER};
+use crate::failure::{DDL_ENGINE_UNSUPPORTED, Failure, SYSTEM, USER};
 
 use super::classification::substatement_type;
 use super::target_table::if_follows;
@@ -236,11 +236,7 @@ fn alter(query: &str) -> Option<ParseError> {
     };
     // RENAME TO・DROP COLUMN だけ category 2・error_type 1006 で、ErrorMessage が reason と別（D4）。
     let (error_message, category, error_type) = match target {
-        Target::AlterRename => (
-            Some("Query type not supported by DDL engine.".to_string()),
-            2,
-            1006,
-        ),
+        Target::AlterRename => (Some(DDL_ENGINE_UNSUPPORTED.to_string()), 2, 1006),
         Target::AlterDropColumn => (Some(drop_column_message(query)?), 2, 1006),
         _ => (None, 1, 1003),
     };
@@ -266,22 +262,52 @@ fn adds_columns_plural(query: &str) -> bool {
 /// `DROP COLUMN` の `COLUMN` の位置から、AthenaError.ErrorMessage を作る（2026-09-26 実測 n7・n9。ラウンド 3）。
 /// 位置は畳んだ文で数えた行と列 + 1（`quoted_names::position` と同じ UTF-16 の数え方に + 1 を重ねる。D5）。
 fn drop_column_message(query: &str) -> Option<String> {
+    let (_, column, line, col) = drop_column_keywords(query)?;
+    Some(drop_column_error_message(column, line, col))
+}
+
+fn drop_column_error_message(column: &str, line: usize, col: usize) -> String {
+    format!(
+        "line {line}:{}: mismatched input '{column}' expecting 'PARTITION'",
+        col + 1
+    )
+}
+
+/// `ALTER TABLE <名前> DROP COLUMN` の `DROP` と `COLUMN` の綴り（書いたまま）と、`COLUMN` の行と列。
+fn drop_column_keywords(query: &str) -> Option<(&str, &str, usize, usize)> {
     let mut cursor = athena_sql::Cursor::new(query);
     if !(cursor.keyword("ALTER") && cursor.keyword("TABLE")) {
         return None;
     }
     cursor.qualified_name()?;
-    if !(cursor.keyword("DROP") && cursor.keyword("COLUMN")) {
+    if !cursor.keyword("DROP") {
+        return None;
+    }
+    let drop_end = query.len() - cursor.rest().len();
+    let drop = &query[drop_end - "DROP".len()..drop_end];
+    if !cursor.keyword("COLUMN") {
         return None;
     }
     let end = query.len() - cursor.rest().len();
     let start = end - "COLUMN".len();
-    let keyword = &query[start..end];
     let (line, col) = position::position(query, start);
-    Some(format!(
-        "line {line}:{}: mismatched input '{keyword}' expecting 'PARTITION'",
-        col + 1
-    ))
+    Some((drop, &query[start..end], line, col))
+}
+
+/// コメント無しの `ALTER TABLE <名前> DROP COLUMN` を本物の Hive のパーサが落とす ParseException（2026-09-20 実測
+/// #39 d1。#256）。StateChangeReason は `COLUMN` の 0 始まりの位置、ErrorMessage はブロックコメントの形と同じ
+/// + 1 の位置。対象の表が Hive 表か無い表かは呼び出し側（`comment_parse_check::plain_alter_failure`）が見る。
+pub(super) fn plain_drop_column(query: &str) -> Option<ParseError> {
+    let (drop, column, line, col) = drop_column_keywords(query)?;
+    Some(ParseError {
+        target: Target::AlterDropColumn,
+        reason: format!(
+            "FAILED: ParseException line {line}:{col} mismatched input '{column}' expecting PARTITION near '{drop}' in drop partition statement"
+        ),
+        error_message: Some(drop_column_error_message(column, line, col)),
+        category: 2,
+        error_type: 1006,
+    })
 }
 
 /// `.txt` の理由・AthenaError の中身を `ParseError` からそのまま作る（1 か所にまとめる。配線側は

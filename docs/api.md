@@ -183,8 +183,9 @@ Behaviour that matches real Athena:
   accepts but Athena's grammar does not (`IF EXISTS`, the singular
   `ADD COLUMN`, `RENAME COLUMN`, `SET PROPERTIES`, `SET AUTHORIZATION`,
   `EXECUTE`, `ALTER COLUMN`, `DROP COLUMN IF EXISTS`); a plain
-  `DROP COLUMN` without `IF EXISTS` is not rejected here and reaches Trino
-  as before. Last, a CTAS-less, unquoted `CREATE TABLE` whose column list
+  `DROP COLUMN` without `IF EXISTS` is not rejected here; it fails after
+  starting on a Hive or missing table, like real Athena, and otherwise
+  reaches Trino as before. Last, a CTAS-less, unquoted `CREATE TABLE` whose column list
   Trino's grammar accepts (a Hive-style column list, with or without `WITH
   (...)`, `NOT NULL`, a nested `row` / `array` / `map` type, or `LIKE`) is
   rejected the same way, with `No location was specified for table. An S3

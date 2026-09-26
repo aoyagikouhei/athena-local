@@ -52,7 +52,9 @@ def failed_ddl(label, sql, cursor_class, status_if_ok):
     if not alive:
         report("SKIP", f"(3) {label}", f"未測定: mc stat の HEAD が trace に出ない（trace が止まっている）。{detail}")
         return
-    ok = kind == "OperationalError" and "does not exist" in (error or "") and placed and not reads
+    # DROP TABLE は Trino の文言、無い表の RENAME TO は本物の文言（#256 から Trino に送らない）。
+    expected = "Table not found" if "RENAME TO" in sql else "does not exist"
+    ok = kind == "OperationalError" and expected in (error or "") and placed and not reads
     report(status_if_ok if ok else ("FAIL" if status_if_ok == "PASS" else "INFO"), f"(3) {label}", detail)
 
 

@@ -9,9 +9,11 @@
 
 # 読みに行ったとみなすキーの正規表現（接頭辞より後ろに対して）。ミューテーション確認ではここに .csv を足す。
 READ_EXT_RE='\.txt'
-# 失敗した DDL の例外メッセージに含まれる Trino の失敗理由。実測（2026-09-23、全版・4 文とも）は
+# 失敗した DDL の例外メッセージに含まれる失敗理由。実測（2026-09-23、全版・4 文とも）は
 # `Query execution failed: TABLE_NOT_FOUND: line 1:1: Table '...' does not exist` だったのでそれに絞る。
-REASON_RE='NOT_FOUND|does not exist'
+# 無い表の RENAME TO・DROP COLUMN は #256 から Trino に送らず、本物の文言（`Table not found`・
+# `mismatched input 'COLUMN' expecting PARTITION`）で FAILED にする。
+REASON_RE='NOT_FOUND|does not exist|Table not found|expecting PARTITION'
 FAILED_DDL_LABELS="DROP_TABLE_iceberg DROP_TABLE_hive ALTER_TABLE_RENAME_hive ALTER_TABLE_DROP_COLUMN_hive"
 SHOW_LABELS=("SHOW_TABLES(対照)" "SHOW_SCHEMAS" "SHOW_COLUMNS")
 

@@ -33,7 +33,8 @@ final class FailedDdlScenario {
         probe(conn, "ALTER_TABLE_RENAME_hive", "ALTER TABLE hive.default." + t + " RENAME TO " + t + "_b");
         // ADD COLUMN（単数）は #208 から StartQueryExecution の時点で弾かれ、Trino まで届かなくなった
         // （docs/caveats.md の「Six ALTER TABLE spellings」）。実行時に FAILED のまま残る無引用の ALTER TABLE
-        // として、対照の DROP COLUMN（IF EXISTS 無し）に差し替える。
+        // として、対照の DROP COLUMN（IF EXISTS 無し）に差し替える。無い表の RENAME TO・DROP COLUMN は #256 から
+        // 開始後に Trino に送らず本物の文言で FAILED にする（<id>.txt は同じく置く）。
         probe(conn, "ALTER_TABLE_DROP_COLUMN_hive", "ALTER TABLE hive.default." + t + " DROP COLUMN m");
         Main.runSelectCase(conn, "SELECT1_後続", "SELECT 1 AS n");
     }

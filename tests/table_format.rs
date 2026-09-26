@@ -479,15 +479,20 @@ async fn 結果_s3_が無効なら_drop_table_でも形式を問い合わせな�
 async fn 列を変える_alter_table_以外は形式を問い合わせない() {
     // SET TBLPROPERTIES・DROP COLUMN・SET LOCATION・ADD PARTITION・DROP PARTITION・RENAME TO は
     // 本物も列なしの本体・.metadata を置かない（2026-09-21 実測）ので、分類はされても
-    // table_format.rs の対象からは外れ、probe も飛ばない。対象は ADD COLUMNS と
-    // REPLACE COLUMNS だけ。
-    for query in [
-        "ALTER TABLE t SET TBLPROPERTIES ('comment' = 'remember to add column for region')",
-        "ALTER TABLE t DROP COLUMN c",
-        "ALTER TABLE t SET LOCATION 's3://bucket/path/'",
-        "ALTER TABLE t ADD PARTITION (p = 'v')",
-        "ALTER TABLE t DROP PARTITION (p = 'v')",
-        "ALTER TABLE t RENAME TO u",
+    // table_format.rs の対象からは外れ、結果を置くときの probe も飛ばない。対象は ADD COLUMNS と
+    // REPLACE COLUMNS だけ。DROP COLUMN・RENAME TO は開始時に本物が失敗させる表かを 1 回だけ確かめる
+    // （#256。ここの偽 Trino の応答では判断できず、今までどおり送る）。
+    let probe = probe_sql("default_catalog", "default_schema", "t");
+    for (query, checks_at_start) in [
+        (
+            "ALTER TABLE t SET TBLPROPERTIES ('comment' = 'remember to add column for region')",
+            false,
+        ),
+        ("ALTER TABLE t DROP COLUMN c", true),
+        ("ALTER TABLE t SET LOCATION 's3://bucket/path/'", false),
+        ("ALTER TABLE t ADD PARTITION (p = 'v')", false),
+        ("ALTER TABLE t DROP PARTITION (p = 'v')", false),
+        ("ALTER TABLE t RENAME TO u", true),
     ] {
         let harness = Harness::builder(json!({ "updateType": "ALTER TABLE" }))
             .results_s3()
@@ -505,7 +510,11 @@ async fn 列を変える_alter_table_以外は形式を問い合わせない() {
             execution["QueryExecution"]["Status"]["State"], "SUCCEEDED",
             "{query:?}"
         );
-        assert_eq!(harness.trino_sqls(), [query.to_string()], "{query:?}");
+        let mut expected = vec![query.to_string()];
+        if checks_at_start {
+            expected.insert(0, probe.clone());
+        }
+        assert_eq!(harness.trino_sqls(), expected, "{query:?}");
 
         let puts = harness.s3_puts();
         assert_eq!(puts.len(), 1, "形式を問い合わせていない: {puts:?}");
