@@ -10,7 +10,7 @@
 
 mod common;
 
-use common::{Harness, trino_error};
+use common::{COLUMN_ROWS_BIGINT, Harness, engine_id_field, hex, hex_of, trino_error};
 use serde_json::{Value, json};
 
 const NO_LOCATION: &str = "No location was specified for table. An S3 location must be specified";
@@ -610,7 +610,9 @@ async fn s3_tables_の_context_の_ctas_は_db_があれば_1_部目を_awsdatac
 /// DB が無いとき、本物は開始して `Database <ns> not found. ...` の FAILED にした（2026-09-26 実測 j13。#232）。
 /// athena-local は Trino に本体を送らずに同じ理由と AthenaError で終える。場所は結果の置き場所（`tables/<id>`）。
 /// 理由の DB 名は、本物は書いたとおりでなく小文字だった（2026-09-27 実測 r5。#251）。
-/// 本物は `.metadata`（81 バイト）だけ置いたが、中身を測っていないので athena-local は何も置かない。
+/// 本物は問い合わせ部分をエンジンで実行してから失敗し、`.metadata`（81 バイト）だけを置いた。athena-local も
+/// 問い合わせ部分を Trino に投げ、そのクエリ ID・`CREATE TABLE`・行数・`rows bigint` の `.metadata` を置く
+/// （2026-09-27 実測 r4。#251）。
 #[tokio::test]
 async fn s3_tables_の_context_の_ctas_は_db_が無ければ_trino_に送らず_failed_にする() {
     let probe = schema_probe_sql("hive", "missing");
@@ -650,8 +652,185 @@ async fn s3_tables_の_context_の_ctas_は_db_が無ければ_trino_に送ら�
     );
     assert_eq!(execution["Query"], query);
     assert_eq!(execution["SubstatementType"], "CREATE_TABLE_AS_SELECT");
-    assert_eq!(harness.trino_sqls(), [probe], "本体は送らない");
+    assert_eq!(
+        harness.trino_sqls(),
+        [probe, "SELECT 1 AS n".to_string()],
+        "本体は送らず、問い合わせ部分だけを投げる"
+    );
+    let puts = harness.s3_puts();
+    assert_eq!(puts.len(), 1, "{puts:?}");
+    assert_eq!(puts[0].key, format!("athena/tables/{id}.metadata"));
+    assert_eq!(hex_of(&puts[0].body), ctas_metadata_hex("1801"));
+}
+
+/// FAILED の CTAS の `.metadata`（成功した CTAS と同じ形。tests/metadata.rs の
+/// `insert_と_ctas_は_metadata_だけを置く`）。`count_field` は field 3（件数）。0 でも省かない（t9・t12）。
+fn ctas_metadata_hex(count_field: &str) -> String {
+    hex(&format!(
+        "{} 120c 435245415445205441424c45 {count_field} {COLUMN_ROWS_BIGINT}",
+        engine_id_field()
+    ))
+}
+
+/// DB が無い CTAS の問い合わせ部分を、`WITH (props)`・括弧・WITH 句・末尾の `WITH NO DATA` を除いて受け取ったまま
+/// 投げ、返った行数を `.metadata` の件数にする。`WITH NO DATA` は 0（2026-09-27 実測 t8・t9・t11〜t14。#251）。
+#[tokio::test]
+async fn db_が無い_ctas_の_metadata_は問い合わせ部分の行数を置く() {
+    let probe = schema_probe_sql("hive", "missing");
+    for (query, part, response, count_field) in [
+        (
+            "CREATE TABLE awsdatacatalog.missing.t WITH (format = 'PARQUET') AS SELECT n FROM (VALUES 1, 2, 3) AS v(n)",
+            "SELECT n FROM (VALUES 1, 2, 3) AS v(n)",
+            json!({ "columns": [{ "name": "n", "type": "integer" }], "data": [[1], [2], [3]] }),
+            "1803",
+        ),
+        (
+            "CREATE TABLE awsdatacatalog.missing.t AS (SELECT 1 AS n WHERE false)",
+            "(SELECT 1 AS n WHERE false)",
+            json!({ "columns": [{ "name": "n", "type": "integer" }], "data": [] }),
+            "1800",
+        ),
+        (
+            "CREATE TABLE awsdatacatalog.missing.t AS WITH c AS (SELECT 1 AS n) SELECT n FROM c WITH NO DATA",
+            "WITH c AS (SELECT 1 AS n) SELECT n FROM c",
+            select_response(),
+            "1800",
+        ),
+    ] {
+        let harness = Harness::builder(select_response())
+            .catalog_map(&[("AwsDataCatalog", "hive")])
+            .route(
+                &probe,
+                trino_error(
+                    "SCHEMA_NOT_FOUND",
+                    "line 1:1: Schema 'missing' does not exist",
+                ),
+            )
+            .route(part, response)
+            .results_s3()
+            .start()
+            .await;
+
+        let execution = harness
+            .run_query(json!({
+                "QueryString": query,
+                "QueryExecutionContext": { "Database": "db" },
+                "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+            }))
+            .await;
+        let execution = &execution["QueryExecution"];
+        assert_eq!(
+            execution["Status"]["State"], "FAILED",
+            "{query}: {execution}"
+        );
+        assert_eq!(execution["Status"]["AthenaError"]["ErrorType"], 1301);
+        assert_eq!(
+            harness.trino_sqls(),
+            [probe.clone(), part.to_string()],
+            "{query}"
+        );
+        let puts = harness.s3_puts();
+        assert_eq!(puts.len(), 1, "{query}: {puts:?}");
+        assert_eq!(
+            hex_of(&puts[0].body),
+            ctas_metadata_hex(count_field),
+            "{query}"
+        );
+    }
+}
+
+/// 問い合わせ部分が Trino で失敗したら、本物と同じくそのエラーで FAILED にし、何も置かない（Database not found より
+/// 先。2026-09-27 実測 t1・t2。#251）。
+#[tokio::test]
+async fn db_が無い_ctas_の問い合わせ部分が失敗すればそのエラーで終える() {
+    let probe = schema_probe_sql("hive", "missing");
+    let part = "SELECT CAST('x' AS integer) AS n";
+    let harness = Harness::builder(select_response())
+        .catalog_map(&[("AwsDataCatalog", "hive")])
+        .route(
+            &probe,
+            trino_error(
+                "SCHEMA_NOT_FOUND",
+                "line 1:1: Schema 'missing' does not exist",
+            ),
+        )
+        .route(
+            part,
+            trino_error("INVALID_CAST_ARGUMENT", "Cannot cast 'x' to INT"),
+        )
+        .results_s3()
+        .start()
+        .await;
+
+    let execution = harness
+        .run_query(json!({
+            "QueryString": format!("CREATE TABLE awsdatacatalog.missing.t AS {part}"),
+            "QueryExecutionContext": { "Catalog": "AwsDataCatalog", "Database": "db" },
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+        }))
+        .await;
+    let status = &execution["QueryExecution"]["Status"];
+    assert_eq!(status["State"], "FAILED", "{execution}");
+    assert_eq!(
+        status["StateChangeReason"],
+        "INVALID_CAST_ARGUMENT: Cannot cast 'x' to INT"
+    );
+    assert_ne!(status["AthenaError"]["ErrorType"], 1301);
+    assert_eq!(harness.trino_sqls(), [probe, part.to_string()]);
     assert!(harness.s3_puts().is_empty(), "{:?}", harness.s3_puts());
+}
+
+/// ExecutionParameters の値は、本体と同じく分類してから問い合わせ部分に当てて投げる（2026-09-27 実測 t15。#251）。
+/// 結果を書かない構成でも、問い合わせ部分は投げる（失敗すればそのエラーが先に出るので、結果を使う）が、
+/// `.metadata` は置かない。
+#[tokio::test]
+async fn db_が無い_ctas_の問い合わせ部分にはパラメータを当て_結果を書かない構成では_metadata_を置かない()
+ {
+    let probe = schema_probe_sql("hive", "missing");
+    for writes_results in [true, false] {
+        let builder = Harness::builder(select_response())
+            .catalog_map(&[("AwsDataCatalog", "hive")])
+            .route(
+                &probe,
+                trino_error(
+                    "SCHEMA_NOT_FOUND",
+                    "line 1:1: Schema 'missing' does not exist",
+                ),
+            );
+        let harness = if writes_results {
+            builder.results_s3()
+        } else {
+            builder
+        }
+        .start()
+        .await;
+
+        let execution = harness
+            .run_query(json!({
+                "QueryString": "CREATE TABLE awsdatacatalog.missing.t AS SELECT ? AS n",
+                "QueryExecutionContext": { "Database": "db" },
+                "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" },
+                "ExecutionParameters": ["7"]
+            }))
+            .await;
+        let status = &execution["QueryExecution"]["Status"];
+        assert_eq!(status["State"], "FAILED", "{execution}");
+        assert_eq!(status["AthenaError"]["ErrorType"], 1301);
+        assert_eq!(
+            harness.trino_sqls(),
+            [
+                probe.clone(),
+                "SELECT (7)".to_string(),
+                "EXECUTE IMMEDIATE 'SELECT ? AS n' USING 7".to_string(),
+            ],
+            "{writes_results}"
+        );
+        assert_eq!(
+            harness.s3_puts().len(),
+            usize::from(writes_results),
+            "{writes_results}"
+        );
+    }
 }
 
 /// 結果の置き場所が無い（結果を書かないモードで OutputLocation も無い）と本物の理由の場所を作れないので、DB を
@@ -779,8 +958,8 @@ async fn 既定の_context_の_ctas_は_db_が無ければ_trino_に送らず_fa
             assert_eq!(execution["Query"], query);
             assert_eq!(
                 harness.trino_sqls(),
-                std::slice::from_ref(&probe),
-                "{query} {context}"
+                [probe.clone(), "SELECT 1 AS n".to_string()],
+                "本体は送らず、問い合わせ部分だけを投げる: {query} {context}"
             );
         }
     }

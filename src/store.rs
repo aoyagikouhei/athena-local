@@ -86,6 +86,10 @@ pub struct Execution {
 pub struct ImmediateFailure {
     pub failure: Failure,
     pub writes_result_file: bool,
+    /// 失敗させる前に CTAS の問い合わせ部分を Trino で実行し、行数とエンジンのクエリ ID で `.metadata` を置くか。本物は
+    /// Glue に無い DB への CTAS でも問い合わせを実行してから失敗し、問い合わせが失敗すればそのエラーで終えた
+    /// （2026-09-27 実測 r4・t1〜t15。#251）。
+    pub runs_ctas_query: bool,
 }
 
 /// GetQueryExecution に返す Query と Context の Database（`Execution::reported`）。

@@ -32,6 +32,9 @@ later name the date they were measured on.
   Athena with `IF NOT EXISTS` and under an `AwsDataCatalog` or omitted context
   catalog, naming the database in lower case
   ([docs](docs/caveats.md#parameters-and-catalog-aliases)).
+- That failed CTAS now runs its query part on Trino first, failing with
+  Trino's error when the query fails and otherwise writing the `.metadata`
+  companion real Athena leaves ([docs](docs/caveats.md#parameters-and-catalog-aliases)).
 - Under an S3 Tables context catalog, a one-part `CREATE TABLE <table>` fails
   like real Athena when the context database is not a namespace
   ([docs](docs/caveats.md#plain-create-table)).

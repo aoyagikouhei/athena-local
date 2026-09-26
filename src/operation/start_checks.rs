@@ -65,6 +65,7 @@ pub(super) async fn decide(
         Some(ImmediateFailure {
             failure: Failure::iceberg_stored_as(),
             writes_result_file: false,
+            runs_ctas_query: false,
         })
     } else {
         pre_syntax_check_failure(
@@ -150,6 +151,7 @@ pub(super) async fn decide(
                 immediate_failure = Some(ImmediateFailure {
                     failure,
                     writes_result_file: false,
+                    runs_ctas_query: false,
                 });
             }
             // 本物は 1 部目を無視して名前空間に作り、Query は受け取ったまま返した（2026-09-26 実測 j1・j4。#237）。
@@ -194,10 +196,11 @@ pub(super) async fn decide(
         immediate_failure = Some(ImmediateFailure {
             failure,
             writes_result_file: false,
+            runs_ctas_query: false,
         });
     } else if s3_tables || catalog.is_none_or(reported_query::is_aws_data_catalog) {
         // S3 Tables の Context の CTAS は、1 部目が `awsdatacatalog` の類なら本物は 2 部目を Glue の DB として引いた
-        // （2026-09-26 実測 i12・j13。#232）。DB が無ければ開始して FAILED（`.metadata` は中身が未実測なので置かない）、
+        // （2026-09-26 実測 i12・j13。#232）。DB が無ければ開始して FAILED（問い合わせ部分を実行してから `.metadata` を置く。#251）、
         // あれば 1 部目を AwsDataCatalog の Trino 名にして送り、Query は受け取ったまま返す。既定の Context（Catalog が
         // AwsDataCatalog か省略。#246 と同じ条件）も DB が無ければ同じ FAILED にした（2026-09-27 実測 r8a・r8c・t6。
         // #251）が、1 部目は実行時の別名置換（#246）が当てるので差し替えは捨てる。
@@ -208,6 +211,7 @@ pub(super) async fn decide(
                 immediate_failure = Some(ImmediateFailure {
                     failure,
                     writes_result_file: false,
+                    runs_ctas_query: true,
                 });
             }
             create_table_catalog::Outcome::Rewrite(rewritten) if s3_tables => {
@@ -263,6 +267,7 @@ pub(super) async fn decide(
         immediate_failure = Some(ImmediateFailure {
             failure,
             writes_result_file: true,
+            runs_ctas_query: false,
         });
     }
 

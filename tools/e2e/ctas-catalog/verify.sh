@@ -10,7 +10,7 @@
 #     `Database <小文字にした DB 名> not found. Please check your query. You may need to manually
 #     clean the data at location '<OutputLocation>tables/<QueryExecutionId>' before retrying.
 #     Athena will not delete data in your account.`、AthenaError ErrorCategory 2・ErrorType 1301・
-#     Retryable false）にし、結果ファイル本体は置かないが `.metadata` は置く（#251。中身の検証はフェーズ 2）。
+#     Retryable false）にし、結果ファイル本体は置かないが、問い合わせ部分を Trino で実行して成功した CTAS と同じ形の `.metadata` を置く（#251）。
 #   - DB があれば、1 部目を `"hive"` と空白（文字数を揃える）に差し替えた文を Trino に送り、Glue 側
 #     （hive カタログ）に表ができる。GetQueryExecution の Query は受け取ったまま。
 # #251 で、既定の Context（Catalog が省略か `AwsDataCatalog`）の CTAS `awsdatacatalog.<DB>.<表>` にも同じ
@@ -34,7 +34,7 @@
 #      CREATE TABLE AwsDataCatalog.E2e232Missing.t232c2 AS SELECT 1 AS n（hive に無い DB。書いたとおり大文字混じり）
 #      → 開始は 200 と QueryExecutionId、最終 FAILED。StateChangeReason・AthenaError が上の文言と一致
 #        （理由の DB 名は小文字 `e2e232missing`、場所は `s3://<bucket>/<prefix>/tables/<id>`）、
-#        MinIO に本体は無いが `.metadata` はある（#251。中身の検証はフェーズ 2）
+#        MinIO に本体は無く、`.metadata` は成功した CTAS の形（Trino のクエリ ID・`CREATE TABLE`・件数 1・`rows bigint`。#251）
 #   C3（回帰。#237） 同じ Context
 #      CREATE TABLE AwsDataCatalog.e2e232ns.t232b (n int)（CTAS でない。e2e232ns は iceberg の名前空間）
 #      → SUCCEEDED、iceberg.e2e232ns.t232b ができる（#232 で #237 の挙動が変わっていないことの確認）
@@ -456,7 +456,7 @@ case_success() {
 }
 
 # C2・C4・C6・C8: 開始できて最終的に FAILED になることを確かめる。理由・AthenaError・Query・
-# SubstatementType に加え、結果ファイル本体が MinIO に無く `.metadata` はあることも見る（#251。`.metadata` の
+# SubstatementType に加え、結果ファイル本体が MinIO に無く `.metadata` は CTAS の形であることも見る（#251。`.metadata` の
 # 中身の検証はフェーズ 2）。missing_db は書いたとおりの綴り（大文字混じり）で渡し、理由文言では小文字にする。
 case_fail_at_runtime() {
   local no="$1" name="$2" sql="$3" catalog="$4" database="$5" missing_db="$6"
@@ -495,10 +495,22 @@ case_fail_at_runtime() {
   if ! mc_exists "$meta_stat"; then
     ok=0
     detail="$detail .metadata が無い(期待はある。#251): ${body_key}.metadata"
+  else
+    # 中身は成功した CTAS と同じ形（本物は 81 バイト。2026-09-27 実測 r4）: field 1 に問い合わせ部分を投げた Trino の
+    # クエリ ID（27 バイト）、field 2 に `CREATE TABLE`、field 3 に件数 1（`SELECT 1 AS n` の 1 行）、列 `rows bigint`。
+    local meta_hex id_hex column_hex
+    meta_hex=$(mc cat "local/$BUCKET/${body_key}.metadata" 2>/dev/null | od -An -tx1 | tr -d ' \n')
+    # クエリ ID は `yyyymmdd_hhmmss_nnnnn_xxxxx` の 27 文字（数字・`_`・英小文字）。
+    id_hex='((3[0-9]|5f|6[1-9a-f]|7[0-9a])){27}'
+    column_hex='22220a04686976652204726f77732a04726f77733206626967696e743813400048035000'
+    if ! [[ "$meta_hex" =~ ^0a1b${id_hex}120c435245415445205441424c451801${column_hex}$ ]]; then
+      ok=0
+      detail="$detail .metadata の中身が CTAS の形（Trino のクエリ ID・CREATE TABLE・件数 1・rows bigint）でない: $meta_hex"
+    fi
   fi
 
   if [ "$ok" = "1" ]; then
-    record "$no $name" PASS "State=$state StateChangeReason 一致 ErrorCategory=$category ErrorType=$type_ Retryable=$retryable Query 一致 SubstatementType=$substmt 結果ファイル本体無し .metadata あり [id=$LAST_ID]"
+    record "$no $name" PASS "State=$state StateChangeReason 一致 ErrorCategory=$category ErrorType=$type_ Retryable=$retryable Query 一致 SubstatementType=$substmt 結果ファイル本体無し .metadata は CTAS の形（件数 1） [id=$LAST_ID]"
   else
     record "$no $name" FAIL "${detail# } [id=$LAST_ID]"
   fi

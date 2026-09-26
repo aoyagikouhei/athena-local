@@ -580,9 +580,20 @@ respectively. `MSCK REPAIR TABLE` on an Iceberg table, with or without a comment
   `ErrorType` 1301), with the database name in lower case, under both kinds
   of context catalog; athena-local fails it the same way without sending the
   statement to Trino (measured 2026-09-27 under an S3 Tables, an
-  `AwsDataCatalog` and an omitted context catalog). Real Athena also leaves a
-  `tables/<id>.metadata` companion there, whose content was not measured, so
-  athena-local writes no file. Without an output location (results not
+  `AwsDataCatalog` and an omitted context catalog). Real Athena runs the
+  query part on the engine before failing: if that query fails, the query
+  fails with the engine's error instead, and otherwise it leaves a
+  `tables/<id>.metadata` companion shaped like a successful CTAS's (the
+  engine's query ID, `CREATE TABLE`, the number of rows written, 0 with
+  `WITH NO DATA`, and a `rows bigint` column), plus a manifest and the data
+  files. athena-local does the same by sending Trino the query part after
+  `AS` (without a trailing `WITH [NO] DATA`) as written, with the context
+  catalog, database and `ExecutionParameters` of the statement, and writing
+  the companion from that query's ID and row count; it writes no manifest and
+  no data files. Real Athena's message for a failing query part also ends
+  with the same ` You may need to manually clean ...` sentence and reports
+  positions a few lines off, while athena-local returns Trino's message
+  (measured 2026-09-27). Without an output location (results not
   written and no `OutputLocation`), or when Trino cannot tell whether the
   database exists, the statement is sent instead
   ([#232](https://github.com/aoyagikouhei/athena-local/issues/232),

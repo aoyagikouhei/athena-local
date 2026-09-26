@@ -83,6 +83,7 @@ pub(super) async fn pre_syntax_check_failure(
         return Some(ImmediateFailure {
             failure: Failure::msck_iceberg(),
             writes_result_file: false,
+            runs_ctas_query: false,
         });
     }
 
@@ -100,6 +101,7 @@ pub(super) async fn pre_syntax_check_failure(
         } => Some(ImmediateFailure {
             failure: comment.into(),
             writes_result_file: true,
+            runs_ctas_query: false,
         }),
         Probe::Table { .. } | Probe::NoCatalog | Probe::Unknown => None,
     }
