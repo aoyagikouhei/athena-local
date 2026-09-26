@@ -406,7 +406,7 @@ Known differences between athena-local and real Athena, grouped by topic.
   Athena answers `DATACATALOG_NOT_FOUND`), and `STORED AS` without `LOCATION`
   (real Athena starts the query and fails it with `Iceberg create table
   statement does not allow STORED AS/BY`); both still get Trino's syntax
-  error. Other clauses, or `EXTERNAL` without `LOCATION` but with a clause,
+  error ([#248](https://github.com/aoyagikouhei/athena-local/issues/248)). Other clauses, or `EXTERNAL` without `LOCATION` but with a clause,
   were not measured and also get Trino's syntax error, as does `EXTERNAL`
   without `LOCATION` on a two-part name or on `AwsDataCatalog.<db>.<t>`.
 - **A three-part name whose catalog does not exist is rejected with
