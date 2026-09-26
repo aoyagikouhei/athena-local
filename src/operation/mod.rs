@@ -15,6 +15,7 @@ mod query_execution;
 mod quoted_names;
 mod reported_query;
 mod result_output;
+mod start_checks;
 mod start_request;
 mod table_format;
 mod target_table;

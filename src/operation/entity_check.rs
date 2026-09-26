@@ -1,6 +1,6 @@
 //! 本物の Athena が StartQueryExecution の時点で Glue に問い合わせる、DESCRIBE・DESC・SHOW COLUMNS の
 //! 対象の存在の確認（#207）。形式の問い合わせ（`table_format::probe_sql`）と同じ SQL を開始前にも投げる。
-//! 応答の解釈（`probe`）は `execution.rs` のブロックコメントの ParseException の判定（#244）も、
+//! 応答の解釈（`probe`）は `start_checks.rs` のブロックコメントの ParseException の判定（#244）も、
 //! SHOW CREATE TABLE・ALTER TABLE の対象を確かめるのに共有する。
 
 use axum::response::Response;
@@ -21,7 +21,7 @@ pub(super) enum Check {
     Run,
     /// 表。`quoted_names` に進む（Continue と同じ）。表への DESCRIBE の Query から修飾を落とすのに使う（#242）。
     /// `iceberg` は `probe` の結果（追加の問い合わせはしない）。Iceberg 表への DESCRIBE の直後のブロックコメントは
-    /// 本物が成功させる（`execution.rs` のブロックコメントの判定の対象外にする。2026-09-26 実測 d1。#244）。
+    /// 本物が成功させる（`start_checks.rs` のブロックコメントの判定の対象外にする。2026-09-26 実測 d1。#244）。
     Table { iceberg: bool },
     /// 対象外の文・確かめられなかった。`quoted_names` に進む（今までどおり）。
     Continue,

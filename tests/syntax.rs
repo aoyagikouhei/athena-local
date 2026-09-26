@@ -235,7 +235,7 @@ async fn 無引用の_alter_table_も本物の文言で開始時に弾き_実行
 }
 
 /// `quoted_names::rejection` の文言が無引用の ALTER TABLE の文言より先に決まる
-/// （`execution.rs` の `or_else` の順序。#204 が先、#208 は quoted_names が None のときだけ）。
+/// （`start_checks.rs` の `or_else` の順序。#204 が先、#208 は quoted_names が None のときだけ）。
 /// 引用符付きの名前は quoted_names が先に決めるので unquoted_ddl は呼ばれても None を返す。
 /// 4 部以上の無引用の名前は、名前の解析だけで両方が別の文言を返しうる実例
 /// （quoted_names は 3 つ目の `.` で、unquoted_ddl は ADD COLUMN の位置で。本物も名前を先に読む）。
