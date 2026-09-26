@@ -9,6 +9,8 @@
 # 存在を確かめ、無ければ Trino に本体を送らずに FAILED（`Cannot find or access the specified table`）にする。
 # 名前空間があれば（Trino にある他のカタログのときも）今までどおり No location のまま
 # （.claude/issue-notes/227.md の実測・設計判断・計画）。
+# #237 で、S3 Tables の Context の `AwsDataCatalog.<名前空間>.<表>` は名前空間があれば 1 部目を空白にして
+# Trino に送り、表を作るように変わった（docs/dev/decisions.md の #237 の項）。M3 の期待値はそれに合わせてある（#254）。
 #
 # この足場は compose のローカル Trino の iceberg カタログを S3 Tables の別名（TRINO_CATALOG_MAP の
 # `s3tablescatalog/e2e227=iceberg`）にし、名前空間 e2e227ns を事前に作って、athena-local の
@@ -25,7 +27,8 @@
 #      → 400、DATACATALOG_NOT_FOUND／Message "Catalog 'NoSuchCatalog227' does not exist"
 #   M3 S3 Tables の Context
 #      CREATE TABLE AwsDataCatalog.e2e227ns.t227 (n int)（名前空間 e2e227ns は実在）
-#      → 400、MALFORMED_QUERY／No location
+#      → 200 と QueryExecutionId、最終状態 SUCCEEDED（Query は受け取ったまま、StatementType DDL・
+#        SubstatementType CREATE_TABLE）。iceberg.e2e227ns に表 t227 ができる（確かめたら消す。#237・#254）
 #   M4 S3 Tables の Context（Database=e2e227missing。名前空間は作らない）
 #      CREATE TABLE AwsDataCatalog.e2e227missing.t227 (n int)
 #      → 200 と QueryExecutionId、最終状態 FAILED（StateChangeReason・AthenaError.ErrorMessage
@@ -457,6 +460,40 @@ case_fail_at_runtime() {
   fi
 }
 
+# M3: 開始できて SUCCEEDED になり、Query が受け取ったままで、iceberg に表ができることを確かめる。後のケースに
+# 持ち越さないよう、確かめたら表を消す（名前空間は trap が消す）。
+case_create_succeeds() {
+  local no="$1" name="$2" sql="$3" catalog="$4" database="$5" check_schema="$6" check_table="$7"
+  if ! run_and_wait "$sql" "$catalog" "$database"; then
+    record "$no $name" FAIL "開始できなかった: $(echo "$LAST_START" | tr -d '\n' | cut -c1-200)"
+    return
+  fi
+  local state reason query stmt substmt ok=1 detail=""
+  state=$(echo "$LAST_RESP" | jq -r '.QueryExecution.Status.State // empty')
+  reason=$(echo "$LAST_RESP" | jq -r '.QueryExecution.Status.StateChangeReason // empty')
+  query=$(echo "$LAST_RESP" | jq -r '.QueryExecution.Query // empty')
+  stmt=$(echo "$LAST_RESP" | jq -r '.QueryExecution.StatementType // empty')
+  substmt=$(echo "$LAST_RESP" | jq -r '.QueryExecution.SubstatementType // empty')
+  [ "$state" = "SUCCEEDED" ] || { ok=0; detail="$detail State=${state:-無し}(期待 SUCCEEDED) StateChangeReason=\"$reason\""; }
+  [ "$query" = "$sql" ] || { ok=0; detail="$detail Query=\"$query\"(期待 \"$sql\")"; }
+  [ "$stmt" = "DDL" ] || { ok=0; detail="$detail StatementType=${stmt:-無し}(期待 DDL)"; }
+  [ "$substmt" = "CREATE_TABLE" ] || { ok=0; detail="$detail SubstatementType=${substmt:-無し}(期待 CREATE_TABLE)"; }
+
+  local rows
+  rows=$(trino_query_rows "SELECT table_name FROM system.jdbc.tables WHERE table_cat = 'iceberg' AND table_schem = '${check_schema}' AND table_name = '${check_table}'" system jdbc)
+  if [ "$(echo "$rows" | jq 'length')" != "1" ]; then
+    ok=0
+    detail="$detail iceberg に表が無い(期待は 1 行): rows=$rows"
+  fi
+  trino_exec "DROP TABLE IF EXISTS iceberg.${check_schema}.${check_table}" iceberg default >/dev/null 2>&1 || true
+
+  if [ "$ok" = "1" ]; then
+    record "$no $name" PASS "State=$state Query は受け取ったまま StatementType=$stmt SubstatementType=$substmt 表あり（消した） [id=$LAST_ID]"
+  else
+    record "$no $name" FAIL "${detail# } [id=$LAST_ID]"
+  fi
+}
+
 # --- ケース ---
 
 run_cases() {
@@ -470,10 +507,10 @@ run_cases() {
     "CREATE TABLE NoSuchCatalog227.${NS}.t227 (n int)" "$S3_TABLES_CATALOG" "$NS" \
     DATACATALOG_NOT_FOUND "Catalog 'NoSuchCatalog227' does not exist"
 
-  # M3: S3 Tables の Context・1 部目 AwsDataCatalog・名前空間あり。No location のまま。
-  case_reject "M3" "S3Tables の Context・AwsDataCatalog・名前空間あり" \
+  # M3: S3 Tables の Context・1 部目 AwsDataCatalog・名前空間あり。1 部目を空白にして Trino に送り、表を作る（#237）。
+  case_create_succeeds "M3" "S3Tables の Context・AwsDataCatalog・名前空間あり" \
     "CREATE TABLE AwsDataCatalog.${NS}.t227 (n int)" "$S3_TABLES_CATALOG" "$NS" \
-    MALFORMED_QUERY "No location was specified for table. An S3 location must be specified"
+    "$NS" "t227"
 
   # M4: S3 Tables の Context・1 部目 AwsDataCatalog・名前空間なし。開始して FAILED。
   case_fail_at_runtime "M4" "S3Tables の Context・AwsDataCatalog・名前空間なし" \
