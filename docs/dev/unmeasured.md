@@ -14,11 +14,9 @@
 ## 文の種類と構文（[measurements/statements.md](measurements/statements.md)）
 
 - [ ] `QueryExecutionContext` の Catalog が S3 Tables（`s3tablescatalog/<bucket>`）のとき、1〜2 部の名前の `DESCRIBE`・`SHOW COLUMNS` を本物がどう扱うか（実在しない表で Entity Not Found か、`Unsupported DDL with 2 catalogs` か）。測ったのは名前の 1 部目に S3 Tables のカタログを書いた形だけ。athena-local は Context から来た別名を種類によらず Trino 側の名前で存在を確かめ、実在しない表なら Entity Not Found にする（#216、2026-09-26）
-- [ ] CTAS の 4 部以上の修飾名（`a.b.c.d`）と、引用符付きの部分が 3 部目までに無い `CREATE TABLE IF NOT EXISTS` の 4 部以上（3 つ目の `.` の文言）。athena-local は今までどおり実行する（#212 で CTAS でない `CREATE TABLE` の 4 部以上は測って弾くようにしたが、この 2 つは測っていない。引用符付きの部分が 3 部目までにある IF NOT EXISTS は 3 部と同じ規則で弾く。2026-09-25）
+- [ ] `QueryExecutionContext` の Catalog が S3 Tables 以外の連携カタログのときや、`S3TablesCatalog/<bucket>` のように大文字を含むときの、場所の無い CTAS でない `CREATE TABLE`。#221 で小文字の `s3tablescatalog/<bucket>` なら作られると測った。athena-local は `s3tablescatalog/` で始まるかを大文字小文字を区別せずに見て No location を返さず、それ以外は `AwsDataCatalog` と同じに弾く（2026-09-26）
+- [ ] CTAS の 4 部以上で引用符付きの部分がある名前（`a.b."c".d AS SELECT ...`）と、大文字を含む無引用の 4 部以上の CTAS の名前の書き方。#221 で無引用・小文字の 4 部の CTAS が `Invalid table name <名前>` になると測った。athena-local は引用符付きの部分があれば実行し、無引用なら DESCRIBE と同じく小文字でつないで弾く（2026-09-26）
 - [ ] `SHOW TABLES IN` の 3 部以上で、2 つ目の `.` の直後が `LIKE` やバッククォートの名前の形（`SHOW TABLES IN a.b.like`・``SHOW TABLES IN a.b.`c` ``）。#212 で直後が無引用の名前なら `mismatched input '.'`、引用符付きなら `extraneous input '.'` と測った。athena-local は `"` で始まらない形をすべて `mismatched input '.'` にする（2026-09-25）
-- [ ] `QueryExecutionContext` の Catalog が S3 Tables（`s3tablescatalog/<bucket>`）のときの、場所の無い CTAS でない `CREATE TABLE`（C20）。#208 の実測スクリプトには項目があったが `S3TABLES_*` が未設定で測れなかった。athena-local は Context の種類を見ずに同じ規則で弾く（2026-09-26）
-- [ ] 場所の無い `CREATE TABLE` の列名が引用符付きのとき（`CREATE TABLE t ("n" int)`）に本物がどう扱うか。athena-local は #204 の粒度（引用符付きの名前は `quoted_names.rs` の担当）に合わせて弾かず実行する（2026-09-26）
-- [ ] 場所の無い `CREATE TABLE IF NOT EXISTS` の 4 部以上の無引用の名前（`a.b.c.d`）。`quoted_names.rs` の 4 部以上の規則は `IF NOT EXISTS` を除外している（上の項目）ので、athena-local はこの組み合わせを弾かず実行する。本物が列の並びまで読んで No location にするか、3 部以下と違う文言にするかは未実測（2026-09-26）
 
 ## GetQueryResults（[measurements/query-results.md](measurements/query-results.md)）
 

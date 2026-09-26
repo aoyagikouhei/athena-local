@@ -108,7 +108,13 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
         && let Some(message) = quoted_names::rejection(&request.query_string, |catalog| {
             app.config.catalog_map.contains_key(catalog)
         })
-        .or_else(|| unquoted_ddl::rejection(&request.query_string))
+        .or_else(|| {
+            // S3 Tables のカタログは `s3tablescatalog/<バケット>` の形で見分ける（大文字小文字は区別しない。#157）。
+            let s3_tables = catalog.as_deref().is_some_and(|catalog| {
+                catalog.to_ascii_lowercase().starts_with("s3tablescatalog/")
+            });
+            unquoted_ddl::rejection(&request.query_string, s3_tables)
+        })
     {
         return invalid_request_with_code(message, "MALFORMED_QUERY");
     }

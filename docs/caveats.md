@@ -170,11 +170,13 @@ Known differences between athena-local and real Athena, grouped by topic.
   the name has four parts or more, which the check above catches first), and
   the other statements above follow the general rule (measured 2026-09-25);
   see [`TRINO_CATALOG_MAP`](configuration.md#environment-variables) for what
-  the alias covers instead. A CTAS with four parts or more, and a
-  `CREATE TABLE IF NOT EXISTS` with four parts or more whose first three
-  parts are all unquoted, were not measured and still run here unrejected
-  (with a quoted part among the first three, `CREATE TABLE IF NOT EXISTS`
-  follows the three-part rule like `CREATE TABLE`), and
+  the alias covers instead. `CREATE TABLE IF NOT EXISTS` with four parts or
+  more follows the same rule as `CREATE TABLE` (measured 2026-09-26). A CTAS
+  with four or more unquoted parts answers `Invalid table name <the parts
+  joined by .>`, with or without `IF NOT EXISTS` or `WITH (...)` (measured
+  2026-09-26; only lower-case names were measured, and athena-local lowers
+  the parts as it does for `DESCRIBE`). A CTAS with four parts or more that
+  has a quoted part was not measured and still runs here unrejected, and
   for `SHOW TABLES IN` a part after the second `.` that is `LIKE` or
   backquoted was not measured either (athena-local answers `mismatched
   input '.'`). Name the table without quotes, in three parts or fewer, to
@@ -336,6 +338,7 @@ Known differences between athena-local and real Athena, grouped by topic.
   | `CREATE TABLE t (n row(a int))`, `array(row(...))`, `map(varchar, ...)` (any type name followed by `(` whose first token is an identifier) | `no viable alternative at input '...<first word inside the parens>'` |
   | `CREATE TABLE t (LIKE u)` (one-part name) | `No location was specified for table. An S3 location must be specified` |
   | `CREATE TABLE t (LIKE db.u)` (two or more parts, with or without `INCLUDING PROPERTIES`) | `no viable alternative at input '...db.'` |
+  | `CREATE TABLE t ("n" int)`, `(n int, "m" int)`, `(n "int")`, `(n row("f" int))` (a double-quoted column name, type name, or first word inside a type's parens — Hive reads `"n"` as a string) | `no viable alternative at input '..."n"'` (measured 2026-09-26) |
 
   All answer `InvalidRequestException` / `AthenaErrorCode` `MALFORMED_QUERY`
   with no `QueryExecutionId` created, Trino is never sent anything but the
@@ -351,10 +354,26 @@ Known differences between athena-local and real Athena, grouped by topic.
   `no viable alternative` message above, at that `.`). A trailing
   `COMMENT '...'` after the column list, on the table itself, is skipped
   either way.
-- **Forms not listed above still run on Trino unchanged.** A quoted column
-  name (`CREATE TABLE t ("n" int)`), a table name with four parts or more, and
-  a table name with a quoted part are not rejected here — either the
-  quoted-name check above rejects them first, or they have not been measured.
+- **With an S3 Tables context catalog, a plain `CREATE TABLE` runs.** When
+  `QueryExecutionContext.Catalog` is `s3tablescatalog/<bucket>` (compared
+  case-insensitively), real Athena creates the table without a location, so
+  athena-local does not answer `No location` and sends it to Trino; the
+  `no viable alternative` rows above still apply (`NOT NULL`, `WITH (`, …),
+  as they did on real Athena (measured 2026-09-26). Real Athena rejects a
+  name in another catalog under that context
+  (`CREATE TABLE awsdatacatalog.<db>.<t> (n int)`) with
+  `Unsupported ddl with 2 catalogs: <the statement>`; athena-local still
+  answers `No location` for an unquoted three-part name there, so it is
+  rejected but with a different message
+  ([#224](https://github.com/aoyagikouhei/athena-local/issues/224)).
+  Other non-default catalogs (federated ones) were not measured and are
+  treated like `AwsDataCatalog`.
+- **Forms not listed above still run on Trino unchanged.** A table name with
+  four parts or more and a table name with a quoted part are not rejected
+  here — the quoted-name check above rejects them first where it was
+  measured. A backquoted column name (`` CREATE TABLE t (`n` int) ``) answers
+  `No location` on real Athena (measured 2026-09-26), but Trino's syntax check
+  rejects backquotes first here (see the backquote item above).
 
 ## Parameters and catalog aliases
 

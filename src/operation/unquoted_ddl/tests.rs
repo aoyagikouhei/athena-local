@@ -4,7 +4,7 @@
 use super::*;
 
 fn rejected(query: &str) -> Option<String> {
-    rejection(query)
+    rejection(query, false)
 }
 
 fn nv(position: &str, input: &str) -> Option<String> {

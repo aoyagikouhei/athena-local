@@ -15,8 +15,12 @@ const NO_LOCATION: &str = "No location was specified for table. An S3 location m
 ///
 /// `substatement_type` が `CREATE_TABLE`（CTAS・CREATE VIEW・`CREATE OR REPLACE TABLE` を除く）で、
 /// 名前が `CREATE TABLE` か `CREATE TABLE IF NOT EXISTS` の直後にあり、4 部未満かつ引用符付きの部分が
-/// 無いときだけ、列の並びを読む（名前が引用符付きなら `quoted_names` の担当か未実測。4 部以上は未実測）。
-pub(super) fn rejection(query: &str) -> Option<String> {
+/// 無いときだけ、列の並びを読む（名前が引用符付きか 4 部以上なら `quoted_names` の担当か未実測）。
+///
+/// `s3_tables` は QueryExecutionContext の Catalog が S3 Tables か。S3 Tables は場所を要らないので、本物は
+/// 1〜2 部の名前の場所の無い形を作り、No location にしない（列の並びと `WITH (` の NV は同じ。2026-09-26 実測
+/// h1〜h7。#221）。
+pub(super) fn rejection(query: &str, s3_tables: bool) -> Option<String> {
     if substatement_type(query) != Some("CREATE_TABLE") {
         return None;
     }
@@ -32,7 +36,11 @@ pub(super) fn rejection(query: &str) -> Option<String> {
         return None;
     }
     let statement_start = sql.len() - skip_leading_trivia(sql).len();
+    // 無引用の 3 部の名前は S3 Tables の Context でも別のカタログを指す（S3 Tables のカタログ名は `/` を含み引用符が
+    // 要る）。本物は `Unsupported ddl with 2 catalogs` で弾く（h8）ので、No location のまま弾く（文言の差は #224）。
+    let creates = s3_tables && name.parts.len() < 3;
     columns(sql, statement_start, &mut cursor)
+        .filter(|message| !(creates && message == NO_LOCATION))
 }
 
 /// 列 1 つを処理した結果。
@@ -59,13 +67,14 @@ fn columns(sql: &str, statement_start: usize, cursor: &mut Cursor) -> Option<Str
     }
 }
 
-/// 列名（無引用の識別子。`LIKE` もただの列の名前として読む）→ 型 → 型の後ろ、の順に読む。
+/// 列名（`LIKE` もただの列の名前として読む）→ 型 → 型の後ろ、の順に読む。
 fn column(sql: &str, statement_start: usize, cursor: &mut Cursor) -> ColumnOutcome {
-    if quoted_ahead(cursor) || !cursor.identifier() {
-        return ColumnOutcome::Unmeasured;
+    // 列名、型名の順。
+    if let Some(outcome) = word(sql, statement_start, cursor) {
+        return outcome;
     }
-    if quoted_ahead(cursor) || !cursor.identifier() {
-        return ColumnOutcome::Unmeasured;
+    if let Some(outcome) = word(sql, statement_start, cursor) {
+        return outcome;
     }
     match type_arguments(sql, statement_start, cursor) {
         Some(outcome) => outcome,
@@ -107,10 +116,7 @@ fn parenthesized_type_arguments(
             None => Some(ColumnOutcome::Unmeasured),
         };
     }
-    // 引用符付きの語（`row("f" int)`）は実測していないので、列名と同じく弾かない（#208 の独立レビュー）。
-    if quoted_ahead(cursor) {
-        return Some(ColumnOutcome::Unmeasured);
-    }
+    // 引用符付きの語（`row("f" int)`）も同じ NV（2026-09-26 実測 q6。#221）。
     Some(match identifier_span(sql, inner) {
         Some((start, end)) => ColumnOutcome::Rejected(no_viable_alternative(
             sql,
@@ -184,9 +190,21 @@ fn after_columns(sql: &str, statement_start: usize, cursor: &mut Cursor) -> Opti
     None
 }
 
-/// 次のトークン（トリビアを読み飛ばした後）が引用符付きの識別子か。
-fn quoted_ahead(cursor: &Cursor) -> bool {
-    skip_leading_trivia(cursor.rest()).starts_with('"')
+/// 列名か型名を 1 語読む。無引用の識別子なら読んで None。引用符付きなら、文の最初の語からその語の終わりまでの
+/// NV（Hive では文字列。2026-09-26 実測 q1〜q3・q5・q8。#221）。識別子でなければ実測していない形。
+fn word(sql: &str, statement_start: usize, cursor: &mut Cursor) -> Option<ColumnOutcome> {
+    let rest = cursor.rest();
+    if skip_leading_trivia(rest).starts_with('"') {
+        return Some(match identifier_span(sql, rest) {
+            Some((start, end)) => ColumnOutcome::Rejected(no_viable_alternative(
+                sql,
+                start,
+                &sql[statement_start..end],
+            )),
+            None => ColumnOutcome::Unmeasured,
+        });
+    }
+    (!cursor.identifier()).then_some(ColumnOutcome::Unmeasured)
 }
 
 /// 任意の `COMMENT '...'` を読み飛ばす（無ければ何もしない）。

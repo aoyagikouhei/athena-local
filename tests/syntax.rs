@@ -291,3 +291,41 @@ async fn 場所の無い_create_table_も本物の文言で開始時に弾き_�
         );
     }
 }
+
+/// Context の Catalog が S3 Tables（`s3tablescatalog/<バケット>`。大文字小文字は区別しない）なら、本物は場所の無い
+/// `CREATE TABLE` を作るので弾かずに実行する。列の `NOT NULL` の NV は同じく弾く（2026-09-26 実測 h1〜h7。#221）。
+#[tokio::test]
+async fn s3_tables_の_context_では場所の無い_create_table_を弾かずに実行する() {
+    let harness = Harness::builder(select_response())
+        .catalog_map(&[("s3tablescatalog/b", "iceberg")])
+        .start()
+        .await;
+
+    for catalog in ["s3tablescatalog/b", "S3TablesCatalog/b"] {
+        let (code, body) = harness
+            .call(
+                "StartQueryExecution",
+                json!({
+                    "QueryString": "CREATE TABLE t (n int)",
+                    "QueryExecutionContext": { "Catalog": catalog },
+                }),
+            )
+            .await;
+        assert_eq!(code, 200, "{catalog}: {body}");
+    }
+
+    let (code, error) = harness
+        .call(
+            "StartQueryExecution",
+            json!({
+                "QueryString": "CREATE TABLE t (n int NOT NULL)",
+                "QueryExecutionContext": { "Catalog": "s3tablescatalog/b" },
+            }),
+        )
+        .await;
+    assert_eq!(code, 400, "{error}");
+    assert_eq!(
+        error["Message"],
+        "line 1:23: no viable alternative at input 'CREATE TABLE t (n int NOT'"
+    );
+}
