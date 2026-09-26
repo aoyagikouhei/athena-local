@@ -359,15 +359,19 @@ Known differences between athena-local and real Athena, grouped by topic.
   case-insensitively), real Athena creates the table without a location, so
   athena-local does not answer `No location` and sends it to Trino; the
   `no viable alternative` rows above still apply (`NOT NULL`, `WITH (`, …),
-  as they did on real Athena (measured 2026-09-26). Real Athena rejects a
-  name in another catalog under that context
-  (`CREATE TABLE awsdatacatalog.<db>.<t> (n int)`) with
-  `Unsupported ddl with 2 catalogs: <the statement>`; athena-local still
-  answers `No location` for an unquoted three-part name there, so it is
-  rejected but with a different message
-  ([#224](https://github.com/aoyagikouhei/athena-local/issues/224)).
-  Other non-default catalogs (federated ones) were not measured and are
-  treated like `AwsDataCatalog`.
+  as they did on real Athena (measured 2026-09-26). Under that context an
+  unquoted three-part name whose first part is exactly `awsdatacatalog`
+  (lower case) is rejected, as on real Athena, with
+  `Unsupported ddl with 2 catalogs: <the statement>` (`ddl` in lower case;
+  the statement follows with its leading and trailing whitespace removed,
+  comments and line breaks kept), unless a `no viable alternative` row above
+  applies first ([#224](https://github.com/aoyagikouhei/athena-local/issues/224),
+  measured 2026-09-26). Any other unquoted three-part name there still answers
+  `No location`, where real Athena starts `AwsDataCatalog.<db>.<t>` and fails it
+  with `Cannot find or access the specified table`, and answers a catalog that
+  does not exist with `DATACATALOG_NOT_FOUND`
+  ([#227](https://github.com/aoyagikouhei/athena-local/issues/227)). Other non-default catalogs
+  (federated ones) were not measured and are treated like `AwsDataCatalog`.
 - **Forms not listed above still run on Trino unchanged.** A table name with
   four parts or more and a table name with a quoted part are not rejected
   here — the quoted-name check above rejects them first where it was

@@ -534,3 +534,27 @@ Content-Type と `.metadata` を含む置き場所は本項が主で、[result-f
 
 - 採用した判断: S3 Tables の Context（`s3tablescatalog/` で始まる Catalog）では No location だけを返さず、NV は既定の Context と同じに弾く。引用符付きの列名・型名・型名の括弧の中の最初の語は NV(その語) で弾く。`IF NOT EXISTS` の 4 部以上は `IF NOT EXISTS` の無い形と同じ規則で弾き、4 部以上の無引用の CTAS は `Invalid table name` で弾く（名前は DESCRIBE の規則に合わせて小文字でつなぐ。測ったのは小文字の名前だけ）。別カタログの名前の `Unsupported ddl with 2 catalogs` は周辺が未実測なので #224 に分けた。`struct<"f":int>` は手元の Trino が同じ文言で先に弾くので手を入れない。バッククォートの列名は Trino の構文チェックが先に弾く既知の差（#204）のまま
 - 備考: #208・#212 の実測（場所の無い形の `No location`、4 部の CTAS でない `CREATE TABLE` の 3 つ目の `.`）と食い違いは無かった
+
+### S3 Tables の Context で別カタログの名前の CREATE TABLE（#224）
+- 日付: 2026-09-26（UTC 2026-09-26 00:40）／ issue: #224 ／ スクリプト: `tools/measure/unquoted-ddl.sh`（`ROUND=4`）／ 生データ: `$HOME/athena-unquoted-ddl-measurements/run-20260926-004013`
+- 相手: 本物の Athena（`AwsDataCatalog` と、S3 Tables のカタログ `s3tablescatalog/<bucket>`）
+- 投げたもの: 23 項目（疎通の `SELECT 1` と `CREATE TABLE` 22 本）。Context はとくに書かない限り `Catalog=s3tablescatalog/<bucket>,Database=<ns>`。作られた表（i12 の CTAS だけ）はその場で消した（後始末の残りは無い）
+- 返ったもの（開始時に弾かれたものはすべて `InvalidRequestException`。AthenaErrorCode は書いたもの以外 `MALFORMED_QUERY`）:
+
+  | 文 | 本物 |
+  |---|---|
+  | `CREATE TABLE awsdatacatalog.<db>.<t> (n int)`（i1。#221 の h8 の再現）・`create table ...`（i5）・`CREATE TABLE IF NOT EXISTS awsdatacatalog...`（i11） | `Unsupported ddl with 2 catalogs: <文>`（文は投げたとおり） |
+  | `/* c */ CREATE TABLE awsdatacatalog...`（i6）・`-- c` の行の後に文（i7）・名前の後で改行した複数行（i8） | 同じ。コメントと改行は文言の後ろにそのまま残る |
+  | `  CREATE  TABLE<TAB>awsdatacatalog... (n int)  `（i9。前後に空白 2 つ） | 同じ。前後の空白は落ち、中の空白 2 つとタブは残る |
+  | `CREATE TABLE awsdatacatalog.<db>.<t> (n int); -- c`（i10） | `Only one sql statement is allowed. Got: <文>`（#228） |
+  | `(n int NOT NULL)`（i13）・`("n" int)`（i16）・`(n int) WITH (format = 'PARQUET')`（i21） | NV(NOT)・NV(`"n"`)・NV(`WITH` の後の `(`)。2 catalogs より先 |
+  | `... (n int) LOCATION 's3://...'`（i14）・`CREATE EXTERNAL TABLE ... LOCATION ...`（i15） | `Table location can not be specified for tables hosted in S3 table buckets`（#229） |
+  | `CREATE TABLE AwsDataCatalog.<db>.<t> (n int)`（i4。大文字混じり） | 開始でき、FAILED（ErrorCategory 2・ErrorType 1100、`Cannot find or access the specified table`）（#227） |
+  | `CREATE TABLE nosuchcatalog224.<db>.<t> (n int)`（i3） | `DATACATALOG_NOT_FOUND`、`Catalog 'nosuchcatalog224' does not exist`（#227） |
+  | `CREATE TABLE <db>.<t> (n int)`（i2。2 部で 1 部目が AwsDataCatalog の DB） | 開始でき、FAILED（i4 と同じ文言） |
+  | `CREATE TABLE awsdatacatalog.<db>.<t> AS SELECT 1 AS n`（i12。CTAS） | 開始でき、SUCCEEDED（DDL / CREATE_TABLE_AS_SELECT） |
+  | `CREATE TABLE "awsdatacatalog".<db>.<t> (n int)`（i17）・`CREATE TABLE "<S3 Tables のカタログ>".<ns>.<t> (n int)`（i19、既定の Context の i20 も） | `line 1:14: no viable alternative at input 'CREATE TABLE "<1 部目>"'`（既定の Context の引用符付きの名前と同じ） |
+  | 既定の Context で `CREATE TABLE awsdatacatalog.<db>.<t> (n int)`（i18）・`IF NOT EXISTS` 付き（i22） | `No location ...` |
+
+- 採用した判断: S3 Tables の Context で、無引用の 3 部の名前の 1 部目がちょうど小文字の `awsdatacatalog` で、列の並びの判定が No location になるときだけ、`Unsupported ddl with 2 catalogs: <前後の空白（空白・タブ・改行）を落とした文>` で弾く。NV は今までどおり先に返す。大文字混じりの `AwsDataCatalog` と実在しないカタログは No location のまま据え置き（人間の判断。#227）。末尾の `;` と LOCATION は Trino の構文チェックが先に弾く形で、#228・#229 に分けた
+- 備考: #221 の h8 と食い違いは無かった。前後の空白を落とす文字の範囲は、測ったのが空白だけなので、athena-local は先頭の判定と同じ空白・タブ・CR・LF にした

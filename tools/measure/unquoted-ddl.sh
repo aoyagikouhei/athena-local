@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# issue #208 で作成。issue #221 で ROUND=3 を追加
+# issue #208 で作成。issue #221 で ROUND=3、issue #224 で ROUND=4 を追加
 # 本物の Athena が StartQueryExecution の時点で弾く、無引用の DDL 3 種
 # （ALTER TABLE IF EXISTS、ALTER TABLE ... ADD COLUMN（単数）、場所の無い CREATE TABLE）の
 # 弾かれ方の規則（`line L:C` の位置、`no viable alternative at input '...'` の input の範囲、
@@ -20,7 +20,7 @@
 #     → line 1:68: no viable alternative at input 'CREATE TABLE <db>.<t> (n int NOT'
 #
 # tools/measure/quoted-names.sh（#204・#207・#212）を雛形にし、次の関数をそのまま
-# （ほぼ無改変で）流用している: redact・mask_names・hide・sanitize・first_err_line・
+# （ほぼ無改変で）流用している: hide（#224 で redact・mask_names をまとめた）・sanitize・first_err_line・
 # is_transient_error・start_query_retry・poll_until_terminal・get_state_once・
 # read_attempts・emit_row・skip・run・write_reason・reason_first_line・
 # athena_error_fields_of・read_execution_fields・start_err_message・start_err_code・
@@ -86,6 +86,12 @@
 #   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=3 \
 #     S3TABLES_CATALOG=s3tablescatalog/your-bucket S3TABLES_NS=your_ns \
 #     bash tools/measure/unquoted-ddl.sh
+#   ラウンド 4（issue #224。S3 Tables の Context で別カタログの名前の CREATE TABLE が
+#   `Unsupported ddl with 2 catalogs: <文>` になる範囲と、文言の後ろに付く文の書かれ方だけを測る。
+#   S3TABLES_* が無ければ I 群は i18 を除いて未測定として残す）:
+#   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=4 \
+#     S3TABLES_CATALOG=s3tablescatalog/your-bucket S3TABLES_NS=your_ns \
+#     bash tools/measure/unquoted-ddl.sh
 #   （資格情報はホストのシェルで AWS_ACCESS_KEY_ID などを export してから。または ~/.aws/credentials）
 #
 # 必要な環境変数:
@@ -100,6 +106,8 @@
 #                    3 は H 群（S3 Tables の Context）・Q 群（引用符付きの列名と型）・
 #                    P 群（4 部以上の無引用の名前）だけ（issue #221）。preflight・DB 確認は
 #                    共通で走るが、実在する表 <PROBE>_real は作らない。
+#                    4 は I 群（S3 Tables の Context の別カタログの名前。issue #224）だけ。
+#                    実在する表は作らない。
 #   CATALOG          既定 AwsDataCatalog
 #   REGION           既定 ap-northeast-1
 #   OUT_DIR          既定 ${DEV_HOST_HOME:-$HOME}/athena-unquoted-ddl-measurements
@@ -229,6 +237,18 @@
 #   preflight 2 と h0 に加え、受理された CREATE とその後始末が乗る見込み
 #   （2〜57 項目程度 × 2〜4 回）。
 #
+# == ROUND=4（I 群のみ。issue #224。preflight・DB 確認は共通、実在する表は作らない） ==
+#
+#   [StartQueryExecution]
+#   preflight（SELECT 1 + SHOW TABLES）2
+#   + I 群（i0 の SELECT 1 と i1〜i22 の CREATE TABLE。S3TABLES_* が無ければ i18 だけ）23
+#   = 25（S3TABLES_* あり）／3（無し）。
+#   受理された CREATE TABLE ごとに、その場で DROP する後始末が 1 本ずつ増える（最大 +22）。
+#   i14・i15（LOCATION 付き）・i12（CTAS）・i17・i18 は受理されうる。
+#
+#   [GetQueryExecution]
+#   開始できた項目だけ終端状態までポーリングし、終端後にもう 1 回まとめて取得する。
+#
 # 実行ごとに $OUT_DIR/run-<日時>/ を作り、その中だけに書く。前の回の結果と混ざらない。
 #
 # 項目ごとに次を保存する（取れたものだけ）。
@@ -254,9 +274,9 @@ set -uo pipefail
 : "${DB:?DB にデータベース名を設定してください}"
 ROUND=${ROUND:-1}
 case "$ROUND" in
-  1 | 2 | 3) ;;
+  1 | 2 | 3 | 4) ;;
   *)
-    echo "ROUND には 1・2・3 のどれかを指定してください（既定 1）" >&2
+    echo "ROUND には 1・2・3・4 のどれかを指定してください（既定 1）" >&2
     exit 1
     ;;
 esac
@@ -356,37 +376,31 @@ trap cleanup EXIT
 # アカウント ID は、前後が数字でない 12 桁の数字として伏せる（quoted-names.sh の実測より）。
 OUTPUT_BUCKET=${OUTPUT#s3://}
 OUTPUT_BUCKET=${OUTPUT_BUCKET%%/*}
-redact() {
-  local s=$1
-  s=${s//$DB/<DB>}
-  s=${s//$OUTPUT/<OUTPUT>}
-  s=${s//$OUTPUT_BUCKET/<BUCKET>}
-  printf '%s' "$s" | sed -E 's/(^|[^0-9])[0-9]{12}([^0-9]|$)/\1<ACCOUNT_ID>\2/g'
+# 伏せる実名と置き換える印を「長さ<TAB>実名<TAB>印」で 1 行ずつ出す（空の実名は出さない）。
+hide_pairs() {
+  local value mark
+  while IFS=$'\t' read -r value mark; do
+    [ -n "$value" ] && printf '%s\t%s\t%s\n' "${#value}" "$value" "$mark"
+  done <<EOF
+$DB	<DB>
+$OUTPUT	<OUTPUT>
+$OUTPUT_BUCKET	<BUCKET>
+$PROBE_PREFIX	<PROBE>
+$S3TABLES_CATALOG	<S3TABLES_CATALOG>
+$S3TABLES_BUCKET	<S3TABLES_BUCKET>
+$S3TABLES_NS	<S3TABLES_NS>
+EOF
 }
 
-# 標準入力から、乱数入りの接頭辞と S3 Tables の実名（設定されていれば）を置換して隠す。
-mask_names() {
-  local s
-  s=$(cat)
-  s=${s//$PROBE_PREFIX/<PROBE>}
-  if [ -n "$S3TABLES_CATALOG" ]; then
-    s=${s//$S3TABLES_CATALOG/<S3TABLES_CATALOG>}
-    if [ -n "$S3TABLES_BUCKET" ]; then
-      s=${s//$S3TABLES_BUCKET/<S3TABLES_BUCKET>}
-    fi
-  fi
-  if [ -n "$S3TABLES_NS" ]; then
-    s=${s//$S3TABLES_NS/<S3TABLES_NS>}
-  fi
-  printf '%s' "$s"
-}
-
-# redact と mask_names を両方かけて、実名をすべて伏せる。
+# 実名をすべて伏せる。実名どうしが入れ子になる（S3 Tables の名前空間が DB 名を含む、DB 名が S3 Tables の
+# バケット名を含む、など）と、短い方を先に置き換えた時点で長い方が一致しなくなって一部が残るので、長い実名
+# から先に置き換える（#221 の summary で名前空間の実名の一部が残った。#224）。
 hide() {
-  local s
-  s=$(redact "$1")
-  s=$(printf '%s' "$s" | mask_names)
-  printf '%s' "$s"
+  local s=$1 value mark
+  while IFS=$'\t' read -r _ value mark; do
+    s=${s//"$value"/$mark}
+  done < <(hide_pairs | sort -t $'\t' -k1,1nr)
+  printf '%s' "$s" | sed -E 's/(^|[^0-9])[0-9]{12}([^0-9]|$)/\1<ACCOUNT_ID>\2/g'
 }
 
 # 制御文字を落として短くする。note・summary に入れる前に必ず通す。
@@ -749,14 +763,14 @@ fi
 # quoted-names.sh の d0-setup-hive と同じ「WITH 句を付けない CTAS」の形にした。
 # ROUND=3 は実在する表を使わないので作らない（REAL_SETUP_ATTEMPTED・REAL_SETUP_OK は 0 のまま）。
 
-if [ "$ROUND" != 3 ]; then
+if [ "$ROUND" != 3 ] && [ "$ROUND" != 4 ]; then
 REAL_SETUP_ATTEMPTED=1
 if run setup-real "CREATE TABLE $DB.$REAL AS SELECT 1 AS n, 'x' AS s, 10 AS x"; then
   REAL_SETUP_OK=1
 else
   echo "== setup-real: 実在する表が作れませんでした。B10・ROUND=2 の F1・F3・F4・F5 は実在しない名前を対象にします。"
 fi
-fi # ROUND != 3
+fi # ROUND != 3 && ROUND != 4
 
 if [ "$REAL_SETUP_OK" = 1 ]; then
   LIKE_TARGET="$DB.$REAL"
@@ -1014,6 +1028,68 @@ run_create_then_drop p8 "CREATE TABLE IF NOT EXISTS $(new_name p8) (n int)" "$(n
 
 fi # ROUND=3
 
+# ROUND=4 だけ、I 群を投げる（issue #224）。
+if [ "$ROUND" = 4 ]; then
+
+DEFAULT_CTX="Catalog=$CATALOG,Database=$DB"
+# LOCATION 付きの項目（i14・i15）の置き場。結果の出力先の下の、項目ごとの空のプレフィックス。
+probe_location() { printf '%sathena-local-probe-224/%s/' "$OUTPUT" "$(new_name "$1")"; }
+
+# --- I 群（QueryExecutionContext の Catalog が S3 Tables で、名前が別カタログを指す CREATE TABLE） ----
+# #221 の h8（S3 Tables の Context で `CREATE TABLE awsdatacatalog.<db>.<t> (n int)` →
+# `Unsupported ddl with 2 catalogs: <文>`）の周辺。i0 は疎通、i1 は h8 の再現（対照）。
+# i2〜i4 は名前の形、i5〜i10 は文言の後ろに付く文の書かれ方（大文字小文字・コメント・改行・空白・`;`）、
+# i11〜i16 は他の判定（IF NOT EXISTS・CTAS・NV・LOCATION・EXTERNAL）との順番、i17〜i22 は
+# 引用符付きの名前と逆向き（既定の Context で S3 Tables のカタログ）と既定の Context の対照。
+# AwsDataCatalog に作られうるものは既定の Context で、S3 Tables に作られうるものは S3 Tables の
+# Context で消す。
+if [ -n "$S3TABLES_CATALOG" ] && [ -n "$S3TABLES_NS" ]; then
+  S3T_CTX="Catalog=$S3TABLES_CATALOG,Database=$S3TABLES_NS"
+  run_in_ctx "$S3T_CTX" i0 "SELECT 1"
+  run_create_then_drop_ctx "$S3T_CTX" "$DEFAULT_CTX" i1 "CREATE TABLE awsdatacatalog.$DB.$(new_name i1) (n int)" "$(new_name i1)"
+  # 2 部で、1 部目が S3 Tables の名前空間でなく AwsDataCatalog の DB。
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" i2 "CREATE TABLE $DB.$(new_name i2) (n int)" "$DB.$(new_name i2)"
+  # 1 部目が実在しないカタログ。
+  run_create_then_drop_ctx "$S3T_CTX" "$DEFAULT_CTX" i3 "CREATE TABLE nosuchcatalog224.$DB.$(new_name i3) (n int)" "$(new_name i3)"
+  # 1 部目が AwsDataCatalog（大文字混じり）。文言の後ろの文がそのままか、小文字にされるか。
+  run_create_then_drop_ctx "$S3T_CTX" "$DEFAULT_CTX" i4 "CREATE TABLE AwsDataCatalog.$DB.$(new_name i4) (n int)" "$(new_name i4)"
+  run_create_then_drop_ctx "$S3T_CTX" "$DEFAULT_CTX" i5 "create table awsdatacatalog.$DB.$(new_name i5) (n int)" "$(new_name i5)"
+  run_create_then_drop_ctx "$S3T_CTX" "$DEFAULT_CTX" i6 "/* c */ CREATE TABLE awsdatacatalog.$DB.$(new_name i6) (n int)" "$(new_name i6)"
+  run_create_then_drop_ctx "$S3T_CTX" "$DEFAULT_CTX" i7 "-- c
+CREATE TABLE awsdatacatalog.$DB.$(new_name i7) (n int)" "$(new_name i7)"
+  run_create_then_drop_ctx "$S3T_CTX" "$DEFAULT_CTX" i8 "CREATE TABLE awsdatacatalog.$DB.$(new_name i8)
+(
+  n int
+)" "$(new_name i8)"
+  run_create_then_drop_ctx "$S3T_CTX" "$DEFAULT_CTX" i9 "  CREATE  TABLE	awsdatacatalog.$DB.$(new_name i9) (n int)  " "$(new_name i9)"
+  run_create_then_drop_ctx "$S3T_CTX" "$DEFAULT_CTX" i10 "CREATE TABLE awsdatacatalog.$DB.$(new_name i10) (n int); -- c" "$(new_name i10)"
+  run_create_then_drop_ctx "$S3T_CTX" "$DEFAULT_CTX" i11 "CREATE TABLE IF NOT EXISTS awsdatacatalog.$DB.$(new_name i11) (n int)" "$(new_name i11)"
+  run_create_then_drop_ctx "$S3T_CTX" "$DEFAULT_CTX" i12 "CREATE TABLE awsdatacatalog.$DB.$(new_name i12) AS SELECT 1 AS n" "$(new_name i12)"
+  # 既定の Context では NV(NOT)・NV(`"n"`)・NV(`WITH` の後の `(`)になる形。2 catalogs と NV のどちらが先か。
+  run_create_then_drop_ctx "$S3T_CTX" "$DEFAULT_CTX" i13 "CREATE TABLE awsdatacatalog.$DB.$(new_name i13) (n int NOT NULL)" "$(new_name i13)"
+  run_create_then_drop_ctx "$S3T_CTX" "$DEFAULT_CTX" i14 "CREATE TABLE awsdatacatalog.$DB.$(new_name i14) (n int) LOCATION '$(probe_location i14)'" "$(new_name i14)"
+  run_create_then_drop_ctx "$S3T_CTX" "$DEFAULT_CTX" i15 "CREATE EXTERNAL TABLE awsdatacatalog.$DB.$(new_name i15) (n int) LOCATION '$(probe_location i15)'" "$(new_name i15)"
+  run_create_then_drop_ctx "$S3T_CTX" "$DEFAULT_CTX" i16 "CREATE TABLE awsdatacatalog.$DB.$(new_name i16) (\"n\" int)" "$(new_name i16)"
+  # 引用符付きの 1 部目（AwsDataCatalog と、Context と同じ S3 Tables のカタログ）。
+  run_create_then_drop_ctx "$S3T_CTX" "$DEFAULT_CTX" i17 "CREATE TABLE \"awsdatacatalog\".$DB.$(new_name i17) (n int)" "$(new_name i17)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" i19 "CREATE TABLE \"$S3TABLES_CATALOG\".$S3TABLES_NS.$(new_name i19) (n int)" "$(new_name i19)"
+  # 逆向き（既定の Context で 1 部目が S3 Tables のカタログ）。
+  run_create_then_drop_ctx "$DEFAULT_CTX" "$S3T_CTX" i20 "CREATE TABLE \"$S3TABLES_CATALOG\".$S3TABLES_NS.$(new_name i20) (n int)" "$(new_name i20)"
+  run_create_then_drop_ctx "$S3T_CTX" "$DEFAULT_CTX" i21 "CREATE TABLE awsdatacatalog.$DB.$(new_name i21) (n int) WITH (format = 'PARQUET')" "$(new_name i21)"
+  # 既定の Context の IF NOT EXISTS の 3 部（No location の見込み。i11 の対照）。
+  run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" i22 "CREATE TABLE IF NOT EXISTS awsdatacatalog.$DB.$(new_name i22) (n int)" "$(new_name i22)"
+else
+  skip i0 "未測定（S3TABLES_* 未設定）"
+  for l in i1 i2 i3 i4 i5 i6 i7 i8 i9 i10 i11 i12 i13 i14 i15 i16 i17 i19 i20 i21 i22; do
+    skip "$l" "未測定（S3TABLES_* 未設定）"
+    skip "$l-cleanup" "CREATE TABLE を投げていないため後始末不要"
+  done
+fi
+# 既定の Context の 3 部（No location の見込み。i1 の対照）。
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" i18 "CREATE TABLE awsdatacatalog.$DB.$(new_name i18) (n int)" "$(new_name i18)"
+
+fi # ROUND=4
+
 # --- 後始末（実在する表） ----------------------------------------------------------
 
 if [ "$REAL_SETUP_OK" = 1 ]; then
@@ -1024,7 +1100,7 @@ if [ "$REAL_SETUP_OK" = 1 ]; then
     echo "== 後始末の DROP TABLE が SUCCEEDED になりませんでした。終了時にもう一度投げます。"
     echo "   それでも消えなければ、$DB の $REAL を手で消してください。"
   fi
-elif [ "$ROUND" != 3 ]; then
+elif [ "$ROUND" != 3 ] && [ "$ROUND" != 4 ]; then
   skip z-drop-real "実在する表を作れなかったため後始末不要"
 fi
 
@@ -1045,6 +1121,11 @@ if [ "$ROUND" = 1 ]; then
 elif [ "$ROUND" = 3 ]; then
   ALL_LABELS="$ALL_LABELS h0"
   for l in h1 h2 h3 h4 h5 h6 h7 h8 h9 q0 q1 q2 q3 q4 q5 q6 q7 q8 p0 p1 p2 p3 p4 p5 p6 p7 p8; do
+    ALL_LABELS="$ALL_LABELS $l $l-cleanup"
+  done
+elif [ "$ROUND" = 4 ]; then
+  ALL_LABELS="$ALL_LABELS i0"
+  for l in i1 i2 i3 i4 i5 i6 i7 i8 i9 i10 i11 i12 i13 i14 i15 i16 i17 i18 i19 i20 i21 i22; do
     ALL_LABELS="$ALL_LABELS $l $l-cleanup"
   done
 else
@@ -1085,6 +1166,28 @@ write_summary_txt() {
       echo "# 注意: これは実測した本物の Athena の挙動であり、将来の Athena の変更で変わりうる。"
       echo "#   実測値は既定とは限らない（本物の Athena の挙動が変わっていれば、ここに書いた"
       echo "#   見込みと食い違うことがある）。"
+    elif [ "$ROUND" = 4 ]; then
+      echo "# issue #224（#208 ラウンド 4）: QueryExecutionContext の Catalog が S3 Tables のとき、"
+      echo "#             別カタログを指す名前の CREATE TABLE が StartQueryExecution の時点で"
+      echo "#             どう弾かれるか（Unsupported ddl with 2 catalogs の範囲と、文言の後ろに"
+      echo "#             付く文の書かれ方）を実測"
+      echo "# 実行日時: $(date -Iseconds)"
+      if [ -n "$S3TABLES_CATALOG" ] && [ -n "$S3TABLES_NS" ]; then
+        echo "# S3TABLES_*: 設定あり（I 群を測る）"
+      else
+        echo "# S3TABLES_*: 未設定（i18 以外の I 群は未測定）"
+      fi
+      echo "# StartQueryExecution の見込み本数: 25（S3TABLES_* あり）／3（無し）"
+      echo "#   （preflight 2 + I 群 23（i0 の SELECT 1 と i1〜i22））。"
+      echo "#   このスクリプトの実測値: $(wc -l < "$START_CALL_FILE" | tr -d ' ') 回"
+      echo "#   受理された CREATE TABLE ごとに、その場で DROP する後始末が 1 本ずつ増える（最大 +22）。"
+      echo "# DDL: 実在する表 <PROBE>_real は作らない。I 群の CREATE TABLE は、受理されたらその場で"
+      echo "#   DROP して消す（AwsDataCatalog に作られうるものは既定の Context、S3 Tables に作られうる"
+      echo "#   i2・i19・i20 は S3 Tables の Context で DROP TABLE IF EXISTS）。i14・i15 の LOCATION は"
+      echo "#   <OUTPUT>athena-local-probe-224/<PROBE>_<項目>/（空のプレフィックス。データは置かない）。"
+      echo "# 課金: スキャンの無いクエリだけ（CREATE は 0〜1 行、DROP はメタデータのみ）。"
+      echo "# 注意: これは実測した本物の Athena の挙動であり、将来の Athena の変更で変わりうる。"
+      echo "#   実測値は既定とは限らない。"
     elif [ "$ROUND" = 3 ]; then
       echo "# issue #221（#208 ラウンド 3）: 場所の無い CREATE TABLE のうち #208 で測れなかった形"
       echo "#             （QueryExecutionContext の Catalog が S3 Tables のとき、列名・型が"

@@ -247,8 +247,10 @@ fn s3_tables_の_context_では_no_location_を返さず_no_viable_alternative_�
         ("CREATE TABLE IF NOT EXISTS t (n int)", None),
         ("CREATE TABLE ns.t (n int)", None),
         ("CREATE TABLE t (n string)", None),
-        // 無引用の 3 部は別のカタログを指す。本物は 2 catalogs で弾く（h8）ので、弾くことだけは揃える（#224）。
-        ("CREATE TABLE awsdatacatalog.db.t (n int)", no_location()),
+        (
+            "CREATE TABLE awsdatacatalog.db.t (n int)",
+            two_catalogs("CREATE TABLE awsdatacatalog.db.t (n int)"),
+        ),
         (
             "CREATE TABLE t (n int NOT NULL)",
             nv("1:23", "CREATE TABLE t (n int NOT"),
@@ -260,6 +262,65 @@ fn s3_tables_の_context_では_no_location_を返さず_no_viable_alternative_�
     ] {
         assert_eq!(rejection(query, true), expected, "{query}");
     }
+}
+
+fn two_catalogs(statement: &str) -> Option<String> {
+    Some(format!("Unsupported ddl with 2 catalogs: {statement}"))
+}
+
+/// S3 Tables の Context で 1 部目がちょうど小文字の `awsdatacatalog` の 3 部の名前なら、No location の代わりに
+/// `Unsupported ddl with 2 catalogs: <文>`。文は前後の空白を落とし、コメント・改行・中の空白はそのまま。
+/// NV は先に出る。大文字混じりの `AwsDataCatalog`（本物は開始して FAILED）と実在しないカタログ（本物は
+/// DATACATALOG_NOT_FOUND）は No location のまま（2026-09-26 実測 i1〜i22。#224）。
+#[test]
+fn s3_tables_の_context_で_awsdatacatalog_の_3_部は_2_catalogs_に文を付けて返す() {
+    for (query, expected) in [
+        (
+            "create table awsdatacatalog.db.t (n int)",
+            two_catalogs("create table awsdatacatalog.db.t (n int)"),
+        ),
+        (
+            "CREATE TABLE IF NOT EXISTS awsdatacatalog.db.t (n int)",
+            two_catalogs("CREATE TABLE IF NOT EXISTS awsdatacatalog.db.t (n int)"),
+        ),
+        (
+            "/* c */ CREATE TABLE awsdatacatalog.db.t (n int)",
+            two_catalogs("/* c */ CREATE TABLE awsdatacatalog.db.t (n int)"),
+        ),
+        (
+            "-- c\nCREATE TABLE awsdatacatalog.db.t (n int)",
+            two_catalogs("-- c\nCREATE TABLE awsdatacatalog.db.t (n int)"),
+        ),
+        (
+            "CREATE TABLE awsdatacatalog.db.t\n(\n  n int\n)",
+            two_catalogs("CREATE TABLE awsdatacatalog.db.t\n(\n  n int\n)"),
+        ),
+        (
+            "  CREATE  TABLE\tawsdatacatalog.db.t (n int)  \n",
+            two_catalogs("CREATE  TABLE\tawsdatacatalog.db.t (n int)"),
+        ),
+        (
+            "CREATE TABLE awsdatacatalog.db.t (n int NOT NULL)",
+            nv("1:41", "CREATE TABLE awsdatacatalog.db.t (n int NOT"),
+        ),
+        (
+            r#"CREATE TABLE awsdatacatalog.db.t ("n" int)"#,
+            nv("1:35", r#"CREATE TABLE awsdatacatalog.db.t ("n""#),
+        ),
+        (
+            "CREATE TABLE awsdatacatalog.db.t (n int) WITH (format = 'PARQUET')",
+            nv("1:47", "CREATE TABLE awsdatacatalog.db.t (n int) WITH ("),
+        ),
+        ("CREATE TABLE AwsDataCatalog.db.t (n int)", no_location()),
+        ("CREATE TABLE nosuchcatalog.db.t (n int)", no_location()),
+    ] {
+        assert_eq!(rejection(query, true), expected, "{query:?}");
+    }
+    // 既定の Context では No location のまま（i18・i22）。
+    assert_eq!(
+        rejected("CREATE TABLE awsdatacatalog.db.t (n int)"),
+        no_location()
+    );
 }
 
 /// `WITH` の後が `(` でない形と、`)` の後の未知の後置き（`LOCATION '...'` など）は None

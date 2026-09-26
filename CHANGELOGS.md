@@ -29,6 +29,10 @@ later name the date they were measured on.
   rejected at `StartQueryExecution` as on real Athena, and an S3 Tables
   context catalog no longer gets `No location` (measured 2026-09-26)
   ([docs](docs/caveats.md#plain-create-table)).
+- Under an S3 Tables context catalog, a plain `CREATE TABLE` naming
+  `awsdatacatalog.<db>.<t>` is rejected with real Athena's
+  `Unsupported ddl with 2 catalogs: <statement>` instead of `No location`
+  (measured 2026-09-26) ([docs](docs/caveats.md#plain-create-table)).
 
 - `GetQueryResults` returns `SHOW CREATE TABLE` and `SHOW CREATE VIEW` one row
   per line, as real Athena does (measured 2026-09-16 and 2026-09-24), instead

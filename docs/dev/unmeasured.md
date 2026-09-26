@@ -15,6 +15,7 @@
 
 - [ ] `QueryExecutionContext` の Catalog が S3 Tables（`s3tablescatalog/<bucket>`）のとき、1〜2 部の名前の `DESCRIBE`・`SHOW COLUMNS` を本物がどう扱うか（実在しない表で Entity Not Found か、`Unsupported DDL with 2 catalogs` か）。測ったのは名前の 1 部目に S3 Tables のカタログを書いた形だけ。athena-local は Context から来た別名を種類によらず Trino 側の名前で存在を確かめ、実在しない表なら Entity Not Found にする（#216、2026-09-26）
 - [ ] `QueryExecutionContext` の Catalog が S3 Tables 以外の連携カタログのときや、`S3TablesCatalog/<bucket>` のように大文字を含むときの、場所の無い CTAS でない `CREATE TABLE`。#221 で小文字の `s3tablescatalog/<bucket>` なら作られると測った。athena-local は `s3tablescatalog/` で始まるかを大文字小文字を区別せずに見て No location を返さず、それ以外は `AwsDataCatalog` と同じに弾く（2026-09-26）
+- [ ] S3 Tables の Context の `Unsupported ddl with 2 catalogs: <文>` で、文の前後のタブ・改行が落ちるか。測ったのは前後の空白だけ（落ちた）。athena-local は空白・タブ・CR・LF を落とす（#224、2026-09-26）
 - [ ] CTAS の 4 部以上で引用符付きの部分がある名前（`a.b."c".d AS SELECT ...`）と、大文字を含む無引用の 4 部以上の CTAS の名前の書き方。#221 で無引用・小文字の 4 部の CTAS が `Invalid table name <名前>` になると測った。athena-local は引用符付きの部分があれば実行し、無引用なら DESCRIBE と同じく小文字でつないで弾く（2026-09-26）
 - [ ] `SHOW TABLES IN` の 3 部以上で、2 つ目の `.` の直後が `LIKE` やバッククォートの名前の形（`SHOW TABLES IN a.b.like`・``SHOW TABLES IN a.b.`c` ``）。#212 で直後が無引用の名前なら `mismatched input '.'`、引用符付きなら `extraneous input '.'` と測った。athena-local は `"` で始まらない形をすべて `mismatched input '.'` にする（2026-09-25）
 
