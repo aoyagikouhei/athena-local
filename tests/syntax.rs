@@ -346,6 +346,63 @@ async fn s3_tables_の_context_で_awsdatacatalog_の_3_部の_create_table_は_
     }
 }
 
+/// Context の Catalog が S3 Tables なら、本物は Hive の `CREATE TABLE` の `LOCATION` と、LOCATION の無い `EXTERNAL` を
+/// 開始時に本物の文言で弾く。Trino の文法にはどちらも無いので構文チェックも送らない。既定の Context では同じ文を
+/// 今までどおり構文チェックに回し、Trino の文言を返す（2026-09-26 実測 n1〜n32。#229）。
+#[tokio::test]
+async fn s3_tables_の_context_では_hive_の_location_と_external_を構文チェックの前に弾く() {
+    const LOCATION: &str = "CREATE TABLE awsdatacatalog.db.t (n int) LOCATION 's3://b/p/'";
+    const EXTERNAL: &str = "CREATE EXTERNAL TABLE t (n int)";
+    const TRINO_MESSAGE: &str =
+        "line 1:43: mismatched input 'LOCATION'. Expecting: 'COMMENT', 'WITH', <EOF>";
+    let harness = Harness::builder(select_response())
+        .catalog_map(&[("s3tablescatalog/b", "iceberg")])
+        .syntax_check_response(LOCATION, syntax_error(TRINO_MESSAGE))
+        .start()
+        .await;
+
+    for (query, message) in [
+        (
+            LOCATION,
+            "Table location can not be specified for tables hosted in S3 table buckets",
+        ),
+        (
+            EXTERNAL,
+            "External keyword not supported for table type ICEBERG",
+        ),
+    ] {
+        let (code, error) = harness
+            .call(
+                "StartQueryExecution",
+                json!({
+                    "QueryString": query,
+                    "QueryExecutionContext": { "Catalog": "S3TablesCatalog/b", "Database": "ns" },
+                }),
+            )
+            .await;
+
+        assert_eq!(code, 400, "{query}: {error}");
+        assert_eq!(error["__type"], "InvalidRequestException", "{query}");
+        assert_eq!(error["AthenaErrorCode"], "MALFORMED_QUERY", "{query}");
+        assert_eq!(error["Message"], message, "{query}");
+    }
+    assert!(harness.syntax_checks().is_empty(), "構文チェックを送らない");
+    assert!(harness.trino_requests().is_empty(), "実行は作らない");
+
+    let (code, error) = harness
+        .call(
+            "StartQueryExecution",
+            json!({
+                "QueryString": LOCATION,
+                "QueryExecutionContext": { "Catalog": "AwsDataCatalog", "Database": "db" },
+            }),
+        )
+        .await;
+    assert_eq!(code, 400, "{error}");
+    assert_eq!(error["Message"], TRINO_MESSAGE);
+    assert_eq!(harness.syntax_checks(), [LOCATION]);
+}
+
 /// Context の Catalog が S3 Tables（`s3tablescatalog/<バケット>`。大文字小文字は区別しない）なら、本物は場所の無い
 /// `CREATE TABLE` を作るので弾かずに実行する。列の `NOT NULL` の NV は同じく弾く（2026-09-26 実測 h1〜h7。#221）。
 #[tokio::test]
