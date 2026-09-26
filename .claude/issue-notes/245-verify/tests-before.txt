@@ -1,0 +1,58 @@
+     Running unittests src/lib.rs (.toolbox/target/debug/deps/athena_local-cdf0ae7662250f61)
+test result: ok. 297 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+     Running unittests src/main.rs (.toolbox/target/debug/deps/athena_local-37196f80d406662d)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/catalog.rs (.toolbox/target/debug/deps/catalog-255cae2e603f01f6)
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+     Running tests/comment_parse_error.rs (.toolbox/target/debug/deps/comment_parse_error-f4e9bc4e4852d49a)
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+     Running tests/context_catalog.rs (.toolbox/target/debug/deps/context_catalog-210876f3cdf10ca7)
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+     Running tests/create_table_catalog.rs (.toolbox/target/debug/deps/create_table_catalog-9f729208fee27f24)
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+     Running tests/describe.rs (.toolbox/target/debug/deps/describe-f0c4d67aea440c5f)
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+     Running tests/dml.rs (.toolbox/target/debug/deps/dml-448046d72d24983d)
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+     Running tests/entity_check.rs (.toolbox/target/debug/deps/entity_check-31d122e73ee022f2)
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/failed_results.rs (.toolbox/target/debug/deps/failed_results-1494c156cd4a444f)
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s
+     Running tests/idempotency.rs (.toolbox/target/debug/deps/idempotency-ab378b26b06857c8)
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+     Running tests/list_work_groups.rs (.toolbox/target/debug/deps/list_work_groups-0d93a114021fcce4)
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/metadata.rs (.toolbox/target/debug/deps/metadata-8bc0494deed17583)
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+     Running tests/parameters.rs (.toolbox/target/debug/deps/parameters-398edfe464bb343e)
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+     Running tests/reported_query.rs (.toolbox/target/debug/deps/reported_query-76de43a3da8e6ede)
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+     Running tests/request.rs (.toolbox/target/debug/deps/request-3d490680c2aca756)
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/results.rs (.toolbox/target/debug/deps/results-cba550e39ef4a280)
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.66s
+     Running tests/retention.rs (.toolbox/target/debug/deps/retention-0fcb944988929a0f)
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.23s
+     Running tests/select.rs (.toolbox/target/debug/deps/select-c0f90a67aeff557a)
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+     Running tests/show_create.rs (.toolbox/target/debug/deps/show_create-4e4420944e04dc0a)
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+     Running tests/startup.rs (.toolbox/target/debug/deps/startup-a9ccd6d8c3c2e2a0)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/statistics.rs (.toolbox/target/debug/deps/statistics-3f5d7660e2c29e37)
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+     Running tests/stop.rs (.toolbox/target/debug/deps/stop-63958817b39c11a4)
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.65s
+     Running tests/syntax.rs (.toolbox/target/debug/deps/syntax-fe02fc7fbec6944b)
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+     Running tests/table_format.rs (.toolbox/target/debug/deps/table_format-bfdbb99d51ed5db2)
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.63s
+     Running tests/waiting.rs (.toolbox/target/debug/deps/waiting-ccbaad65c66da7a0)
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.04s
+     Running tests/work_group.rs (.toolbox/target/debug/deps/work_group-8a559908d145c8e1)
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running unittests src/lib.rs (.toolbox/target/debug/deps/athena_sql-440beb118bf7458e)
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
