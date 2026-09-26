@@ -61,7 +61,8 @@ TBLPROPERTIES`, `DROP COLUMN`, `SET LOCATION`, `ADD PARTITION`,
 DDL: an empty `<id>.txt`, `binary/octet-stream`, and no `.metadata`. All six
 were measured on 2026-09-21 on whichever table format Athena accepts them on
 (see [Caveats](caveats.md#alter-table-and-format-dependent-ddl) for the combinations Athena itself rejects). Of the
-six, only `DROP COLUMN` and `RENAME TO` can be run through athena-local; the
+six, only `DROP COLUMN` and `RENAME TO` can be run through athena-local (on
+an Iceberg table; on a Hive or missing table they fail like on Athena); the
 rest are rejected at the syntax check, so their rows describe Athena alone.
 
 Only the statements in the table above (`DESC` included) trigger the format

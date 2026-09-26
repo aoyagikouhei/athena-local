@@ -311,7 +311,8 @@ respectively. `MSCK REPAIR TABLE` on an Iceberg table, with or without a comment
   real Athena's grammar allows fewer follow-on keywords once `IF EXISTS` is
   present. A plain `ALTER TABLE t DROP COLUMN m` (no `IF EXISTS`) is **not**
   rejected — real Athena accepts it too and only fails at run time (measured
-  2026-09-26), so athena-local sends it to Trino unchanged. Athena's own
+  2026-09-26), so athena-local starts it too, and fails it or sends it to
+  Trino unchanged depending on the table (see below). Athena's own
   spellings (`ADD COLUMNS`, `SET TBLPROPERTIES`, and so on) are rejected by
   Trino's syntax check instead (the item above).
 - **`ALTER TABLE` classification covers eight forms.** `SET TBLPROPERTIES`,
@@ -327,7 +328,8 @@ respectively. `MSCK REPAIR TABLE` on an Iceberg table, with or without a comment
   format. Any other `ALTER TABLE` form is left unclassified, the same as any
   other statement whose `SubstatementType` was not measured (see
   [Supported API](api.md#supported-api)). Only two of the eight can actually be run
-  through athena-local — `DROP COLUMN` and `RENAME TO`. The other six are
+  through athena-local — `DROP COLUMN` and `RENAME TO`, on an Iceberg table
+  (see below for the other tables). The other six are
   rejected at the syntax check or at `StartQueryExecution` (the items above),
   so their classification is what athena-local would answer if the backend's
   grammar accepted the statement.
@@ -345,7 +347,19 @@ respectively. `MSCK REPAIR TABLE` on an Iceberg table, with or without a comment
   `RENAME TO` on a Hive table, where Glue answers `Table cannot be renamed`
   (measured 2026-09-21; `DROP PARTITION` on 2026-09-24). They fail before
   athena-local's own format-dependent behaviour would matter — not a
-  limitation of athena-local.
+  limitation of athena-local. athena-local reproduces two of them without
+  sending the statement to Trino: `DROP COLUMN` on a Hive table or a missing
+  table fails with Athena's `ParseException` (`mismatched input 'COLUMN'
+  expecting PARTITION`), and `RENAME TO` fails with `Table cannot be renamed`
+  on a Hive table (with a freshly generated `Request ID`) or with
+  `SemanticException [Error 10001]: Table not found <database>.<table>` on a
+  missing table. Both are `ErrorCategory` 2, `ErrorType` 1006, write the reason
+  to `<id>.txt` and no `.metadata`, and `RENAME TO` reports `ErrorMessage`
+  `Query type not supported by DDL engine.`. Views, statements containing a
+  comment other than the ones in
+  [Block comments Athena's Hive parser rejects](#block-comments-athenas-hive-parser-rejects),
+  and the other combinations above are still sent to Trino (not measured, or
+  not reproduced).
 - **`ADD PARTITION` and `DROP PARTITION` succeed on a partitioned Hive table
   only.** On an Iceberg table Athena accepts the statements but fails both at
   run time (see above); no other partition layout was measured.

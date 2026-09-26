@@ -28,6 +28,9 @@ later name the date they were measured on.
   `MSCK REPAIR TABLE`, `ALTER TABLE` and `DESCRIBE` now fails the query with real
   Athena's `ParseException` on the tables where Athena fails it
   ([docs](docs/caveats.md#block-comments-athenas-hive-parser-rejects)).
+- `ALTER TABLE ... DROP COLUMN` and `ALTER TABLE ... RENAME TO` on a Hive table
+  or a missing table now fail with real Athena's reason instead of running on
+  Trino ([docs](docs/caveats.md#alter-table-and-format-dependent-ddl)).
 - A statement ending (or starting) with `;`, such as `SELECT 1;`, now runs, and
   the `;` and the whitespace around the statement are removed from `Query` and
   from syntax error positions, as on real Athena; `;` alone is rejected with

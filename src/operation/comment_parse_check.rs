@@ -147,3 +147,71 @@ pub(super) async fn comment_parse_error_failure(
         Target::MsckRepair | Target::AlterAddColumns => None,
     }
 }
+
+/// コメント無しの `ALTER TABLE ... DROP COLUMN`・`RENAME TO` を、本物は Hive 表と無い表で開始後に FAILED にする
+/// （2026-09-20 実測 #39 d1・09-21 #43 b1・09-25 #204 alt-rename-u・#217 n22。#256）。DROP COLUMN は Hive のパーサの
+/// ParseException、RENAME TO は Hive 表なら Glue の `Table cannot be renamed`、無い表なら `Table not found`。
+/// Iceberg 表は本物も成功する。ビュー・コメントのある形（`comment_parse_error::detect` が拾わない位置のもの）は
+/// 測っていないので、カタログが無い・問い合わせが失敗したときと同じく None（今までどおり Trino へ）。
+/// 問い合わせが増えるのはこの 2 つの文のときだけ（design-checklist #39）。
+pub(super) async fn plain_alter_failure(
+    trino: &Trino,
+    config: &Config,
+    statement: &str,
+    resolved: Option<&str>,
+    database: Option<&str>,
+) -> Option<Failure> {
+    let rename = match classification::substatement_type(statement) {
+        Some("ALTER_TABLE_DROP_COLUMN") => false,
+        Some("ALTER_TABLE_RENAME") => true,
+        _ => return None,
+    };
+    if has_comment(statement) {
+        return None;
+    }
+    let raw_catalog = resolved.or(config.default_catalog.as_deref());
+    let default_database = database.or(config.default_database.as_deref());
+    // ALTER の名前の前のキーワードは ADD COLUMNS と同じ `ALTER TABLE`（`comment_parse_error_failure` と同じ）。
+    let target = target_table::parse_target_table(
+        statement,
+        TargetStatement::AlterTableAddColumns,
+        raw_catalog,
+        default_database,
+    )?;
+    let probe = entity_check::probe(
+        trino,
+        config,
+        &target.catalog,
+        &target.schema,
+        &target.table,
+    )
+    .await;
+    match (probe, rename) {
+        (Probe::Missing | Probe::Table { iceberg: false }, false) => {
+            comment_parse_error::plain_drop_column(statement).map(Into::into)
+        }
+        (Probe::Table { iceberg: false }, true) => Some(Failure::rename_hive_table()),
+        // 実測は小文字の名前だけ。Glue は名前を小文字で持つので小文字にする（大文字の名前は未実測）。
+        (Probe::Missing, true) => Some(Failure::rename_table_not_found(
+            &target.schema.to_lowercase(),
+            &target.table.to_lowercase(),
+        )),
+        (Probe::View | Probe::Table { iceberg: true } | Probe::NoCatalog | Probe::Unknown, _) => {
+            None
+        }
+    }
+}
+
+/// 引用符（`'`・`"`。`athena_sql::statements` と同じ）の外にコメント（`/* */`・`--`）が 1 つでもあるか。
+fn has_comment(statement: &str) -> bool {
+    let bytes = statement.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' | b'"' => i = athena_sql::skip_quoted(bytes, i),
+            _ if athena_sql::comment_end(bytes, i).is_some() => return true,
+            _ => i += 1,
+        }
+    }
+    false
+}
