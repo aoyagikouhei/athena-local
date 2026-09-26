@@ -17,7 +17,9 @@ value: `SYNTAX_ERROR` or `COLUMN_NOT_FOUND` (or a result with more than one
 column) makes it a quoted string literal, anything else is used as-is. The query
 is then sent as `EXECUTE IMMEDIATE '<sql>' USING <values>` (Trino 418+), so `?`
 inside string literals and comments is left alone. `GetQueryExecution` returns
-the original SQL, and `StatementType` is derived from it.
+the SQL as sent, apart from a `;` around the statement and the whitespace before
+and after it, which are removed as on real Athena ([Supported API](api.md)), and
+`StatementType` is derived from it.
 
 A wrong number of values fails with `INVALID_PARAMETER_USAGE`, except that — like
 Athena — values passed to SQL without any `?` are ignored.

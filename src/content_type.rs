@@ -199,8 +199,8 @@ mod tests {
             "SELECT 1 AS i, 'abc' AS s, CAST(1.5 AS DOUBLE) AS d",
             "SELECT id, name FROM users",
             "(SELECT 1)",
-            // 本物は binary（2026-09-23 実測）だが、Trino が末尾の `;` を構文エラーにするので
-            // athena-local では構文チェックが 400 にして実行を作らず、判定の結果は捨てられる。判定は変えない。
+            // 本物は binary（2026-09-23 実測）だが、StartQueryExecution の入口で `;` を落とした文を判定に渡す
+            // （#240）ので、`;` 付きの文はここに届かない。判定は変えない。
             "SELECT 1;",
             // 途中で終わる・数の形が崩れているもの。パーサの拒否の分岐を 1 つずつ踏む。
             "SELECT",

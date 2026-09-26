@@ -64,39 +64,38 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
         &request.query_string,
         &request.result_configuration,
     );
+    // 冪等の比較は受け取ったままの文、それ以外は `;` と前後の空白を落とした文で行う（2026-09-26 実測。#240）。
+    let statement = single_statement(&request.query_string);
     let id = Uuid::new_v4().to_string();
     let result_location = match result_location(
         app,
         request.result_configuration,
-        &request.query_string,
+        statement.as_deref().unwrap_or(&request.query_string),
         &id,
     ) {
         Ok(location) => location,
         Err(response) => return *response,
     };
 
-    // 複数の文は構文エラーより先に弾く（2026-09-26 実測。#228）。トークン・OutputLocation との順は測っていない。
-    if let Some(message) = multiple_statements(&request.query_string) {
-        return invalid_request_with_code(message, "MALFORMED_QUERY");
-    }
+    // 複数の文と空の文は構文エラーより先に弾く（2026-09-26 実測。#228・#240）。トークン・OutputLocation との順は
+    // 測っていない。
+    let query = match statement {
+        Ok(statement) => statement.to_string(),
+        Err(message) => return invalid_request_with_code(message, "MALFORMED_QUERY"),
+    };
     // 本物は構文エラーを StartQueryExecution で弾き、実行を作らない（ExecutionParameters があっても元の SQL で数える）。
     // 文言は Trino のもの、コードは 2026-09-14 に実測した MALFORMED_QUERY。
-    if let Some(message) = app.trino.syntax_error(&request.query_string).await {
+    if let Some(message) = app.trino.syntax_error(&query).await {
         return invalid_request_with_code(message, "MALFORMED_QUERY");
     }
     // 本物は DESCRIBE・SHOW COLUMNS の対象の存在を開始時に確かめ、無ければ弾き、ビューなら引用符付きの
     // 名前でも実行する（2026-09-25 実測。#207）。Context の Catalog が実在しなければ、既定のカタログで確かめる（#214）。
-    let resolved = context_catalog::resolve(
-        &app.trino,
-        &app.config,
-        &request.query_string,
-        catalog.as_deref(),
-    )
-    .await;
+    let resolved =
+        context_catalog::resolve(&app.trino, &app.config, &query, catalog.as_deref()).await;
     let check = entity_check::check(
         &app.trino,
         &app.config,
-        &request.query_string,
+        &query,
         resolved.as_deref(),
         database.as_deref(),
     )
@@ -111,7 +110,7 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
     // EXISTS のときだけで、後者は unquoted_ddl が引き取る）。
     let mut immediate_failure = None;
     if !matches!(check, Check::Run)
-        && let Some(message) = quoted_names::rejection(&request.query_string, |catalog| {
+        && let Some(message) = quoted_names::rejection(&query, |catalog| {
             app.config.catalog_map.contains_key(catalog)
         })
         .or_else(|| {
@@ -119,19 +118,13 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
             let s3_tables = catalog.as_deref().is_some_and(|catalog| {
                 catalog.to_ascii_lowercase().starts_with("s3tablescatalog/")
             });
-            unquoted_ddl::rejection(&request.query_string, s3_tables)
+            unquoted_ddl::rejection(&query, s3_tables)
         })
     {
         // No location になった無引用の 3 部の名前は、1 部目のカタログしだいで本物は別の文言で弾くか、開始して
         // FAILED にする（#227）。
         let outcome = if message == unquoted_ddl::NO_LOCATION {
-            create_table_catalog::check(
-                &app.trino,
-                &app.config,
-                &request.query_string,
-                catalog.as_deref(),
-            )
-            .await
+            create_table_catalog::check(&app.trino, &app.config, &query, catalog.as_deref()).await
         } else {
             create_table_catalog::Outcome::Continue
         };
@@ -153,7 +146,7 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
     let outcome = app.store.submit(
         &id,
         Submission {
-            query: request.query_string,
+            query,
             execution_parameters: request.execution_parameters.unwrap_or_default(),
             catalog,
             database,
@@ -168,27 +161,32 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
     submit_response(app, id, outcome)
 }
 
+/// 本物が実行する文。引用符とコメントの外の `;` で区切り、空白だけでない片（コメントだけの片も数える）が
+/// ちょうど 1 つなら、その片の前後の空白を落とした文を構文チェック・開始時の判定・実行・`Query` に使う
+/// （`;` の無い文も前後の空白が落ちる）。2 つ以上なら `Only one sql statement is allowed`（#228）、`;` が
+/// あって 1 つも無ければ `Empty sql statement` で、構文エラー・DESCRIBE の存在確認・No location・NV より先に
+/// 弾く。どちらも文言の後ろは受け取った文の末尾の空白だけを落としたもの（先頭の空白は残る）
+/// （2026-09-26 実測。#228・#240）。`;` の無い空白だけの文は測っていないので受け取ったまま返す。
+fn single_statement(sql: &str) -> Result<&str, String> {
+    const WHITESPACE: [char; 4] = [' ', '\t', '\r', '\n'];
+    let pieces = athena_sql::statements(sql);
+    let separated = pieces.len() > 1;
+    let mut statements = pieces
+        .into_iter()
+        .map(|piece| piece.trim_matches(WHITESPACE))
+        .filter(|piece| !piece.is_empty());
+    let got = sql.trim_end_matches(WHITESPACE);
+    match (statements.next(), statements.next()) {
+        (Some(statement), None) => Ok(statement),
+        (Some(_), Some(_)) => Err(format!("Only one sql statement is allowed. Got: {got}")),
+        (None, _) if separated => Err(format!("Empty sql statement: {got}")),
+        (None, _) => Ok(sql),
+    }
+}
+
 /// submit の結果を応答に変換する。Created のときだけ実行を始める。
 /// Existing で spawn_query を呼んでも mark_running の「QUEUED からだけ進める」ガードが
 /// 二重実行を弾く（ミューテーション確認で実測）が、既存の実行に手を触れないのが本物の意味。
-/// 本物は引用符とコメントの外の `;` で区切り、空白だけでない片（コメントだけの片も数える）が 2 つ以上あれば、
-/// 構文エラー・DESCRIBE の存在確認・No location・NV より先にこの文言で弾く。`Got:` の後ろは受け取った文の
-/// 末尾の空白だけを落としたもの（先頭の空白は残る）。末尾の `;` だけ（`SELECT 1;`・`SELECT 1;;`）は弾かない
-/// （2026-09-26 実測。#228）。
-fn multiple_statements(sql: &str) -> Option<String> {
-    const WHITESPACE: [char; 4] = [' ', '\t', '\r', '\n'];
-    let count = athena_sql::statements(sql)
-        .into_iter()
-        .filter(|piece| !piece.trim_matches(WHITESPACE).is_empty())
-        .count();
-    (count > 1).then(|| {
-        format!(
-            "Only one sql statement is allowed. Got: {}",
-            sql.trim_end_matches(WHITESPACE)
-        )
-    })
-}
-
 fn submit_response(app: &App, id: String, outcome: SubmitOutcome) -> Response {
     match outcome {
         SubmitOutcome::Created => {

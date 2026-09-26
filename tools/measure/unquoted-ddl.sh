@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # issue #208 で作成。issue #221 で ROUND=3、issue #224 で ROUND=4、issue #227 で ROUND=5、
-# issue #228 で ROUND=6 を追加
+# issue #228 で ROUND=6、issue #240 で ROUND=7 を追加
 # 本物の Athena が StartQueryExecution の時点で弾く、無引用の DDL 3 種
 # （ALTER TABLE IF EXISTS、ALTER TABLE ... ADD COLUMN（単数）、場所の無い CREATE TABLE）の
 # 弾かれ方の規則（`line L:C` の位置、`no viable alternative at input '...'` の input の範囲、
@@ -117,6 +117,12 @@
 #   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=6 \
 #     S3TABLES_CATALOG=s3tablescatalog/your-bucket S3TABLES_NS=your_ns \
 #     bash tools/measure/unquoted-ddl.sh
+#   ラウンド 7（issue #240。末尾の `;` だけの文を本物がどう見せるか（GetQueryExecution の Query の
+#   正規化の範囲・先頭の `;`・文を引用する文言・文の種類ごとの見え方・パラメータ付き・同じ
+#   ClientRequestToken での冪等の比較）だけを測る。S3TABLES_* が無ければ l13 は未測定として残す）:
+#   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=7 \
+#     S3TABLES_CATALOG=s3tablescatalog/your-bucket S3TABLES_NS=your_ns \
+#     bash tools/measure/unquoted-ddl.sh
 #   （資格情報はホストのシェルで AWS_ACCESS_KEY_ID などを export してから。または ~/.aws/credentials）
 #
 # 必要な環境変数:
@@ -137,6 +143,8 @@
 #                    issue #227）だけ。実在する表は作らない。FAILED になった項目は
 #                    結果ファイル本体と .metadata も取得する。
 #                    6 は K 群（複数の文・末尾の `;`。issue #228）だけ。実在する表は作らない。
+#                    7 は L 群（末尾の `;` だけの文の見え方。issue #240）だけ。実在する表は作らず、
+#                    l16 の CTAS で作った表を l20 で消す。
 #   CATALOG          既定 AwsDataCatalog
 #   REGION           既定 ap-northeast-1
 #   OUT_DIR          既定 ${DEV_HOST_HOME:-$HOME}/athena-unquoted-ddl-measurements
@@ -211,6 +219,9 @@
 #     その場で無引用 + IF EXISTS の DROP TABLE を投げて消す（k30 は S3 Tables の Context で
 #     awsdatacatalog 側の名前なので既定の Context で消す）。DESCRIBE・DROP TABLE IF EXISTS は
 #     実在しない名前（<接頭辞>_nope）にだけ投げる。
+#   - ROUND=7: 実在する表 <接頭辞>_real は作らない。l16 の CTAS で <接頭辞>_l16（1 行）を作り、l17 で
+#     1 行 INSERT し、l20 の DROP TABLE IF EXISTS（末尾 `;`）で消す。l20 が SUCCEEDED にならなければ trap が
+#     もう一度 DROP を投げる。l12・l13 の CREATE TABLE は run_create_then_drop_ctx で、受理されたら消す。
 #
 # 課金について: ALTER TABLE・DROP TABLE はメタデータだけを見る／書く文で、実データの
 # スキャンは無い。CREATE TABLE（実在する表の準備・C3・C20・C21・C22・C23、E・F 群、
@@ -301,6 +312,13 @@
 #   [GetQueryExecution]
 #   開始できた項目だけ終端状態までポーリングし、終端後にもう 1 回まとめて取得する。
 #
+# == ROUND=7（L 群のみ。issue #240。preflight・DB 確認は共通、実在する表は作らない） ==
+#
+#   [StartQueryExecution]
+#   preflight（SELECT 1 + SHOW TABLES）2 + L 群（l0〜l28）29 = 31（S3TABLES_* が無ければ l13 を引いて 30）。
+#   l12・l13 が受理されたら、その場で DROP する後始末が 1 本ずつ増える（最大 +2）。
+#   l22〜l26 は同じ ClientRequestToken で投げる（冪等なら同じ QueryExecutionId が返り、実行は増えない）。
+#
 # == ROUND=6（K 群のみ。issue #228。preflight・DB 確認は共通、実在する表は作らない） ==
 #
 #   [StartQueryExecution]
@@ -354,9 +372,9 @@ set -uo pipefail
 : "${DB:?DB にデータベース名を設定してください}"
 ROUND=${ROUND:-1}
 case "$ROUND" in
-  1 | 2 | 3 | 4 | 5 | 6) ;;
+  1 | 2 | 3 | 4 | 5 | 6 | 7) ;;
   *)
-    echo "ROUND には 1・2・3・4・5・6 のどれかを指定してください（既定 1）" >&2
+    echo "ROUND には 1・2・3・4・5・6・7 のどれかを指定してください（既定 1）" >&2
     exit 1
     ;;
 esac
@@ -407,6 +425,9 @@ C20_CREATED=0
 # 含まない。区切りは最後の `|`）。run_create_then_drop_ctx が立て、後始末が SUCCEEDED に
 # なったら下ろす。
 declare -A PENDING_DROPS_CTX=()
+
+# StartQueryExecution に足す引数（ROUND=7 の ClientRequestToken・ExecutionParameters。#240）。ふだんは空。
+START_EXTRA=()
 
 # StartQueryExecution に渡す QueryExecutionContext。ふだんは CATALOG・DB で、
 # run_in_ctx で 1 文だけ差し替える（preflight・C20）。
@@ -648,6 +669,7 @@ start_query_retry() {
       --query-string "$sql" \
       --query-execution-context "$QE_CONTEXT" \
       --result-configuration "OutputLocation=$OUTPUT" \
+      "${START_EXTRA[@]}" \
       --query QueryExecutionId --output text 2> "$RUN_DIR/$label.start.err")
     if [ -n "${id:-}" ]; then
       echo "$attempt" > "$RUN_DIR/.tmp-attempts-$label"
@@ -1330,6 +1352,76 @@ fi
 
 fi # ROUND=6
 
+# ROUND=7 だけ、L 群を投げる（issue #240）。
+if [ "$ROUND" = 7 ]; then
+
+DEFAULT_CTX="Catalog=$CATALOG,Database=$DB"
+# L 群のラベル一覧（l0〜l28。-cleanup は含まない）。ALL_LABELS と summary の repr の節から参照する。
+L_LABELS="l0 l1 l2 l3 l4 l5 l6 l7 l8 l9 l10 l11 l12 l13 l14 l15 l16 l17 l18 l19 l20 l21 l22 l23 l24 l25 l26 l27 l28"
+T16="$(new_name l16)"
+
+# --- L 群（末尾の `;` だけの文を本物がどう見せるか） ----------------------------------------
+# #228 の k6〜k12 で、末尾の `;` だけの SELECT は SUCCEEDED になり、GetQueryExecution の Query から
+# 末尾の `;` と前後の空白が落ちていた。l0 は対照。l1〜l5 は Query の正規化の範囲（先頭の空白・`;` の無い文の
+# 末尾の空白）、l6〜l8 は先頭の `;`、l9・l10・l27 は `;` の直前で構文が不完全な文の文言と位置、l11〜l13 は
+# 文を引用する文言（Entity Not Found・NV・2 catalogs）、l14〜l20 は文の種類ごとの見え方（SHOW・EXPLAIN・
+# CTAS・INSERT・DESCRIBE・SHOW CREATE TABLE・DROP）、l21 はパラメータ付き、l22〜l26 は同じ
+# ClientRequestToken で `;` の有無・末尾の空白だけが違う文を投げたときの冪等の比較。
+run_in_ctx "$DEFAULT_CTX" l0 "SELECT 1"
+run_in_ctx "$DEFAULT_CTX" l1 "  SELECT 1;"
+run_in_ctx "$DEFAULT_CTX" l2 "SELECT 1  "
+run_in_ctx "$DEFAULT_CTX" l3 $'\n\nSELECT 1\n'
+run_in_ctx "$DEFAULT_CTX" l4 "  SELECT 1  ;  "
+run_in_ctx "$DEFAULT_CTX" l5 $'SELECT 1\t;'
+run_in_ctx "$DEFAULT_CTX" l6 ";SELECT 1"
+run_in_ctx "$DEFAULT_CTX" l7 "; SELECT 1"
+run_in_ctx "$DEFAULT_CTX" l8 ";"
+run_in_ctx "$DEFAULT_CTX" l9 "SELECT;"
+run_in_ctx "$DEFAULT_CTX" l10 $'SELECT 1\nFROM;'
+run_in_ctx "$DEFAULT_CTX" l11 "DESCRIBE $DB.$NOPE;"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" l12 "CREATE TABLE $DB.$(new_name l12) (n int NOT NULL);" "$(new_name l12)"
+if [ -n "$S3TABLES_CATALOG" ] && [ -n "$S3TABLES_NS" ]; then
+  S3T_CTX="Catalog=$S3TABLES_CATALOG,Database=$S3TABLES_NS"
+  run_create_then_drop_ctx "$S3T_CTX" "$DEFAULT_CTX" l13 "CREATE TABLE awsdatacatalog.$DB.$(new_name l13) (n int);" "$(new_name l13)"
+else
+  skip l13 "未測定（S3TABLES_* 未設定）"
+  skip l13-cleanup "CREATE TABLE を投げていないため後始末不要"
+fi
+run_in_ctx "$DEFAULT_CTX" l14 "SHOW TABLES;"
+run_in_ctx "$DEFAULT_CTX" l15 "EXPLAIN SELECT 1;"
+# l16 の CTAS で作った表を l17〜l19 で使い、l20 の DROP（末尾 `;`）で消す。消せなければ trap が消す。
+PENDING_DROPS[$T16]=1
+if run_in_ctx "$DEFAULT_CTX" l16 "CREATE TABLE $DB.$T16 AS SELECT 1 AS n;"; then
+  run_in_ctx "$DEFAULT_CTX" l17 "INSERT INTO $DB.$T16 VALUES (2);"
+  run_in_ctx "$DEFAULT_CTX" l18 "DESCRIBE $DB.$T16;"
+  run_in_ctx "$DEFAULT_CTX" l19 "SHOW CREATE TABLE $DB.$T16;"
+else
+  skip l17 "l16 の CTAS が失敗したため"
+  skip l18 "l16 の CTAS が失敗したため"
+  skip l19 "l16 の CTAS が失敗したため"
+fi
+run_in_ctx "$DEFAULT_CTX" l20 "DROP TABLE IF EXISTS $DB.$T16;"
+if succeeded l20; then
+  unset 'PENDING_DROPS[$T16]'
+fi
+START_EXTRA=(--execution-parameters 1)
+run_in_ctx "$DEFAULT_CTX" l21 "SELECT ?;"
+START_EXTRA=()
+# 冪等の比較。同じトークンで、`;` の有無・`;` の数・末尾の空白だけが違う文を続けて投げる。
+TOKEN=$(python3 -c 'import uuid; print(uuid.uuid4())')
+START_EXTRA=(--client-request-token "$TOKEN")
+run_in_ctx "$DEFAULT_CTX" l22 "SELECT 1;"
+run_in_ctx "$DEFAULT_CTX" l23 "SELECT 1"
+run_in_ctx "$DEFAULT_CTX" l24 "SELECT 1;;"
+run_in_ctx "$DEFAULT_CTX" l25 "SELECT 1 "
+run_in_ctx "$DEFAULT_CTX" l26 "SELECT 2;"
+START_EXTRA=()
+run_in_ctx "$DEFAULT_CTX" l27 "SELECT 1 +;"
+# l28: 先頭のコメントと末尾の `;` の間に改行がある複数行の文（Query の中の改行と末尾の扱い）。
+run_in_ctx "$DEFAULT_CTX" l28 $'-- c\nSELECT\n  1 ;\n'
+
+fi # ROUND=7
+
 # --- 後始末（実在する表） ----------------------------------------------------------
 
 if [ "$REAL_SETUP_OK" = 1 ]; then
@@ -1367,6 +1459,13 @@ elif [ "$ROUND" = 4 ]; then
   ALL_LABELS="$ALL_LABELS i0"
   for l in i1 i2 i3 i4 i5 i6 i7 i8 i9 i10 i11 i12 i13 i14 i15 i16 i17 i18 i19 i20 i21 i22; do
     ALL_LABELS="$ALL_LABELS $l $l-cleanup"
+  done
+elif [ "$ROUND" = 7 ]; then
+  for l in $L_LABELS; do
+    case "$l" in
+      l12 | l13) ALL_LABELS="$ALL_LABELS $l $l-cleanup" ;;
+      *) ALL_LABELS="$ALL_LABELS $l" ;;
+    esac
   done
 elif [ "$ROUND" = 6 ]; then
   for l in $K_LABELS; do
@@ -1438,6 +1537,26 @@ write_summary_txt() {
       echo "#   i2・i19・i20 は S3 Tables の Context で DROP TABLE IF EXISTS）。i14・i15 の LOCATION は"
       echo "#   <OUTPUT>athena-local-probe-224/<PROBE>_<項目>/（空のプレフィックス。データは置かない）。"
       echo "# 課金: スキャンの無いクエリだけ（CREATE は 0〜1 行、DROP はメタデータのみ）。"
+      echo "# 注意: これは実測した本物の Athena の挙動であり、将来の Athena の変更で変わりうる。"
+      echo "#   実測値は既定とは限らない。"
+    elif [ "$ROUND" = 7 ]; then
+      echo "# issue #240（#208 ラウンド 7）: 末尾の ; だけの文を本物がどう見せるか（GetQueryExecution の"
+      echo "#             Query の正規化の範囲、先頭の ;、文を引用する文言、文の種類ごとの見え方、"
+      echo "#             パラメータ付き、同じ ClientRequestToken での冪等の比較）を実測"
+      echo "# 実行日時: $(date -Iseconds)"
+      if [ -n "$S3TABLES_CATALOG" ] && [ -n "$S3TABLES_NS" ]; then
+        echo "# S3TABLES_*: 設定あり（l13 を測る）"
+      else
+        echo "# S3TABLES_*: 未設定（l13 は未測定）"
+      fi
+      echo "# StartQueryExecution の見込み本数: 31（S3TABLES_* あり）／30（無し）"
+      echo "#   （preflight 2 + L 群 l0〜l28 の 29、S3TABLES_* が無ければ l13 の 1 を引く）。"
+      echo "#   このスクリプトの実測値: $(wc -l < "$START_CALL_FILE" | tr -d ' ') 回"
+      echo "#   l12・l13 の CREATE TABLE が受理されたら、その場で DROP する後始末が 1 本ずつ増える（最大 +2）。"
+      echo "# DDL: 実在する表 <PROBE>_real は作らない。l16 の CTAS で <PROBE>_l16 を作り、l17 で 1 行 INSERT し、"
+      echo "#   l20 の DROP TABLE IF EXISTS で消す（消せなければ trap が消す）。l12・l13 は受理されたら消す。"
+      echo "#   DESCRIBE（l11）は実在しない名前（<PROBE>_nope）にだけ投げる。"
+      echo "# 課金: スキャンの無いクエリだけ（SELECT は定数、CTAS・INSERT は 1 行、DROP はメタデータのみ）。"
       echo "# 注意: これは実測した本物の Athena の挙動であり、将来の Athena の変更で変わりうる。"
       echo "#   実測値は既定とは限らない。"
     elif [ "$ROUND" = 6 ]; then
@@ -1584,14 +1703,15 @@ PYEOF
         echo
       fi
     done
-    if [ "$ROUND" = 6 ]; then
+    if [ "$ROUND" = 6 ] || [ "$ROUND" = 7 ]; then
+      if [ "$ROUND" = 6 ]; then REPR_LABELS=$K_LABELS; else REPR_LABELS=$L_LABELS; fi
       echo
-      echo "## K 群の文と開始時の文言（Python の repr。前後の空白・改行・CR を区別する。実名は伏せる）"
-      for label in $K_LABELS; do
+      echo "## 文と開始時の文言・Query（Python の repr。前後の空白・改行・CR を区別する。実名は伏せる）"
+      for label in $REPR_LABELS; do
         [ -s "$RUN_DIR/$label.sql" ] || continue
         echo "### $label"
-        hide "$(python3 - "$RUN_DIR/$label.sql" "$RUN_DIR/$label.start.err" <<'PYEOF'
-import sys
+        hide "$(python3 - "$RUN_DIR/$label.sql" "$RUN_DIR/$label.start.err" "$RUN_DIR/$label.execution.json" <<'PYEOF'
+import json, sys
 # .sql は printf '%s\n' で書いたので、末尾の改行 1 つだけが足されている。
 sql = open(sys.argv[1], "rb").read().decode("utf-8", "replace")
 if sql.endswith("\n"):
@@ -1603,6 +1723,19 @@ except OSError:
     text = ""
 if not text:
     print("- message: (開始できた)")
+    # 開始できた項目は GetQueryExecution の Query（repr）・種類・ID・出力先の拡張子を出す（ROUND=7。#240）。
+    try:
+        q = json.load(open(sys.argv[3]))["QueryExecution"]
+    except (OSError, ValueError, KeyError):
+        sys.exit(0)
+    status = q.get("Status", {})
+    location = q.get("ResultConfiguration", {}).get("OutputLocation", "")
+    print("- Query: " + repr(q.get("Query")))
+    print("- id: %s state: %s type: %s/%s output: %s" % (
+        q.get("QueryExecutionId"), status.get("State"), q.get("StatementType"),
+        q.get("SubstatementType"), location.rsplit("/", 1)[-1].split(".", 1)[-1] if "." in location.rsplit("/", 1)[-1] else "(拡張子なし)"))
+    if status.get("State") == "FAILED":
+        print("- reason: " + repr(status.get("StateChangeReason")))
     sys.exit(0)
 marker = "operation: "
 idx = text.find(marker)

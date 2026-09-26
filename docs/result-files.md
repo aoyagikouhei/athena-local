@@ -130,10 +130,11 @@ generalisations are combining them, a lowercase `e` or a signed exponent
 (`SELECT -1.5e-1 x`), more than two pairs of parentheses, a comment between
 `-` and the digits, and keyword case.
 Everything else is sent as `application/octet-stream`, the value Athena gave
-every measured `SELECT` that is not literals only. Two measured forms cannot be
-compared: Athena writes `SELECT 1;` as `binary/octet-stream`, but Trino
-rejects the trailing `;`, so athena-local fails it at the syntax check; and
-Athena rejects `SHOW SESSION` and `SHOW STATS FOR t` at `StartQueryExecution`
+every measured `SELECT` that is not literals only. A trailing `;` does not
+change which one applies: `SELECT 1;` is `binary/octet-stream` on Athena and here, since
+the `;` is removed before the statement is read (see [Supported API](api.md)).
+One measured form cannot be compared: Athena rejects `SHOW SESSION` and
+`SHOW STATS FOR t` at `StartQueryExecution`
 (`InvalidRequestException`, `no viable alternative`), while Trino runs them, so
 athena-local writes their `<id>.txt` with the `binary/octet-stream` default.
 `SHOW CREATE VIEW` is `binary/octet-stream` for both the `.txt` and its
