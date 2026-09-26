@@ -74,9 +74,48 @@ pub fn skip_trivia(bytes: &[u8], mut i: usize) -> usize {
     i
 }
 
+/// 引用符（`'` と `"`）とコメントの外にある `;` で区切った片。`;` 自体は含めず、空の片も残す
+/// （`"a;"` は `["a", ""]`）。片は元の SQL の部分文字列なので、位置を失わない。
+pub fn statements(sql: &str) -> Vec<&str> {
+    let bytes = sql.as_bytes();
+    let mut pieces = Vec::new();
+    let (mut start, mut i) = (0, 0);
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' | b'"' => i = skip_quoted(bytes, i),
+            b';' => {
+                pieces.push(&sql[start..i]);
+                i += 1;
+                start = i;
+            }
+            _ => i = comment_end(bytes, i).unwrap_or(i + 1),
+        }
+    }
+    pieces.push(&sql[start..]);
+    pieces
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn statements_は引用符とコメントの外の_セミコロンだけで区切る() {
+        assert_eq!(statements("SELECT 1"), ["SELECT 1"]);
+        assert_eq!(statements("SELECT 1;"), ["SELECT 1", ""]);
+        assert_eq!(statements("a; -- c"), ["a", " -- c"]);
+        assert_eq!(statements("a;;b"), ["a", "", "b"]);
+        assert_eq!(statements("SELECT 'a;b'; x"), ["SELECT 'a;b'", " x"]);
+        assert_eq!(statements(r#"SELECT 1 AS "a;b""#), [r#"SELECT 1 AS "a;b""#]);
+        assert_eq!(
+            statements("SELECT 1 -- a;b\n;x"),
+            ["SELECT 1 -- a;b\n", "x"]
+        );
+        assert_eq!(statements("SELECT 1 /* a;b */"), ["SELECT 1 /* a;b */"]);
+        // 閉じていない引用符・コメントは末尾まで中身として読む。
+        assert_eq!(statements("SELECT 'a; b"), ["SELECT 'a; b"]);
+        assert_eq!(statements("SELECT /* a; b"), ["SELECT /* a; b"]);
+    }
 
     #[test]
     fn トリビアが無ければ受け取った_sql_をそのまま返す() {

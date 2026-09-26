@@ -112,6 +112,16 @@ Behaviour that matches real Athena:
 
   An unknown id returns `QueryExecution <id> was not found` (`QUERY_EXECUTION_NOT_FOUND`).
 - A stopped query reports `StateChangeReason` `Query cancelled by user`.
+- A `QueryString` holding more than one statement makes `StartQueryExecution`
+  fail with `InvalidRequestException` (`AthenaErrorCode` `MALFORMED_QUERY`) and
+  real Athena's message `Only one sql statement is allowed. Got: <statement>`,
+  where `<statement>` is the `QueryString` with trailing whitespace removed
+  (measured 2026-09-26). As on real Athena, the text is split at every `;`
+  outside quotes and comments, and pieces holding only whitespace do not count,
+  while a piece holding only a comment does: `SELECT 1; -- c` is rejected,
+  `SELECT 'a;b'` is not. This check comes before every other check on the SQL
+  below. A statement ending in `;` with nothing after it passes this check but
+  still fails Trino's syntax check (see [Caveats](caveats.md#sql-dialect)).
 - A syntax error makes `StartQueryExecution` fail with `InvalidRequestException`
   (`AthenaErrorCode` `MALFORMED_QUERY`) instead of creating a `FAILED` query, as
   Athena does. The message is Trino's, with positions counted in the original SQL

@@ -578,3 +578,22 @@ Content-Type と `.metadata` を含む置き場所は本項が主で、[result-f
 - 採用した判断: 無引用の 3 部の名前で No location になる形は、1 部目のカタログが無ければ Context によらず `DATACATALOG_NOT_FOUND`（実在は `DESCRIBE` と同じく Trino に問い合わせ、`awsdatacatalog` は大文字小文字によらず実在）。S3 Tables の Context で 1 部目が小文字ちょうどでない `awsdatacatalog` なら、2 部目の名前空間が無ければ Trino に送らずに本物と同じ FAILED（ファイルも置かない）、あれば No location のまま（本物は作るが、SQL の書き換えが要る。ユーザーの判断）。2 部の `<db>.<t>` は #231、CTAS は #232
 - 備考: #224 の i2・i4 と食い違いは無かった。仮説（大文字混じりの 1 部目は無視され、2 部目が S3 Tables の名前空間として引かれる）は j1・j4 と j2・j3 の対で確かめた
 
+
+### 複数の文と末尾の `;`（#228）
+- 日付: 2026-09-26（UTC 2026-09-26 03:38）／ issue: #228 ／ スクリプト: `tools/measure/unquoted-ddl.sh`（`ROUND=6`）／ 生データ: `$HOME/athena-unquoted-ddl-measurements/run-20260926-033720`
+- 相手: 本物の Athena（Context は書いたもの以外 `Catalog=AwsDataCatalog,Database=<db>`。k29・k30 は S3 Tables のカタログ `s3tablescatalog/<bucket>`）
+- 投げたもの: 31 項目（k0〜k30）。作られた表は無い（CREATE TABLE はすべて開始時に弾かれた）
+- 返ったもの（弾かれたものはすべて `InvalidRequestException`・AthenaErrorCode `MALFORMED_QUERY`。文言は repr で読んだ）:
+
+  | 文 | 本物 |
+  |---|---|
+  | `SELECT 1; -- c`（k1）・`SELECT 1; /* c */`（k2）・`SELECT 1;\n-- c`（k3）・`SELECT 1; SELECT 2`（k4）・`SELECT 1;SELECT 2`（k5）・`SELECT 'a;b'; -- c`（k14） | `Only one sql statement is allowed. Got: <文>`（文は投げたとおり） |
+  | `  SELECT  1; -- c  `（k18）・`SELECT 1\n; -- c\n`（k19） | 同じ。`Got:` の後ろは末尾の空白・改行だけ落ち、先頭の空白 2 つと中の空白・改行は残る |
+  | `SELEC 1; -- c`（k20）・`SELECT 1; SELEC 2`（k21）・`DESCRIBE <db>.<実在しない表>; -- c`（k22）・`SHOW DATABASES; -- c`（k23）・`DROP TABLE IF EXISTS <db>.<実在しない表>; -- c`（k24）・`CREATE TABLE <db>.<t> (n int); -- c`（k25）・`(n int NOT NULL); -- c`（k26） | 同じ。構文エラー・存在の確認・No location・NV より先 |
+  | S3 Tables の Context で `SELECT 1; -- c`（k29）・`CREATE TABLE awsdatacatalog.<db>.<t> (n int); -- c`（k30。#224 の i10 の再現） | 同じ。`Unsupported ddl with 2 catalogs` より先 |
+  | `SELECT 1;;`（k6）・`SELECT 1; ;`（k7）・`SELECT 1; `（k8）・`SELECT 1;\n\n`（k9）・`SELECT 1 ;`（k10）・`-- c\nSELECT 1;`（k11）・`SELECT 1 -- c\n;`（k12）・`SELECT 1;\r\n`（k28） | SUCCEEDED（DML / SELECT） |
+  | `SELECT 'a;b'`（k13）・`SELECT 1 AS "a;b"`（k15）・`SELECT 1 -- a;b`（k16）・`SELECT 1 /* a;b */`（k17） | SUCCEEDED（文字列・引用符付きの名前・コメントの中の `;` は区切りにならない） |
+  | `CREATE TABLE <db>.<t> (n int);`（k27） | `No location was specified for table. An S3 location must be specified`（`;` の無い形と同じ） |
+
+- 採用した判断: 引用符（`'`・`"`）とコメントの外の `;` で区切り、空白（空白・タブ・CR・LF）だけの片を除いて 2 つ以上あれば、構文チェックの前に `Only one sql statement is allowed. Got: <末尾の空白を落とした文>` で弾く。コメントだけの片は数える。末尾の `;` だけの文は本物では通るが、athena-local は今までどおり Trino の構文チェックで弾く（#240 に分けた）
+- 備考: #224 の i10 と食い違いは無かった。#76 の `SELECT 1;`（SUCCEEDED）とも合う

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# issue #208 で作成。issue #221 で ROUND=3、issue #224 で ROUND=4、issue #227 で ROUND=5 を追加
+# issue #208 で作成。issue #221 で ROUND=3、issue #224 で ROUND=4、issue #227 で ROUND=5、
+# issue #228 で ROUND=6 を追加
 # 本物の Athena が StartQueryExecution の時点で弾く、無引用の DDL 3 種
 # （ALTER TABLE IF EXISTS、ALTER TABLE ... ADD COLUMN（単数）、場所の無い CREATE TABLE）の
 # 弾かれ方の規則（`line L:C` の位置、`no viable alternative at input '...'` の input の範囲、
@@ -110,6 +111,12 @@
 #   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=5 \
 #     S3TABLES_CATALOG=s3tablescatalog/your-bucket S3TABLES_NS=your_ns \
 #     bash tools/measure/unquoted-ddl.sh
+#   ラウンド 6（issue #228。#224 の i10 で見つけた `Only one sql statement is allowed. Got: <文>` が
+#   どの形で返るか（`;` の後ろに何があるとき・文字列やコメントの中の `;`・他の判定との順番・
+#   `Got:` の後ろの文の書かれ方）だけを測る。S3TABLES_* が無ければ k29・k30 は未測定として残す）:
+#   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=6 \
+#     S3TABLES_CATALOG=s3tablescatalog/your-bucket S3TABLES_NS=your_ns \
+#     bash tools/measure/unquoted-ddl.sh
 #   （資格情報はホストのシェルで AWS_ACCESS_KEY_ID などを export してから。または ~/.aws/credentials）
 #
 # 必要な環境変数:
@@ -129,6 +136,7 @@
 #                    5 は J 群（S3 Tables の Context の別カタログ・別名前空間の名前。
 #                    issue #227）だけ。実在する表は作らない。FAILED になった項目は
 #                    結果ファイル本体と .metadata も取得する。
+#                    6 は K 群（複数の文・末尾の `;`。issue #228）だけ。実在する表は作らない。
 #   CATALOG          既定 AwsDataCatalog
 #   REGION           既定 ap-northeast-1
 #   OUT_DIR          既定 ${DEV_HOST_HOME:-$HOME}/athena-unquoted-ddl-measurements
@@ -198,6 +206,11 @@
 #     加えて、FAILED になった項目は GetQueryExecution の OutputLocation から結果ファイル
 #     本体と `.metadata` を `aws s3 cp <uri> -` で読み出して保存する
 #     （fetch_failed_attachments。読み取りのみで、書き込みは行わない）。
+#   - ROUND=6: 実在する表 <接頭辞>_real は作らない。K 群の大半は SELECT などの読み取りで、
+#     CREATE TABLE（k25〜k27・k30）は run_create_then_drop_ctx で投げ、想定外に成功したら
+#     その場で無引用 + IF EXISTS の DROP TABLE を投げて消す（k30 は S3 Tables の Context で
+#     awsdatacatalog 側の名前なので既定の Context で消す）。DESCRIBE・DROP TABLE IF EXISTS は
+#     実在しない名前（<接頭辞>_nope）にだけ投げる。
 #
 # 課金について: ALTER TABLE・DROP TABLE はメタデータだけを見る／書く文で、実データの
 # スキャンは無い。CREATE TABLE（実在する表の準備・C3・C20・C21・C22・C23、E・F 群、
@@ -288,6 +301,16 @@
 #   [GetQueryExecution]
 #   開始できた項目だけ終端状態までポーリングし、終端後にもう 1 回まとめて取得する。
 #
+# == ROUND=6（K 群のみ。issue #228。preflight・DB 確認は共通、実在する表は作らない） ==
+#
+#   [StartQueryExecution]
+#   preflight（SELECT 1 + SHOW TABLES）2 + K 群（k0〜k28）29
+#   + S3TABLES_* が揃うときだけ k29・k30 の 2 = 33（あり）／31（無し）。
+#   受理された CREATE TABLE ごとに、その場で DROP する後始末が 1 本ずつ増える（最大 +4）。
+#
+#   [GetQueryExecution]
+#   開始できた項目だけ終端状態までポーリングし、終端後にもう 1 回まとめて取得する。
+#
 # == ROUND=5（J 群のみ。issue #227。preflight・DB 確認は共通、実在する表は作らない） ==
 #
 #   [StartQueryExecution]
@@ -331,9 +354,9 @@ set -uo pipefail
 : "${DB:?DB にデータベース名を設定してください}"
 ROUND=${ROUND:-1}
 case "$ROUND" in
-  1 | 2 | 3 | 4 | 5) ;;
+  1 | 2 | 3 | 4 | 5 | 6) ;;
   *)
-    echo "ROUND には 1・2・3・4・5 のどれかを指定してください（既定 1）" >&2
+    echo "ROUND には 1・2・3・4・5・6 のどれかを指定してください（既定 1）" >&2
     exit 1
     ;;
 esac
@@ -858,17 +881,17 @@ fi
 # --- 実在する表のセットアップ（B10・C15、ROUND=2 の F1・F3・F4・F5 の対照に使う） --------
 # WITH (format='PARQUET') は本物で external_location が要るかもしれないため、
 # quoted-names.sh の d0-setup-hive と同じ「WITH 句を付けない CTAS」の形にした。
-# ROUND=3・4・5 は実在する表を使わないので作らない
+# ROUND=3・4・5・6 は実在する表を使わないので作らない
 # （REAL_SETUP_ATTEMPTED・REAL_SETUP_OK は 0 のまま）。
 
-if [ "$ROUND" != 3 ] && [ "$ROUND" != 4 ] && [ "$ROUND" != 5 ]; then
+if [ "$ROUND" = 1 ] || [ "$ROUND" = 2 ]; then
 REAL_SETUP_ATTEMPTED=1
 if run setup-real "CREATE TABLE $DB.$REAL AS SELECT 1 AS n, 'x' AS s, 10 AS x"; then
   REAL_SETUP_OK=1
 else
   echo "== setup-real: 実在する表が作れませんでした。B10・ROUND=2 の F1・F3・F4・F5 は実在しない名前を対象にします。"
 fi
-fi # ROUND != 3 && ROUND != 4 && ROUND != 5
+fi # ROUND = 1 || ROUND = 2
 
 if [ "$REAL_SETUP_OK" = 1 ]; then
   LIKE_TARGET="$DB.$REAL"
@@ -1251,6 +1274,62 @@ fetch_failed_attachments $J_LABELS
 
 fi # ROUND=5
 
+# ROUND=6 だけ、K 群を投げる（issue #228）。
+if [ "$ROUND" = 6 ]; then
+
+DEFAULT_CTX="Catalog=$CATALOG,Database=$DB"
+# K 群のラベル一覧（k0〜k30。-cleanup は含まない）。ALL_LABELS と summary の repr の節から参照する。
+K_LABELS="k0 k1 k2 k3 k4 k5 k6 k7 k8 k9 k10 k11 k12 k13 k14 k15 k16 k17 k18 k19 k20 k21 k22 k23 k24 k25 k26 k27 k28 k29 k30"
+
+# --- K 群（複数の文と末尾の `;`） -----------------------------------------------------
+# #224 の i10（S3 Tables の Context で `CREATE TABLE awsdatacatalog.<db>.<t> (n int); -- c` →
+# `Only one sql statement is allowed. Got: <文>`）の周辺。#76 で `SELECT 1;` は SUCCEEDED だった。
+# k0 は疎通の対照。k1〜k12 は `;` の後ろに何があれば弾かれるか（コメント・別の文・`;`・空白・改行・CRLF）、
+# k13〜k17 は文字列・引用符付きの名前・コメントの中の `;`、k18・k19 は `Got:` の後ろの文の前後の空白、
+# k20〜k27 は他の判定（構文エラー・DESCRIBE の存在確認・No location・NV）との順番と文の種類、
+# k28 は末尾の CRLF、k29・k30 は S3 Tables の Context の対照（k30 は i10 の再現）。
+run_in_ctx "$DEFAULT_CTX" k0 "SELECT 1"
+run_in_ctx "$DEFAULT_CTX" k1 "SELECT 1; -- c"
+run_in_ctx "$DEFAULT_CTX" k2 "SELECT 1; /* c */"
+run_in_ctx "$DEFAULT_CTX" k3 $'SELECT 1;\n-- c'
+run_in_ctx "$DEFAULT_CTX" k4 "SELECT 1; SELECT 2"
+run_in_ctx "$DEFAULT_CTX" k5 "SELECT 1;SELECT 2"
+run_in_ctx "$DEFAULT_CTX" k6 "SELECT 1;;"
+run_in_ctx "$DEFAULT_CTX" k7 "SELECT 1; ;"
+run_in_ctx "$DEFAULT_CTX" k8 "SELECT 1; "
+run_in_ctx "$DEFAULT_CTX" k9 $'SELECT 1;\n\n'
+run_in_ctx "$DEFAULT_CTX" k10 "SELECT 1 ;"
+run_in_ctx "$DEFAULT_CTX" k11 $'-- c\nSELECT 1;'
+run_in_ctx "$DEFAULT_CTX" k12 $'SELECT 1 -- c\n;'
+run_in_ctx "$DEFAULT_CTX" k13 "SELECT 'a;b'"
+run_in_ctx "$DEFAULT_CTX" k14 "SELECT 'a;b'; -- c"
+run_in_ctx "$DEFAULT_CTX" k15 'SELECT 1 AS "a;b"'
+run_in_ctx "$DEFAULT_CTX" k16 "SELECT 1 -- a;b"
+run_in_ctx "$DEFAULT_CTX" k17 "SELECT 1 /* a;b */"
+run_in_ctx "$DEFAULT_CTX" k18 "  SELECT  1; -- c  "
+run_in_ctx "$DEFAULT_CTX" k19 $'SELECT 1\n; -- c\n'
+run_in_ctx "$DEFAULT_CTX" k20 "SELEC 1; -- c"
+run_in_ctx "$DEFAULT_CTX" k21 "SELECT 1; SELEC 2"
+run_in_ctx "$DEFAULT_CTX" k22 "DESCRIBE $DB.$NOPE; -- c"
+run_in_ctx "$DEFAULT_CTX" k23 "SHOW DATABASES; -- c"
+run_in_ctx "$DEFAULT_CTX" k24 "DROP TABLE IF EXISTS $DB.$NOPE; -- c"
+# No location・NV(NOT) との順番と、DDL の末尾の `;` だけ（既定の Context）。
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" k25 "CREATE TABLE $DB.$(new_name k25) (n int); -- c" "$(new_name k25)"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" k26 "CREATE TABLE $DB.$(new_name k26) (n int NOT NULL); -- c" "$(new_name k26)"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" k27 "CREATE TABLE $DB.$(new_name k27) (n int);" "$(new_name k27)"
+run_in_ctx "$DEFAULT_CTX" k28 $'SELECT 1;\r\n'
+if [ -n "$S3TABLES_CATALOG" ] && [ -n "$S3TABLES_NS" ]; then
+  S3T_CTX="Catalog=$S3TABLES_CATALOG,Database=$S3TABLES_NS"
+  run_in_ctx "$S3T_CTX" k29 "SELECT 1; -- c"
+  run_create_then_drop_ctx "$S3T_CTX" "$DEFAULT_CTX" k30 "CREATE TABLE awsdatacatalog.$DB.$(new_name k30) (n int); -- c" "$(new_name k30)"
+else
+  skip k29 "未測定（S3TABLES_* 未設定）"
+  skip k30 "未測定（S3TABLES_* 未設定）"
+  skip k30-cleanup "CREATE TABLE を投げていないため後始末不要"
+fi
+
+fi # ROUND=6
+
 # --- 後始末（実在する表） ----------------------------------------------------------
 
 if [ "$REAL_SETUP_OK" = 1 ]; then
@@ -1261,7 +1340,7 @@ if [ "$REAL_SETUP_OK" = 1 ]; then
     echo "== 後始末の DROP TABLE が SUCCEEDED になりませんでした。終了時にもう一度投げます。"
     echo "   それでも消えなければ、$DB の $REAL を手で消してください。"
   fi
-elif [ "$ROUND" != 3 ] && [ "$ROUND" != 4 ] && [ "$ROUND" != 5 ]; then
+elif [ "$ROUND" = 1 ] || [ "$ROUND" = 2 ]; then
   skip z-drop-real "実在する表を作れなかったため後始末不要"
 fi
 
@@ -1288,6 +1367,13 @@ elif [ "$ROUND" = 4 ]; then
   ALL_LABELS="$ALL_LABELS i0"
   for l in i1 i2 i3 i4 i5 i6 i7 i8 i9 i10 i11 i12 i13 i14 i15 i16 i17 i18 i19 i20 i21 i22; do
     ALL_LABELS="$ALL_LABELS $l $l-cleanup"
+  done
+elif [ "$ROUND" = 6 ]; then
+  for l in $K_LABELS; do
+    case "$l" in
+      k25 | k26 | k27 | k30) ALL_LABELS="$ALL_LABELS $l $l-cleanup" ;;
+      *) ALL_LABELS="$ALL_LABELS $l" ;;
+    esac
   done
 elif [ "$ROUND" = 5 ]; then
   ALL_LABELS="$ALL_LABELS j0"
@@ -1352,6 +1438,26 @@ write_summary_txt() {
       echo "#   i2・i19・i20 は S3 Tables の Context で DROP TABLE IF EXISTS）。i14・i15 の LOCATION は"
       echo "#   <OUTPUT>athena-local-probe-224/<PROBE>_<項目>/（空のプレフィックス。データは置かない）。"
       echo "# 課金: スキャンの無いクエリだけ（CREATE は 0〜1 行、DROP はメタデータのみ）。"
+      echo "# 注意: これは実測した本物の Athena の挙動であり、将来の Athena の変更で変わりうる。"
+      echo "#   実測値は既定とは限らない。"
+    elif [ "$ROUND" = 6 ]; then
+      echo "# issue #228（#208 ラウンド 6）: 複数の文（; の後ろに何かある文）が StartQueryExecution の"
+      echo "#             時点で Only one sql statement is allowed で弾かれる範囲と、Got: の後ろの"
+      echo "#             文の書かれ方、他の判定との順番を実測"
+      echo "# 実行日時: $(date -Iseconds)"
+      if [ -n "$S3TABLES_CATALOG" ] && [ -n "$S3TABLES_NS" ]; then
+        echo "# S3TABLES_*: 設定あり（k29・k30 を測る）"
+      else
+        echo "# S3TABLES_*: 未設定（k29・k30 は未測定）"
+      fi
+      echo "# StartQueryExecution の見込み本数: 33（S3TABLES_* あり）／31（無し）"
+      echo "#   （preflight 2 + K 群 k0〜k28 の 29、S3TABLES_* が揃えば k29・k30 の 2）。"
+      echo "#   このスクリプトの実測値: $(wc -l < "$START_CALL_FILE" | tr -d ' ') 回"
+      echo "#   受理された CREATE TABLE ごとに、その場で DROP する後始末が 1 本ずつ増える（最大 +4）。"
+      echo "# DDL: 実在する表 <PROBE>_real は作らない。k25〜k27・k30 の CREATE TABLE は、受理されたら"
+      echo "#   その場で既定の Context で DROP TABLE IF EXISTS <PROBE>_<項目> を投げて消す。"
+      echo "#   DESCRIBE・DROP TABLE IF EXISTS は実在しない名前（<PROBE>_nope）にだけ投げる。"
+      echo "# 課金: スキャンの無いクエリだけ（SELECT は定数、CREATE は 0 行、DROP はメタデータのみ）。"
       echo "# 注意: これは実測した本物の Athena の挙動であり、将来の Athena の変更で変わりうる。"
       echo "#   実測値は既定とは限らない。"
     elif [ "$ROUND" = 5 ]; then
@@ -1478,6 +1584,41 @@ PYEOF
         echo
       fi
     done
+    if [ "$ROUND" = 6 ]; then
+      echo
+      echo "## K 群の文と開始時の文言（Python の repr。前後の空白・改行・CR を区別する。実名は伏せる）"
+      for label in $K_LABELS; do
+        [ -s "$RUN_DIR/$label.sql" ] || continue
+        echo "### $label"
+        hide "$(python3 - "$RUN_DIR/$label.sql" "$RUN_DIR/$label.start.err" <<'PYEOF'
+import sys
+# .sql は printf '%s\n' で書いたので、末尾の改行 1 つだけが足されている。
+sql = open(sys.argv[1], "rb").read().decode("utf-8", "replace")
+if sql.endswith("\n"):
+    sql = sql[:-1]
+print("- sql: " + repr(sql))
+try:
+    text = open(sys.argv[2], "rb").read().decode("utf-8", "replace")
+except OSError:
+    text = ""
+if not text:
+    print("- message: (開始できた)")
+    sys.exit(0)
+marker = "operation: "
+idx = text.find(marker)
+if idx == -1:
+    print("- message: (見つからない)")
+    sys.exit(0)
+rest = text[idx + len(marker):]
+end = rest.find("\n\nAdditional error details:")
+# AWS CLI は文言の直後に空行と Additional error details を続ける（#224 の i10 の生データ）。
+msg = rest[:end] if end != -1 else rest
+print("- message: " + repr(msg))
+PYEOF
+)"
+        echo
+      done
+    fi
     if [ "$ROUND" = 5 ]; then
       echo
       echo "## 付随物（結果ファイル本体・.metadata。FAILED になった項目だけ。実名は伏せる）"
