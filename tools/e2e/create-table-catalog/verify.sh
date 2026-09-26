@@ -53,12 +53,12 @@
 # コンテナや compose のサービスは止めたり消したりしない。cargo test も走らせない。
 # 終了コードは結果表の FAIL の件数を数え、1 件でもあれば 1。
 #
-# 実機での確認（2026-09-26）: この Trino のカタログ構成（iceberg.properties の TESTING_FILE_METASTORE、
-# fs.local.enabled=true）では、CREATE SCHEMA で作った名前空間が一覧（system.jdbc.schemas・SHOW SCHEMAS・
-# information_schema.schemata）に現れない（生の Trino CLI でも再現する）。そのため athena-local は名前空間の
-# 有無を一覧ではなく `SHOW TABLES FROM "<カタログ>"."<名前空間>" LIKE ''` で直接引いて確かめる（無ければ
-# SCHEMA_NOT_FOUND）。最初の版は system.jdbc.schemas を引いていて、この足場の M3 で「あるのに無い」と
-# 誤判定したので直した（#227）。
+# 実機での確認（2026-09-26）: 当時のこの Trino のカタログ構成（iceberg.properties の TESTING_FILE_METASTORE、
+# fs.local.enabled=true、場所を file:// で書いていた）では、CREATE SCHEMA で作った名前空間が一覧
+# （system.jdbc.schemas・SHOW SCHEMAS・information_schema.schemata）に現れなかった（生の Trino CLI でも再現した。
+# 場所を local:// にして直した。#233）。athena-local は名前空間の有無を一覧ではなく
+# `SHOW TABLES FROM "<カタログ>"."<名前空間>" LIKE ''` で直接引いて確かめる（無ければ SCHEMA_NOT_FOUND）。
+# 最初の版は system.jdbc.schemas を引いていて、この足場の M3 で「あるのに無い」と誤判定したので直した（#227）。
 
 set -uo pipefail
 
