@@ -15,6 +15,10 @@
 #   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db bash tools/measure/block-comment-parse-error.sh
 #   （資格情報はホストのシェルで AWS_ACCESS_KEY_ID などを export してから。または ~/.aws/credentials）
 #   DB を省略するか実在しなければ、SHOW DATABASES の候補の 1 件目を自動で使う。
+#   ラウンド 2（RENAME・DROP COLUMN・ADD COLUMNS の先頭寄りの位置、MSCK REPAIR TABLE の
+#   I・V・無い表、DESCRIBE の続き、空白 2 つ・タブ・複数改行・コメントの中身の違い。
+#   下の「項目（ROUND=2）」）:
+#   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=2 bash tools/measure/block-comment-parse-error.sh
 #
 # 必要な環境変数:
 #   OUTPUT    結果の出力先。s3://bucket/prefix/ の形（末尾の / を付ける）。
@@ -22,6 +26,9 @@
 # 任意の環境変数:
 #   DB           データベース名。省略するか実在しなければ、SHOW DATABASES の候補の 1 件目を使う
 #                （$RUN_DIR/available-databases.bytes に一覧を残す。実名を含む）。
+#   ROUND        既定 1（A・S・R・D 群）。2 にすると下の「項目（ROUND=2）」だけを流す
+#                （フィクスチャの作成・形式の裏取り・後始末・衝突確認・preflight・マスク・
+#                summary の仕組みは ROUND=1 と共通）。
 #   CATALOG      既定 AwsDataCatalog
 #   REGION       既定 ap-northeast-1
 #   OUT_DIR      既定 ${DEV_HOST_HOME:-$HOME}/athena-block-comment-parse-error-measurements
@@ -46,6 +53,11 @@
 #   EXTERNAL なので DROP TABLE では S3 の場所自体は残るが、行を入れていないので中身は無い。
 #   スキャンする SELECT は一切投げない（S/R/D 群は SHOW / MSCK REPAIR / DESCRIBE で、いずれも
 #   メタデータだけを見る）。
+#   ROUND=2 は同じ 3 つのフィクスチャを使い、ALTER TABLE ... RENAME TO を H・V にも投げる
+#   （n1・n2）。RENAME が成功すると対象は athena_local_probe_244_h_ren /
+#   athena_local_probe_244_v_ren という名前になる。後始末は元の名前と _ren の両方に
+#   DROP TABLE/VIEW IF EXISTS を投げるので、どちらの名前で残っていても消える
+#   （athena_local_probe_244_i_ren も念のため同様に消す。本ラウンドの項目には I の RENAME は無い）。
 #
 # 課金について: メタデータだけの操作（DDL は 0 行、SHOW/DESCRIBE/MSCK は読み取りのみ）。
 # Athena の最小課金 × クエリ数の見込み。StartQueryExecution を呼んだ回数は summary.txt の
@@ -53,8 +65,8 @@
 # trap で発動する後始末のベストエフォート呼び出しも、正常終了で本編の DROP が全部済んでいれば
 # 呼ばれないため含めない）。
 #
-# 項目（A・S・R・D の 4 群。<H>/<I>/<V> はフィクスチャの修飾名 <DB>.athena_local_probe_244_h
-# などで、<M> は作らない無い表。改行を含む文は本物の改行文字を送る）:
+# 項目（ROUND=1、既定。A・S・R・D の 4 群。<H>/<I>/<V> はフィクスチャの修飾名
+# <DB>.athena_local_probe_244_h などで、<M> は作らない無い表。改行を含む文は本物の改行文字を送る）:
 #   A. ALTER TABLE（コメント無しの対照と対で。a17 は I の列を消すので、I を使うほかの項目
 #      （a3・s6〜s9・r10・d1）の後、後始末の直前に流す）
 #     a1  ALTER TABLE <H> ADD COLUMNS (c1 int)                          対照（コメント無し）
@@ -117,6 +129,60 @@
 #     d5  DESCRIBE /* c */ <V>                                         ビュー
 #     d6  DESCRIBE -- c\n<H>                                           行コメント
 #
+# 項目（ROUND=2。RENAME・DROP COLUMN・ADD COLUMNS の先頭寄りの位置、MSCK REPAIR TABLE の
+# I・V・無い表、DESCRIBE の続き、空白 2 つ・タブ・複数改行・コメントの中身の違い。
+# n1・n2（RENAME）が成功すると H・V は <名前>_ren に移る。後始末は両方の名前に投げる）:
+#   n1  ALTER /* c */ TABLE <H> RENAME TO <DB>.athena_local_probe_244_h_ren（H を使う
+#       ほかの全項目の後、後始末の直前に流す）
+#   n2  ALTER /* c */ TABLE <V> RENAME TO <DB>.athena_local_probe_244_v_ren（V を使う
+#       ほかの項目（n8・m5・m6・d9・d10）の後に流す）
+#   n3  /* c */ ALTER TABLE <M> RENAME TO <DB>.athena_local_probe_244_renamed
+#   n4  ALTER TABLE /* c */ <M> RENAME TO <DB>.athena_local_probe_244_renamed
+#   n5  /* c */ ALTER TABLE <H> DROP COLUMN n
+#   n6  ALTER TABLE /* c */ <H> DROP COLUMN n
+#   n7  alter /* c */ table <H> drop column n                            小文字
+#   n8  ALTER /* c */ TABLE <V> DROP COLUMN n
+#   n9  ALTER  /* c */ TABLE <M> DROP COLUMN c                           空白 2 つ
+#   n10 /* c */ ALTER TABLE <H> ADD COLUMNS (c6 int)
+#   n11 ALTER TABLE /* c */ <H> ADD COLUMNS (c7 int)
+#   n12 /* c */ ALTER TABLE <I> ADD COLUMNS (c8 int)                     m1〜m4・d7・d8 の後
+#   n13 ALTER TABLE /* c */ <I> ADD COLUMNS (c9 int)                     m1〜m4・d7・d8 の後
+#   m1  MSCK REPAIR TABLE <I>                                            対照（コメント無し）
+#   m2  /* c */ MSCK REPAIR TABLE <I>
+#   m3  MSCK /* c */ REPAIR TABLE <I>
+#   m4  MSCK REPAIR TABLE /* c */ <I>
+#   m5  MSCK REPAIR TABLE <V>                                            対照（コメント無し）
+#   m6  MSCK REPAIR /* c */ TABLE <V>
+#   m7  MSCK REPAIR TABLE <M>                                            対照（コメント無し）
+#   d7  /* c */ DESCRIBE <I>
+#   d8  DESC /* c */ <I>
+#   d9  /* c */ DESCRIBE <V>
+#   d10 SHOW CREATE TABLE /* c */ <V>
+#   p1  SHOW  CREATE /* c */ TABLE <H>                                   空白 2 つ
+#   p2  SHOW\t/* c */ CREATE TABLE <H>                                   タブ
+#   p3  MSCK  REPAIR /* c */ TABLE <H>                                   空白 2 つ
+#   p4  SHOW CREATE TABLE  /* c */ <H>                                   空白 2 つ
+#   p5  SHOW CREATE\n  /* c */ TABLE <H>                                 改行 + 空白 2 つ
+#   p6  SHOW\n\n/* c */ CREATE TABLE <H>                                 改行 2 つ
+#   p7     /* c */ SHOW CREATE TABLE <H>                                 先頭に空白 3 つ
+#   p8  SHOW  CREATE  TABLE  /* c */ <H>                                 空白 2 つ × 3
+#   p9  ALTER TABLE  /* c */ <M> ADD COLUMNS (c int)                     空白 2 つ
+#   p10 ALTER  TABLE /* c */ <M> ADD COLUMNS (c int)                     空白 2 つ
+#   p11 SHOW\t\t/* c */ CREATE TABLE <H>                                 タブ 2 つ
+#   c1  /* 1 */ SHOW CREATE TABLE <H>
+#   c2  /* 'x' */ SHOW CREATE TABLE <H>
+#   c3  /* a.b */ SHOW CREATE TABLE <H>
+#   c4  /* _a1 */ SHOW CREATE TABLE <H>
+#   c5  /*+ x */ SHOW CREATE TABLE <H>
+#   c6  /* あ */ SHOW CREATE TABLE <H>                                   非 ASCII
+#   c7  /* 1a */ SHOW CREATE TABLE <H>
+#   c8  /*\nc */ SHOW CREATE TABLE <H>                                   コメントの中に改行
+#   c9  /* "q" */ SHOW CREATE TABLE <H>
+#   c10 /* ) */ SHOW CREATE TABLE <H>
+#   c11 SHOW CREATE TABLE /* 1 */ <H>
+#   c12 /* 1.5 */ SHOW CREATE TABLE <H>
+#   c13 /* a-b */ SHOW CREATE TABLE <H>
+#
 # ** SQL に改行を含める書き方の注意 **
 # 「ALTER\n/* c */ TABLE ...」のような文は、シェルで実際の改行文字（0x0a）にしてから渡さないと、
 # 「\」「n」という 2 文字が入った 1 行の文字列になり、まったく別の測定になる。そのため bash の
@@ -172,6 +238,14 @@ OUT_DIR=${OUT_DIR:-${DEV_HOST_HOME:-$HOME}/athena-block-comment-parse-error-meas
 POLL_TIMEOUT=${POLL_TIMEOUT:-180}
 RETRY_MAX=${RETRY_MAX:-4}
 RETRY_DELAY=${RETRY_DELAY:-5}
+ROUND=${ROUND:-1}
+case "$ROUND" in
+  1 | 2) ;;
+  *)
+    echo "ROUND には 1・2 のどちらかを指定してください（既定 1）" >&2
+    exit 1
+    ;;
+esac
 
 PREFIX=athena_local_probe_244
 H="${PREFIX}_h"
@@ -179,6 +253,11 @@ I="${PREFIX}_i"
 V="${PREFIX}_v"
 MISSING="${PREFIX}_missing"
 RENAMED="${PREFIX}_renamed"
+# ROUND=2 の n1・n2（RENAME）が成功したときの行き先。後始末で両方の名前に
+# DROP TABLE/VIEW IF EXISTS を投げる（IF EXISTS なので無い方は無害）。
+H_REN="${H}_ren"
+I_REN="${I}_ren"
+V_REN="${V}_ren"
 LOC_H="${OUTPUT}tables-probe-244-h/"
 LOC_I="${OUTPUT}tables-probe-244-i/"
 
@@ -221,6 +300,22 @@ cleanup() {
       --query-string "DROP TABLE IF EXISTS $DB.$H" \
       --query-execution-context "Catalog=$CATALOG,Database=$DB" \
       --result-configuration "OutputLocation=$OUTPUT" >/dev/null 2>&1 || true
+    if [ "$ROUND" = 2 ]; then
+      # ROUND=2 の n1・n2（RENAME）が成功していると、H・V は元の名前ではなく
+      # <名前>_ren に残っている。IF EXISTS なので両方の名前に投げて無害に消す。
+      aws athena start-query-execution --region "$REGION" \
+        --query-string "DROP VIEW IF EXISTS $DB.$V_REN" \
+        --query-execution-context "Catalog=$CATALOG,Database=$DB" \
+        --result-configuration "OutputLocation=$OUTPUT" >/dev/null 2>&1 || true
+      aws athena start-query-execution --region "$REGION" \
+        --query-string "DROP TABLE IF EXISTS $DB.$I_REN" \
+        --query-execution-context "Catalog=$CATALOG,Database=$DB" \
+        --result-configuration "OutputLocation=$OUTPUT" >/dev/null 2>&1 || true
+      aws athena start-query-execution --region "$REGION" \
+        --query-string "DROP TABLE IF EXISTS $DB.$H_REN" \
+        --query-execution-context "Catalog=$CATALOG,Database=$DB" \
+        --result-configuration "OutputLocation=$OUTPUT" >/dev/null 2>&1 || true
+    fi
   fi
 }
 trap cleanup EXIT
@@ -762,8 +857,12 @@ else
 fi
 
 # ============================================================================
-# A 群: ALTER TABLE（a17 は末尾で実行する。I の唯一の列 n を消すため）。
+# ROUND=1: A・S・R・D 群（既定）。
 # ============================================================================
+
+if [ "$ROUND" = 1 ]; then
+
+# --- A 群: ALTER TABLE（a17 は末尾で実行する。I の唯一の列 n を消すため）。 -----------
 
 run_req a1  "ALTER TABLE $DB.$H ADD COLUMNS (c1 int)" H
 run_req a2  "ALTER /* c */ TABLE $DB.$H ADD COLUMNS (c2 int)" H
@@ -782,9 +881,7 @@ run_req a14 "ALTER /* c */ TABLE $DB.$V ADD COLUMNS (c int)" V
 run     a15 "ALTER /* c */ TABLE $DB.$MISSING DROP COLUMN c"
 run_req a16 "ALTER /* c */ TABLE $DB.$H DROP COLUMN n" H
 
-# ============================================================================
-# S 群: SHOW CREATE TABLE。
-# ============================================================================
+# --- S 群: SHOW CREATE TABLE。 ------------------------------------------------
 
 run_req s1  "SHOW CREATE TABLE $DB.$H" H
 run_req s2  "/* c */ SHOW CREATE TABLE $DB.$H" H
@@ -814,9 +911,7 @@ run_req s25 $'-- x\n'"/* c */ SHOW CREATE TABLE $DB.$H" H
 run_req s26 $'/* c */\n'"SHOW CREATE TABLE $DB.$H" H
 run_req s27 "SHOW /* a */ /* b */ CREATE TABLE $DB.$H" H
 
-# ============================================================================
-# R 群: MSCK REPAIR TABLE。
-# ============================================================================
+# --- R 群: MSCK REPAIR TABLE。 ------------------------------------------------
 
 run_req r1  "MSCK REPAIR TABLE $DB.$H" H
 run_req r2  "MSCK REPAIR /* c */ TABLE $DB.$H" H
@@ -829,9 +924,7 @@ run_req r8  $'MSCK REPAIR\n'"/* c */ TABLE $DB.$H" H
 run     r9  "MSCK REPAIR /* c */ TABLE $DB.$MISSING"
 run_req r10 "MSCK REPAIR /* c */ TABLE $DB.$I" I
 
-# ============================================================================
-# D 群: DESCRIBE（#242 の周辺の未実測）。
-# ============================================================================
+# --- D 群: DESCRIBE（#242 の周辺の未実測）。 ------------------------------------
 
 run_req d1 "DESCRIBE /* c */ $DB.$I" I
 run_req d2 "describe /* c */ $DB.$H" H
@@ -843,6 +936,120 @@ run_req d6 $'DESCRIBE -- c\n'"$DB.$H" H
 # a17: I の唯一の列 n を消すので、I を使うほかの項目（a3・s6〜s9・r10・d1）が全部終わった
 # 後、後始末の直前に流す。
 run_req a17 "ALTER /* c */ TABLE $DB.$I DROP COLUMN n" I
+
+fi # ROUND=1
+
+# ============================================================================
+# ROUND=2: RENAME・DROP COLUMN・ADD COLUMNS の先頭寄りの位置、MSCK REPAIR TABLE
+# （I・V・無い表）、DESCRIBE の続き（I・V）、空白 2 つ・タブ・複数改行・コメントの
+# 中身の違い（n・m・d7〜d10・p・c 群）。
+#
+# 並び: I を使う項目（m1〜m4・d7・d8・n12・n13）は n12・n13 が m1〜m4・d7・d8 の後に
+# なるようにまとめて先に流す。V を使う項目（n8・m5・m6・d9・d10・n2）は n2 が最後になる
+# ようにまとめて流す。H を使う項目（n5・n6・n7・n10・n11・p 群の大半・c 群・n1）は
+# n1（RENAME）が最後になるように、p 群・c 群の後に n1 を置く。M を使う項目
+# （n3・n4・n9・m7・p9・p10）は依存が無いので好きな位置に置く。
+# ============================================================================
+
+if [ "$ROUND" = 2 ]; then
+
+# --- M（無い表）。依存が無いのでここでまとめて流す。 ------------------------------
+
+run n3 "/* c */ ALTER TABLE $DB.$MISSING RENAME TO $DB.$RENAMED"
+run n4 "ALTER TABLE /* c */ $DB.$MISSING RENAME TO $DB.$RENAMED"
+
+# --- H: DROP COLUMN n（3 形）。前提: どれかが実際に列を消してしまうと、後続は
+# 「列が無い」という別の理由で失敗しうる（コメント位置とは別の原因）。本物の挙動は
+# 未知のため、指示どおりの並びで投げ、結果は reason.txt の全文で見分ける。 ----------
+
+run_req n5 "/* c */ ALTER TABLE $DB.$H DROP COLUMN n" H
+run_req n6 "ALTER TABLE /* c */ $DB.$H DROP COLUMN n" H
+run_req n7 "alter /* c */ table $DB.$H drop column n" H
+
+# --- V: DROP COLUMN n。 --------------------------------------------------------
+
+run_req n8 "ALTER /* c */ TABLE $DB.$V DROP COLUMN n" V
+
+# --- M: DROP COLUMN（空白 2 つ）。 -----------------------------------------------
+
+run n9 "ALTER  /* c */ TABLE $DB.$MISSING DROP COLUMN c"
+
+# --- H: ADD COLUMNS（先頭寄りの位置。2 形）。 -----------------------------------
+
+run_req n10 "/* c */ ALTER TABLE $DB.$H ADD COLUMNS (c6 int)" H
+run_req n11 "ALTER TABLE /* c */ $DB.$H ADD COLUMNS (c7 int)" H
+
+# --- I: MSCK REPAIR TABLE（対照 + 3 形）。 --------------------------------------
+
+run_req m1 "MSCK REPAIR TABLE $DB.$I" I
+run_req m2 "/* c */ MSCK REPAIR TABLE $DB.$I" I
+run_req m3 "MSCK /* c */ REPAIR TABLE $DB.$I" I
+run_req m4 "MSCK REPAIR TABLE /* c */ $DB.$I" I
+
+# --- I: DESCRIBE・DESC。 --------------------------------------------------------
+
+run_req d7 "/* c */ DESCRIBE $DB.$I" I
+run_req d8 "DESC /* c */ $DB.$I" I
+
+# --- I: ADD COLUMNS（先頭寄りの位置。2 形）。m1〜m4・d7・d8 の後に置く。 -------------
+
+run_req n12 "/* c */ ALTER TABLE $DB.$I ADD COLUMNS (c8 int)" I
+run_req n13 "ALTER TABLE /* c */ $DB.$I ADD COLUMNS (c9 int)" I
+
+# --- V: MSCK REPAIR TABLE（対照 + 1 形）。 --------------------------------------
+
+run_req m5 "MSCK REPAIR TABLE $DB.$V" V
+run_req m6 "MSCK REPAIR /* c */ TABLE $DB.$V" V
+
+# --- V: DESCRIBE・SHOW CREATE TABLE。 --------------------------------------------
+
+run_req d9  "/* c */ DESCRIBE $DB.$V" V
+run_req d10 "SHOW CREATE TABLE /* c */ $DB.$V" V
+
+# --- V: RENAME。V を使うほかの項目（n8・m5・m6・d9・d10）が全部終わった後に置く。 -----
+
+run_req n2 "ALTER /* c */ TABLE $DB.$V RENAME TO $DB.$V_REN" V
+
+# --- M: MSCK REPAIR TABLE（対照）。 ----------------------------------------------
+
+run m7 "MSCK REPAIR TABLE $DB.$MISSING"
+
+# --- H: 空白 2 つ・タブ・複数改行・先頭の空白（p 群。p9・p10 は M）。 -----------------
+
+run_req p1  "SHOW  CREATE /* c */ TABLE $DB.$H" H
+run_req p2  $'SHOW\t'"/* c */ CREATE TABLE $DB.$H" H
+run_req p3  "MSCK  REPAIR /* c */ TABLE $DB.$H" H
+run_req p4  "SHOW CREATE TABLE  /* c */ $DB.$H" H
+run_req p5  $'SHOW CREATE\n  '"/* c */ TABLE $DB.$H" H
+run_req p6  $'SHOW\n\n'"/* c */ CREATE TABLE $DB.$H" H
+run_req p7  "   /* c */ SHOW CREATE TABLE $DB.$H" H
+run_req p8  "SHOW  CREATE  TABLE  /* c */ $DB.$H" H
+run     p9  "ALTER TABLE  /* c */ $DB.$MISSING ADD COLUMNS (c int)"
+run     p10 "ALTER  TABLE /* c */ $DB.$MISSING ADD COLUMNS (c int)"
+run_req p11 $'SHOW\t\t'"/* c */ CREATE TABLE $DB.$H" H
+
+# --- H: コメントの中身の違い（c 群）。 --------------------------------------------
+
+run_req c1  "/* 1 */ SHOW CREATE TABLE $DB.$H" H
+run_req c2  "/* 'x' */ SHOW CREATE TABLE $DB.$H" H
+run_req c3  "/* a.b */ SHOW CREATE TABLE $DB.$H" H
+run_req c4  "/* _a1 */ SHOW CREATE TABLE $DB.$H" H
+run_req c5  "/*+ x */ SHOW CREATE TABLE $DB.$H" H
+run_req c6  "/* あ */ SHOW CREATE TABLE $DB.$H" H
+run_req c7  "/* 1a */ SHOW CREATE TABLE $DB.$H" H
+run_req c8  $'/*\n'"c */ SHOW CREATE TABLE $DB.$H" H
+run_req c9  "/* \"q\" */ SHOW CREATE TABLE $DB.$H" H
+run_req c10 "/* ) */ SHOW CREATE TABLE $DB.$H" H
+run_req c11 "SHOW CREATE TABLE /* 1 */ $DB.$H" H
+run_req c12 "/* 1.5 */ SHOW CREATE TABLE $DB.$H" H
+run_req c13 "/* a-b */ SHOW CREATE TABLE $DB.$H" H
+
+# --- H: RENAME。H を使うほかの全項目（n5・n6・n7・n10・n11・p 群・c 群）が全部終わった
+# 後、後始末の直前に流す（RENAME が成功すると H は $H_REN に移る）。 -------------------
+
+run_req n1 "ALTER /* c */ TABLE $DB.$H RENAME TO $DB.$H_REN" H
+
+fi # ROUND=2
 
 # ============================================================================
 # 後始末: 作った 3 つを DROP する。
@@ -860,6 +1067,19 @@ fi
 if [ "$H_OK" = 1 ]; then
   run drop-h "DROP TABLE IF EXISTS $DB.$H" || CLEANUP_ALL_OK=0
 fi
+if [ "$ROUND" = 2 ]; then
+  # n1・n2（RENAME）が成功していると、上の DROP は元の名前を探して見つからないだけ
+  # （IF EXISTS なので SUCCEEDED のまま）。<名前>_ren の方も IF EXISTS で消す。
+  if [ "$V_OK" = 1 ]; then
+    run drop-v-ren "DROP VIEW IF EXISTS $DB.$V_REN" || CLEANUP_ALL_OK=0
+  fi
+  if [ "$I_OK" = 1 ]; then
+    run drop-i-ren "DROP TABLE IF EXISTS $DB.$I_REN" || CLEANUP_ALL_OK=0
+  fi
+  if [ "$H_OK" = 1 ]; then
+    run drop-h-ren "DROP TABLE IF EXISTS $DB.$H_REN" || CLEANUP_ALL_OK=0
+  fi
+fi
 if [ "$CLEANUP_ALL_OK" = 1 ]; then
   FIXTURES_ATTEMPTED=0
 else
@@ -873,12 +1093,23 @@ fi
 
 PREFLIGHT_LABELS="list-tables available-databases"
 FIXTURE_LABELS="create-h create-i create-v verify-h verify-i"
-A_LABELS="a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11 a12 a13 a14 a15 a16"
-S_LABELS="s1 s2 s3 s4 s5 s6 s7 s8 s9 s10 s11 s12 s13 s14 s15 s16 s17 s18 s19 s20 s21 s22 s23 s24 s25 s26 s27"
-R_LABELS="r1 r2 r3 r4 r5 r6 r7 r8 r9 r10"
-D_LABELS="d1 d2 d3 d4 d5 d6"
 CLEANUP_LABELS="drop-v drop-i drop-h"
-ALL_LABELS="$PREFLIGHT_LABELS $FIXTURE_LABELS $A_LABELS $S_LABELS $R_LABELS $D_LABELS a17 $CLEANUP_LABELS"
+if [ "$ROUND" = 2 ]; then
+  CLEANUP_LABELS="$CLEANUP_LABELS drop-v-ren drop-i-ren drop-h-ren"
+fi
+
+if [ "$ROUND" = 1 ]; then
+  A_LABELS="a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11 a12 a13 a14 a15 a16"
+  S_LABELS="s1 s2 s3 s4 s5 s6 s7 s8 s9 s10 s11 s12 s13 s14 s15 s16 s17 s18 s19 s20 s21 s22 s23 s24 s25 s26 s27"
+  R_LABELS="r1 r2 r3 r4 r5 r6 r7 r8 r9 r10"
+  D_LABELS="d1 d2 d3 d4 d5 d6"
+  ALL_LABELS="$PREFLIGHT_LABELS $FIXTURE_LABELS $A_LABELS $S_LABELS $R_LABELS $D_LABELS a17 $CLEANUP_LABELS"
+else
+  ROUND2_LABELS="n3 n4 n5 n6 n7 n8 n9 n10 n11 m1 m2 m3 m4 d7 d8 n12 n13 m5 m6 d9 d10 n2 m7"
+  ROUND2_LABELS="$ROUND2_LABELS p1 p2 p3 p4 p5 p6 p7 p8 p9 p10 p11"
+  ROUND2_LABELS="$ROUND2_LABELS c1 c2 c3 c4 c5 c6 c7 c8 c9 c10 c11 c12 c13"
+  ALL_LABELS="$PREFLIGHT_LABELS $FIXTURE_LABELS $ROUND2_LABELS n1 $CLEANUP_LABELS"
+fi
 
 # summary.tsv から 1 行を読み、要点を 1 行にまとめて返す。
 row_summary_of() {
@@ -901,6 +1132,7 @@ write_summary_txt() {
   {
     echo "# issue #244: SHOW CREATE TABLE・ALTER TABLE・MSCK REPAIR TABLE・DESCRIBE の"
     echo "#             キーワードの間や直後のブロックコメントが本物の Athena でどう扱われるかを実測"
+    echo "# ROUND: $ROUND"
     echo "# 実行日時: $(date -Iseconds)"
     echo "# StartQueryExecution を呼んだ回数（一時的な失敗の再試行込み。フィクスチャ作成・"
     echo "#   形式の裏取り（SHOW CREATE TABLE）・後始末の DROP を含む。list-work-groups など"
@@ -908,12 +1140,23 @@ write_summary_txt() {
     echo "#   ※ GetQueryExecution / S3 への呼び出しはこの回数に含めない（課金には影響しない）。"
     echo "#   ※ trap で発動する後始末（ベストエフォートの DROP）だけはこの回数に含めない。"
     echo "#     正常終了で 3 つとも消せていれば trap は何も呼ばない。"
-    echo "# DDL: あり。作成: ${PREFIX}_h（Hive の EXTERNAL TABLE）・${PREFIX}_i（Iceberg）・"
-    echo "#   ${PREFIX}_v（ビュー）の 3 つ。A 群で ALTER TABLE を最大 17 回、S/R/D 群は"
-    echo "#   SHOW CREATE TABLE / MSCK REPAIR TABLE / DESCRIBE で読むだけ。最後に 3 つとも DROP。"
-    echo "#   ${PREFIX}_i（Iceberg）は location を <OUTPUT> の下に置いてあり、DROP でデータも消える。"
-    echo "#   ${PREFIX}_h（Hive の EXTERNAL）は DROP TABLE では S3 の場所自体は残るが、行を"
-    echo "#   入れていないので中身は無い。"
+    if [ "$ROUND" = 1 ]; then
+      echo "# DDL: あり。作成: ${PREFIX}_h（Hive の EXTERNAL TABLE）・${PREFIX}_i（Iceberg）・"
+      echo "#   ${PREFIX}_v（ビュー）の 3 つ。A 群で ALTER TABLE を最大 17 回、S/R/D 群は"
+      echo "#   SHOW CREATE TABLE / MSCK REPAIR TABLE / DESCRIBE で読むだけ。最後に 3 つとも DROP。"
+      echo "#   ${PREFIX}_i（Iceberg）は location を <OUTPUT> の下に置いてあり、DROP でデータも消える。"
+      echo "#   ${PREFIX}_h（Hive の EXTERNAL）は DROP TABLE では S3 の場所自体は残るが、行を"
+      echo "#   入れていないので中身は無い。"
+    else
+      echo "# DDL: あり（ROUND=2）。フィクスチャの作成・後始末は ROUND=1 と同じ 3 つ"
+      echo "#   （${PREFIX}_h・${PREFIX}_i・${PREFIX}_v）。n1（H を RENAME）・n2（V を RENAME）が"
+      echo "#   成功しうるため、後始末は元の名前と <名前>_ren（${PREFIX}_h_ren・${PREFIX}_v_ren・"
+      echo "#   ${PREFIX}_i_ren。I は本ラウンドでは RENAME しないが念のため）の両方に"
+      echo "#   DROP TABLE/VIEW IF EXISTS を投げる。n・m・d7〜d10 群で ADD/DROP COLUMNS・"
+      echo "#   RENAME TO・MSCK REPAIR TABLE（I・V・無い表）・DESCRIBE（I・V）を投げ、"
+      echo "#   p・c 群は空白 2 つ・タブ・複数改行・先頭空白・コメントの中身の違いを"
+      echo "#   SHOW CREATE TABLE / MSCK REPAIR TABLE / ALTER TABLE で見る。"
+    fi
     echo "# 課金の見込み: スキャンする SELECT は投げていない。ALTER・DROP はメタデータのみ、"
     echo "#   CREATE は 0 行、SHOW/MSCK/DESCRIBE は読み取りのみ。Athena の最小課金 × クエリ数の見込み。"
     echo "# フィクスチャの形式（SHOW CREATE TABLE で裏取り。作成直後の値）: H=$FMT_H  I=$FMT_I"
