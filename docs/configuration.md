@@ -32,7 +32,10 @@ and an unquoted `awsdatacatalog.` or database in the name of `DESCRIBE` and a
 few other statements, which is dropped (see [Supported API](api.md)), and,
 under an S3 Tables context catalog, the first part of a plain
 `CREATE TABLE AwsDataCatalog.<namespace>.<table>`, which is blanked out (see
-[Caveats](caveats.md#plain-create-table)). Unqualified table names with the
+[Caveats](caveats.md#plain-create-table)), and, under an S3 Tables context
+catalog, the first part of a CTAS into `awsdatacatalog.<database>.<table>`,
+which is replaced by the Trino catalog of the `AwsDataCatalog` alias (see
+[Caveats](caveats.md#parameters-and-catalog-aliases)). Unqualified table names with the
 context carrying the catalog and database remain the most portable form.
 
 Some Athena catalog names cannot exist in Trino. Reading S3 Tables through Athena

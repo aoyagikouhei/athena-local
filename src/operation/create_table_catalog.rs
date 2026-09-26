@@ -5,18 +5,22 @@
 //! 2 部目を S3 Tables の名前空間として作り、名前空間が無ければ開始して FAILED にした（j1〜j4・j9）。
 //! 名前空間があれば、1 部目を空白にした文を Trino に送る（j1・j4。#237）。
 //! S3 Tables の Context の無引用の 2 部の名前も、1 部目の名前空間が無ければ同じ FAILED にした（i2・j12。#231）。
+//! S3 Tables の Context の CTAS は逆に、1 部目が `awsdatacatalog` の類なら 2 部目を Glue の DB として引いた（i12・j13。#232）。
 
 use std::ops::Range;
 
 use axum::response::Response;
 
+use crate::catalog::replacement;
 use crate::config::Config;
 use crate::failure::Failure;
 use crate::response::invalid_request_with_code;
 use crate::trino::{Cancel, Trino};
 
+use super::classification::substatement_type;
 use super::context_catalog::missing;
 use super::table_format::{catalog_exists_sql, schema_probe_sql};
+use super::target_table::if_follows;
 use super::unquoted_ddl::{three_part_name, two_part_namespace};
 
 /// 開始時にどうするか。
@@ -68,6 +72,45 @@ pub(super) async fn check(
     } else {
         Outcome::Rewrite(blank_out(query, first_part))
     }
+}
+
+/// S3 Tables の Context（呼び出し側が確かめる）の CTAS で、無引用の 3 部の名前の 1 部目が `awsdatacatalog`（大文字小文字に
+/// よらない）なら、本物は 2 部目を Glue の DB として引いた（2026-09-26 実測 i12 は小文字で作られ、j13 は `AwsDataCatalog`
+/// で DB が無く FAILED）。DB は `TRINO_CATALOG_MAP` の `AwsDataCatalog` の Trino 名で確かめ、無いと確かめられて結果の
+/// 置き場所（`location`）があれば本物と同じ理由の失敗、それ以外は 1 部目を Trino 名に差し替えた文を返す。Trino 名が
+/// `awsdatacatalog` のままなら差し替えない。`IF NOT EXISTS` は未実測なので見ない。
+pub(super) async fn ctas(
+    trino: &Trino,
+    config: &Config,
+    query: &str,
+    location: Option<&str>,
+) -> Outcome {
+    if substatement_type(query) != Some("CREATE_TABLE_AS_SELECT") || if_follows(query, "CREATE") {
+        return Outcome::Continue;
+    }
+    let Some((catalog, database, first_part)) = three_part_name(query) else {
+        return Outcome::Continue;
+    };
+    if !catalog.eq_ignore_ascii_case("awsdatacatalog") {
+        return Outcome::Continue;
+    }
+    let trino_name = trino_catalog(config, "AwsDataCatalog");
+    let sql = schema_probe_sql(&trino_name.to_lowercase(), &database.to_lowercase());
+    if let Some(location) = location
+        && schema_missing(trino, &sql).await
+    {
+        return Outcome::FailAtRuntime(Failure::database_not_found(database, location));
+    }
+    if trino_name.eq_ignore_ascii_case("awsdatacatalog") {
+        return Outcome::Continue;
+    }
+    let end = first_part.start + catalog.len();
+    Outcome::Rewrite(format!(
+        "{}{}{}",
+        &query[..first_part.start],
+        replacement(catalog, trino_name),
+        &query[end..]
+    ))
 }
 
 /// `query` の `range` の各文字を空白にする（改行は残す）。文字数と行を保つので、Trino のエラー位置は受け取った

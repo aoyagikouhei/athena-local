@@ -35,7 +35,7 @@ CI（`.github/workflows/ci.yml`）の中身とリリース（`v*` タグで `doc
 
 壊すと事故になる不変条件:
 
-- 書き換えの条件（パラメータ、`TRINO_CATALOG_MAP` の別名に一致する修飾名、文の前後の空白と `;`、DESCRIBE などの `awsdatacatalog.` と表への DESCRIBE の DB、S3 Tables の Context の `CREATE TABLE AwsDataCatalog.<名前空間>.<表>` の 1 部目を空白にするもの）のどれにも当たらなければ、Trino に送る SQL は受け取った SQL と 1 文字も違わない（テストで保証）。条件を足したら、この一覧と `docs/configuration.md` の "not rewritten" の約束も直す。
+- 書き換えの条件（パラメータ、`TRINO_CATALOG_MAP` の別名に一致する修飾名、文の前後の空白と `;`、DESCRIBE などの `awsdatacatalog.` と表への DESCRIBE の DB、S3 Tables の Context の `CREATE TABLE AwsDataCatalog.<名前空間>.<表>` の 1 部目を空白にするもの、S3 Tables の Context の CTAS の `awsdatacatalog.<DB>.<表>` の 1 部目を `AwsDataCatalog` の Trino 名にするもの）のどれにも当たらなければ、Trino に送る SQL は受け取った SQL と 1 文字も違わない（テストで保証）。条件を足したら、この一覧と `docs/configuration.md` の "not rewritten" の約束も直す。
 - 構文チェックは `PREPARE athena_local_syntax_check FROM\n<sql>` で、Trino のエラー位置を 1 行戻す。前置きを変えるときは `src/trino.rs` と偽 Trino（`tests/common/mod.rs`）の `SYNTAX_CHECK_PREFIX` を両方直す。
 - 結果ファイル（本体、次に `.metadata`）を置いてから `SUCCEEDED` にする（クライアントは SUCCEEDED を見た直後に S3 を読む）。
 - `Store::finish` は終端状態では何もしない（先に `CANCELLED` になったクエリにあとから届いた結果は捨てる）。取り消しは `Store::cancel` で同期に `CANCELLED` にし、実行中のタスクがページ境界でフラグを見て `nextUri` に `DELETE` を送る。
@@ -65,7 +65,7 @@ CI（`.github/workflows/ci.yml`）の中身とリリース（`v*` タグで `doc
 | `tools/measure/`、`tools/e2e/`、`tools/toolbox/`、`tools/dev.sh`、`compose.yml`、`tools/compose/` | 本物の Athena に投げる実測スクリプト、compose の実機検証の足場、足場を動かす toolbox のイメージと呼び口（dev サービス）、足場の環境（trino / minio などのサービス）とその付属物（カタログ、tls、jdbc-client） | — |
 
 - **この CLAUDE.md には、毎回の作業で要る規則と不変条件だけを書く。** モジュールの細部は docs/dev/architecture.md、決着した判断とその理由は decisions.md、手順は development.md に書き、ここには重ねない（#190）。
-- 作業中のノート（`.claude/issue-notes/<番号>.md` と、その issue の足場）は、いま進めている issue のぶんだけを置く。**新しい issue に着手したら、ブランチを切った直後に過去の issue のノートを `git rm -r .claude/issue-notes` で全部消してから進める**（Skill が新しいノートを書く前に消す。理由は decisions.md。過去のノートは git の履歴にある）。
+- 作業中のノートは `.claude/issue-notes/<番号>.md` に置く（その issue の足場も同じ場所）。
 - ノートに書いた実測の結果表は `docs/dev/measurements/` へ、後の開発でも効く設計判断は `docs/dev/decisions.md` へ、残った未実測は `docs/dev/unmeasured.md` へ、その issue の PR をマージする前に写す。ノートは PR に残してよいが、正はつねに docs/dev 側で、ノートの記述と食い違ったら docs/dev を信じる。
 - 実測スクリプトは issue 番号の接頭辞を付けず、内容で名前を付けて `tools/measure/` に置き、先頭のコメントに issue 番号を書く。
 
