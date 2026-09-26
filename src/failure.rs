@@ -72,8 +72,10 @@ impl Failure {
         }
     }
 
-    /// S3 Tables の Context の CTAS で、1 部目が `awsdatacatalog` の類の名前の 2 部目（Glue の DB）が無いときに本物が
-    /// 返した文言（2026-09-26 実測 j13。#232）。`location` は結果の置き場所（`<OutputLocation>tables/<id>`）。
+    /// S3 Tables の Context と既定の Context の CTAS で、1 部目が `awsdatacatalog` の類の名前の 2 部目（Glue の DB）が
+    /// 無いときに本物が返した文言（2026-09-26 実測 j13。#232。2026-09-27 実測 r4〜r8c。#251）。`database` は呼び出し側が
+    /// 小文字にした名前（本物は書いたとおりでなく小文字で返した。r5・r8a）。`location` は結果の置き場所
+    /// （`<OutputLocation>tables/<id>`）。
     pub fn database_not_found(database: &str, location: &str) -> Self {
         Self {
             reason: format!(

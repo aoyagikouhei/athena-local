@@ -5,7 +5,9 @@
 //! 2 部目を S3 Tables の名前空間として作り、名前空間が無ければ開始して FAILED にした（j1〜j4・j9）。
 //! 名前空間があれば、1 部目を空白にした文を Trino に送る（j1・j4。#237）。
 //! S3 Tables の Context の無引用の 2 部の名前も、1 部目の名前空間が無ければ同じ FAILED にした（i2・j12。#231）。
+//! 1 部の名前も、Context の Database の名前空間が無ければ同じ FAILED にした（r1。#251）。
 //! S3 Tables の Context の CTAS は逆に、1 部目が `awsdatacatalog` の類なら 2 部目を Glue の DB として引いた（i12・j13。#232）。
+//! 既定の Context（Catalog が `AwsDataCatalog`）の CTAS も、DB が無ければ同じ FAILED にした（r8a・r8c。#251）。
 
 use std::ops::Range;
 
@@ -20,8 +22,7 @@ use crate::trino::{Cancel, Trino};
 use super::classification::substatement_type;
 use super::context_catalog::missing;
 use super::table_format::{catalog_exists_sql, schema_probe_sql};
-use super::target_table::if_follows;
-use super::unquoted_ddl::{location_catalog, three_part_name, two_part_namespace};
+use super::unquoted_ddl::{location_catalog, one_part_name, three_part_name, two_part_namespace};
 
 /// 開始時にどうするか。
 pub(super) enum Outcome {
@@ -96,15 +97,16 @@ async fn catalog_rejection(trino: &Trino, config: &Config, catalog: &str) -> Opt
 /// S3 Tables の Context（呼び出し側が確かめる）の CTAS で、無引用の 3 部の名前の 1 部目が `awsdatacatalog`（大文字小文字に
 /// よらない）なら、本物は 2 部目を Glue の DB として引いた（2026-09-26 実測 i12 は小文字で作られ、j13 は `AwsDataCatalog`
 /// で DB が無く FAILED）。DB は `TRINO_CATALOG_MAP` の `AwsDataCatalog` の Trino 名で確かめ、無いと確かめられて結果の
-/// 置き場所（`location`）があれば本物と同じ理由の失敗、それ以外は 1 部目を Trino 名に差し替えた文を返す。Trino 名が
-/// `awsdatacatalog` のままなら差し替えない。`IF NOT EXISTS` は未実測なので見ない。
+/// 置き場所（`location`）があれば本物と同じ理由の失敗（DB 名は小文字。2026-09-27 実測 r5・r8a）、それ以外は 1 部目を
+/// Trino 名に差し替えた文を返す。Trino 名が `awsdatacatalog` のままなら差し替えない。`IF NOT EXISTS` の有無によらない
+/// （r6a・r6b。#251）。既定の Context でも同じ判定を使う（呼び出し側が差し替えを捨てる）。
 pub(super) async fn ctas(
     trino: &Trino,
     config: &Config,
     query: &str,
     location: Option<&str>,
 ) -> Outcome {
-    if substatement_type(query) != Some("CREATE_TABLE_AS_SELECT") || if_follows(query, "CREATE") {
+    if substatement_type(query) != Some("CREATE_TABLE_AS_SELECT") {
         return Outcome::Continue;
     }
     let Some((catalog, database, first_part)) = three_part_name(query) else {
@@ -118,7 +120,10 @@ pub(super) async fn ctas(
     if let Some(location) = location
         && schema_missing(trino, &sql).await
     {
-        return Outcome::FailAtRuntime(Failure::database_not_found(database, location));
+        return Outcome::FailAtRuntime(Failure::database_not_found(
+            &database.to_lowercase(),
+            location,
+        ));
     }
     if trino_name.eq_ignore_ascii_case("awsdatacatalog") {
         return Outcome::Continue;
@@ -152,6 +157,23 @@ pub(super) async fn two_part_failure(
     s3_tables: &str,
 ) -> Option<Failure> {
     let namespace = two_part_namespace(query)?;
+    namespace_missing(trino, config, s3_tables, namespace)
+        .await
+        .then(Failure::cannot_find_table)
+}
+
+/// S3 Tables の Context（`s3_tables` は受け取ったままの Catalog）の無引用の 1 部の名前の場所の無い `CREATE TABLE`
+/// （本物は Context の Database の名前空間に作る）。Context の Database（`database`、受け取ったまま）の名前空間が無いと
+/// 確かめられたときだけ、Trino に送らずに終える失敗を返す（2026-09-27 実測 r1。#251）。Database が無ければ名前空間が
+/// 決まらないので問い合わせない。
+pub(super) async fn one_part_failure(
+    trino: &Trino,
+    config: &Config,
+    query: &str,
+    s3_tables: &str,
+    database: Option<&str>,
+) -> Option<Failure> {
+    let namespace = database.filter(|_| one_part_name(query))?;
     namespace_missing(trino, config, s3_tables, namespace)
         .await
         .then(Failure::cannot_find_table)

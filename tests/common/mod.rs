@@ -620,3 +620,27 @@ async fn spawn(router: Router) -> SocketAddr {
 
     addr
 }
+
+/// 失敗したときに差分が読めるよう、比較は 16 進文字列どうしでする。
+pub fn hex_of(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// 期待値の 16 進から空白と改行を落とす。
+pub fn hex(text: &str) -> String {
+    text.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+/// 列 `rows bigint`（DML / CTAS が返す唯一の列）。Precision 19 = 0x13、Scale 0、CaseSensitive 0。
+/// message = 6 + 6 + 6 + 8 + 2 + 2 + 2 + 2 = 34 = 0x22。
+pub const COLUMN_ROWS_BIGINT: &str = "2222
+     0a04 68697665
+     2204 726f7773
+     2a04 726f7773
+     3206 626967696e74
+     3813 4000 4803 5000";
+
+/// top の field 1（クエリ ID）。偽 Trino の既定 ID は 27 バイトなので長さ前置は 1b。
+pub fn engine_id_field() -> String {
+    format!("0a1b{}", hex_of(TRINO_QUERY_ID.as_bytes()))
+}

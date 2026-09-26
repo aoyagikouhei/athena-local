@@ -7,6 +7,7 @@ mod comment_parse_error;
 mod completion;
 mod context_catalog;
 mod create_table_catalog;
+mod ctas_query;
 mod entity_check;
 mod execution;
 mod format_probe;

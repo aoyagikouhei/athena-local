@@ -41,6 +41,20 @@
 #   M6 S3 Tables の Context
 #      CREATE TABLE iceberg.e2e227ns.t227 (n int)（Trino にあるカタログは実在扱い）
 #      → 400、MALFORMED_QUERY／No location
+#   M7（#251） S3 Tables の Context（Database=e2e227missing。M4 と同じ、名前空間は作らない）
+#      CREATE TABLE t227one (n int)（1 部の名前）
+#      → 200 と QueryExecutionId、最終状態 FAILED（M4 と同じ文言・ErrorCategory 2・ErrorType 1100・
+#        Retryable false、StatementType DDL・SubstatementType CREATE_TABLE）。結果ファイル本体も
+#        .metadata も置かない（MinIO に無い）。iceberg に表ができていない
+#   M8（#251） S3 Tables の Context（Database=e2e227ns。名前空間は実在）
+#      CREATE TABLE t227one (n int)（1 部の名前）
+#      → 200 と QueryExecutionId、最終状態 SUCCEEDED（Query は受け取ったまま）。iceberg.e2e227ns に表
+#        t227one ができる（確かめたら消す）
+#
+# #251 の変更を入れる前にこの足場を流すと、M7 は今の実装では 1 部の名前を Context のまま Trino に送ってしまう
+# （unquoted_ddl::rejection が 1 部の名前には NO_LOCATION を返さず、開始時に弾かれない）ため、想定の
+# `Cannot find or access the specified table`（1100）にならず FAIL になる想定。M8 は元から通っている経路
+# （名前空間があるので Trino が普通に作れる）なので PASS のまま（回帰）。M1〜M6 は #251 の対象外で変わらない。
 #
 # 前提コマンド: tools/dev.sh 経由で動かす（toolbox に全部入っている）
 #
@@ -526,6 +540,16 @@ run_cases() {
   case_reject "M6" "S3Tables の Context・Trino に実在するカタログ" \
     "CREATE TABLE iceberg.${NS}.t227 (n int)" "$S3_TABLES_CATALOG" "$NS" \
     MALFORMED_QUERY "No location was specified for table. An S3 location must be specified"
+
+  # M7（#251）: S3 Tables の Context・1 部の名前・Database が名前空間の無い e2e227missing。開始して FAILED。
+  case_fail_at_runtime "M7" "S3Tables の Context・1 部の名前・名前空間なし" \
+    "CREATE TABLE t227one (n int)" "$S3_TABLES_CATALOG" "$NS_MISSING" \
+    "$NS_MISSING" "t227one"
+
+  # M8（#251）: S3 Tables の Context・1 部の名前・Database が実在する名前空間 e2e227ns。作られる。
+  case_create_succeeds "M8" "S3Tables の Context・1 部の名前・名前空間あり" \
+    "CREATE TABLE t227one (n int)" "$S3_TABLES_CATALOG" "$NS" \
+    "$NS" "t227one"
 }
 
 main() {

@@ -5,7 +5,7 @@
 
 mod common;
 
-use common::{Harness, TRINO_QUERY_ID, execution_id};
+use common::{COLUMN_ROWS_BIGINT, Harness, engine_id_field, execution_id, hex, hex_of};
 use serde_json::{Value, json};
 
 fn select_response() -> Value {
@@ -35,21 +35,6 @@ fn dml_response(update_type: &str, update_count: i64) -> Value {
     })
 }
 
-/// 失敗したときに差分が読めるよう、比較は 16 進文字列どうしでする。
-fn hex_of(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
-/// 期待値の 16 進から空白と改行を落とす。
-fn hex(text: &str) -> String {
-    text.chars().filter(|c| !c.is_whitespace()).collect()
-}
-
-/// top の field 1（クエリ ID）。偽 Trino の既定 ID は 27 バイトなので長さ前置は 1b。
-fn engine_id_field() -> String {
-    format!("0a1b{}", hex_of(TRINO_QUERY_ID.as_bytes()))
-}
-
 /// top の field 1 に実行 ID（UUID）が入る形。36 バイトなので長さ前置は 24。
 fn execution_id_field(id: &str) -> String {
     assert_eq!(id.len(), 36, "実行 ID が UUID の形でない: {id}");
@@ -74,15 +59,6 @@ const COLUMN_NAME_VARCHAR: &str = "2227
      2a04 6e616d65
      3207 76617263686172
      38ffffffff07 4000 4803 5001";
-
-/// 列 `rows bigint`（DML / CTAS が返す唯一の列）。Precision 19 = 0x13、Scale 0、CaseSensitive 0。
-/// message = 6 + 6 + 6 + 8 + 2 + 2 + 2 + 2 = 34 = 0x22。
-const COLUMN_ROWS_BIGINT: &str = "2222
-     0a04 68697665
-     2204 726f7773
-     2a04 726f7773
-     3206 626967696e74
-     3813 4000 4803 5000";
 
 /// Trino の DESCRIBE の応答（`Column`／`Type`／`Extra`／`Comment` の 4 列）。
 fn describe_response() -> Value {

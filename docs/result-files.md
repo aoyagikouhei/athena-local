@@ -220,7 +220,10 @@ no result file of their own, as on Athena. DDL without columns
 (`CREATE DATABASE`, `DROP DATABASE`, `CREATE TABLE`), a failed query and a
 cancelled query write no companion file, also as on Athena — except the two
 combinations described under
-[DDL that depends on the target table's format](ddl.md#ddl-that-depends-on-the-target-tables-format).
+[DDL that depends on the target table's format](ddl.md#ddl-that-depends-on-the-target-tables-format),
+and a CTAS into a missing `awsdatacatalog` database, which fails after
+writing the companion file of a successful CTAS (see
+[Parameters and catalog aliases](caveats.md#parameters-and-catalog-aliases)).
 A failed statement may still write its own `<id>.txt` (see Result files
 above).
 

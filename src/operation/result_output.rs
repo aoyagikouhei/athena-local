@@ -164,6 +164,42 @@ pub(super) async fn write_failure(app: &App, execution: &Execution, failure: &Fa
     }
 }
 
+/// Glue に無い DB への CTAS を FAILED にする前に、`.metadata` だけを置く（本体は置かない）。本物は問い合わせを実行した
+/// エンジンのクエリ ID・`CREATE TABLE`・書いた行数（0 でも省かない）・`rows bigint` の列を置いた。成功した CTAS の
+/// `.metadata` と同じ形（2026-09-27 実測 r4・t6〜t15。#251）。`engine_id` は athena-local が問い合わせ部分を投げた
+/// Trino のクエリ ID。結果を書かない構成と、取り消されたときは何も置かない。
+pub(super) async fn write_ctas_metadata(
+    app: &App,
+    execution: &Execution,
+    engine_id: &str,
+    rows: i64,
+) {
+    let (Some(writer), Some(location)) = (&app.results, &execution.result_location) else {
+        return;
+    };
+    if execution.cancel.is_requested() {
+        return;
+    }
+    let rows_column = Outcome {
+        columns: vec![crate::trino::Column {
+            name: "rows".to_string(),
+            type_name: "bigint".to_string(),
+            type_signature: None,
+        }],
+        ..Outcome::default()
+    };
+    write_metadata(
+        writer,
+        location,
+        engine_id,
+        Some("CREATE TABLE"),
+        Some(rows),
+        &convert::column_infos(&rows_column, None),
+        None,
+    )
+    .await;
+}
+
 /// 付随ファイル `.metadata` を組み立てて置く。書けなくても実行は成功のまま（補助ファイルなので握りつぶす）。
 /// `query_id` / `update_type` / `update_count` は呼び出し元（`write_result`）が文の種類に応じて
 /// 決めた値（ALTER TABLE ADD COLUMNS × Hive は実行 ID・None・None に、SHOW CREATE TABLE × Iceberg は
