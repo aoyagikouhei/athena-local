@@ -1,6 +1,10 @@
 //! ClientRequestToken による StartQueryExecution の冪等化。
 //! 同じトークン・同じパラメータの再送は先行クエリの状態に関係なく同じ ID を返し、
 //! パラメータが違えば IDEMPOTENT_PARAMETER_MISMATCH になる（2026-09-17 実測）。
+//!
+//! StartQueryExecution は実行をバックグラウンドに起こして先に返るので、応答の直後には
+//! Trino へまだ届いていないことがある。Trino が受けた本体を数えるテストは、実行が終わるのを
+//! 待ってから数える（待たずに数えると、まれに 0 本で落ちる。#201）。
 
 mod common;
 
@@ -28,6 +32,7 @@ async fn 同じトークンで2回呼ぶと同じ_id_が返り_trino_への本�
     let id2 = harness.start_query(body).await;
 
     assert_eq!(id1, id2);
+    harness.wait_until_done(&id1).await;
     assert_eq!(harness.trino_sqls().len(), 1, "本体は1回だけ");
     // 照合は構文チェックの後なので、2回目も PREPARE は届く。
     assert_eq!(harness.syntax_checks().len(), 2);
@@ -55,6 +60,8 @@ async fn 同時に2回呼んでも実行は1本だけになる() {
     assert_eq!(status1, 200, "{response1}");
     assert_eq!(status2, 200, "{response2}");
     assert_eq!(response1["QueryExecutionId"], response2["QueryExecutionId"]);
+    let id = response1["QueryExecutionId"].as_str().expect("ID がある");
+    harness.wait_until_done(id).await;
     assert_eq!(harness.trino_sqls().len(), 1);
 }
 
@@ -90,6 +97,8 @@ async fn 同じトークンを50本同時に送っても_id_は1つで実行は1
     }
 
     assert_eq!(ids.len(), 1, "ID は 1 つ: {ids:?}");
+    let id = ids.iter().next().expect("ID がある");
+    harness.wait_until_done(id).await;
     assert_eq!(harness.trino_sqls().len(), 1, "本体は 1 回だけ");
 }
 
@@ -98,13 +107,9 @@ async fn 同じトークンでクエリを変えると_idempotent_parameter_mism
     let harness = Harness::start(select_response()).await;
     let same_token = token("mismatch-query");
 
-    let (status1, _) = harness
-        .call(
-            "StartQueryExecution",
-            json!({ "QueryString": "SELECT 1", "ClientRequestToken": same_token }),
-        )
+    let id1 = harness
+        .start_query(json!({ "QueryString": "SELECT 1", "ClientRequestToken": same_token }))
         .await;
-    assert_eq!(status1, 200);
 
     let (status2, error) = harness
         .call(
@@ -118,6 +123,7 @@ async fn 同じトークンでクエリを変えると_idempotent_parameter_mism
     assert_eq!(error["AthenaErrorCode"], "IDEMPOTENT_PARAMETER_MISMATCH");
     assert_eq!(error["ErrorCode"], "IDEMPOTENT_PARAMETER_MISMATCH");
     assert_eq!(error["Message"], "Idempotent parameters do not match");
+    harness.wait_until_done(&id1).await;
     assert_eq!(harness.trino_sqls().len(), 1, "2回目は実行を作らない");
 }
 
