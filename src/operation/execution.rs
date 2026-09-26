@@ -21,6 +21,7 @@ use crate::trino::{Outcome, QueryError, Trino};
 
 use super::completion;
 use super::context_catalog;
+use super::create_table_catalog;
 use super::entity_check::{self, Check};
 use super::format_probe;
 use super::quoted_names;
@@ -116,6 +117,13 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
             unquoted_ddl::rejection(&request.query_string, s3_tables)
         })
     {
+        // No location になった無引用の 3 部の名前は、1 部目のカタログが無ければ本物は別の文言で弾く（#227）。
+        if message == unquoted_ddl::NO_LOCATION
+            && let create_table_catalog::Outcome::Reject(response) =
+                create_table_catalog::check(&app.trino, &app.config, &request.query_string).await
+        {
+            return *response;
+        }
         return invalid_request_with_code(message, "MALFORMED_QUERY");
     }
 

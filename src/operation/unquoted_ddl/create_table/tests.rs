@@ -346,3 +346,38 @@ fn create_table_でない文は_none() {
         assert_eq!(rejected(query), None, "{query}");
     }
 }
+
+/// `three_part_name` は `rejection` と同じ読み方で名前を取る。No location になる無引用の 3 部の名前では、Context に
+/// よらず必ず 1 部目と 2 部目を書いたとおりに返し、1〜2 部と引用符付きの部分がある名前では None（#227）。
+#[test]
+fn three_part_name_は_no_location_になる_3_部の名前で必ず_1_部目と_2_部目を返す() {
+    for (query, expected) in [
+        ("CREATE TABLE NoSuch.db.t (n int)", ("NoSuch", "db")),
+        (
+            "CREATE TABLE IF NOT EXISTS AwsDataCatalog.Ns.t (n int)",
+            ("AwsDataCatalog", "Ns"),
+        ),
+        (
+            "/* c */\n  create table cat . ns . t (n int)",
+            ("cat", "ns"),
+        ),
+        (
+            "CREATE TABLE iceberg.db.t (n array<int>, m string)",
+            ("iceberg", "db"),
+        ),
+    ] {
+        for s3_tables in [false, true] {
+            assert_eq!(rejection(query, s3_tables), no_location(), "{query}");
+        }
+        assert_eq!(three_part_name(query), Some(expected), "{query}");
+    }
+    for query in [
+        "CREATE TABLE t (n int)",
+        "CREATE TABLE db.t (n int)",
+        r#"CREATE TABLE "cat".db.t (n int)"#,
+        r#"CREATE TABLE cat."db".t (n int)"#,
+        "CREATE TABLE AS SELECT 1",
+    ] {
+        assert_eq!(three_part_name(query), None, "{query}");
+    }
+}
