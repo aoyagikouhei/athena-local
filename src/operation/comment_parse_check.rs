@@ -11,7 +11,7 @@ use super::comment_parse_error;
 use super::context_catalog;
 use super::entity_check::{self, Probe};
 use super::reported_query;
-use super::table_format::TargetStatement;
+use super::table_format::{TableFormat, TargetStatement};
 use super::target_table;
 
 /// 構文チェックの前の判定: `query` が `MSCK REPAIR TABLE` か、`comment_parse_error::detect` が
@@ -72,7 +72,14 @@ pub(super) async fn pre_syntax_check_failure(
     )
     .await;
 
-    if is_msck && matches!(probe, Probe::Table { iceberg: true }) {
+    if is_msck
+        && matches!(
+            probe,
+            Probe::Table {
+                format: Some(TableFormat::Iceberg)
+            }
+        )
+    {
         return Some(ImmediateFailure {
             failure: Failure::msck_iceberg(),
             writes_result_file: false,
@@ -86,11 +93,15 @@ pub(super) async fn pre_syntax_check_failure(
     }?;
 
     match probe {
-        Probe::Missing | Probe::View | Probe::Table { iceberg: false } => Some(ImmediateFailure {
+        Probe::Missing
+        | Probe::View
+        | Probe::Table {
+            format: Some(TableFormat::Hive),
+        } => Some(ImmediateFailure {
             failure: comment.into(),
             writes_result_file: true,
         }),
-        Probe::Table { iceberg: true } | Probe::NoCatalog | Probe::Unknown => None,
+        Probe::Table { .. } | Probe::NoCatalog | Probe::Unknown => None,
     }
 }
 
@@ -138,10 +149,12 @@ pub(super) async fn comment_parse_error_failure(
             )
             .await
             {
-                Probe::Missing | Probe::View | Probe::Table { iceberg: false } => {
-                    Some(parse_error.into())
-                }
-                Probe::Table { iceberg: true } | Probe::NoCatalog | Probe::Unknown => None,
+                Probe::Missing
+                | Probe::View
+                | Probe::Table {
+                    format: Some(TableFormat::Hive),
+                } => Some(parse_error.into()),
+                Probe::Table { .. } | Probe::NoCatalog | Probe::Unknown => None,
             }
         }
         Target::MsckRepair | Target::AlterAddColumns => None,
@@ -153,6 +166,7 @@ pub(super) async fn comment_parse_error_failure(
 /// ParseException、RENAME TO は Hive 表なら Glue の `Table cannot be renamed`、無い表なら `Table not found`。
 /// Iceberg 表は本物も成功する。ビュー・コメントのある形（`comment_parse_error::detect` が拾わない位置のもの）は
 /// 測っていないので、カタログが無い・問い合わせが失敗したときと同じく None（今までどおり Trino へ）。
+/// hive でも iceberg でもないコネクタ（memory など）の表も、形式を判定しないので None（#39。#264）。
 /// 問い合わせが増えるのはこの 2 つの文のときだけ（design-checklist #39）。
 pub(super) async fn plain_alter_failure(
     trino: &Trino,
@@ -187,18 +201,25 @@ pub(super) async fn plain_alter_failure(
     )
     .await;
     match (probe, rename) {
-        (Probe::Missing | Probe::Table { iceberg: false }, false) => {
-            comment_parse_error::plain_drop_column(statement).map(Into::into)
-        }
-        (Probe::Table { iceberg: false }, true) => Some(Failure::rename_hive_table()),
+        (
+            Probe::Missing
+            | Probe::Table {
+                format: Some(TableFormat::Hive),
+            },
+            false,
+        ) => comment_parse_error::plain_drop_column(statement).map(Into::into),
+        (
+            Probe::Table {
+                format: Some(TableFormat::Hive),
+            },
+            true,
+        ) => Some(Failure::rename_hive_table()),
         // 実測は小文字の名前だけ。Glue は名前を小文字で持つので小文字にする（大文字の名前は未実測）。
         (Probe::Missing, true) => Some(Failure::rename_table_not_found(
             &target.schema.to_lowercase(),
             &target.table.to_lowercase(),
         )),
-        (Probe::View | Probe::Table { iceberg: true } | Probe::NoCatalog | Probe::Unknown, _) => {
-            None
-        }
+        (Probe::View | Probe::Table { .. } | Probe::NoCatalog | Probe::Unknown, _) => None,
     }
 }
 

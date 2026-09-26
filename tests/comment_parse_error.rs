@@ -335,6 +335,40 @@ async fn alter_table_のブロックコメントは_iceberg_表なら成功し�
     }
 }
 
+/// hive でも iceberg でもないコネクタ（memory など）の表は、形式を判定せず今までどおり Trino に送る
+/// （未知の connector_name は判定しない。decisions.md の #39。#264）。
+#[tokio::test]
+async fn hive_でも_iceberg_でもないコネクタの表はブロックコメントがあっても_trino_に送る() {
+    for sql in [
+        "SHOW /* c */ CREATE TABLE t",
+        "DESCRIBE /* c */ t",
+        "ALTER /* c */ TABLE t RENAME TO u",
+        "ALTER /* c */ TABLE t DROP COLUMN n",
+    ] {
+        let harness = Harness::builder(select_response())
+            .route(
+                &probe_sql(DEFAULT_CATALOG, DEFAULT_SCHEMA, "t"),
+                probe_response("memory", "TABLE"),
+            )
+            .route("SHOW /* c */ CREATE TABLE t", create_table_response())
+            .start()
+            .await;
+
+        let execution =
+            harness.run_query(json!({ "QueryString": sql })).await["QueryExecution"].clone();
+
+        assert_eq!(
+            execution["Status"]["State"], "SUCCEEDED",
+            "{sql}: {execution}"
+        );
+        assert!(
+            harness.trino_sqls().iter().any(|s| s == sql),
+            "{sql}: Trino に送る: {:?}",
+            harness.trino_sqls()
+        );
+    }
+}
+
 /// probe の `_col0` が null（カタログが無い）なら介入せず今までどおり送る。
 #[tokio::test]
 async fn probe_でカタログが無ければ介入せず今までどおり送る() {

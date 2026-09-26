@@ -152,7 +152,7 @@ fn connector_name_sql(catalog: &str) -> String {
 /// `probe_sql` の応答から形式を決める。対象が存在しなければ（`table_type` が null なら）None
 /// （Hive 側と同じ今までどおりの振る舞いに倒す）。hive でも iceberg でもない値も None。
 /// `table_type` が `VIEW` なら（hive と iceberg のカタログのうち）`View`。
-fn parse_probe_result(outcome: &Outcome) -> Option<TableFormat> {
+pub(super) fn parse_probe_result(outcome: &Outcome) -> Option<TableFormat> {
     let row = outcome.rows.first()?;
     let format = match row.first()?.as_str()? {
         "hive" => TableFormat::Hive,

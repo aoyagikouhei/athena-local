@@ -18,6 +18,7 @@ use super::create_table_catalog;
 use super::entity_check::{self, Check};
 use super::quoted_names;
 use super::reported_query;
+use super::table_format::TableFormat;
 use super::unquoted_ddl;
 
 /// 開始時の判定の結果。`Submission` にそのまま渡す。
@@ -212,7 +213,12 @@ pub(super) async fn decide(
     // `check`（`Check::Reject(Box<Response>)` を含む）を async の境界（`.await`）越しに借用すると、
     // `axum::body::Body` が `Sync` でないせいで `dispatch` が `Handler` を実装できなくなる。判定だけ先に
     // bool にして渡す。
-    let describe_table_hive = matches!(check, Check::Table { iceberg: false });
+    let describe_table_hive = matches!(
+        check,
+        Check::Table {
+            format: Some(TableFormat::Hive)
+        }
+    );
     // コメント無しの ALTER TABLE の DROP COLUMN・RENAME TO も、本物は Hive 表・無い表で開始後に FAILED にする（#256）。
     let failure = match comment_parse_error::detect(&statement) {
         Some(parse_error) => {
