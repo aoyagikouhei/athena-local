@@ -26,8 +26,11 @@ final class FailedDdlScenario {
     static void run(Connection conn, String runId) {
         String t = "nope_" + runId;
         probe(conn, "DROP_TABLE_iceberg", "DROP TABLE iceberg.default." + t);
-        probe(conn, "SHOW_COLUMNS_hive", "SHOW COLUMNS FROM hive.default." + t);
-        probe(conn, "DESCRIBE_hive", "DESCRIBE hive.default." + t);
+        // 実在しない表への SHOW COLUMNS・DESCRIBE は #207 から StartQueryExecution の時点で Entity Not Found で
+        // 弾かれ、<id>.txt も置かれない（本物と同じ）。本物も実行時に FAILED になって <id>.txt を置く
+        // DROP TABLE（#6）と、無引用の RENAME TO（#204）に差し替える（#222）。
+        probe(conn, "DROP_TABLE_hive", "DROP TABLE hive.default." + t);
+        probe(conn, "ALTER_TABLE_RENAME_hive", "ALTER TABLE hive.default." + t + " RENAME TO " + t + "_b");
         // ADD COLUMN（単数）は #208 から StartQueryExecution の時点で弾かれ、Trino まで届かなくなった
         // （docs/caveats.md の「Six ALTER TABLE spellings」）。実行時に FAILED のまま残る無引用の ALTER TABLE
         // として、対照の DROP COLUMN（IF EXISTS 無し）に差し替える。

@@ -206,6 +206,7 @@
 
   後続の `SELECT 1 AS n` は `[[1]]`。
 - 備考: PyAthena は `FAILED` を見た時点で `StateChangeReason` を `OperationalError` にし（`cursor.py:155-166`、`pandas/cursor.py:218-240`）、athena-local が置いた `FAILED: ` の `<id>.txt` も `.txt.metadata` も読みに行かない（trace の区間に GET・HEAD とも 0）。`cursor.query_id` は FAILED でも取れる
+  - → #207（2026-09-25）から実在しない表への `SHOW COLUMNS` は `StartQueryExecution` の時点で `Entity Not Found` で弾かれ（本物と同じ）、`<id>.txt` も `query_id` も無くなった。足場は SKIP（trace が止まったと誤判定）になっていたので、#222（2026-09-26）で本物も実行時に FAILED になる無引用の `ALTER TABLE hive.default.nope_<run> RENAME TO ...`（statements.md の #204）に差し替えた
 
 ## Athena JDBC 3.x
 
@@ -345,6 +346,7 @@
   - 例外の文言は全 11 回・4 文とも `java.sql.SQLException: Query execution failed: TABLE_NOT_FOUND: line 1:1: Table '<catalog>.default.nope_<run>' does not exist`（`GetQueryExecution` の `StateChangeReason` がそのまま入る）
   - 結論: どの版も FAILED を見て SQLException を投げ、`<id>.txt` も `<id>.txt.metadata` も取りに行かなかった。失敗のあとも同じ接続で `SELECT 1` が通る
 - 備考: athena-local 相手の実機検証で、本物の Athena ではない（ドライバの挙動を測った）。本物が失敗した文に `<id>.txt` を置くことは #43 の `RENAME TO` の実測（`result-files.md`）。3.0.0・3.1.0 の jar には ServiceLoader の登録（`META-INF/services/java.sql.Driver`）が無く、`Class.forName("com.amazon.athena.jdbc.AthenaDriver")` で読み込んだ（3.2.2 から登録がある）
+  - → 4 文のうち `ALTER TABLE ... ADD COLUMN` は #208 で開始時に弾かれるようになり、`DROP COLUMN m` に差し替えた。`SHOW COLUMNS`・`DESCRIBE` は #207（2026-09-25）から実在しない表を `StartQueryExecution` の時点で `Entity Not Found` で弾く（本物と同じ）ので `<id>.txt` が置かれず、#222（2026-09-26）で本物も実行時に FAILED になって `<id>.txt` を置く `DROP TABLE hive.default.nope_<run>`（result-files.md の #6）と無引用の `ALTER TABLE hive.default.nope_<run> RENAME TO ...`（statements.md の #204）に差し替えた
 
 ### 旧版の Athena JDBC（3.0.0〜3.5.0）が athena-local の `.txt.metadata` を読むか
 - 日付: 2026-09-23 ／ issue: #111 ／ スクリプト: `tools/e2e/jdbc-drivers/verify.sh`（JVM 側は `tools/e2e/minio/jdbc-client/src/main/java/local/athenajdbccheck/Main.java` のシナリオ 57） ／ 生データ: verify.sh が `/tmp/athena-local-issue111-jdbc.*` に残す

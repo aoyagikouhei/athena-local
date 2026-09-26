@@ -38,6 +38,11 @@ def failed_ddl(label, sql, cursor_class, status_if_ok):
     except Exception as exc:  # noqa: BLE001
         error, kind = short(exc), type(exc).__name__
     query_id = cursor.query_id
+    if query_id is None:
+        # StartQueryExecution の時点で弾かれた（<id>.txt が無い）。trace の生死と取り違えて SKIP にしない（#222）。
+        report("FAIL" if status_if_ok == "PASS" else "INFO", f"(3) {label}",
+               f"開始時に弾かれ、実行時に FAILED にならない（{kind} msg={(error or '')[:200]!r}）")
+        return
     reads = window.reads(f"/athena-results/py/{query_id}.txt")  # .txt.metadata も前方一致で含む
     placed = mc_exists(f"athena-results/py/{query_id}.txt")
     # mc stat の HeadObject が trace に出ることで、「GET 0 件」を数えた trace が生きていることを確かめる（最終パスの指摘）。
@@ -119,8 +124,10 @@ def main():
     except Exception as exc:  # noqa: BLE001
         report("SKIP", "PyAthena の (3)(7)", f"未測定: preflight が通らない（{short(exc)}）")
         return failures()
+    # 実在しない表への SHOW COLUMNS は #207 から StartQueryExecution の時点で弾かれ、<id>.txt が置かれない
+    # （本物と同じ）。本物も実行時に FAILED になる無引用の RENAME TO（#204）に差し替えた（#222）。
     for label, sql in (("DROP TABLE", f"DROP TABLE iceberg.default.nope_{RUN}"),
-                       ("SHOW COLUMNS", f"SHOW COLUMNS FROM hive.default.nope_{RUN}")):
+                       ("ALTER TABLE RENAME TO", f"ALTER TABLE hive.default.nope_{RUN} RENAME TO nope_{RUN}_b")):
         failed_ddl(f"PandasCursor 失敗した {label}", sql, PandasCursor, "PASS")
         failed_ddl(f"Cursor 失敗した {label}（対照）", sql, None, "INFO")
     try:
