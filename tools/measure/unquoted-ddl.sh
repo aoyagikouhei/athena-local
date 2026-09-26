@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # issue #208 で作成。issue #221 で ROUND=3、issue #224 で ROUND=4、issue #227 で ROUND=5、
-# issue #228 で ROUND=6、issue #240 で ROUND=7、issue #242 で ROUND=8、issue #229 で ROUND=9 を追加
+# issue #228 で ROUND=6、issue #240 で ROUND=7、issue #242 で ROUND=8、issue #229 で ROUND=9、
+# issue #248 で ROUND=10 を追加
 # 本物の Athena が StartQueryExecution の時点で弾く、無引用の DDL 3 種
 # （ALTER TABLE IF EXISTS、ALTER TABLE ... ADD COLUMN（単数）、場所の無い CREATE TABLE）の
 # 弾かれ方の規則（`line L:C` の位置、`no viable alternative at input '...'` の input の範囲、
@@ -92,6 +93,21 @@
 #     既定の Context で DROP する（i 群の後始末と同じ考え方）。n32 だけ Context に Database を含めない
 #     （Catalog=<S3TABLES_CATALOG> だけ）。S3TABLES_* が無ければ、既定の Context だけで測れる n31 を
 #     除いて未測定として残す。
+#   - 【issue #248 で追加】ROUND=10 は、#229 で扱わなかった S3 Tables の Context の Hive の
+#     CREATE TABLE の残り（表の COMMENT・CLUSTERED BY・ROW FORMAT SERDE・FIELDS 以外の
+#     DELIMITED の句・TBLPROPERTIES の 2 組以上、LOCATION の無い EXTERNAL の 2 部の名前・
+#     AwsDataCatalog の 3 部・ほかの句付き、TRINO_CATALOG_MAP の別名や Trino にだけあるカタログの
+#     3 部 + LOCATION、バッククォートの名前）を測る S 群だけを測る。加えて、n6（実在しないカタログ +
+#     LOCATION）の対照として既定の Context の同じ形（S3 Tables の判定を経ないときも同じ
+#     DATACATALOG_NOT_FOUND になるか）と、連携カタログ（FEDERATED_CATALOG。設定されていれば）を
+#     1 部目にした同じ形、n21（STORED AS PARQUET・LOCATION 無し）の対照として STORED AS の
+#     別形式（ORC）と LOCATION 付き、#249 の独立レビューで挙がった入れ子の型（`row(...)`・
+#     `array(row(...))`）の列を持つ形も測る。preflight・DB 確認は共通で走るが、実在する表は
+#     作らない（ROUND=3〜7・9 と同じ）。LOCATION の組み立ては `probe_location_s`（`probe_location`
+#     と同じ形。空のプレフィックス、接頭辞だけ issue 番号を 248 にする）。受理されたら同じ
+#     Context で消す run_create_then_drop_ctx をそのまま流用する。S3TABLES_* が無ければ、
+#     既定の Context だけで測れる s12 を除いて未測定として残す。s14（連携カタログ）は
+#     S3TABLES_* に加えて FEDERATED_CATALOG も要る。
 #
 # 使い方:
 #   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db bash tools/measure/unquoted-ddl.sh
@@ -143,6 +159,16 @@
 #   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=9 \
 #     S3TABLES_CATALOG=s3tablescatalog/your-bucket S3TABLES_NS=your_ns \
 #     bash tools/measure/unquoted-ddl.sh
+#   ラウンド 10（issue #248。#229 で扱わなかった S3 Tables の Context の Hive の CREATE TABLE の残り
+#   （COMMENT・CLUSTERED BY・ROW FORMAT SERDE・FIELDS 以外の DELIMITED の句・TBLPROPERTIES の
+#   2 組以上、LOCATION の無い EXTERNAL の各形、TRINO_CATALOG_MAP の別名や Trino にだけあるカタログの
+#   3 部 + LOCATION、バッククォートの名前、入れ子の型）だけを測る。S3TABLES_* が無ければ s12 以外の
+#   S 群は未測定として残す。連携カタログも測るなら FEDERATED_CATALOG を足す（無ければ s14 だけ
+#   未測定として残す））:
+#   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=10 \
+#     S3TABLES_CATALOG=s3tablescatalog/your-bucket S3TABLES_NS=your_ns \
+#     FEDERATED_CATALOG=your_federated_catalog \
+#     bash tools/measure/unquoted-ddl.sh
 #   （資格情報はホストのシェルで AWS_ACCESS_KEY_ID などを export してから。または ~/.aws/credentials）
 #
 # 必要な環境変数:
@@ -169,6 +195,8 @@
 #                    別の DB を作り、最後に消す。
 #                    9 は N 群（S3 Tables の Context の LOCATION 付き CREATE TABLE。issue #229）だけ。
 #                    実在する表は作らない。
+#                    10 は S 群（S3 Tables の Context の Hive の CREATE TABLE の残り。issue #248）だけ。
+#                    実在する表は作らない。
 #   CATALOG          既定 AwsDataCatalog
 #   REGION           既定 ap-northeast-1
 #   OUT_DIR          既定 ${DEV_HOST_HOME:-$HOME}/athena-unquoted-ddl-measurements
@@ -180,9 +208,14 @@
 #   S3TABLES_NS      S3 Tables の名前空間。
 #                    この 2 つが揃ったときだけ、ROUND=1 の C20（S3 Tables への場所の無い
 #                    CREATE TABLE）と ROUND=3 の H 群（h0〜h9）、ROUND=5 の J 群（j0〜j13）、
-#                    ROUND=9 の N 群（n0〜n30・n32）を測る。1 つでも欠けていれば
-#                    「未測定（S3TABLES_* 未設定）」として summary に残す（ROUND=5 は j14〜j16、
-#                    ROUND=9 は n31 だけ測る）。ROUND=2 では使わない。
+#                    ROUND=9 の N 群（n0〜n30・n32）、ROUND=10 の S 群（s1〜s11・s13・s15〜s18）を
+#                    測る。1 つでも欠けていれば「未測定（S3TABLES_* 未設定）」として summary に
+#                    残す（ROUND=5 は j14〜j16、ROUND=9 は n31、ROUND=10 は s12 だけ測る）。
+#                    ROUND=2 では使わない。
+#   FEDERATED_CATALOG 連携カタログ（S3 Tables 以外）の名前。設定されていれば ROUND=10 の s14
+#                    （TRINO_CATALOG_MAP の別名や Trino にだけあるカタログの 3 部 + LOCATION が
+#                    実在するカタログのとき）も測る。無ければ s14 だけ「未測定（FEDERATED_CATALOG
+#                    未設定）」として残す（他の S 群は S3TABLES_* だけで測れる）。
 #
 # ** このスクリプトが本物に対して行う破壊的な操作 **
 #   - 実在する表 <db>.athena_local_probe_208_<乱数>_real を 1 つ CTAS で作り、
@@ -259,12 +292,20 @@
 #       n32（Context は Catalog=<S3TABLES_CATALOG> だけ、Database 無し）
 #                                     → 同じ Context で DROP TABLE IF EXISTS <接頭辞>_n32
 #     LOCATION は <OUTPUT>athena-local-probe-229/<接頭辞>_<項目>/（空のプレフィックス。データは置かない）。
+#   - ROUND=10: 実在する表 <接頭辞>_real は作らない。S 群の CREATE TABLE（EXTERNAL を含む）は
+#     すべて run_create_then_drop_ctx で投げ、想定外に受理されたらその場で無引用 + IF EXISTS の
+#     DROP TABLE を投げて消す。結果は確かめ、SUCCEEDED にならなければ trap がもう一度
+#     ベストエフォートで投げる。s8（EXTERNAL の AwsDataCatalog 3 部）は既定の Context で、
+#     s12（既定の Context の n6 対照）・s13（Trino にだけあるような綴りの連携カタログ）・s14
+#     （FEDERATED_CATALOG、設定されていれば）以外は S3 Tables の Context で DROP TABLE IF
+#     EXISTS <接頭辞>_sN を投げる。s14 は FEDERATED_CATALOG の Context で消す。LOCATION は
+#     <OUTPUT>athena-local-probe-248/<接頭辞>_<項目>/（空のプレフィックス。データは置かない）。
 #
 # 課金について: ALTER TABLE・DROP TABLE はメタデータだけを見る／書く文で、実データの
 # スキャンは無い。CREATE TABLE（実在する表の準備・C3・C20・C21・C22・C23、E・F 群、
-# ROUND=3 の H・Q・P 群、ROUND=5 の J 群、ROUND=9 の N 群。いずれも 0〜1 行）もスキャンや
-# 書き込みは軽微。Athena の最小課金 × クエリ数の見込み。ROUND=5 の結果ファイルの読み出し
-# （aws s3 cp）は Athena のクエリではなく S3 の GetObject で、課金には乗らない。
+# ROUND=3 の H・Q・P 群、ROUND=5 の J 群、ROUND=9 の N 群、ROUND=10 の S 群。いずれも 0〜1 行）
+# もスキャンや書き込みは軽微。Athena の最小課金 × クエリ数の見込み。ROUND=5・10 の結果ファイルの
+# 読み出し（aws s3 cp）は Athena のクエリではなく S3 の GetObject で、課金には乗らない。
 #
 # 本物への呼び出し回数の見込み（内訳。実際の回数は下で更新される。GetQueryExecution は
 # poll_until_terminal のポーリング + 終端後の 1 回で、開始できた項目の数 × 数回のオーダー。
@@ -403,6 +444,24 @@
 #   [GetQueryExecution]
 #   開始できた項目だけ終端状態までポーリングし、終端後にもう 1 回まとめて取得する。
 #
+# == ROUND=10（S 群のみ。issue #248。preflight・DB 確認は共通、実在する表は作らない） ==
+#
+#   [StartQueryExecution]
+#   preflight（SELECT 1 + SHOW TABLES）2
+#   + S 群のうち S3TABLES_* が揃うときだけ（s1〜s11・s13・s15〜s18 の 16）
+#   + s14（S3TABLES_* と FEDERATED_CATALOG が両方揃うときだけ）1
+#   + s12（既定の Context。S3TABLES_* によらず常に投げる）1
+#   = 20（S3TABLES_* と FEDERATED_CATALOG が両方あり）／19（S3TABLES_* のみ）／3（どちらも無し）。
+#   受理された CREATE TABLE ごとに、その場で DROP する後始末が 1 本ずつ増える（最大 +18）。
+#
+#   [GetQueryExecution]
+#   開始できた項目だけ終端状態までポーリングし、終端後にもう 1 回まとめて取得する。
+#
+#   [その他]
+#   FAILED になった項目ごとに、結果ファイル本体と `<OutputLocation>.metadata` の取得
+#   （aws s3 cp、それぞれ 1 回）を追加で呼ぶ（最大で S 群の項目数 × 2 回）。Athena の
+#   API ではないので上の StartQueryExecution・GetQueryExecution の回数には含めない。
+#
 # 実行ごとに $OUT_DIR/run-<日時>/ を作り、その中だけに書く。前の回の結果と混ざらない。
 #
 # 項目ごとに次を保存する（取れたものだけ）。
@@ -428,9 +487,9 @@ set -uo pipefail
 : "${DB:?DB にデータベース名を設定してください}"
 ROUND=${ROUND:-1}
 case "$ROUND" in
-  1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9) ;;
+  1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10) ;;
   *)
-    echo "ROUND には 1・2・3・4・5・6・7・8・9 のどれかを指定してください（既定 1）" >&2
+    echo "ROUND には 1・2・3・4・5・6・7・8・9・10 のどれかを指定してください（既定 1）" >&2
     exit 1
     ;;
 esac
@@ -443,6 +502,8 @@ RETRY_MAX=${RETRY_MAX:-4}
 RETRY_DELAY=${RETRY_DELAY:-5}
 S3TABLES_CATALOG=${S3TABLES_CATALOG:-}
 S3TABLES_NS=${S3TABLES_NS:-}
+# 連携カタログ（S3 Tables 以外）の名前。ROUND=10 の s14 だけが使う（issue #248）。
+FEDERATED_CATALOG=${FEDERATED_CATALOG:-}
 # S3TABLES_CATALOG が s3tablescatalog/<バケット> の形なら、そのバケット名（伏せ字用）。
 S3TABLES_BUCKET=""
 case "$S3TABLES_CATALOG" in
@@ -554,6 +615,7 @@ $PROBE_PREFIX	<PROBE>
 $S3TABLES_CATALOG	<S3TABLES_CATALOG>
 $S3TABLES_BUCKET	<S3TABLES_BUCKET>
 $S3TABLES_NS	<S3TABLES_NS>
+$FEDERATED_CATALOG	<FEDERATED_CATALOG>
 ${DB^^}	<DB_UPPER>
 EOF
 }
@@ -1702,6 +1764,94 @@ run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" n31 \
 
 fi # ROUND=9
 
+# ROUND=10 だけ、S 群を投げる（issue #248）。
+if [ "$ROUND" = 10 ]; then
+
+DEFAULT_CTX="Catalog=$CATALOG,Database=$DB"
+# バッククォート 1 文字（s11。ダブルクォートと違い、二重引用符で囲むと bash のコマンド置換に
+# なってしまうので変数にして埋め込む）。
+BT='`'
+# LOCATION 付きの項目の置き場（n 群の probe_location と同じ形。空のプレフィックス）。
+probe_location_s() { printf '%sathena-local-probe-248/%s/' "$OUTPUT" "$(new_name "$1")"; }
+
+# --- S 群（QueryExecutionContext の Catalog が S3 Tables の Hive の CREATE TABLE の残り） --------
+# #229 で測っていない句（s1〜s6）、LOCATION の無い EXTERNAL の各形（s7〜s10）、バッククォートの
+# 名前（s11）、n6（実在しないカタログ + LOCATION）の対照（s12・s13・s14）、n21（STORED AS PARQUET・
+# LOCATION 無し）の対照（s15・s16）、#249 の独立レビューで挙がった入れ子の型（s17・s18）。
+if [ -n "$S3TABLES_CATALOG" ] && [ -n "$S3TABLES_NS" ]; then
+  S3T_CTX="Catalog=$S3TABLES_CATALOG,Database=$S3TABLES_NS"
+
+  # s1〜s6: #229 で測っていない句。列の並びは Hive のデリミタ系の句が要る型にする。
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" s1 \
+    "CREATE TABLE $(new_name s1) (n int) COMMENT 't comment' LOCATION '$(probe_location_s s1)'" "$(new_name s1)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" s2 \
+    "CREATE TABLE $(new_name s2) (n int) CLUSTERED BY (n) INTO 4 BUCKETS LOCATION '$(probe_location_s s2)'" "$(new_name s2)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" s3 \
+    "CREATE TABLE $(new_name s3) (n int) ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde' LOCATION '$(probe_location_s s3)'" "$(new_name s3)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" s4 \
+    "CREATE TABLE $(new_name s4) (n int) ROW FORMAT DELIMITED FIELDS TERMINATED BY ',' LINES TERMINATED BY '\n' LOCATION '$(probe_location_s s4)'" "$(new_name s4)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" s5 \
+    "CREATE TABLE $(new_name s5) (n map<string,string>) ROW FORMAT DELIMITED COLLECTION ITEMS TERMINATED BY ',' MAP KEYS TERMINATED BY ':' NULL DEFINED AS 'N' LOCATION '$(probe_location_s s5)'" "$(new_name s5)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" s6 \
+    "CREATE TABLE $(new_name s6) (n int) LOCATION '$(probe_location_s s6)' TBLPROPERTIES ('a248'='b', 'c248'='d')" "$(new_name s6)"
+
+  # s7〜s10: LOCATION の無い EXTERNAL（n11 は 1 部の無引用の名前だけ測った）。
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" s7 \
+    "CREATE EXTERNAL TABLE $S3TABLES_NS.$(new_name s7) (n int)" "$(new_name s7)"
+  run_create_then_drop_ctx "$S3T_CTX" "$DEFAULT_CTX" s8 \
+    "CREATE EXTERNAL TABLE AwsDataCatalog.$DB.$(new_name s8) (n int)" "$(new_name s8)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" s9 \
+    "CREATE EXTERNAL TABLE $(new_name s9) (n int) STORED AS PARQUET" "$(new_name s9)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" s10 \
+    "CREATE EXTERNAL TABLE $(new_name s10) (n int) TBLPROPERTIES ('a248'='b')" "$(new_name s10)"
+
+  # s11: バッククォートの名前（Hive は引用符でなくバッククォートで名前を囲む）。
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" s11 \
+    "CREATE TABLE ${BT}$(new_name s11)${BT} (n int) LOCATION '$(probe_location_s s11)'" "$(new_name s11)"
+
+  # s13: n6 と同じ形で、1 部目を Trino にだけあるような綴り（TRINO_CATALOG_MAP の別名候補）にする。
+  run_create_then_drop_ctx "$S3T_CTX" "$DEFAULT_CTX" s13 \
+    "CREATE TABLE hive248.$DB.$(new_name s13) (n int) LOCATION '$(probe_location_s s13)'" "$(new_name s13)"
+
+  # s15・s16: n21（STORED AS PARQUET、LOCATION 無し）の対照。
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" s15 \
+    "CREATE TABLE $(new_name s15) (n int) STORED AS ORC" "$(new_name s15)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" s16 \
+    "CREATE TABLE $(new_name s16) (n int) STORED AS PARQUET LOCATION '$(probe_location_s s16)'" "$(new_name s16)"
+
+  # s17・s18: #249 の独立レビュー（low）で挙がった入れ子の型の列。
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" s17 \
+    "CREATE TABLE $(new_name s17) (c row(a int)) LOCATION '$(probe_location_s s17)'" "$(new_name s17)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" s18 \
+    "CREATE TABLE $(new_name s18) (c array(row(a int))) LOCATION '$(probe_location_s s18)'" "$(new_name s18)"
+
+  # s14: n6 の対照（実在するカタログ名での同じ形）。連携カタログが設定されていれば測る。
+  if [ -n "$FEDERATED_CATALOG" ]; then
+    run_create_then_drop_ctx "$S3T_CTX" "Catalog=$FEDERATED_CATALOG" s14 \
+      "CREATE TABLE $FEDERATED_CATALOG.$DB.$(new_name s14) (n int) LOCATION '$(probe_location_s s14)'" "$(new_name s14)"
+  else
+    skip s14 "未測定（FEDERATED_CATALOG 未設定）"
+    skip s14-cleanup "CREATE TABLE を投げていないため後始末不要"
+  fi
+else
+  for l in s1 s2 s3 s4 s5 s6 s7 s8 s9 s10 s11 s13 s14 s15 s16 s17 s18; do
+    skip "$l" "未測定（S3TABLES_* 未設定）"
+    skip "$l-cleanup" "CREATE TABLE を投げていないため後始末不要"
+  done
+fi
+
+# s12: n6 の対照（Hive の Context。既定の Context で同じ形が同じ DATACATALOG_NOT_FOUND になるか）。
+# S3TABLES_* によらず常に投げる。
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" s12 \
+  "CREATE TABLE nosuchcatalog248.$DB.$(new_name s12) (n int) LOCATION '$(probe_location_s s12)'" "$(new_name s12)"
+
+S_LABELS="s1 s2 s3 s4 s5 s6 s7 s8 s9 s10 s11 s12 s13 s14 s15 s16 s17 s18"
+
+# --- 付随物の取得（FAILED になった項目だけ） --------------------------------------------
+fetch_failed_attachments $S_LABELS
+
+fi # ROUND=10
+
 # --- 後始末（実在する表） ----------------------------------------------------------
 
 if [ "$REAL_SETUP_OK" = 1 ]; then
@@ -1743,6 +1893,10 @@ elif [ "$ROUND" = 4 ]; then
 elif [ "$ROUND" = 9 ]; then
   ALL_LABELS="$ALL_LABELS n0"
   for l in n1 n2 n3 n4 n5 n6 n7 n8 n9 n10 n11 n12 n13 n14 n15 n16 n17 n18 n19 n20 n21 n22 n23 n24 n25 n26 n27 n28 n29 n30 n31 n32; do
+    ALL_LABELS="$ALL_LABELS $l $l-cleanup"
+  done
+elif [ "$ROUND" = 10 ]; then
+  for l in $S_LABELS; do
     ALL_LABELS="$ALL_LABELS $l $l-cleanup"
   done
 elif [ "$ROUND" = 8 ]; then
@@ -1849,6 +2003,39 @@ write_summary_txt() {
       echo "#   それ以外は S3 Tables の Context（n32 は Database 無しの Catalog だけ）で DROP TABLE IF EXISTS）。"
       echo "#   LOCATION は <OUTPUT>athena-local-probe-229/<PROBE>_<項目>/（空のプレフィックス。データは置かない）。"
       echo "# 課金: スキャンの無いクエリだけ（CREATE は 0〜1 行、DROP はメタデータのみ）。"
+      echo "# 注意: これは実測した本物の Athena の挙動であり、将来の Athena の変更で変わりうる。"
+      echo "#   実測値は既定とは限らない。"
+    elif [ "$ROUND" = 10 ]; then
+      echo "# issue #248（#208 ラウンド 10）: QueryExecutionContext の Catalog が S3 Tables のとき、"
+      echo "#             #229 で測っていない Hive の CREATE TABLE の句（COMMENT・CLUSTERED BY・"
+      echo "#             ROW FORMAT SERDE・FIELDS 以外の DELIMITED の句・TBLPROPERTIES の 2 組以上）、"
+      echo "#             LOCATION の無い EXTERNAL の各形、バッククォートの名前、n6・n21 の対照、"
+      echo "#             入れ子の型の列を実測"
+      echo "# 実行日時: $(date -Iseconds)"
+      if [ -n "$S3TABLES_CATALOG" ] && [ -n "$S3TABLES_NS" ]; then
+        echo "# S3TABLES_*: 設定あり（S 群 s1〜s11・s13・s15〜s18 を測る）"
+      else
+        echo "# S3TABLES_*: 未設定（s12 以外の S 群は未測定）"
+      fi
+      if [ -n "$FEDERATED_CATALOG" ]; then
+        echo "# FEDERATED_CATALOG: 設定あり（s14 を測る）"
+      else
+        echo "# FEDERATED_CATALOG: 未設定（s14 は未測定）"
+      fi
+      echo "# StartQueryExecution の見込み本数: 20（S3TABLES_* と FEDERATED_CATALOG が両方あり）／"
+      echo "#   19（S3TABLES_* のみ）／3（どちらも無し）"
+      echo "#   （preflight 2 + S 群のうち S3TABLES_* が揃うときだけの 16（s1〜s11・s13・s15〜s18）+"
+      echo "#   FEDERATED_CATALOG も揃うときだけの s14 の 1 + 常に投げる s12 の 1）。"
+      echo "#   このスクリプトの実測値: $(wc -l < "$START_CALL_FILE" | tr -d ' ') 回"
+      echo "#   受理された CREATE TABLE ごとに、その場で DROP する後始末が 1 本ずつ増える（最大 +18）。"
+      echo "# DDL: 実在する表 <PROBE>_real は作らない。S 群の CREATE TABLE（EXTERNAL を含む）は、"
+      echo "#   受理されたらその場で DROP して消す（s8 は既定の Context、s14 は FEDERATED_CATALOG の"
+      echo "#   Context、それ以外は S3 Tables の Context で DROP TABLE IF EXISTS）。"
+      echo "#   LOCATION は <OUTPUT>athena-local-probe-248/<PROBE>_<項目>/（空のプレフィックス。データは置かない）。"
+      echo "# 付随物: FAILED になった項目は、結果ファイル本体と <OutputLocation>.metadata を"
+      echo "#   aws s3 cp で読み出して保存する（<label>.output.txt・<label>.output.metadata）。"
+      echo "# 課金: スキャンの無いクエリだけ（CREATE は 0〜1 行、DROP はメタデータのみ）。結果ファイルの"
+      echo "#   読み出しは S3 の GetObject で、Athena のクエリ課金には乗らない。"
       echo "# 注意: これは実測した本物の Athena の挙動であり、将来の Athena の変更で変わりうる。"
       echo "#   実測値は既定とは限らない。"
     elif [ "$ROUND" = 8 ]; then
@@ -2030,11 +2217,12 @@ PYEOF
         echo
       fi
     done
-    if [ "$ROUND" = 6 ] || [ "$ROUND" = 7 ] || [ "$ROUND" = 8 ]; then
+    if [ "$ROUND" = 6 ] || [ "$ROUND" = 7 ] || [ "$ROUND" = 8 ] || [ "$ROUND" = 10 ]; then
       case "$ROUND" in
         6) REPR_LABELS=$K_LABELS ;;
         7) REPR_LABELS=$L_LABELS ;;
-        *) REPR_LABELS=$M_LABELS ;;
+        8) REPR_LABELS=$M_LABELS ;;
+        *) REPR_LABELS=$S_LABELS ;;
       esac
       echo
       echo "## 文と開始時の文言・Query（Python の repr。前後の空白・改行・CR を区別する。実名は伏せる）"
@@ -2085,10 +2273,14 @@ PYEOF
         echo
       done
     fi
-    if [ "$ROUND" = 5 ]; then
+    if [ "$ROUND" = 5 ] || [ "$ROUND" = 10 ]; then
       echo
       echo "## 付随物（結果ファイル本体・.metadata。FAILED になった項目だけ。実名は伏せる）"
-      for label in $J_LABELS; do
+      case "$ROUND" in
+        5) ATTACH_LABELS=$J_LABELS ;;
+        *) ATTACH_LABELS=$S_LABELS ;;
+      esac
+      for label in $ATTACH_LABELS; do
         is_failed "$label" || continue
         echo "### $label"
         body="$RUN_DIR/$label.output.txt"
