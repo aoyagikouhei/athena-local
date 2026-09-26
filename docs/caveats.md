@@ -501,7 +501,9 @@ respectively. `MSCK REPAIR TABLE` on an Iceberg table, with or without a comment
   gets the Trino catalog of the `AwsDataCatalog` alias (keys compared
   case-insensitively), double-quoted and padded with spaces as above, while
   `Query` stays as sent. Real Athena ran such names in `SELECT`, `INSERT`,
-  CTAS, `CREATE VIEW` and `EXPLAIN` (measured 2026-09-26). Other unquoted
+  CTAS, `CREATE VIEW` and `EXPLAIN` (measured 2026-09-26); athena-local
+  applies the alias whatever the statement, and other statements (`DELETE`,
+  `DROP VIEW`, the target of `RENAME TO`) have not been measured. Other unquoted
   aliases, names with a quoted part or a part count other than three, and
   other context catalogs are sent as written; they have not been measured.
   Real Athena resolves `QueryExecutionContext.Catalog` and `Database`
