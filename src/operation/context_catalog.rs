@@ -50,21 +50,26 @@ pub(super) async fn resolve(
         return unchanged;
     }
     // Trino はカタログを小文字で持つ（#207 の存在の確認と同じ）。
-    let sql = catalog_exists_sql(&catalog.to_lowercase());
-    // system.* を修飾名で引くので、セッションのカタログ・スキーマは付けない。
-    let Ok(outcome) = trino.execute(&sql, None, None, &Cancel::default()).await else {
+    if !missing(trino, &catalog_exists_sql(&catalog.to_lowercase())).await {
         return unchanged;
-    };
-    // 失敗・応答の形が違う（偽 Trino が本体の応答を返すときも）・実在するなら、今までどおり。
-    let columns: Vec<&str> = outcome.columns.iter().map(|c| c.name.as_str()).collect();
-    match (columns.as_slice(), outcome.rows.as_slice()) {
-        (["_col0"], [row]) if row.len() == 1 && row[0].is_null() => {
-            fallback(&config.catalog_map, config.default_catalog.as_deref())
-                .map(str::to_string)
-                .or(unchanged)
-        }
-        _ => unchanged,
     }
+    fallback(&config.catalog_map, config.default_catalog.as_deref())
+        .map(str::to_string)
+        .or(unchanged)
+}
+
+/// カタログの有無の問い合わせ（`table_format::catalog_exists_sql`）で、無いと確かめられたときだけ真。
+/// 問い合わせの失敗・応答の形が違う（偽 Trino が本体の応答を返すときも）・あるなら偽（呼び出し側は今までどおりに倒す）。
+pub(super) async fn missing(trino: &Trino, sql: &str) -> bool {
+    // system.* を修飾名で引くので、セッションのカタログ・スキーマは付けない。
+    let Ok(outcome) = trino.execute(sql, None, None, &Cancel::default()).await else {
+        return false;
+    };
+    let columns: Vec<&str> = outcome.columns.iter().map(|c| c.name.as_str()).collect();
+    matches!(
+        (columns.as_slice(), outcome.rows.as_slice()),
+        (["_col0"], [row]) if row.len() == 1 && row[0].is_null()
+    )
 }
 
 /// 差し替え先（Trino 側の名前）。`TRINO_CATALOG_MAP` の `AwsDataCatalog` の別名、無ければ `TRINO_CATALOG` に

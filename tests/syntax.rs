@@ -294,7 +294,8 @@ async fn 場所の無い_create_table_も本物の文言で開始時に弾き_�
 
 /// Context の Catalog が S3 Tables のとき、1 部目が `awsdatacatalog` の無引用の 3 部の名前の `CREATE TABLE` は、
 /// 本物が前後の空白を落とした文を付けて `Unsupported ddl with 2 catalogs` で弾く。1 部目が引用符付きなら
-/// 既定の Context と同じ NV（2026-09-26 実測 i1〜i22。#224）。
+/// 既定の Context と同じ NV（2026-09-26 実測 i1〜i22。#224）。どれも Trino に問い合わせない。
+/// 大文字混じりの `AwsDataCatalog` は名前空間を問い合わせる（tests/create_table_catalog.rs。#227）。
 #[tokio::test]
 async fn s3_tables_の_context_で_awsdatacatalog_の_3_部の_create_table_は_2_catalogs_で弾く() {
     let harness = Harness::builder(select_response())
@@ -306,10 +307,6 @@ async fn s3_tables_の_context_で_awsdatacatalog_の_3_部の_create_table_は_
         (
             "  CREATE TABLE awsdatacatalog.db.t\n(n int)\n",
             "Unsupported ddl with 2 catalogs: CREATE TABLE awsdatacatalog.db.t\n(n int)",
-        ),
-        (
-            "CREATE TABLE AwsDataCatalog.db.t (n int)",
-            "No location was specified for table. An S3 location must be specified",
         ),
         (
             r#"CREATE TABLE "awsdatacatalog".db.t (n int)"#,

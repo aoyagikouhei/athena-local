@@ -1,14 +1,15 @@
 //! 本物の Athena が StartQueryExecution の時点で弾く、CTAS でない無引用の `CREATE TABLE` の文言
 //! （2026-09-26 実測。#208）。
 
-use athena_sql::{Cursor, skip_leading_trivia};
+use athena_sql::{Cursor, QualifiedName, skip_leading_trivia};
 
 use super::super::classification::substatement_type;
 use super::super::target_table::table_name_start;
 use super::{end_of, no_viable_alternative, start_of};
 
 /// 場所を指定しない `CREATE TABLE` に本物が返す固定文言（位置なし）。
-const NO_LOCATION: &str = "No location was specified for table. An S3 location must be specified";
+pub(in crate::operation) const NO_LOCATION: &str =
+    "No location was specified for table. An S3 location must be specified";
 
 /// S3 Tables の Context で別カタログの名前の `CREATE TABLE` に本物が返す文言の前半（`ddl` は小文字。DESCRIBE の
 /// `Unsupported DDL with 2 catalogs` とは綴りが違う）。後ろに `: <文>` が付く（2026-09-26 実測。#224）。
@@ -29,10 +30,7 @@ pub(super) fn rejection(query: &str, s3_tables: bool) -> Option<String> {
         return None;
     }
     let sql = query.trim_start_matches([' ', '\t', '\r', '\n']);
-    let rest = table_name_start(sql, &["CREATE", "TABLE"])
-        .or_else(|| table_name_start(sql, &["CREATE", "TABLE", "IF", "NOT", "EXISTS"]))?;
-    let mut cursor = Cursor::new(rest);
-    let name = cursor.qualified_name()?;
+    let (name, mut cursor) = table_name(sql)?;
     if name.parts.len() >= 4 || name.parts.iter().any(|part| part.text.starts_with('"')) {
         return None;
     }
@@ -56,6 +54,31 @@ pub(super) fn rejection(query: &str, s3_tables: bool) -> Option<String> {
         [_, _, _] => Some(message),
         _ => None,
     }
+}
+
+/// `rejection` が No location を返す文の、無引用の 3 部の名前の 1 部目と 2 部目（書いたとおり）。
+/// 3 部でないか引用符付きの部分があれば None。名前は `rejection` と同じ `table_name` で読む（#227）。
+pub(in crate::operation) fn three_part_name(query: &str) -> Option<(&str, &str)> {
+    let sql = query.trim_start_matches([' ', '\t', '\r', '\n']);
+    match table_name(sql)?.0.parts.as_slice() {
+        [catalog, namespace, _]
+            if ![catalog, namespace]
+                .iter()
+                .any(|part| part.text.starts_with('"')) =>
+        {
+            Some((catalog.text, namespace.text))
+        }
+        _ => None,
+    }
+}
+
+/// `CREATE TABLE` か `CREATE TABLE IF NOT EXISTS` の直後の名前と、名前の直後の位置の cursor。
+fn table_name(sql: &str) -> Option<(QualifiedName<'_>, Cursor<'_>)> {
+    let rest = table_name_start(sql, &["CREATE", "TABLE"])
+        .or_else(|| table_name_start(sql, &["CREATE", "TABLE", "IF", "NOT", "EXISTS"]))?;
+    let mut cursor = Cursor::new(rest);
+    let name = cursor.qualified_name()?;
+    Some((name, cursor))
 }
 
 /// 列 1 つを処理した結果。

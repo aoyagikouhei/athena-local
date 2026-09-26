@@ -51,6 +51,17 @@ impl Failure {
         }
     }
 
+    /// S3 Tables の Context で、1 部目が `awsdatacatalog` の類の `CREATE TABLE` の名前空間が無いときに本物が返した
+    /// 固定の文言（表の名前は入らない。2026-09-26 実測 j2・j3・j9。#227）。
+    pub fn cannot_find_table() -> Self {
+        Self {
+            reason: "Cannot find or access the specified table".to_string(),
+            category: USER,
+            error_type: 1100,
+            retryable: false,
+        }
+    }
+
     /// 結果 CSV を置けなかった。本物は書き込みで FAILED にならないので、一覧の
     /// 「Failed to write query results to Amazon S3」を当て、再試行で通りうるものとして返す。
     pub fn result_write(reason: String) -> Self {

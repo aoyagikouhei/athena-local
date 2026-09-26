@@ -39,6 +39,11 @@ pub fn quote_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
+/// SQL の引用符付きの識別子にする。
+pub fn quote_identifier(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\"\""))
+}
+
 /// パラメータがあれば `EXECUTE IMMEDIATE` で包む。無ければ SQL をそのまま返す。
 /// `?` の位置は Trino のパーサが解決するので、リテラルやコメント中の `?` は置換されない。
 pub fn to_trino_sql(query: &str, parameters: &[String]) -> String {
@@ -83,6 +88,12 @@ mod tests {
             error_type: None,
             message: message.to_string(),
         })
+    }
+
+    #[test]
+    fn 識別子は二重引用符で包み_中の二重引用符は重ねる() {
+        assert_eq!(quote_identifier("iceberg"), r#""iceberg""#);
+        assert_eq!(quote_identifier(r#"a"b"#), r#""a""b""#);
     }
 
     #[test]

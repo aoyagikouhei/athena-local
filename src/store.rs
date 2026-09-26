@@ -71,6 +71,8 @@ pub struct Execution {
     pub substatement_type: Option<&'static str>,
     /// FAILED のときだけ入る。
     pub failure: Option<Failure>,
+    /// 開始時点で「Trino に送らずに FAILED にする」と決まっていれば、その失敗（#227）。
+    pub immediate_failure: Option<Failure>,
     /// StopQueryExecution が立て、実行中のタスクが見る。
     pub cancel: Arc<Cancel>,
 }
@@ -136,6 +138,8 @@ pub struct Submission {
     /// ClientRequestToken。operation/execution.rs が必須項目として検証済みなので常に有効な値。
     pub token: String,
     pub fingerprint: Fingerprint,
+    /// 開始時点で決まった失敗（`Execution::immediate_failure`）。
+    pub immediate_failure: Option<Failure>,
 }
 
 impl Store {
@@ -162,6 +166,7 @@ impl Store {
             work_group,
             token,
             fingerprint,
+            immediate_failure,
         } = submission;
 
         let mut inner = self.lock();
@@ -190,6 +195,7 @@ impl Store {
             update_count: None,
             substatement_type: None,
             failure: None,
+            immediate_failure,
             cancel: Arc::default(),
         };
         inner.executions.insert(id.to_string(), execution);
@@ -355,6 +361,7 @@ mod tests {
                 work_group: "primary".to_string(),
                 token: test_token("submitted"),
                 fingerprint: fingerprint("SELECT 1"),
+                immediate_failure: None,
             },
         );
         store
@@ -374,6 +381,7 @@ mod tests {
                 work_group: "primary".to_string(),
                 token: test_token("progress"),
                 fingerprint: fingerprint("SELECT ?"),
+                immediate_failure: None,
             },
         );
 
@@ -501,6 +509,7 @@ mod tests {
             work_group: "primary".to_string(),
             token: token.to_string(),
             fingerprint: fingerprint(query),
+            immediate_failure: None,
         }
     }
 
