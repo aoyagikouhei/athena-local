@@ -29,7 +29,10 @@ headers. **Without `ExecutionParameters` the SQL string is not rewritten**, exce
 for catalog aliases in qualified names (below) and, as on real Athena, a `;`
 around the statement and the whitespace before and after it, which are removed,
 and an unquoted `awsdatacatalog.` or database in the name of `DESCRIBE` and a
-few other statements, which is dropped (see [Supported API](api.md)). Unqualified table names with the
+few other statements, which is dropped (see [Supported API](api.md)), and,
+under an S3 Tables context catalog, the first part of a plain
+`CREATE TABLE AwsDataCatalog.<namespace>.<table>`, which is blanked out (see
+[Caveats](caveats.md#plain-create-table)). Unqualified table names with the
 context carrying the catalog and database remain the most portable form.
 
 Some Athena catalog names cannot exist in Trino. Reading S3 Tables through Athena

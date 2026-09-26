@@ -124,7 +124,7 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
     // 本物は表への DESCRIBE・DESC の Query から DB も落とし、ビューはカタログも落とさずに返した（2026-09-26
     // 実測 m1〜m13・m11・m37。#242）。ビューは実行だけカタログを落とした文で行う。
     let mut reported = None;
-    let (statement, database) = match check {
+    let (mut statement, database) = match check {
         Check::Table => match reported_query::drop_database(&statement, catalog.as_deref()) {
             Some(rewritten) => (rewritten.query, Some(rewritten.database)),
             None => (statement, database),
@@ -164,6 +164,14 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
                     failure,
                     writes_result_file: false,
                 });
+            }
+            // 本物は 1 部目を無視して名前空間に作り、Query は受け取ったまま返した（2026-09-26 実測 j1・j4。#237）。
+            create_table_catalog::Outcome::Rewrite(rewritten) => {
+                reported = Some(Reported {
+                    query: query.clone(),
+                    database: database.clone(),
+                });
+                statement = rewritten;
             }
             create_table_catalog::Outcome::Continue => {
                 return invalid_request_with_code(message, "MALFORMED_QUERY");

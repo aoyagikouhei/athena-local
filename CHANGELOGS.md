@@ -55,6 +55,10 @@ later name the date they were measured on.
 - Under an S3 Tables context catalog, a plain `CREATE TABLE <namespace>.<t>`
   with a missing namespace starts and fails as on real Athena (measured
   2026-09-26) ([docs](docs/caveats.md#plain-create-table)).
+- Under an S3 Tables context catalog, a plain
+  `CREATE TABLE AwsDataCatalog.<namespace>.<t>` with an existing namespace now
+  creates the table instead of answering `No location`, as on real Athena
+  (measured 2026-09-26) ([docs](docs/caveats.md#plain-create-table)).
 - Under an S3 Tables context catalog, a Hive-style `CREATE TABLE` with
   `LOCATION`, and `CREATE EXTERNAL TABLE` without one, are rejected with real
   Athena's messages instead of Trino's syntax error (measured 2026-09-26)

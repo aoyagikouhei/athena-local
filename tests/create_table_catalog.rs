@@ -239,10 +239,12 @@ async fn s3_tables_の_context_で名前空間が無ければ開始して_trino_
     assert!(harness.s3_puts().is_empty(), "{:?}", harness.s3_puts());
 }
 
-/// 名前空間があるとき（本物は作る）と、問い合わせが `SCHEMA_NOT_FOUND` 以外で失敗したとき（確かめられない）は、
-/// 今までどおり No location。
+/// 名前空間があるとき、本物は 1 部目を無視して名前空間に作った（2026-09-26 実測 j1・j4。#237）。athena-local は
+/// 1 部目から 2 部目の直前まで（`.`・空白・コメントを含む）を文字数ぶんの空白にした文を Trino に送り（改行は残して
+/// Trino のエラー位置を受け取った文に合わせる）、Query は受け取ったまま返す。問い合わせが `SCHEMA_NOT_FOUND` 以外で
+/// 失敗したとき（確かめられない）も、2 部の名前（#231）と同じく Trino に送る。
 #[tokio::test]
-async fn s3_tables_の_context_で名前空間があれば_no_location_のまま() {
+async fn s3_tables_の_context_で名前空間があれば_1_部目を空白にして_trino_に送る() {
     let harness = Harness::builder(select_response())
         .catalog_map(&[("s3tablescatalog/b", "iceberg")])
         .route(&schema_probe_sql("iceberg", "ns"), show_tables_response())
@@ -250,25 +252,49 @@ async fn s3_tables_の_context_で名前空間があれば_no_location_のまま
             &schema_probe_sql("iceberg", "other"),
             trino_error("GENERIC_INTERNAL_ERROR", "boom"),
         )
+        .results_s3()
         .start()
         .await;
 
-    for query in [
-        "CREATE TABLE AwsDataCatalog.ns.t (n int)",
-        "CREATE TABLE AwsDataCatalog.other.t (n int)",
-    ] {
-        let (code, error) = start(&harness, query, Some("s3tablescatalog/b")).await;
-        assert_eq!(code, 400, "{query}: {error}");
-        assert_eq!(error["AthenaErrorCode"], "MALFORMED_QUERY", "{query}");
-        assert_eq!(error["Message"], NO_LOCATION, "{query}");
+    let cases = [
+        (
+            "CREATE TABLE AwsDataCatalog.ns.t (n int)",
+            "ns",
+            "CREATE TABLE                ns.t (n int)",
+        ),
+        (
+            "CREATE TABLE IF NOT EXISTS AWSDATACATALOG.Ns.t (n int)",
+            "ns",
+            "CREATE TABLE IF NOT EXISTS                Ns.t (n int)",
+        ),
+        (
+            "CREATE TABLE AwsDataCatalog /* 表 */\n. ns.t (n int)",
+            "ns",
+            "CREATE TABLE                       \n  ns.t (n int)",
+        ),
+        (
+            "CREATE TABLE AwsDataCatalog.other.t (n int)",
+            "other",
+            "CREATE TABLE                other.t (n int)",
+        ),
+    ];
+    let mut expected_sqls = Vec::new();
+    for (query, namespace, sent) in cases {
+        let execution = harness.run_query(s3_tables_request(query)).await;
+        let execution = &execution["QueryExecution"];
+        assert_eq!(
+            execution["Status"]["State"], "SUCCEEDED",
+            "{query}: {execution}"
+        );
+        assert_eq!(execution["Query"], query, "Query は受け取ったまま");
+        assert_eq!(execution["QueryExecutionContext"]["Database"], "ns");
+        assert_eq!(execution["StatementType"], "DDL");
+        assert_eq!(execution["SubstatementType"], "CREATE_TABLE");
+        assert_eq!(sent.chars().count(), query.chars().count(), "{query}");
+        expected_sqls.push(schema_probe_sql("iceberg", namespace));
+        expected_sqls.push(sent.to_string());
     }
-    assert_eq!(
-        harness.trino_sqls(),
-        [
-            schema_probe_sql("iceberg", "ns"),
-            schema_probe_sql("iceberg", "other")
-        ]
-    );
+    assert_eq!(harness.trino_sqls(), expected_sqls);
 }
 
 /// 名前空間を問い合わせるのは 1 部目が `awsdatacatalog` の類のときだけ。Trino にある他のカタログ（本物は未実測）は

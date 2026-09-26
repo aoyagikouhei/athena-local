@@ -369,7 +369,16 @@ fn three_part_name_は_no_location_になる_3_部の名前で必ず_1_部目と
         for s3_tables in [false, true] {
             assert_eq!(rejection(query, s3_tables), no_location(), "{query}");
         }
-        assert_eq!(three_part_name(query), Some(expected), "{query}");
+        let (catalog, namespace, first_part) = three_part_name(query).expect(query);
+        assert_eq!((catalog, namespace), expected, "{query}");
+        assert_eq!(
+            &query[first_part.start..first_part.start + catalog.len()],
+            catalog
+        );
+        assert_eq!(
+            &query[first_part.end..first_part.end + namespace.len()],
+            namespace
+        );
     }
     for query in [
         "CREATE TABLE t (n int)",
