@@ -169,6 +169,21 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
                 return invalid_request_with_code(message, "MALFORMED_QUERY");
             }
         }
+    } else if s3_tables
+        && let Some(failure) = create_table_catalog::two_part_failure(
+            &app.trino,
+            &app.config,
+            &query,
+            catalog.as_deref().unwrap_or_default(),
+        )
+        .await
+    {
+        // S3 Tables の Context の無引用の 2 部の名前は、本物は名前空間が無ければ 3 部と同じく開始して FAILED にした
+        // （2026-09-26 実測 i2・j12。#231）。
+        immediate_failure = Some(ImmediateFailure {
+            failure,
+            writes_result_file: false,
+        });
     }
 
     // 本物は DESCRIBE の直後のブロックコメントを Hive の ParseException で FAILED にする（#242）。表と分かったとき

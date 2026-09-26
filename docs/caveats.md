@@ -378,7 +378,10 @@ Known differences between athena-local and real Athena, grouped by topic.
   creating the table there would mean rewriting the statement; write the name
   as `<namespace>.<table>` instead
   ([#227](https://github.com/aoyagikouhei/athena-local/issues/227), measured
-  2026-09-26).
+  2026-09-26). An unquoted two-part `<namespace>.<table>` whose namespace does
+  not exist in the context catalog fails the same way, without being sent to
+  Trino ([#231](https://github.com/aoyagikouhei/athena-local/issues/231),
+  measured 2026-09-26).
 - **With an S3 Tables context catalog, Hive's `LOCATION` and `EXTERNAL` are
   rejected with real Athena's messages.** Trino's grammar has neither, so under
   any other context catalog such a statement gets Trino's syntax error. When

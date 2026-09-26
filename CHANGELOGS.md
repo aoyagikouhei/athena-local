@@ -52,6 +52,9 @@ later name the date they were measured on.
   exist is rejected with `DATACATALOG_NOT_FOUND`, and under an S3 Tables context
   catalog `AwsDataCatalog.<namespace>.<t>` with a missing namespace starts and
   fails as on real Athena (measured 2026-09-26) ([docs](docs/caveats.md#plain-create-table)).
+- Under an S3 Tables context catalog, a plain `CREATE TABLE <namespace>.<t>`
+  with a missing namespace starts and fails as on real Athena (measured
+  2026-09-26) ([docs](docs/caveats.md#plain-create-table)).
 - Under an S3 Tables context catalog, a Hive-style `CREATE TABLE` with
   `LOCATION`, and `CREATE EXTERNAL TABLE` without one, are rejected with real
   Athena's messages instead of Trino's syntax error (measured 2026-09-26)
