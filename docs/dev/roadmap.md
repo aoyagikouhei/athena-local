@@ -20,7 +20,7 @@
   - PyAthena の SQLAlchemy 方言：スキーマ、テーブル、列の取得に使う（`pyathena/sqlalchemy/base.py:254`、`270-275`、`285-307`、確認済み）。テーブルが無いときはエラーコード `MetadataException` を期待する。テーブルとビューは `TableType` の `EXTERNAL_TABLE` などと `VIRTUAL_VIEW` で見分ける。ビューの定義は `SHOW CREATE VIEW` の SQL で取る（`base.py:342`、確認済み）。
   - Grafana のクエリエディタ（`api.go` のクライアント定義 27-32 行、確認済み）。
   - JDBC のテーブル一覧（jar の調査とリリースノートのみ）。
-- メモ：Trino に `SHOW` や `information_schema` の別のクエリを投げれば組み立てられ、SQL の本文を書き換えない方針と両立する。`TableType` やパラメータの値は実測する。
+- メモ：Trino に `SHOW` や `information_schema` の別のクエリを投げれば組み立てられ、SQL の本文を書き換えずに済む（別のクエリで足りるなら書き換えない。CLAUDE.md の開発上の約束）。`TableType` やパラメータの値は実測する。
 
 ### ListDataCatalogs
 
