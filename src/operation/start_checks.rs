@@ -199,8 +199,8 @@ pub(super) async fn decide(
         // S3 Tables の Context の CTAS は、1 部目が `awsdatacatalog` の類なら本物は 2 部目を Glue の DB として引いた
         // （2026-09-26 実測 i12・j13。#232）。DB が無ければ開始して FAILED（`.metadata` は中身が未実測なので置かない）、
         // あれば 1 部目を AwsDataCatalog の Trino 名にして送り、Query は受け取ったまま返す。既定の Context（Catalog が
-        // AwsDataCatalog か省略。省略は未実測で #246 と同じ条件）も DB が無ければ同じ FAILED にした（2026-09-27 実測
-        // r8a・r8c。#251）が、1 部目は実行時の別名置換（#246）が当てるので差し替えは捨てる。
+        // AwsDataCatalog か省略。#246 と同じ条件）も DB が無ければ同じ FAILED にした（2026-09-27 実測 r8a・r8c・t6。
+        // #251）が、1 部目は実行時の別名置換（#246）が当てるので差し替えは捨てる。
         let location = result_location.map(ResultLocation::uri);
         match create_table_catalog::ctas(&app.trino, &app.config, &query, location.as_deref()).await
         {

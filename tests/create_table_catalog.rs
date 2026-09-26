@@ -467,7 +467,8 @@ async fn s3_tables_の_context_で_2_部の名前空間があれば_trino_に送
 }
 
 /// S3 Tables の Context の無引用の 1 部の名前も、本物は Context の Database の名前空間が無ければ 2 部・3 部と同じ
-/// FAILED にした（2026-09-27 実測 r1。#251）。名前空間は Context の Database を小文字にして引き、本体は Trino に送らない。
+/// FAILED にした（`IF NOT EXISTS` も同じ。2026-09-27 実測 r1・t19。#251）。名前空間は Context の Database を小文字にして
+/// 引き、本体は Trino に送らない。
 #[tokio::test]
 async fn s3_tables_の_context_で_1_部の名前は_context_の_database_の名前空間が無ければ_failed_にする()
  {
@@ -485,32 +486,34 @@ async fn s3_tables_の_context_で_1_部の名前は_context_の_database_の名
         .start()
         .await;
 
-    let query = "CREATE TABLE t (n int)";
-    let execution = harness
-        .run_query(json!({
-            "QueryString": query,
-            "QueryExecutionContext": { "Catalog": "s3tablescatalog/b", "Database": "Missing" },
-            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
-        }))
-        .await;
-    let execution = &execution["QueryExecution"];
-    let status = &execution["Status"];
-    assert_eq!(status["State"], "FAILED", "{execution}");
-    assert_eq!(
-        status["StateChangeReason"],
-        "Cannot find or access the specified table"
-    );
-    assert_eq!(status["AthenaError"]["ErrorType"], 1100);
-    assert_eq!(execution["SubstatementType"], "CREATE_TABLE");
-    assert_eq!(harness.trino_sqls(), [probe], "本体は送らない");
+    for query in [
+        "CREATE TABLE t (n int)",
+        "CREATE TABLE IF NOT EXISTS t (n int)",
+    ] {
+        let execution = harness
+            .run_query(json!({
+                "QueryString": query,
+                "QueryExecutionContext": { "Catalog": "s3tablescatalog/b", "Database": "Missing" },
+                "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+            }))
+            .await;
+        let execution = &execution["QueryExecution"];
+        let status = &execution["Status"];
+        assert_eq!(status["State"], "FAILED", "{query}: {execution}");
+        assert_eq!(
+            status["StateChangeReason"],
+            "Cannot find or access the specified table"
+        );
+        assert_eq!(status["AthenaError"]["ErrorType"], 1100);
+        assert_eq!(execution["SubstatementType"], "CREATE_TABLE");
+    }
+    assert_eq!(harness.trino_sqls(), vec![probe; 2], "本体は送らない");
     assert!(harness.s3_puts().is_empty(), "{:?}", harness.s3_puts());
 }
 
-/// 1 部の名前で Context の Database が無いときは名前空間が決まらないので、問い合わせずに送る。`IF NOT EXISTS` の
-/// 1 部の名前は測っていないので、今までどおり問い合わせずに送る。
+/// 1 部の名前で Context の Database が無いときは名前空間が決まらないので、問い合わせずに送る。
 #[tokio::test]
-async fn s3_tables_の_context_で_1_部の名前は_database_が無いか_if_not_exists_なら問い合わせずに送る()
- {
+async fn s3_tables_の_context_で_1_部の名前は_database_が無ければ問い合わせずに送る() {
     let harness = Harness::builder(select_response())
         .catalog_map(&[("s3tablescatalog/b", "iceberg")])
         .route(
@@ -524,16 +527,10 @@ async fn s3_tables_の_context_で_1_部の名前は_database_が無いか_if_no
         .start()
         .await;
 
-    for (query, context) in [
-        (
-            "CREATE TABLE t (n int)",
-            json!({ "Catalog": "s3tablescatalog/b" }),
-        ),
-        (
-            "CREATE TABLE IF NOT EXISTS t (n int)",
-            json!({ "Catalog": "s3tablescatalog/b", "Database": "missing" }),
-        ),
-    ] {
+    for (query, context) in [(
+        "CREATE TABLE t (n int)",
+        json!({ "Catalog": "s3tablescatalog/b" }),
+    )] {
         let execution = harness
             .run_query(json!({
                 "QueryString": query,
@@ -546,13 +543,7 @@ async fn s3_tables_の_context_で_1_部の名前は_database_が無いか_if_no
             "{query}: {execution}"
         );
     }
-    assert_eq!(
-        harness.trino_sqls(),
-        [
-            "CREATE TABLE t (n int)",
-            "CREATE TABLE IF NOT EXISTS t (n int)"
-        ]
-    );
+    assert_eq!(harness.trino_sqls(), ["CREATE TABLE t (n int)"]);
 }
 
 /// S3 Tables の Context の CTAS で 1 部目が `awsdatacatalog` の類なら、本物は 2 部目を Glue（AwsDataCatalog）の DB として
@@ -738,8 +729,7 @@ async fn s3_tables_の_context_の_ctas_で差し替えない形は受け取っ�
 }
 
 /// 既定の Context（Catalog が `AwsDataCatalog` か省略）の CTAS も、本物は `awsdatacatalog.<DB>.<表>` の DB が無ければ
-/// S3 Tables の Context と同じ FAILED にした（2026-09-27 実測 r8a・r8c。省略は未実測で #246 の別名置換と同じ条件に
-/// した。#251）。DB 名は小文字、`IF NOT EXISTS` も同じ。
+/// S3 Tables の Context と同じ FAILED にした（2026-09-27 実測 r8a・r8c・t6。#251）。DB 名は小文字、`IF NOT EXISTS` も同じ。
 #[tokio::test]
 async fn 既定の_context_の_ctas_は_db_が無ければ_trino_に送らず_failed_にする() {
     let probe = schema_probe_sql("hive", "missing");

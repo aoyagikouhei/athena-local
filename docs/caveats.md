@@ -451,8 +451,7 @@ respectively. `MSCK REPAIR TABLE` on an Iceberg table, with or without a comment
   2026-09-26), and so does an unquoted one-part `<table>` when the context
   database does not exist as a namespace in the context catalog
   ([#251](https://github.com/aoyagikouhei/athena-local/issues/251), measured
-  2026-09-27). With no context database, or with `IF NOT EXISTS` (not
-  measured for a one-part name), a one-part name is sent as written.
+  2026-09-27). With no context database, a one-part name is sent as written.
 - **With an S3 Tables context catalog, Hive's `LOCATION` and `EXTERNAL` are
   rejected with real Athena's messages.** Trino's grammar has neither, so under
   any other context catalog such a statement gets Trino's syntax error. When
@@ -580,9 +579,8 @@ respectively. `MSCK REPAIR TABLE` on an Iceberg table, with or without a comment
   retrying. Athena will not delete data in your account.` (`ErrorCategory` 2,
   `ErrorType` 1301), with the database name in lower case, under both kinds
   of context catalog; athena-local fails it the same way without sending the
-  statement to Trino (measured 2026-09-27 under an S3 Tables and an
-  `AwsDataCatalog` context catalog; an omitted context catalog is not
-  measured). Real Athena also leaves a
+  statement to Trino (measured 2026-09-27 under an S3 Tables, an
+  `AwsDataCatalog` and an omitted context catalog). Real Athena also leaves a
   `tables/<id>.metadata` companion there, whose content was not measured, so
   athena-local writes no file. Without an output location (results not
   written and no `OutputLocation`), or when Trino cannot tell whether the

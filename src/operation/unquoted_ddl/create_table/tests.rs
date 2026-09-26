@@ -417,18 +417,18 @@ fn two_part_namespace_は_no_location_になる_2_部の名前の_1_部目を返
 }
 
 /// `one_part_name` は S3 Tables でない Context で No location になる無引用の 1 部の名前かを見る（S3 Tables の Context
-/// では `rejection` が弾かない）。`IF NOT EXISTS` の 1 部の名前は本物で測っていないので偽（#251）。
+/// では `rejection` が弾かない）。`IF NOT EXISTS` も同じ（#251）。
 #[test]
 fn one_part_name_は_no_location_になる_1_部の名前で真() {
     for query in [
         "CREATE TABLE t (n int)",
+        "CREATE TABLE IF NOT EXISTS t (n int)",
         "/* c */\n  create table T (n int) COMMENT 'c'",
     ] {
         assert_eq!(rejection(query, true), None, "{query}");
         assert!(one_part_name(query), "{query}");
     }
     for query in [
-        "CREATE TABLE IF NOT EXISTS t (n int)",
         "CREATE TABLE ns.t (n int)",
         "CREATE TABLE cat.ns.t (n int)",
         r#"CREATE TABLE "t" (n int)"#,

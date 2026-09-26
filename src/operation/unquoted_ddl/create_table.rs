@@ -6,7 +6,7 @@ use std::ops::Range;
 use athena_sql::{Cursor, QualifiedName, skip_leading_trivia};
 
 use super::super::classification::substatement_type;
-use super::super::target_table::{if_follows, table_name_start};
+use super::super::target_table::table_name_start;
 use super::{end_of, no_viable_alternative, start_of};
 
 mod hive;
@@ -99,12 +99,11 @@ pub(in crate::operation) fn two_part_namespace(query: &str) -> Option<&str> {
 }
 
 /// S3 Tables でない Context なら `rejection` が No location を返す、無引用の 1 部の名前の文か。S3 Tables の Context では
-/// `rejection` が弾かず、本物は Context の Database の名前空間に作る（名前空間が無ければ FAILED。2026-09-27 実測 r1。
-/// #251）。`IF NOT EXISTS` の 1 部の名前は測っていないので偽。
+/// `rejection` が弾かず、本物は Context の Database の名前空間に作る（名前空間が無ければ `IF NOT EXISTS` の有無によらず
+/// FAILED。2026-09-27 実測 r1・t19。#251）。
 pub(in crate::operation) fn one_part_name(query: &str) -> bool {
     let sql = query.trim_start_matches([' ', '\t', '\r', '\n']);
     rejection(query, false).as_deref() == Some(NO_LOCATION)
-        && !if_follows(sql, "CREATE")
         && table_name(sql).is_some_and(|(name, _, _)| name.parts.len() == 1)
 }
 
