@@ -15,12 +15,6 @@ Known differences between athena-local and real Athena, grouped by topic.
   `SELECT 0.1 + 0.2` reads `0.30000000000000004` on Athena and `0.3` here, and
   `ColumnInfo.Type` differs. Put the type into the literal — `1.5E0` for a
   `double`, `DECIMAL '1.5'` for a `decimal` — and both engines agree.
-- **`DESCRIBE <db>.<table>;` reports its `Query` as written.** In one
-  measurement (2026-09-26) real Athena reported `DESCRIBE <table>;` as `Query`
-  `DESCRIBE <table>`, dropping the database, while earlier measurements without
-  the `;` kept it. athena-local removes only the `;` (see
-  [Supported API](api.md)); when Athena drops the database is not measured yet
-  ([#242](https://github.com/aoyagikouhei/athena-local/issues/242)).
 - **Syntax differs.** Trino-only syntax such as `CREATE OR REPLACE TABLE` passes
   here but is a syntax error on Athena (`CREATE OR REPLACE TABLE ... AS SELECT`
   answers `InvalidRequestException` with `line 1:19: mismatched input 'TABLE'.
@@ -64,12 +58,13 @@ Known differences between athena-local and real Athena, grouped by topic.
   `SHOW /* c */ TABLES` and `CREATE` / `DROP /* c */ DATABASE` all succeed on
   Athena. Since athena-local sends the SQL to Trino unmodified, and Trino
   accepts a comment anywhere whitespace is allowed, every block-comment form
-  can succeed here where it would fail on real Athena. Two more statements
-  fail on Athena with a block comment after the verb: `DESCRIBE /* c */ t`
-  (`ParseException line 1:0 cannot recognize input near 'DESCRIBE' '/' '*' in
-  describe statement`) and `MSCK REPAIR /* c */ TABLE t` (`ParseException line
-  1:12 missing EOF at '/' near 'REPAIR'`), both `ErrorCategory` 1 /
-  `ErrorType` 1003 with the reason written to `<id>.txt`; `SHOW PARTITIONS`,
+  can succeed here where it would fail on real Athena. One more statement
+  fails on Athena with a block comment after the verb: `MSCK REPAIR /* c */
+  TABLE t` (`ParseException line 1:12 missing EOF at '/' near 'REPAIR'`,
+  `ErrorCategory` 1 / `ErrorType` 1003 with the reason written to `<id>.txt`).
+  `DESCRIBE /* c */ t` on a table is the exception: athena-local fails it the
+  way Athena does (see [Supported API](api.md)). Reproducing the others is
+  [#244](https://github.com/aoyagikouhei/athena-local/issues/244). `SHOW PARTITIONS`,
   `SHOW TBLPROPERTIES`, `SHOW COLUMNS FROM`, `SHOW CREATE VIEW` and
   `CREATE EXTERNAL TABLE` with the same comment succeed (measured 2026-09-24).
 - **`StartQueryExecution` checks whether the target of `DESCRIBE`, `DESC` and
@@ -416,7 +411,10 @@ Known differences between athena-local and real Athena, grouped by topic.
 - **Catalog aliases in SQL cover quoted names only.** A qualified name is rewritten
   only when its catalog is a double-quoted identifier that equals an alias
   exactly, including case. `AwsDataCatalog.db.users` (unquoted) and
-  `"S3TablesCatalog/my-bucket".db.users` (different case) are sent as written.
+  `"S3TablesCatalog/my-bucket".db.users` (different case) are sent as written,
+  except where real Athena itself drops an unquoted `awsdatacatalog.` from
+  `DESCRIBE`, `SHOW COLUMNS`, `SHOW CREATE TABLE`, `SHOW TABLES IN`,
+  `ALTER TABLE` and `DROP TABLE` (see [Supported API](api.md)).
   Real Athena resolves `QueryExecutionContext.Catalog` and `Database`
   case-insensitively (`SHOW TABLES` under `AWSDATACATALOG` and under an
   upper-cased database name both listed the tables, measured 2026-09-24);

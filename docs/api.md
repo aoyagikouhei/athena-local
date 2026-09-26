@@ -5,7 +5,7 @@ The Athena operations athena-local answers, and the Athena behaviour it reproduc
 | Operation | Notes |
 | --- | --- |
 | `StartQueryExecution` | Returns an id immediately; the query runs in the background. `ExecutionParameters` are supported (see [`ExecutionParameters`](parameters.md)). `ClientRequestToken` is required and makes retries idempotent (see below) |
-| `GetQueryExecution` | `QUEUED` → `RUNNING` → `SUCCEEDED` / `FAILED` / `CANCELLED`. Trino errors land in `Status.StateChangeReason`. `WorkGroup` is the name `StartQueryExecution` was given, or `primary` when it was omitted. `QueryExecutionContext.Catalog` is returned lower-cased and `Database` as sent, and a value the request left out is left out of the response (the `TRINO_CATALOG` / `TRINO_SCHEMA` defaults are not echoed), as real Athena does (measured 2026-09-24; see [Caveats](caveats.md#query-lifecycle)) |
+| `GetQueryExecution` | `QUEUED` → `RUNNING` → `SUCCEEDED` / `FAILED` / `CANCELLED`. Trino errors land in `Status.StateChangeReason`. `WorkGroup` is the name `StartQueryExecution` was given, or `primary` when it was omitted. `QueryExecutionContext.Catalog` is returned lower-cased and `Database` as sent (except for the qualified statements below), and a value the request left out is left out of the response (the `TRINO_CATALOG` / `TRINO_SCHEMA` defaults are not echoed), as real Athena does (measured 2026-09-24; see [Caveats](caveats.md#query-lifecycle)) |
 | `GetQueryResults` | Paginated with `MaxResults` / `NextToken` (1..1000, default 1000 rows including the header row). Out-of-range `MaxResults` and malformed `NextToken` fail the way Athena does (see [Caveats](caveats.md#paging)) |
 | `StopQueryExecution` | Marks a queued or running query `CANCELLED` immediately and sends `DELETE` to Trino's `nextUri`. Stopping a finished query succeeds and changes nothing |
 | `GetWorkGroup` | Accepts any workgroup name and returns the same configuration for all of them. `Configuration.ResultConfiguration.OutputLocation` reflects `ATHENA_LOCAL_OUTPUT_LOCATION` when it is set with `ATHENA_LOCAL_RESULTS=s3`. `Configuration.ResultConfiguration` is always present, and is `{}` otherwise (with `ATHENA_LOCAL_RESULTS=none` the variable is ignored) |
@@ -130,6 +130,35 @@ Behaviour that matches real Athena:
     `<text>` is the `QueryString` with trailing whitespace removed. These come
     before every other check on the SQL below. A `QueryString` holding only
     whitespace and no `;` is passed on as sent (not measured).
+- Real Athena rewrites a few statements before running them, and so does
+  athena-local (measured 2026-09-26), when `QueryExecutionContext.Catalog` is
+  `AwsDataCatalog` (any case) or omitted:
+  - `DESCRIBE`, `DESC`, `SHOW COLUMNS FROM` / `IN`, `SHOW CREATE TABLE`,
+    `ALTER TABLE` and `DROP TABLE` on an unquoted three-part name, and
+    `SHOW TABLES IN` on a two-part one, whose catalog is `awsdatacatalog` (any
+    case), lose `awsdatacatalog.`: `SHOW COLUMNS FROM awsdatacatalog.db.t` runs,
+    and reports `Query`, as `SHOW COLUMNS FROM db.t`. `SELECT`, `INSERT`,
+    CTAS, `CREATE VIEW`, `EXPLAIN` and `SHOW VIEWS IN` are sent as written.
+  - `DESCRIBE` and `DESC` on a table then lose the database too:
+    `DESCRIBE db.t`, `DESCRIBE awsdatacatalog.db.t` and `DESCRIBE db . t` all
+    run, and report `Query`, as `DESCRIBE t`. A comment in the dropped part is
+    kept (`DESCRIBE db./* c */t` becomes `DESCRIBE /* c */t`). On a view the
+    name keeps its database, and the catalog stays in `Query` although the
+    statement runs without it.
+  - Whenever the database or the catalog is dropped from `Query`,
+    `GetQueryExecution` reports the name's database, spelled as written, as
+    `QueryExecutionContext.Database`, even when the request sent another
+    database or none. On a view, where `Query` keeps the name, `Database` is
+    the one the request sent (measured only with the same database in both).
+  - `DESCRIBE` on a table followed right away by a block comment
+    (`DESCRIBE /* c */ t`, and `DESCRIBE db./* c */t` once the database is
+    dropped) is not sent to Trino: it fails as on real Athena with
+    `FAILED: ParseException line 1:0 cannot recognize input near 'DESCRIBE' '/'
+    '*' in describe statement` (`ErrorCategory` 1 / `ErrorType` 1003), and
+    `<id>.txt` holds that reason with no `.metadata`.
+  The `ClientRequestToken` idempotency check still compares the request as
+  sent. Syntax errors and the start-time messages below are worked out from
+  the statement as sent, too.
 - A syntax error makes `StartQueryExecution` fail with `InvalidRequestException`
   (`AthenaErrorCode` `MALFORMED_QUERY`) instead of creating a `FAILED` query, as
   Athena does. The message is Trino's, with positions counted in the original SQL

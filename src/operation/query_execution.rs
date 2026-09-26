@@ -162,7 +162,11 @@ fn not_succeeded(state: State) -> Response {
 fn to_query_execution(id: &str, execution: &Execution) -> QueryExecution {
     QueryExecution {
         query_execution_id: id.to_string(),
-        query: execution.query.clone(),
+        // 本物が受け取った文のまま返す場合（#242）は、実行した文の代わりにそれを返す。
+        query: execution.reported.as_ref().map_or_else(
+            || execution.query.clone(),
+            |reported| reported.query.clone(),
+        ),
         statement_type: super::classification::statement_type(&execution.query).to_string(),
         // 完了時に形式から決まった値（ビューの `DESC_VIEW`）があれば、SQL だけで決まる分類より優先する（#173）。
         substatement_type: execution
@@ -175,7 +179,10 @@ fn to_query_execution(id: &str, execution: &Execution) -> QueryExecution {
             }
         }),
         query_execution_context: QueryExecutionContext {
-            database: execution.database.clone(),
+            database: execution.reported.as_ref().map_or_else(
+                || execution.database.clone(),
+                |reported| reported.database.clone(),
+            ),
             // 本物は Catalog を小文字にして返す（大文字・混在・実在しない名前まで。2026-09-24 実測、#157）。
             // Database は送ったまま。冪等性の照合と Trino への送信は生の値のままで、ここは表示だけ。
             catalog: execution

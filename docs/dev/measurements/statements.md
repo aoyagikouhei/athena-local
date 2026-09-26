@@ -620,3 +620,31 @@ Content-Type と `.metadata` を含む置き場所は本項が主で、[result-f
 
 - 採用した判断: 引用符とコメントの外の `;` で区切り、空白（空白・タブ・CR・LF）だけでない片がちょうど 1 つなら、その片の前後の空白を落とした文を、構文チェック・開始時の判定・実行・GetQueryExecution の Query に使う（`;` の無い文も前後の空白を落とす）。空白だけでない片が 0 で `;` があれば `Empty sql statement: <末尾の空白を落とした受け取った文>`（MALFORMED_QUERY）で弾く。冪等の指紋は受け取ったままの文で作る
 - 備考: #228 の k6〜k12・k28（Query から末尾の `;` と前後の空白が落ちる）、#76 の g2-semicolon（`.csv` と `.metadata` が `SELECT 1` と同じ）と食い違いは無かった。#208 の「位置は先頭の空白を数えない」（上の #208 の節）も、前後の空白を落とした文で位置を数えると読めば同じ規則になる
+
+### DESCRIBE の修飾と、ほかの文のカタログ部分が Query から落ちる範囲（#242）
+- 日付: 2026-09-26（UTC 2026-09-26 06:13）／ issue: #242 ／ スクリプト: `tools/measure/unquoted-ddl.sh`（`ROUND=8`）／ 生データ: `$HOME/athena-unquoted-ddl-measurements/run-20260926-061322`（過去の生データ 1187 件の突き合わせは .claude/issue-notes/242.md の「過去の実測」）
+- 相手: 本物の Athena（Context は書いたもの以外 `Catalog=AwsDataCatalog,Database=<db>`）
+- 投げたもの: 36 項目（m0〜m42）と準備・後始末 10 本。表 `<db>.<t>`（CTAS）・ビュー `<db>.<v>`・別の DB `<db2>` と表 `<db2>.<t2>` を作り、最後にすべて消した（後始末の残りは無い）
+- 返ったもの（すべて SUCCEEDED。書いたもの以外。Query と Context は repr で読んだ。返った Context の Catalog はすべて `awsdatacatalog`）:
+
+  | 文 | Query | 返った Context の Database |
+  |---|---|---|
+  | `DESCRIBE <db>.<t>`（m1）・`DESCRIBE AwsDataCatalog.<db>.<t>`（m5）・`DESCRIBE <db> . <t>`（m9） | `DESCRIBE <t>` | `<db>` |
+  | `DESCRIBE <db2>.<t2>`（m2）・`DESC <db2>.<t2>`（m3）・`DESCRIBE awsdatacatalog.<db2>.<t2>`（m6） | `DESCRIBE <t2>`・`DESC <t2>`・`DESCRIBE <t2>` | `<db2>`（送った Context は `<db>`） |
+  | Context に Database 無しで `DESCRIBE <db>.<t>`（m4） | `DESCRIBE <t>` | `<db>` |
+  | Context の Database が `<db2>` で `DESCRIBE <db>.<t>`（m13） | `DESCRIBE <t>` | `<db>` |
+  | `DESCRIBE <DB の大文字>.<t>`（m12） | `DESCRIBE <t>` | `<DB の大文字>`（文中の綴り） |
+  | `DESCRIBE EXTENDED <db>.<t>`（m7）・`DESCRIBE <db>.<t> n`（m8） | `DESCRIBE EXTENDED <t>`・`DESCRIBE <t> n` | `<db>` |
+  | `DESCRIBE <db>./* c */<t>`（m10） | `DESCRIBE /* c */<t>`。FAILED（`FAILED: ParseException line 1:0 cannot recognize input near 'DESCRIBE' '/' '*' in describe statement`） | `<db>` |
+  | ビューへの `DESCRIBE <db>.<v>`（m11。DESC_VIEW） | `DESCRIBE <db>.<v>`（残る） | `<db>` |
+  | `DESCRIBE <t2>`（m14。Context の Database が `<db2>`。対照） | `DESCRIBE <t2>` | `<db2>` |
+  | `SHOW COLUMNS FROM awsdatacatalog.<db>.<t>`（m20）・`FROM AwsDataCatalog.<db>.<t>`（m21）・`IN awsdatacatalog.<db>.<t>`（m23）、Context に Database 無し（m39） | `SHOW COLUMNS FROM <db>.<t>`（m23 は `IN`） | `<db>` |
+  | `SHOW COLUMNS FROM awsdatacatalog.<db2>.<t2>`（m22） | `SHOW COLUMNS FROM <db2>.<t2>` | `<db2>`（送った Context は `<db>`） |
+  | ビューへの `SHOW COLUMNS FROM awsdatacatalog.<db>.<v>`（m37。DESC_VIEW） | 残る | `<db>` |
+  | `SHOW CREATE TABLE awsdatacatalog.<db>.<t>`（m24）・`AwsDataCatalog.`（m25）・`awsdatacatalog . <db> . <t>`（m38） | `SHOW CREATE TABLE <db>.<t>`（m38 は `<db> . <t>`。カタログと直後の ` . ` が落ちる） | `<db>` |
+  | `SHOW TABLES IN awsdatacatalog.<db>`（m26）・`SHOW TABLES IN AwsDataCatalog.<db2>`（m27） | `SHOW TABLES IN <db>`・`SHOW TABLES IN <db2>` | `<db>`・`<db2>`（m27 の送った Context は `<db>`） |
+  | `SHOW TBLPROPERTIES awsdatacatalog.<db>.<t>`（m28）・`ALTER TABLE awsdatacatalog.<db>.<t> SET TBLPROPERTIES (...)`（m33）・`DROP TABLE IF EXISTS awsdatacatalog.<db>.<無い表>`（m34） | カタログが落ちる | `<db>` |
+  | `SELECT * FROM awsdatacatalog.<db>.<t>`（m30）・`AwsDataCatalog.`（m31）・`INSERT INTO awsdatacatalog...`（m32）・CTAS（m35）・`CREATE VIEW awsdatacatalog...`（m36）・`EXPLAIN SELECT ...`（m41）・`SHOW VIEWS IN awsdatacatalog.<db>`（m42） | 送ったまま（落ちない） | `<db>` |
+
+- 採用した判断: Context の Catalog が省略か AwsDataCatalog のとき、DESCRIBE・DESC・SHOW COLUMNS・SHOW CREATE TABLE・ALTER TABLE・DROP TABLE の無引用のちょうど 3 部（SHOW TABLES IN は 2 部）の名前の 1 部目の `awsdatacatalog`（大文字小文字によらない）と直後の `.`・空白を、開始時の確認・実行・Query から落とし、Context の Database を修飾の DB（文中の綴り）にする。構文と開始時の文言の判定は受け取った文で行う。表への DESCRIBE・DESC は開始時の確認で表と分かったら DB も落とす。ビューは Query を受け取った文のまま返す（実行はカタログを落とした文）。DESCRIBE の直後のブロックコメント（`DESCRIBE /* c */ t`（2026-09-22 実測）と m10）は Trino に送らず本物と同じ ParseException で FAILED にし、`.txt` だけ置く。ほかの文の同じ形は #244
+- 備考: 過去の生データ（#204 の d-n7・w1-desc-upper2・w1-showcol-n7・c-n7、#224 の i4、#173 の d5 など）と食い違いは無かった。Context の Catalog が実在しないとき修飾が残るのは #212・#214 の生データ（z-desc-nodbctx・y3-desc-2）で、このラウンドでは測っていない
