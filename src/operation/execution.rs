@@ -4,49 +4,27 @@ use axum::body::Bytes;
 use axum::response::Response;
 use uuid::Uuid;
 
-use crate::athena::{
-    QueryExecutionContext, ResultConfiguration, StartQueryExecutionRequest,
-    StartQueryExecutionResponse,
-};
-use crate::catalog::alias_qualified_names;
-use crate::config::{Config, DEFAULT_WORK_GROUP, ResultsMode};
-use crate::failure::Failure;
+use crate::athena::{StartQueryExecutionRequest, StartQueryExecutionResponse};
+use crate::config::DEFAULT_WORK_GROUP;
 use crate::handler::App;
 use crate::request::parse;
 use crate::response::{invalid_request_with_code, ok};
 use crate::results::ResultLocation;
-use crate::statement;
-use crate::store::{Execution, Fingerprint, ImmediateFailure, Reported, Submission, SubmitOutcome};
-use crate::trino::{Outcome, QueryError, Trino};
+use crate::store::{ImmediateFailure, Reported, Submission, SubmitOutcome};
 
-use super::completion;
+use super::background_execution::spawn_query;
 use super::context_catalog;
 use super::create_table_catalog;
 use super::entity_check::{self, Check};
-use super::format_probe;
 use super::quoted_names;
 use super::reported_query;
-use super::result_output;
-use super::table_format::{self, FormatOverride};
+use super::start_request::{
+    client_request_token, context_defaults, result_location, single_statement,
+};
 use super::unquoted_ddl;
-
-/// OutputLocation も既定も無いときの本物の文言（2026-09-14 実測。"for  your" の空白 2 つも本物のまま）。
-const NO_OUTPUT_LOCATION: &str = "No output location provided. You did not provide an output location for  your query results. Either specify an S3 bucket location or enable Athena managed query results in your workgroup settings.";
 
 /// 同じ ClientRequestToken の再送で衝突したときの文言（2026-09-17 実測）。
 const IDEMPOTENT_MISMATCH: &str = "Idempotent parameters do not match";
-
-/// ClientRequestToken が無い（キーが無い）ときの文言（2026-09-17、4 回目の実測）。
-const TOKEN_MISSING: &str = "clientRequestToken is null or empty";
-
-/// ClientRequestToken が 32 文字未満（空文字を含む）のときの文言（2026-09-17、3 回目の実測）。
-const TOKEN_TOO_SHORT: &str = "1 validation error detected: Value at 'clientRequestToken' failed to satisfy constraint: Member must have length greater than or equal to 32";
-
-/// ClientRequestToken が 128 文字を超えるときの文言（2026-09-17、3 回目の実測）。
-const TOKEN_TOO_LONG: &str = "1 validation error detected: Value at 'clientRequestToken' failed to satisfy constraint: Member must have length less than or equal to 128";
-/// ClientRequestToken が 128 文字以下なのに UTF-8 で 128 バイトを超えるときの文言（2026-09-24 実測、#153）。
-/// 枠組みの検証（文字数）を通った後の別の検査なので、前置きが無い。
-const TOKEN_TOO_MANY_BYTES: &str = "clientRequestToken exceeds maximum allowed length 128";
 
 pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
     let request: StartQueryExecutionRequest = match parse(body) {
@@ -250,29 +228,6 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
     submit_response(app, id, outcome)
 }
 
-/// 本物が実行する文。引用符とコメントの外の `;` で区切り、空白だけでない片（コメントだけの片も数える）が
-/// ちょうど 1 つなら、その片の前後の空白を落とした文を構文チェック・開始時の判定・実行・`Query` に使う
-/// （`;` の無い文も前後の空白が落ちる）。2 つ以上なら `Only one sql statement is allowed`（#228）、`;` が
-/// あって 1 つも無ければ `Empty sql statement` で、構文エラー・DESCRIBE の存在確認・No location・NV より先に
-/// 弾く。どちらも文言の後ろは受け取った文の末尾の空白だけを落としたもの（先頭の空白は残る）
-/// （2026-09-26 実測。#228・#240）。`;` の無い空白だけの文は測っていないので受け取ったまま返す。
-fn single_statement(sql: &str) -> Result<&str, String> {
-    const WHITESPACE: [char; 4] = [' ', '\t', '\r', '\n'];
-    let pieces = athena_sql::statements(sql);
-    let separated = pieces.len() > 1;
-    let mut statements = pieces
-        .into_iter()
-        .map(|piece| piece.trim_matches(WHITESPACE))
-        .filter(|piece| !piece.is_empty());
-    let got = sql.trim_end_matches(WHITESPACE);
-    match (statements.next(), statements.next()) {
-        (Some(statement), None) => Ok(statement),
-        (Some(_), Some(_)) => Err(format!("Only one sql statement is allowed. Got: {got}")),
-        (None, _) if separated => Err(format!("Empty sql statement: {got}")),
-        (None, _) => Ok(sql),
-    }
-}
-
 /// submit の結果を応答に変換する。Created のときだけ実行を始める。
 /// Existing で spawn_query を呼んでも mark_running の「QUEUED からだけ進める」ガードが
 /// 二重実行を弾く（ミューテーション確認で実測）が、既存の実行に手を触れないのが本物の意味。
@@ -291,211 +246,4 @@ fn submit_response(app: &App, id: String, outcome: SubmitOutcome) -> Response {
             invalid_request_with_code(IDEMPOTENT_MISMATCH, "IDEMPOTENT_PARAMETER_MISMATCH")
         }
     }
-}
-
-/// ClientRequestToken を検証する（2026-09-17 実測、判断 2・11）。本物と同じく必須で、
-/// 長さは 32 文字以上 128 文字以下（枠組みの検証。文字数は chars().count()）、さらに UTF-8 で
-/// 128 バイト以下（別の検査。2026-09-24 実測、#153。`あ`×50 は 50 文字なのに拒否された）。
-/// 文字数でもバイト数でも 128 を超えるときにどちらの文言が先かは測っていないので、
-/// 枠組みの検証を先に置く（docs/dev/unmeasured.md）。
-fn client_request_token(request: &StartQueryExecutionRequest) -> Result<String, Box<Response>> {
-    let Some(token) = request.client_request_token.clone() else {
-        return Err(Box::new(invalid_request_with_code(
-            TOKEN_MISSING,
-            "INVALID_INPUT",
-        )));
-    };
-
-    let length = token.chars().count();
-    if length < 32 {
-        return Err(Box::new(invalid_request_with_code(
-            TOKEN_TOO_SHORT,
-            "INVALID_INPUT",
-        )));
-    }
-    if length > 128 {
-        return Err(Box::new(invalid_request_with_code(
-            TOKEN_TOO_LONG,
-            "INVALID_INPUT",
-        )));
-    }
-    if token.len() > 128 {
-        return Err(Box::new(invalid_request_with_code(
-            TOKEN_TOO_MANY_BYTES,
-            "INVALID_INPUT",
-        )));
-    }
-
-    Ok(token)
-}
-
-/// QueryExecutionContext の Catalog / Database（受け取ったまま）と、冪等化用のフィンガープリント（同じく生の値）を組む。
-fn context_defaults(
-    context: QueryExecutionContext,
-    query_string: &str,
-    result_configuration: &Option<ResultConfiguration>,
-) -> (Option<String>, Option<String>, Fingerprint) {
-    let fingerprint = Fingerprint {
-        query: query_string.to_string(),
-        catalog: context.catalog.clone(),
-        database: context.database.clone(),
-        output_location: result_configuration
-            .as_ref()
-            .and_then(|configuration| configuration.output_location.clone()),
-    };
-    // 既定（TRINO_CATALOG / TRINO_SCHEMA）はここでは当てない。本物は省略した Catalog / Database を
-    // GetQueryExecution に返さない（キー無し。2026-09-24 実測、#167）ので、実行情報には受け取った値だけを
-    // 残し、既定は Trino に送るとき（`run`）に当てる。
-    (context.catalog, context.database, fingerprint)
-}
-
-/// OutputLocation から結果の置き場所を決める。本物と同じく s3:// の形でない値は受け付けない
-/// （結果を書かないモードでも同じ）。書くモードでは、OutputLocation も既定も無ければ受け付けない。
-fn result_location(
-    app: &App,
-    configuration: Option<ResultConfiguration>,
-    query: &str,
-    id: &str,
-) -> Result<Option<ResultLocation>, Box<Response>> {
-    let requested = configuration.and_then(|configuration| configuration.output_location);
-    let output_location = match (requested, &app.config.results) {
-        (Some(location), _) => location,
-        (None, ResultsMode::S3(settings)) => match &settings.default_output_location {
-            Some(location) => location.clone(),
-            None => {
-                return Err(Box::new(invalid_request_with_code(
-                    NO_OUTPUT_LOCATION,
-                    "INVALID_INPUT",
-                )));
-            }
-        },
-        (None, ResultsMode::None) => return Ok(None),
-    };
-
-    // 文言とコードは 2026-09-14 に本番 Athena で実測したもの。
-    ResultLocation::new(&output_location, id, query)
-        .map(Some)
-        .ok_or_else(|| {
-            Box::new(invalid_request_with_code(
-                "outputLocation is not a valid S3 path.",
-                "INVALID_INPUT",
-            ))
-        })
-}
-
-/// 本物と同じく実行はバックグラウンドで進み、状態はポーリングで見る。
-fn spawn_query(app: App, id: String) {
-    tokio::spawn(async move {
-        let Some(execution) = app.store.get(&id) else {
-            return;
-        };
-        // 投入直後に止められていれば Trino には何も送らない。
-        if !app.store.mark_running(&id) {
-            return;
-        }
-        // 開始時点で FAILED と決まっていれば Trino に送らない。本物は Glue で表が引けない失敗には結果ファイルも
-        // `.metadata` も置かず（#227）、Hive の ParseException には理由の `.txt` だけを置いた（#242）。
-        if let Some(immediate) = &execution.immediate_failure {
-            if immediate.writes_result_file {
-                result_output::write_failure(&app, &execution, &immediate.failure).await;
-            }
-            app.store.finish(&id, Err(immediate.failure.clone()));
-            return;
-        }
-
-        let outcome = match run(&app.trino, &app.config, &execution).await {
-            Ok((outcome, format_override, substatement_type)) => {
-                // UpdateCount は形式の判定を使うので、判定が手元にあるここで決めて Store に渡す（#160）。
-                // SubstatementType の上書き（ビューの `DESC_VIEW`）も同じく形式の判定から決まる（#173）。
-                let update_count =
-                    completion::update_count(&execution.query, &outcome, format_override);
-                result_output::write_result(&app, &execution, &id, outcome, format_override)
-                    .await
-                    .map(|outcome| (outcome, update_count, substatement_type))
-            }
-            Err(error) => {
-                let failure = Failure::from_query_error(&error);
-                // FAILED にする前に置く（クライアントは FAILED を見た直後に S3 を読みに行く）。
-                result_output::write_failure(&app, &execution, &failure).await;
-                Err(failure)
-            }
-        };
-        // 途中で止められていれば CANCELLED が先に書かれているので、finish は何もしない。
-        app.store.finish(&id, outcome);
-    });
-}
-
-/// 値を分類して EXECUTE IMMEDIATE で包んで実行する。
-/// パラメータが無ければ分類は走らず、SQL は修飾名に別名を当てただけで送られる（to_trino_sql が判断する）。
-/// 戻り値の `Option<FormatOverride>` は、実行前にテーブルの形式を問い合わせて分かった、本体・`.metadata` の
-/// 書き方を上書きする文（issue #39。DROP TABLE × Iceberg、ALTER TABLE ADD COLUMNS × Hive、
-/// SHOW CREATE TABLE × Iceberg（#151））。戻り値の `Option<&'static str>` は、完了後の GetQueryExecution が
-/// SQL だけで決まる分類の代わりに返す SubstatementType（ビューへの DESCRIBE／SHOW COLUMNS の `DESC_VIEW`。#173）。
-async fn run(
-    trino: &Trino,
-    config: &Config,
-    execution: &Execution,
-) -> Result<(Outcome, Option<FormatOverride>, Option<&'static str>), QueryError> {
-    // 省略した Catalog / Database にはここで既定を当てる（実行情報には残さない。#167）。
-    // Trino に送るのは別名を当てた名前。実行情報には受け取った名前が残る。
-    // 実在しない Catalog は、メタデータの文だけ既定のカタログに差し替える（#214）。
-    let resolved = context_catalog::resolve(
-        trino,
-        config,
-        &execution.query,
-        execution.catalog.as_deref(),
-    )
-    .await;
-    let raw_catalog = resolved.as_deref().or(config.default_catalog.as_deref());
-    let catalog = raw_catalog.map(|catalog| config.trino_catalog(catalog));
-    let database = execution
-        .database
-        .as_deref()
-        .or(config.default_database.as_deref());
-    // 分類の問い合わせにも本体にも同じ取り消し要求を渡す。
-    let cancel = &execution.cancel;
-
-    let (statement, format, format_override, substatement_type) =
-        format_probe::probe_target_format(trino, config, execution, raw_catalog, database, cancel)
-            .await;
-
-    // 分類も本体と同じカタログ・スキーマで問い合わせ、関数の解決先を揃える。
-    let mut bound = Vec::with_capacity(execution.execution_parameters.len());
-    for value in &execution.execution_parameters {
-        let probe = trino
-            .execute(&statement::probe_sql(value), catalog, database, cancel)
-            .await;
-        bound.push(statement::bind(value, &probe));
-    }
-
-    // 修飾名のカタログにもヘッダと同じ別名を当てる。EXECUTE IMMEDIATE で文字列リテラルに包む前に当てるので、
-    // 包んだ後の引用符の二重化を考えなくてよい。構文チェックと GetQueryExecution の Query は受け取った SQL のまま。
-    let query = alias_qualified_names(&execution.query, &config.catalog_map);
-    let sql = statement::to_trino_sql(&query, &bound);
-    let outcome = match trino.execute(&sql, catalog, database, cancel).await {
-        Err(error) if statement::is_unused_parameters(&error) => {
-            trino.execute(&query, catalog, database, cancel).await
-        }
-        result => result,
-    }?;
-    let outcome = completion::split_explain_rows(&execution.query, outcome);
-    let outcome = completion::split_show_create_rows(&execution.query, outcome);
-    // Iceberg のテーブルの DESCRIBE だけ、パーティション行のために `SHOW CREATE TABLE` を別に投げる（#173）。
-    let partitions = if statement == Some(table_format::TargetStatement::Describe)
-        && format == Some(table_format::TableFormat::Iceberg)
-    {
-        completion::iceberg_partition_specs(
-            trino,
-            config,
-            &execution.query,
-            catalog,
-            database,
-            cancel,
-        )
-        .await
-    } else {
-        Vec::new()
-    };
-    let outcome = super::utility_rows::reshape(&execution.query, outcome, format, &partitions);
-    Ok((outcome, format_override, substatement_type))
 }

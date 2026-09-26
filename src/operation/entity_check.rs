@@ -39,7 +39,7 @@ pub(super) async fn check(
     else {
         return Check::Continue;
     };
-    // 既定は実行時（`execution::run`）と同じく当てる。
+    // 既定は実行時（`background_execution::run`）と同じく当てる。
     let raw_catalog = catalog.or(config.default_catalog.as_deref());
     let database = database.or(config.default_database.as_deref());
     let Some(target) = target_table::parse_target_table(query, statement, raw_catalog, database)

@@ -153,7 +153,7 @@ pub struct Submission {
     pub database: Option<String>,
     pub result_location: Option<ResultLocation>,
     pub work_group: String,
-    /// ClientRequestToken。operation/execution.rs が必須項目として検証済みなので常に有効な値。
+    /// ClientRequestToken。operation/start_request.rs が必須項目として検証済みなので常に有効な値。
     pub token: String,
     pub fingerprint: Fingerprint,
     /// 開始時点で決まった失敗（`Execution::immediate_failure`）。
