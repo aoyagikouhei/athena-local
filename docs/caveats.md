@@ -493,9 +493,17 @@ respectively. `MSCK REPAIR TABLE` on an Iceberg table, with or without a comment
   `"S3TablesCatalog/my-bucket".db.users` (different case) are sent as written,
   except where real Athena itself drops an unquoted `awsdatacatalog.` from
   `DESCRIBE`, `SHOW COLUMNS`, `SHOW CREATE TABLE`, `SHOW TABLES IN`,
-  `ALTER TABLE` and `DROP TABLE` (see [Supported API](api.md)), and where
+  `ALTER TABLE` and `DROP TABLE` (see [Supported API](api.md)), where
   real Athena reads the first part of a CTAS under an S3 Tables context
-  catalog as `AwsDataCatalog` (next item).
+  catalog as `AwsDataCatalog` (next item), and where the context catalog is
+  `AwsDataCatalog` or omitted: there an unquoted three-part name whose first
+  part is `awsdatacatalog` in any case (`SELECT * FROM AwsDataCatalog.db.t`)
+  gets the Trino catalog of the `AwsDataCatalog` alias (keys compared
+  case-insensitively), double-quoted and padded with spaces as above, while
+  `Query` stays as sent. Real Athena ran such names in `SELECT`, `INSERT`,
+  CTAS, `CREATE VIEW` and `EXPLAIN` (measured 2026-09-26). Other unquoted
+  aliases, names with a quoted part or a part count other than three, and
+  other context catalogs are sent as written; they have not been measured.
   Real Athena resolves `QueryExecutionContext.Catalog` and `Database`
   case-insensitively (`SHOW TABLES` under `AWSDATACATALOG` and under an
   upper-cased database name both listed the tables, measured 2026-09-24);

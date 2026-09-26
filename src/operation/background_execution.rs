@@ -101,7 +101,16 @@ async fn run(
 
     // 修飾名のカタログにもヘッダと同じ別名を当てる。EXECUTE IMMEDIATE で文字列リテラルに包む前に当てるので、
     // 包んだ後の引用符の二重化を考えなくてよい。構文チェックと GetQueryExecution の Query は受け取った SQL のまま。
-    let query = alias_qualified_names(&execution.query, &config.catalog_map);
+    // 無引用の `awsdatacatalog.<db>.<t>` は、本物が実行した Context（AwsDataCatalog か省略）でだけ当てる（#246）。
+    let aws_data_catalog_context = execution
+        .catalog
+        .as_deref()
+        .is_none_or(super::reported_query::is_aws_data_catalog);
+    let query = alias_qualified_names(
+        &execution.query,
+        &config.catalog_map,
+        aws_data_catalog_context,
+    );
     let sql = statement::to_trino_sql(&query, &bound);
     let outcome = match trino.execute(&sql, catalog, database, cancel).await {
         Err(error) if statement::is_unused_parameters(&error) => {

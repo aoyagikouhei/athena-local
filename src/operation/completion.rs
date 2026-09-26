@@ -22,7 +22,8 @@ pub(super) async fn iceberg_partition_specs(
         return Vec::new();
     };
     let sql = format!("SHOW CREATE TABLE {name}");
-    let sql = alias_qualified_names(&sql, &config.catalog_map);
+    // 無引用の `awsdatacatalog.` は、当てる Context では開始時に DESCRIBE から落としてある（#242）ので見ない。
+    let sql = alias_qualified_names(&sql, &config.catalog_map, false);
     let Ok(outcome) = trino.execute(&sql, catalog, database, cancel).await else {
         return Vec::new();
     };

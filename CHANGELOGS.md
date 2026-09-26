@@ -11,6 +11,9 @@ later name the date they were measured on.
 
 ### Changed
 
+- An unquoted `awsdatacatalog.<database>.<table>` in `SELECT`, `INSERT`, CTAS,
+  `CREATE VIEW` and `EXPLAIN` now runs through the `AwsDataCatalog` alias
+  ([docs](docs/caveats.md#parameters-and-catalog-aliases)).
 - Under an S3 Tables context catalog, a CTAS into
   `awsdatacatalog.<database>.<table>` now creates the table through the
   `AwsDataCatalog` alias, and fails like real Athena when the database does not
