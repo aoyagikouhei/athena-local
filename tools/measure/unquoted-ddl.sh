@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # issue #208 で作成。issue #221 で ROUND=3、issue #224 で ROUND=4、issue #227 で ROUND=5、
 # issue #228 で ROUND=6、issue #240 で ROUND=7、issue #242 で ROUND=8、issue #229 で ROUND=9、
-# issue #248 で ROUND=10 を追加
+# issue #248 で ROUND=10、issue #251 で ROUND=11 を追加
 # 本物の Athena が StartQueryExecution の時点で弾く、無引用の DDL 3 種
 # （ALTER TABLE IF EXISTS、ALTER TABLE ... ADD COLUMN（単数）、場所の無い CREATE TABLE）の
 # 弾かれ方の規則（`line L:C` の位置、`no viable alternative at input '...'` の input の範囲、
@@ -108,6 +108,17 @@
 #     Context で消す run_create_then_drop_ctx をそのまま流用する。S3TABLES_* が無ければ、
 #     既定の Context だけで測れる s12 を除いて未測定として残す。s14（連携カタログ）は
 #     S3TABLES_* に加えて FEDERATED_CATALOG も要る。
+#   - 【issue #251 で追加】ROUND=11 は、S3 Tables の Context の場所の無い CREATE TABLE で、
+#     名前空間まわりの未実測の形（issue 本文の 1〜3）と、CTAS の残り（#232 の未実測。issue の
+#     コメントの 4〜8）を測る R 群だけを測る。preflight・DB 確認は共通で走るが、実在する表は
+#     作らない（ROUND=3〜7・9・10 と同じ）。受理されたら同じ Context で消す
+#     run_create_then_drop_ctx をそのまま流用するが、CTAS の対象 DB がテスト用に作った
+#     実在しない名前のときは、その DB を Database にした Context で消す（作られていれば、
+#     という前提。実際は作られない見込み）。r4・r5・r6b・r7b・r8a・r8c（DB が無い CTAS）が
+#     FAILED になったときは、理由に書かれた `location '...'` を `aws s3 ls --recursive` で
+#     読み取り専用に確かめ、データが実際に書かれているかを見る（`check_ctas_orphan_data`。
+#     #251 のコメントの項目 4）。S3TABLES_* が無ければ、既定の Context だけで測れる r8a〜r8c を
+#     除いて未測定として残す。
 #
 # 使い方:
 #   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db bash tools/measure/unquoted-ddl.sh
@@ -169,6 +180,14 @@
 #     S3TABLES_CATALOG=s3tablescatalog/your-bucket S3TABLES_NS=your_ns \
 #     FEDERATED_CATALOG=your_federated_catalog \
 #     bash tools/measure/unquoted-ddl.sh
+#   ラウンド 11（issue #251。S3 Tables の Context の場所の無い CREATE TABLE の名前空間まわり
+#   （1 部の名前・2 部の IF NOT EXISTS・3 部の IF NOT EXISTS）と、CTAS の残り（j13 の再現の
+#   .metadata・データの有無、DB 名の大文字小文字、IF NOT EXISTS の CTAS、1 部目の綴りと DB の
+#   有無の組、既定の Context の対照）だけを測る。S3TABLES_* が無ければ r8a〜r8c 以外の R 群は
+#   未測定として残す）:
+#   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=11 \
+#     S3TABLES_CATALOG=s3tablescatalog/your-bucket S3TABLES_NS=your_ns \
+#     bash tools/measure/unquoted-ddl.sh
 #   （資格情報はホストのシェルで AWS_ACCESS_KEY_ID などを export してから。または ~/.aws/credentials）
 #
 # 必要な環境変数:
@@ -197,6 +216,8 @@
 #                    実在する表は作らない。
 #                    10 は S 群（S3 Tables の Context の Hive の CREATE TABLE の残り。issue #248）だけ。
 #                    実在する表は作らない。
+#                    11 は R 群（S3 Tables の Context の場所の無い CREATE TABLE の名前空間まわりと
+#                    CTAS の残り。issue #251）だけ。実在する表は作らない。
 #   CATALOG          既定 AwsDataCatalog
 #   REGION           既定 ap-northeast-1
 #   OUT_DIR          既定 ${DEV_HOST_HOME:-$HOME}/athena-unquoted-ddl-measurements
@@ -208,9 +229,10 @@
 #   S3TABLES_NS      S3 Tables の名前空間。
 #                    この 2 つが揃ったときだけ、ROUND=1 の C20（S3 Tables への場所の無い
 #                    CREATE TABLE）と ROUND=3 の H 群（h0〜h9）、ROUND=5 の J 群（j0〜j13）、
-#                    ROUND=9 の N 群（n0〜n30・n32）、ROUND=10 の S 群（s1〜s11・s13・s15〜s18）を
-#                    測る。1 つでも欠けていれば「未測定（S3TABLES_* 未設定）」として summary に
-#                    残す（ROUND=5 は j14〜j16、ROUND=9 は n31、ROUND=10 は s12 だけ測る）。
+#                    ROUND=9 の N 群（n0〜n30・n32）、ROUND=10 の S 群（s1〜s11・s13・s15〜s18）、
+#                    ROUND=11 の R 群（r1〜r7b）を測る。1 つでも欠けていれば
+#                    「未測定（S3TABLES_* 未設定）」として summary に残す（ROUND=5 は j14〜j16、
+#                    ROUND=9 は n31、ROUND=10 は s12、ROUND=11 は r8a〜r8c だけ測る）。
 #                    ROUND=2 では使わない。
 #   FEDERATED_CATALOG 連携カタログ（S3 Tables 以外）の名前。設定されていれば ROUND=10 の s14
 #                    （TRINO_CATALOG_MAP の別名や Trino にだけあるカタログの 3 部 + LOCATION が
@@ -300,12 +322,24 @@
 #     （FEDERATED_CATALOG、設定されていれば）以外は S3 Tables の Context で DROP TABLE IF
 #     EXISTS <接頭辞>_sN を投げる。s14 は FEDERATED_CATALOG の Context で消す。LOCATION は
 #     <OUTPUT>athena-local-probe-248/<接頭辞>_<項目>/（空のプレフィックス。データは置かない）。
+#   - ROUND=11: 実在する表 <接頭辞>_real は作らない。R 群の CREATE TABLE（r1〜r8c）はすべて
+#     run_create_then_drop_ctx で投げ、想定外に（あるいは r3・r6a・r7a・r8b は想定どおり）
+#     受理されたらその場で無引用 + IF EXISTS の DROP TABLE を投げて消す。結果は確かめ、
+#     SUCCEEDED にならなければ trap がもう一度ベストエフォートで投げる。CTAS の対象 DB が
+#     テスト用の実在しない名前（r4・r5・r6b・r7b・r8a・r8c）のときは、その DB を Database に
+#     した Context で DROP する（作られていれば、という前提）。r6a・r7a・r8b（実在する DB・
+#     既存の名前空間）は既定の Context か S3 Tables の Context（作った Context と同じ）で消す。
+#     FAILED になった項目は結果ファイル本体と `.metadata` も取得し、CTAS で DB が無いために
+#     FAILED になった項目（r4・r5・r6a・r6b・r7a・r7b・r8a・r8b・r8c のうち FAILED のもの）は、
+#     理由に書かれた `location '...'` を `aws s3 ls --recursive` で読み取り、データが実際に
+#     書かれているかも確かめる（`check_ctas_orphan_data`。読み取りのみで、書き込みは行わない）。
 #
 # 課金について: ALTER TABLE・DROP TABLE はメタデータだけを見る／書く文で、実データの
 # スキャンは無い。CREATE TABLE（実在する表の準備・C3・C20・C21・C22・C23、E・F 群、
-# ROUND=3 の H・Q・P 群、ROUND=5 の J 群、ROUND=9 の N 群、ROUND=10 の S 群。いずれも 0〜1 行）
-# もスキャンや書き込みは軽微。Athena の最小課金 × クエリ数の見込み。ROUND=5・10 の結果ファイルの
-# 読み出し（aws s3 cp）は Athena のクエリではなく S3 の GetObject で、課金には乗らない。
+# ROUND=3 の H・Q・P 群、ROUND=5 の J 群、ROUND=9 の N 群、ROUND=10 の S 群、ROUND=11 の R 群。
+# いずれも 0〜1 行）もスキャンや書き込みは軽微。Athena の最小課金 × クエリ数の見込み。
+# ROUND=5・10・11 の結果ファイルの読み出し（aws s3 cp）と ROUND=11 のオーファンデータ確認
+# （aws s3 ls）は Athena のクエリではなく S3 の GetObject／ListObjects で、課金には乗らない。
 #
 # 本物への呼び出し回数の見込み（内訳。実際の回数は下で更新される。GetQueryExecution は
 # poll_until_terminal のポーリング + 終端後の 1 回で、開始できた項目の数 × 数回のオーダー。
@@ -462,6 +496,26 @@
 #   （aws s3 cp、それぞれ 1 回）を追加で呼ぶ（最大で S 群の項目数 × 2 回）。Athena の
 #   API ではないので上の StartQueryExecution・GetQueryExecution の回数には含めない。
 #
+# == ROUND=11（R 群のみ。issue #251。preflight・DB 確認は共通、実在する表は作らない） ==
+#
+#   [StartQueryExecution]
+#   preflight（SELECT 1 + SHOW TABLES）2
+#   + R 群のうち S3TABLES_* が揃うときだけ（r1〜r7b の 9）
+#   + r8a〜r8c（既定の Context。S3TABLES_* によらず常に投げる）3
+#   = 14（S3TABLES_* あり）／5（無し）。
+#   受理された CREATE TABLE ごとに、その場で DROP する後始末が 1 本ずつ増える（最大 +12）。
+#   r3・r6a・r7a・r8b は受理されうる（IF NOT EXISTS・既存の名前空間・既存の DB）。
+#
+#   [GetQueryExecution]
+#   開始できた項目だけ終端状態までポーリングし、終端後にもう 1 回まとめて取得する。
+#
+#   [その他]
+#   FAILED になった項目ごとに、結果ファイル本体と `<OutputLocation>.metadata` の取得
+#   （aws s3 cp、それぞれ 1 回）を追加で呼ぶ（最大で R 群の項目数 × 2 回）。CTAS で DB が
+#   無いために FAILED になった項目（最大 9 項目）ごとに、理由に書かれた location をオーファン
+#   データの確認（aws s3 ls --recursive、1 回）にも使う。どちらも Athena の API ではないので
+#   上の StartQueryExecution・GetQueryExecution の回数には含めない。
+#
 # 実行ごとに $OUT_DIR/run-<日時>/ を作り、その中だけに書く。前の回の結果と混ざらない。
 #
 # 項目ごとに次を保存する（取れたものだけ）。
@@ -487,9 +541,9 @@ set -uo pipefail
 : "${DB:?DB にデータベース名を設定してください}"
 ROUND=${ROUND:-1}
 case "$ROUND" in
-  1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10) ;;
+  1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11) ;;
   *)
-    echo "ROUND には 1・2・3・4・5・6・7・8・9・10 のどれかを指定してください（既定 1）" >&2
+    echo "ROUND には 1・2・3・4・5・6・7・8・9・10・11 のどれかを指定してください（既定 1）" >&2
     exit 1
     ;;
 esac
@@ -933,6 +987,38 @@ fetch_failed_attachments() {
     fetch_s3_body "$loc" "$RUN_DIR/$label.output.txt" "$RUN_DIR/$label.output.txt.err"
     fetch_s3_body "${loc}.metadata" "$RUN_DIR/$label.output.metadata" "$RUN_DIR/$label.output.metadata.err"
   done
+}
+
+# CTAS が DB 無しで FAILED になったとき、StateChangeReason・AthenaError.ErrorMessage に書かれた
+# `location '<uri>'`（j13 の実測どおりの書かれ方）を取り出し、その下に実際にオブジェクトが
+# 書かれているかを `aws s3 ls --recursive` で確かめる（読み取りのみ。ROUND=11、issue #251 の
+# コメントの項目 4）。結果は <label>.orphan-data.txt に保存する。location が見つからなければ
+# その旨を書いて終わる。
+check_ctas_orphan_data() {
+  local label=$1 uri
+  uri=$(python3 - "$RUN_DIR/$label.execution.json" <<'PYEOF'
+import json, re, sys
+try:
+    status = json.load(open(sys.argv[1]))["QueryExecution"]["Status"]
+except Exception:
+    print("")
+    sys.exit(0)
+text = status.get("StateChangeReason") or ""
+err = status.get("AthenaError") or {}
+text += " " + (err.get("ErrorMessage") or "")
+m = re.search(r"location '([^']+)'", text)
+print(m.group(1) if m else "")
+PYEOF
+)
+  if [ -z "$uri" ]; then
+    echo "(理由に location が見つかりませんでした)" > "$RUN_DIR/$label.orphan-data.txt"
+    return
+  fi
+  if ! aws s3 ls --recursive "$uri" --region "$REGION" > "$RUN_DIR/$label.orphan-data.txt" 2> "$RUN_DIR/$label.orphan-data.err"; then
+    : # ls が失敗しても（オブジェクトが無いなど）orphan-data.txt はそのまま残す（空か途中まで）
+  else
+    rm -f "$RUN_DIR/$label.orphan-data.err"
+  fi
 }
 
 # CREATE TABLE を投げ、成功したら（想定どおりでも想定外でも）その場で
@@ -1852,6 +1938,75 @@ fetch_failed_attachments $S_LABELS
 
 fi # ROUND=10
 
+# ROUND=11 だけ、R 群を投げる（issue #251）。
+if [ "$ROUND" = 11 ]; then
+
+DEFAULT_CTX="Catalog=$CATALOG,Database=$DB"
+# S3 Tables に無い名前空間（乱数入りの接頭辞なので実在しない見込み）。
+R_NOPE_NS="$(new_name r_nope_ns)"
+
+# --- R 群（S3 Tables の Context の場所の無い CREATE TABLE の名前空間まわり） ----------------
+# issue 本文の 1〜3（r1〜r3）と、コメントの 4〜8（CTAS の残り。r4〜r8c）。
+if [ -n "$S3TABLES_CATALOG" ] && [ -n "$S3TABLES_NS" ]; then
+  S3T_CTX="Catalog=$S3TABLES_CATALOG,Database=$S3TABLES_NS"
+
+  # r1: 1 部の名前で、Context の Database が S3 Tables に無い名前空間のとき（issue 本文の 1）。
+  run_create_then_drop_ctx "Catalog=$S3TABLES_CATALOG,Database=$R_NOPE_NS" "Catalog=$S3TABLES_CATALOG,Database=$R_NOPE_NS" r1 \
+    "CREATE TABLE $(new_name r1) (n int)" "$(new_name r1)"
+  # r2: 2 部の IF NOT EXISTS で、1 部目（名前空間）が無いとき（issue 本文の 2。j12 は IF NOT EXISTS 無し）。
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" r2 \
+    "CREATE TABLE IF NOT EXISTS $R_NOPE_NS.$(new_name r2) (n int)" "$(new_name r2)"
+  # r3: 3 部の IF NOT EXISTS で、名前空間があるとき（issue 本文の 3。j1 は IF NOT EXISTS 無し、j9 は無い名前空間）。
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" r3 \
+    "CREATE TABLE IF NOT EXISTS AwsDataCatalog.$S3TABLES_NS.$(new_name r3) (n int)" "$(new_name r3)"
+
+  # r4: j13 の再現（CTAS、DB 無し）。.metadata の中身と書かれたデータの有無を確かめる（コメントの項目 4）。
+  R4_DB="$(new_name r4db)"
+  run_create_then_drop_ctx "$S3T_CTX" "Catalog=$CATALOG,Database=$R4_DB" r4 \
+    "CREATE TABLE AwsDataCatalog.$R4_DB.$(new_name r4) AS SELECT 1 AS n" "$(new_name r4)"
+  # r5: j13 と同じ形で、DB 名を大文字混じりにする（理由の Database <名前> が書いたとおりか小文字か。項目 5）。
+  R5_DB="$(new_name R5Mixed)"
+  run_create_then_drop_ctx "$S3T_CTX" "Catalog=$CATALOG,Database=$R5_DB" r5 \
+    "CREATE TABLE AwsDataCatalog.$R5_DB.$(new_name r5) AS SELECT 1 AS n" "$(new_name r5)"
+  # r6a/r6b: IF NOT EXISTS + 小文字 awsdatacatalog の CTAS（DB がある・無い。項目 6）。
+  run_create_then_drop_ctx "$S3T_CTX" "$DEFAULT_CTX" r6a \
+    "CREATE TABLE IF NOT EXISTS awsdatacatalog.$DB.$(new_name r6a) AS SELECT 1 AS n" "$(new_name r6a)"
+  R6B_DB="$(new_name r6bdb)"
+  run_create_then_drop_ctx "$S3T_CTX" "Catalog=$CATALOG,Database=$R6B_DB" r6b \
+    "CREATE TABLE IF NOT EXISTS awsdatacatalog.$R6B_DB.$(new_name r6b) AS SELECT 1 AS n" "$(new_name r6b)"
+  # r7a/r7b: 1 部目の綴りと DB の有無の残りの組（項目 7）。
+  run_create_then_drop_ctx "$S3T_CTX" "$DEFAULT_CTX" r7a \
+    "CREATE TABLE AwsDataCatalog.$DB.$(new_name r7a) AS SELECT 1 AS n" "$(new_name r7a)"
+  R7B_DB="$(new_name r7bdb)"
+  run_create_then_drop_ctx "$S3T_CTX" "Catalog=$CATALOG,Database=$R7B_DB" r7b \
+    "CREATE TABLE awsdatacatalog.$R7B_DB.$(new_name r7b) AS SELECT 1 AS n" "$(new_name r7b)"
+else
+  for l in r1 r2 r3 r4 r5 r6a r6b r7a r7b; do
+    skip "$l" "未測定（S3TABLES_* 未設定）"
+    skip "$l-cleanup" "CREATE TABLE を投げていないため後始末不要"
+  done
+fi
+
+# r8a〜r8c: 既定の Context（Catalog=AwsDataCatalog）で r5・r7a・r7b と同じ形（項目 8。S3TABLES_* によらず常に投げる）。
+R8A_DB="$(new_name R8AMixed)"
+run_create_then_drop_ctx "$DEFAULT_CTX" "Catalog=$CATALOG,Database=$R8A_DB" r8a \
+  "CREATE TABLE AwsDataCatalog.$R8A_DB.$(new_name r8a) AS SELECT 1 AS n" "$(new_name r8a)"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" r8b \
+  "CREATE TABLE AwsDataCatalog.$DB.$(new_name r8b) AS SELECT 1 AS n" "$(new_name r8b)"
+R8C_DB="$(new_name r8cdb)"
+run_create_then_drop_ctx "$DEFAULT_CTX" "Catalog=$CATALOG,Database=$R8C_DB" r8c \
+  "CREATE TABLE awsdatacatalog.$R8C_DB.$(new_name r8c) AS SELECT 1 AS n" "$(new_name r8c)"
+
+R_LABELS="r1 r2 r3 r4 r5 r6a r6b r7a r7b r8a r8b r8c"
+
+# --- 付随物の取得（FAILED になった項目だけ） --------------------------------------------
+fetch_failed_attachments $R_LABELS
+for l in r4 r5 r6a r6b r7a r7b r8a r8b r8c; do
+  is_failed "$l" && check_ctas_orphan_data "$l"
+done
+
+fi # ROUND=11
+
 # --- 後始末（実在する表） ----------------------------------------------------------
 
 if [ "$REAL_SETUP_OK" = 1 ]; then
@@ -1897,6 +2052,10 @@ elif [ "$ROUND" = 9 ]; then
   done
 elif [ "$ROUND" = 10 ]; then
   for l in $S_LABELS; do
+    ALL_LABELS="$ALL_LABELS $l $l-cleanup"
+  done
+elif [ "$ROUND" = 11 ]; then
+  for l in $R_LABELS; do
     ALL_LABELS="$ALL_LABELS $l $l-cleanup"
   done
 elif [ "$ROUND" = 8 ]; then
@@ -2036,6 +2195,34 @@ write_summary_txt() {
       echo "#   aws s3 cp で読み出して保存する（<label>.output.txt・<label>.output.metadata）。"
       echo "# 課金: スキャンの無いクエリだけ（CREATE は 0〜1 行、DROP はメタデータのみ）。結果ファイルの"
       echo "#   読み出しは S3 の GetObject で、Athena のクエリ課金には乗らない。"
+      echo "# 注意: これは実測した本物の Athena の挙動であり、将来の Athena の変更で変わりうる。"
+      echo "#   実測値は既定とは限らない。"
+    elif [ "$ROUND" = 11 ]; then
+      echo "# issue #251（#208 ラウンド 11）: QueryExecutionContext の Catalog が S3 Tables のとき、"
+      echo "#             場所の無い CREATE TABLE の名前空間まわり（1 部の名前・2 部と 3 部の"
+      echo "#             IF NOT EXISTS）と、CTAS の残り（j13 の再現の .metadata・データの有無、"
+      echo "#             DB 名の大文字小文字、1 部目の綴りと DB の有無の組、既定の Context の対照）を実測"
+      echo "# 実行日時: $(date -Iseconds)"
+      if [ -n "$S3TABLES_CATALOG" ] && [ -n "$S3TABLES_NS" ]; then
+        echo "# S3TABLES_*: 設定あり（R 群 r1〜r7b を測る）"
+      else
+        echo "# S3TABLES_*: 未設定（r8a〜r8c 以外の R 群は未測定）"
+      fi
+      echo "# StartQueryExecution の見込み本数: 14（S3TABLES_* あり）／5（無し）"
+      echo "#   （preflight 2 + R 群のうち S3TABLES_* が揃うときだけの 9（r1〜r7b）+"
+      echo "#   常に投げる r8a〜r8c の 3）。"
+      echo "#   このスクリプトの実測値: $(wc -l < "$START_CALL_FILE" | tr -d ' ') 回"
+      echo "#   受理された CREATE TABLE ごとに、その場で DROP する後始末が 1 本ずつ増える（最大 +12）。"
+      echo "#   r3・r6a・r7a・r8b は受理されうる（IF NOT EXISTS・既存の名前空間・既存の DB）。"
+      echo "# DDL: 実在する表 <PROBE>_real は作らない。R 群の CREATE TABLE は、受理されたらその場で"
+      echo "#   DROP して消す（CTAS の対象 DB がテスト用の実在しない名前のときは、その DB を"
+      echo "#   Database にした Context で消す。既存の DB・名前空間の項目は作った Context と同じ）。"
+      echo "# 付随物: FAILED になった項目は、結果ファイル本体と <OutputLocation>.metadata を"
+      echo "#   aws s3 cp で読み出して保存する（<label>.output.txt・<label>.output.metadata）。CTAS で"
+      echo "#   DB が無いために FAILED になった項目は、理由に書かれた location を aws s3 ls --recursive で"
+      echo "#   確かめ、データが実際に書かれているかも見る（<label>.orphan-data.txt）。"
+      echo "# 課金: スキャンの無いクエリだけ（CREATE は 0〜1 行、DROP はメタデータのみ）。結果ファイルの"
+      echo "#   読み出し・オーファンデータの確認は Athena のクエリ課金には乗らない。"
       echo "# 注意: これは実測した本物の Athena の挙動であり、将来の Athena の変更で変わりうる。"
       echo "#   実測値は既定とは限らない。"
     elif [ "$ROUND" = 8 ]; then
@@ -2217,12 +2404,13 @@ PYEOF
         echo
       fi
     done
-    if [ "$ROUND" = 6 ] || [ "$ROUND" = 7 ] || [ "$ROUND" = 8 ] || [ "$ROUND" = 10 ]; then
+    if [ "$ROUND" = 6 ] || [ "$ROUND" = 7 ] || [ "$ROUND" = 8 ] || [ "$ROUND" = 10 ] || [ "$ROUND" = 11 ]; then
       case "$ROUND" in
         6) REPR_LABELS=$K_LABELS ;;
         7) REPR_LABELS=$L_LABELS ;;
         8) REPR_LABELS=$M_LABELS ;;
-        *) REPR_LABELS=$S_LABELS ;;
+        10) REPR_LABELS=$S_LABELS ;;
+        *) REPR_LABELS=$R_LABELS ;;
       esac
       echo
       echo "## 文と開始時の文言・Query（Python の repr。前後の空白・改行・CR を区別する。実名は伏せる）"
@@ -2273,12 +2461,13 @@ PYEOF
         echo
       done
     fi
-    if [ "$ROUND" = 5 ] || [ "$ROUND" = 10 ]; then
+    if [ "$ROUND" = 5 ] || [ "$ROUND" = 10 ] || [ "$ROUND" = 11 ]; then
       echo
       echo "## 付随物（結果ファイル本体・.metadata。FAILED になった項目だけ。実名は伏せる）"
       case "$ROUND" in
         5) ATTACH_LABELS=$J_LABELS ;;
-        *) ATTACH_LABELS=$S_LABELS ;;
+        10) ATTACH_LABELS=$S_LABELS ;;
+        *) ATTACH_LABELS=$R_LABELS ;;
       esac
       for label in $ATTACH_LABELS; do
         is_failed "$label" || continue
@@ -2298,6 +2487,21 @@ PYEOF
           echo "- .metadata: あり（0 バイト）"
         else
           echo "- .metadata: 取得できず（$(first_err_line "$meta.err")）"
+        fi
+        echo
+      done
+    fi
+    if [ "$ROUND" = 11 ]; then
+      echo
+      echo "## CTAS が DB 無しで失敗した項目のオーファンデータ確認（aws s3 ls --recursive。実名は伏せる）"
+      for label in r4 r5 r6a r6b r7a r7b r8a r8b r8c; do
+        f="$RUN_DIR/$label.orphan-data.txt"
+        [ -f "$f" ] || continue
+        echo "### $label"
+        if [ -s "$f" ]; then
+          echo "$(hide "$(cat "$f")")"
+        else
+          echo "(オブジェクトなし)"
         fi
         echo
       done
