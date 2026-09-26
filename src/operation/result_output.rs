@@ -183,7 +183,9 @@ async fn write_metadata(
 
 /// `.metadata` の先頭（field 1）に載せるクエリ ID。2026-09-17 実測では DESCRIBE と
 /// SHOW CREATE TABLE だけが QueryExecutionId で、SELECT・DML・CTAS・EXPLAIN・DROP TABLE は
-/// エンジン（Trino）のクエリ ID だった。SHOW FUNCTIONS もエンジンのクエリ ID（2026-09-23 実測。#80）。
+/// エンジン（Trino）のクエリ ID だった。ただしリテラルだけの SELECT（本体が binary/octet-stream になる文）は
+/// QueryExecutionId で（2026-09-23／25 実測。#70/#76・#200・#205）、Content-Type と同じ述語
+/// `content_type::is_literal_only_select` で選ぶ（#210）。SHOW FUNCTIONS もエンジンのクエリ ID（2026-09-23 実測。#80）。
 /// 本物の `.metadata` が不透明な形式の文（`SHOW TABLES` など 5 文と `SHOW CREATE VIEW`。2026-09-24 実測。
 /// #146・#151）は先頭 ID を観測できないので、EXPLAIN に倣ってエンジン ID にする。
 /// どの文が QueryExecutionId かは Content-Type の判定と同じ述語 `content_type::carries_execution_id` で決める。
@@ -193,7 +195,9 @@ fn metadata_query_id<'a>(
     execution_id: &'a str,
     engine_id: Option<&'a str>,
 ) -> &'a str {
-    if crate::content_type::carries_execution_id(query) {
+    if crate::content_type::carries_execution_id(query)
+        || crate::content_type::is_literal_only_select(query)
+    {
         execution_id
     } else {
         engine_id.unwrap_or(execution_id)
@@ -205,7 +209,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn metadata_query_id_は_describe_と_show_create_table_だけ実行_id_で_show_create_view_はエンジン_id()
+    fn metadata_query_id_は_describe_と_show_create_table_とリテラルだけの_select_だけ実行_id_で_show_create_view_はエンジン_id()
      {
         let exec = "11111111-2222-3333-4444-555555555555";
         let engine = "20260924_000000_00000_local";
@@ -216,6 +220,15 @@ mod tests {
             "show create table t",
             "SHOW CREATE /* c */ TABLE t",
             "-- c\nSHOW CREATE TABLE t",
+            // リテラルだけの SELECT（本体が binary/octet-stream になる文）も QueryExecutionId
+            // （2026-09-23 実測。#70/#76。括弧付きと符号の後ろの空白は 2026-09-25 実測。#200・#205。#210）。
+            "SELECT 1",
+            "SELECT 1 AS i",
+            "SELECT 1, 2",
+            "SELECT 'a'",
+            "SELECT(1)",
+            "SELECT (1)",
+            "SELECT - 1",
         ] {
             assert_eq!(
                 metadata_query_id(query, exec, Some(engine)),
@@ -232,7 +245,10 @@ mod tests {
             "-- c\nSHOW CREATE VIEW v",
             "SHOW TABLES",
             "EXPLAIN SELECT 1",
-            "SELECT 1",
+            // 式を含む SELECT はエンジン ID（2026-09-23 実測。#70/#76）。
+            "SELECT 1 + 1",
+            "SELECT CAST(1.5 AS DOUBLE)",
+            "SELECT -(1)",
         ] {
             assert_eq!(
                 metadata_query_id(query, exec, Some(engine)),

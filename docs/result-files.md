@@ -248,9 +248,12 @@ reads:
 
 The query id follows Athena's own split: `SELECT`, DML, CTAS, `EXPLAIN` and the
 `SHOW` statements (including `SHOW CREATE VIEW`) carry the engine's query id
-(Trino's here, Athena's engine id there), while `DESCRIBE` and
-`SHOW CREATE TABLE` on a Hive table carry the `QueryExecutionId` (on an
-Iceberg table both use the engine id; see below).
+(Trino's here, Athena's engine id there), while `DESCRIBE`,
+`SHOW CREATE TABLE` on a Hive table and a `SELECT` of literals only (the forms
+written as `binary/octet-stream` under [Result files](#result-files), such as
+`SELECT 1` or `SELECT (1)`; measured 2026-09-23 and 2026-09-25) carry the
+`QueryExecutionId` (on an Iceberg table `DESCRIBE` and `SHOW CREATE TABLE` use
+the engine id; see below).
 For the `SHOW` statements whose real companion file is opaque (see [Caveats](caveats.md#result-files-and-metadata))
 Athena's own choice cannot be observed, so athena-local uses the engine id there
 by analogy with `EXPLAIN`. The statements under

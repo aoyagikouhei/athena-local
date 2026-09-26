@@ -11,6 +11,9 @@ later name the date they were measured on.
 
 ### Changed
 
+- The companion `.metadata` of a literals-only `SELECT` (such as `SELECT 1`)
+  now starts with the `QueryExecutionId`, as on real Athena
+  ([docs](docs/result-files.md#companion-metadata-files)).
 - `DESCRIBE`, `DESC` and `SHOW COLUMNS` now check the target table when the
   context catalog is a `TRINO_CATALOG_MAP` alias such as `AwsDataCatalog`
   ([docs](docs/caveats.md#sql-dialect)).

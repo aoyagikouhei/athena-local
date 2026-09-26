@@ -546,7 +546,7 @@
   | `SELECT -(1)`、`SELECT - (1)`、`SELECT -(-1)`、`SELECT +1` | application | エンジン ID |
 
 - 採用: 括弧は何重でもリテラルを包むだけで、括弧の外の符号と `+` は式になる。Trino の文法（数値リテラルは `MINUS? INTEGER_VALUE` で、`-` は別のトークン。括弧は式を包むだけ）と整合する。athena-local は `is_literal_only_select` で括弧の対を読み、`athena_sql::Cursor::literal` で `-` と数の間の空白・コメントを読み飛ばすようにした。3 重以上の括弧と `-` と数の間のコメントは測っておらず、それぞれ 2 重の括弧・空白からの一般化（`(-1)` が binary で `-(1)` が application に割れたので、本物は括弧の深さではなく構文木でリテラルかを見ていると読んだ）
-- 備考: binary の項目の `.metadata` の先頭は QueryExecutionId で、athena-local はエンジン ID を書く（リテラルだけの SELECT 全体の既存の差。#70 の生データでも同じ。[#210](https://github.com/aoyagikouhei/athena-local/issues/210)）
+- 備考: binary の項目の `.metadata` の先頭は QueryExecutionId で、athena-local はエンジン ID を書く（リテラルだけの SELECT 全体の既存の差。#70 の生データでも同じ。[#210](https://github.com/aoyagikouhei/athena-local/issues/210)）。#210 で athena-local も `is_literal_only_select` に当たる文は QueryExecutionId を書くようにした（2026-09-26）
 
 ## 値の表記
 
