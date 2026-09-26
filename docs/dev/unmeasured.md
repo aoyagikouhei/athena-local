@@ -59,6 +59,7 @@
 ## Trino（[measurements/trino.md](measurements/trino.md)）
 
 - [ ] Trino 470・400 のすべての値と、440 の存在するテーブルへの probe（D1・D2）と `updateType`（#111 の足場で 480・475 は測れたが、470 はローカル FS の設定名が無く、400 は cgroup v2 で JVM が落ち、440 は file メタストアに書けなかった）
+- [ ] `;` の無い空白だけの文（`   `）、`;` と空白だけの文の `Empty sql statement: <文>` の文（`;` 1 つ以外。` ; `・`;;`）、文の前後から落とす空白の文字の範囲（測ったのは空白・タブ・CR・LF。制御文字や非 ASCII の空白）。athena-local は `;` の無い空白だけの文を受け取ったまま Trino に回し、`Empty sql statement` の文は受け取った文の末尾の空白を落としたもの、落とす空白は空白・タブ・CR・LF にする（#240、2026-09-26）
 - [ ] 複数の文（`Only one sql statement is allowed`）と、`ClientRequestToken`・`OutputLocation` の検証との順番、`ExecutionParameters` 付きのとき、バッククォートの中の `;`、閉じていない引用符・コメントの中の `;`。#228 で測ったのは構文エラー・存在の確認・No location・NV・2 catalogs より先であることと、`'`・`"`・`--`・`/* */` の中の `;` が区切りにならないことだけ。athena-local はトークンと OutputLocation の後・構文チェックの前に、受け取った SQL（パラメータを当てる前）で数え、閉じていない引用符・コメントは末尾までを中身とする（2026-09-26）
 
 ## 済み

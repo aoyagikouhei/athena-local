@@ -102,6 +102,39 @@ async fn 同じトークンを50本同時に送っても_id_は1つで実行は1
     assert_eq!(harness.trino_sqls().len(), 1, "本体は 1 回だけ");
 }
 
+/// 本物は `;` と前後の空白を落とした文を実行するが、冪等の比較は受け取ったままの文で行う
+/// （2026-09-26 実測。#240）。
+#[tokio::test]
+async fn 同じトークンで末尾の_セミコロンや空白だけが違う文も_idempotent_parameter_mismatch_になる()
+{
+    let harness = Harness::start(select_response()).await;
+    let same_token = token("mismatch-semicolon");
+
+    let id1 = harness
+        .start_query(json!({ "QueryString": "SELECT 1;", "ClientRequestToken": same_token }))
+        .await;
+    let id2 = harness
+        .start_query(json!({ "QueryString": "SELECT 1;", "ClientRequestToken": same_token }))
+        .await;
+    assert_eq!(id1, id2, "受け取った文が同じなら同じ実行");
+
+    for query in ["SELECT 1", "SELECT 1;;", "SELECT 1 "] {
+        let (status, error) = harness
+            .call(
+                "StartQueryExecution",
+                json!({ "QueryString": query, "ClientRequestToken": same_token }),
+            )
+            .await;
+        assert_eq!(status, 400, "{query:?}: {error}");
+        assert_eq!(
+            error["Message"], "Idempotent parameters do not match",
+            "{query:?}"
+        );
+    }
+    harness.wait_until_done(&id1).await;
+    assert_eq!(harness.trino_sqls(), ["SELECT 1"]);
+}
+
 #[tokio::test]
 async fn 同じトークンでクエリを変えると_idempotent_parameter_mismatch_になる() {
     let harness = Harness::start(select_response()).await;

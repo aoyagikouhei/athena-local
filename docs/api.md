@@ -112,16 +112,24 @@ Behaviour that matches real Athena:
 
   An unknown id returns `QueryExecution <id> was not found` (`QUERY_EXECUTION_NOT_FOUND`).
 - A stopped query reports `StateChangeReason` `Query cancelled by user`.
-- A `QueryString` holding more than one statement makes `StartQueryExecution`
-  fail with `InvalidRequestException` (`AthenaErrorCode` `MALFORMED_QUERY`) and
-  real Athena's message `Only one sql statement is allowed. Got: <statement>`,
-  where `<statement>` is the `QueryString` with trailing whitespace removed
-  (measured 2026-09-26). As on real Athena, the text is split at every `;`
-  outside quotes and comments, and pieces holding only whitespace do not count,
-  while a piece holding only a comment does: `SELECT 1; -- c` is rejected,
-  `SELECT 'a;b'` is not. This check comes before every other check on the SQL
-  below. A statement ending in `;` with nothing after it passes this check but
-  still fails Trino's syntax check (see [Caveats](caveats.md#sql-dialect)).
+- As on real Athena, `StartQueryExecution` first splits the `QueryString` at
+  every `;` outside quotes and comments (measured 2026-09-26). Pieces holding
+  only whitespace do not count, while a piece holding only a comment does.
+  - With exactly one piece left, that piece without its leading and trailing
+    whitespace is the statement. The syntax check, the checks below, the SQL
+    sent to Trino and `GetQueryExecution`'s `Query` all use it: `SELECT 1;`,
+    `;SELECT 1` and `  SELECT 1  ` all run and report `Query` `SELECT 1`, and a
+    syntax error position counts from the statement's first character. The
+    `ClientRequestToken` idempotency check still compares the `QueryString` as
+    sent, so `SELECT 1;` and then `SELECT 1` with the same token answer
+    `Idempotent parameters do not match`, as on real Athena.
+  - With more than one piece left (`SELECT 1; -- c`), `StartQueryExecution`
+    fails with `InvalidRequestException` (`AthenaErrorCode` `MALFORMED_QUERY`)
+    and real Athena's message `Only one sql statement is allowed. Got:
+    <text>`; with none but a `;` (`;`), with `Empty sql statement: <text>`.
+    `<text>` is the `QueryString` with trailing whitespace removed. These come
+    before every other check on the SQL below. A `QueryString` holding only
+    whitespace and no `;` is passed on as sent (not measured).
 - A syntax error makes `StartQueryExecution` fail with `InvalidRequestException`
   (`AthenaErrorCode` `MALFORMED_QUERY`) instead of creating a `FAILED` query, as
   Athena does. The message is Trino's, with positions counted in the original SQL

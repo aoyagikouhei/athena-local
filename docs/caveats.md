@@ -15,11 +15,12 @@ Known differences between athena-local and real Athena, grouped by topic.
   `SELECT 0.1 + 0.2` reads `0.30000000000000004` on Athena and `0.3` here, and
   `ColumnInfo.Type` differs. Put the type into the literal — `1.5E0` for a
   `double`, `DECIMAL '1.5'` for a `decimal` — and both engines agree.
-- **A trailing `;`.** Real Athena runs a statement ending in `;`, such as
-  `SELECT 1;` or `SELECT 1;;` (measured 2026-09-26), but Trino rejects the
-  `;`, so athena-local fails it at the syntax check (`mismatched input ';'`,
-  `MALFORMED_QUERY`). Leave the `;` out. A `;` followed by another statement or
-  a comment is rejected as on real Athena (see [Supported API](api.md)).
+- **`DESCRIBE <db>.<table>;` reports its `Query` as written.** In one
+  measurement (2026-09-26) real Athena reported `DESCRIBE <table>;` as `Query`
+  `DESCRIBE <table>`, dropping the database, while earlier measurements without
+  the `;` kept it. athena-local removes only the `;` (see
+  [Supported API](api.md)); when Athena drops the database is not measured yet
+  ([#242](https://github.com/aoyagikouhei/athena-local/issues/242)).
 - **Syntax differs.** Trino-only syntax such as `CREATE OR REPLACE TABLE` passes
   here but is a syntax error on Athena (`CREATE OR REPLACE TABLE ... AS SELECT`
   answers `InvalidRequestException` with `line 1:19: mismatched input 'TABLE'.

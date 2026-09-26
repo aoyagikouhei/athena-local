@@ -275,6 +275,11 @@ async fn 場所の無い_create_table_も本物の文言で開始時に弾き_�
             "CREATE TABLE t (n int) WITH (format = 'PARQUET')",
             "line 1:29: no viable alternative at input 'CREATE TABLE t (n int) WITH ('",
         ),
+        // 末尾の `;` を落とした文で判定する（2026-09-26 実測。#240）。
+        (
+            "CREATE TABLE t (n int);",
+            "No location was specified for table. An S3 location must be specified",
+        ),
     ] {
         let (code, error) = harness
             .call("StartQueryExecution", json!({ "QueryString": query }))
@@ -284,7 +289,10 @@ async fn 場所の無い_create_table_も本物の文言で開始時に弾き_�
         assert_eq!(error["__type"], "InvalidRequestException", "{query}");
         assert_eq!(error["AthenaErrorCode"], "MALFORMED_QUERY", "{query}");
         assert_eq!(error["Message"], message, "{query}");
-        assert_eq!(harness.syntax_checks().last(), Some(&query.to_string()));
+        assert_eq!(
+            harness.syntax_checks().last(),
+            Some(&query.trim_end_matches(';').to_string())
+        );
         assert!(
             harness.trino_requests().is_empty(),
             "{query}: 実行は作らない"
@@ -414,7 +422,7 @@ async fn 引用符とコメントの外の_セミコロンの後ろに文かコ�
 }
 
 /// 空白だけの片（`;;`、`; ;`、末尾の空白・改行・CRLF）と、文字列・引用符付きの名前・コメントの中の `;` は
-/// 本物では複数の文にならない（2026-09-26 実測。#228）。athena-local は今までどおり構文チェックに回す。
+/// 本物では複数の文にならない（2026-09-26 実測。#228）。構文チェックには `;` と前後の空白を落とした文を送る（#240）。
 #[tokio::test]
 async fn 空白だけの片や引用符とコメントの中の_セミコロンは複数の文に数えない() {
     let harness = Harness::builder(select_response()).start().await;
@@ -436,5 +444,66 @@ async fn 空白だけの片や引用符とコメントの中の_セミコロン�
             .await;
         assert_eq!(code, 200, "{sql:?}: {body}");
     }
-    assert_eq!(harness.syntax_checks(), sqls);
+    assert_eq!(
+        harness.syntax_checks(),
+        [
+            "SELECT 1",
+            "SELECT 1",
+            "SELECT 1",
+            "-- c\nSELECT 1",
+            "SELECT 1 -- c",
+            "SELECT 'a;b'",
+            "SELECT 1 AS \"a;b\"",
+            "SELECT 1 -- a;b",
+            "SELECT 1 /* a;b */",
+        ]
+    );
+}
+
+/// 本物は `;` で区切った片のうち空白だけでない 1 つを、前後の空白を落として文にし、GetQueryExecution の
+/// Query・構文エラー・実行はその文で決まる。`;` の無い文でも前後の空白は落ちる（2026-09-26 実測。#240）。
+#[tokio::test]
+async fn 末尾と先頭の_セミコロンと前後の空白を落とした文を構文チェックと実行と_query_に使う() {
+    let harness = Harness::builder(select_response()).start().await;
+    let cases = [
+        ("SELECT 1;", "SELECT 1"),
+        ("SELECT 1;;", "SELECT 1"),
+        ("  SELECT 1  ;  ", "SELECT 1"),
+        (";SELECT 1", "SELECT 1"),
+        ("SELECT 1\t;", "SELECT 1"),
+        ("SELECT 1  ", "SELECT 1"),
+        ("\n\nSELECT 1\n", "SELECT 1"),
+        ("-- c\nSELECT\n  1 ;\n", "-- c\nSELECT\n  1"),
+    ];
+
+    for (sql, statement) in cases {
+        let execution = harness.run_query(json!({ "QueryString": sql })).await;
+        assert_eq!(execution["QueryExecution"]["Query"], statement, "{sql:?}");
+    }
+    let statements: Vec<&str> = cases.iter().map(|(_, statement)| *statement).collect();
+    assert_eq!(harness.syntax_checks(), statements);
+    assert_eq!(harness.trino_sqls(), statements);
+}
+
+/// 本物は空白だけでない片が無い `;` だけの文を開始時に弾く（2026-09-26 実測。#240）。
+#[tokio::test]
+async fn セミコロンだけの文は_empty_sql_statement_で弾き構文チェックも実行もしない() {
+    let harness = Harness::builder(select_response()).start().await;
+
+    let (code, error) = harness
+        .call("StartQueryExecution", json!({ "QueryString": ";" }))
+        .await;
+
+    assert_eq!(code, 400, "{error}");
+    assert_eq!(error["__type"], "InvalidRequestException");
+    assert_eq!(error["AthenaErrorCode"], "MALFORMED_QUERY");
+    assert_eq!(error["Message"], "Empty sql statement: ;");
+    assert!(harness.syntax_checks().is_empty());
+    assert!(harness.trino_requests().is_empty());
+
+    // `;` の無い空白だけの文は測っていないので、今までどおり受け取ったまま構文チェックに回す。
+    harness
+        .call("StartQueryExecution", json!({ "QueryString": "   " }))
+        .await;
+    assert_eq!(harness.syntax_checks(), ["   "]);
 }
