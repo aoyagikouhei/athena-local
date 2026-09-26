@@ -25,6 +25,7 @@ use super::create_table_catalog;
 use super::entity_check::{self, Check};
 use super::format_probe;
 use super::quoted_names;
+use super::reported_query;
 use super::result_output;
 use super::table_format::{self, FormatOverride};
 use super::unquoted_ddl;
@@ -88,14 +89,21 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
     if let Some(message) = app.trino.syntax_error(&query).await {
         return invalid_request_with_code(message, "MALFORMED_QUERY");
     }
+    // 本物は DESCRIBE・SHOW COLUMNS などの `awsdatacatalog.` を落とし、Context の Database を修飾の DB にする
+    // （2026-09-26 実測。#242）。落とした文を開始時の確認・実行・`Query` に使い、構文と開始時の文言の判定は
+    // 受け取った文で行う（文言の位置と input は受け取った文で実測している）。
+    let (statement, database) = match reported_query::drop_catalog(&query, catalog.as_deref()) {
+        Some(rewritten) => (rewritten.query, Some(rewritten.database)),
+        None => (query.clone(), database),
+    };
     // 本物は DESCRIBE・SHOW COLUMNS の対象の存在を開始時に確かめ、無ければ弾き、ビューなら引用符付きの
     // 名前でも実行する（2026-09-25 実測。#207）。Context の Catalog が実在しなければ、既定のカタログで確かめる（#214）。
     let resolved =
-        context_catalog::resolve(&app.trino, &app.config, &query, catalog.as_deref()).await;
+        context_catalog::resolve(&app.trino, &app.config, &statement, catalog.as_deref()).await;
     let check = entity_check::check(
         &app.trino,
         &app.config,
-        &query,
+        &statement,
         resolved.as_deref(),
         database.as_deref(),
     )
@@ -146,7 +154,7 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
     let outcome = app.store.submit(
         &id,
         Submission {
-            query,
+            query: statement,
             execution_parameters: request.execution_parameters.unwrap_or_default(),
             catalog,
             database,
