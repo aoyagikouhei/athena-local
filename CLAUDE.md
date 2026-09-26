@@ -71,7 +71,7 @@ CI（`.github/workflows/ci.yml`）の中身とリリース（`v*` タグで `doc
 
 ## 開発上の約束
 
-- **本物の Athena に合わせることが目的**。文言、エラーコード、型の見え方、ファイル名などは本番 Athena で実測した値に合わせ、コメントに「2026-09-14 実測」のように書いてある。実測していない振る舞いは推測で埋めない。項目を省く（例: `substatement_type` が `None`）か、`docs/caveats.md` に「not measured」と書いて `docs/dev/unmeasured.md` に載せる。測ったら `docs/dev/measurements/` に記録し、unmeasured から消す。
+- **本物の Athena に合わせることが目的**。文言、エラーコード、型の見え方、ファイル名などは本番 Athena で実測した値に合わせ、コメントに「2026-09-14 実測」のように書いてある。実測していない振る舞いは推測で埋めない。項目を省く（例: `substatement_type` が `None`）か、`docs/caveats.md` に「not measured」と書いて `docs/dev/unmeasured.md` に載せる。測ったら `docs/dev/measurements/` に記録し、unmeasured から消す。設計・範囲の選択肢を人間に示すときは、実測に近い方を推奨にする（規模・issue の範囲・別 issue に分けられることは推奨を下げる理由にせず、コストとして添える。#242）。
 - **SQL の本文を書き換えるのは、本物の Athena がそう扱うと実測した場合だけ**（理由と経緯は decisions.md の「SQL の字句処理と文の分類」）。Athena と Trino の書き方の違い（小数リテラルの型、DDL、`OPTIMIZE` / `VACUUM`）を Trino で通すための変換はせず、`docs/caveats.md` に回避策を書く（手元で通って本物で落ちる SQL を作らない）。書き換えは `athena-sql` が持つ元の SQL の位置（バイト範囲）の差し替えだけにし、触らない部分は 1 文字も変えず、Trino のエラーの位置を受け取った SQL に戻せるようにする。書き換えた SQL は実行の中だけに置き、`Store` の `Query` は受け取ったままにする（例外は、本物の `Query` がそうなっている、文の前後の空白と `;` を落とす入口の正規化だけ。#240）。全体を包む（`EXECUTE IMMEDIATE`）か別のクエリを投げる（構文チェックの `PREPARE`、パラメータ分類の `SELECT (<値>)`）で足りるなら書き換えない。
 - 挙動を変えたら `docs/`（対応オペレーションは `api.md`、Athena との差分は `caveats.md`、結果ファイルは `result-files.md` など）と CHANGELOGS.md の `[Unreleased]` も更新する。CHANGELOG は 1 項目 1〜2 行の箇条書きで、挙動の説明は書かずに docs の節へリンクする。CHANGELOG のバージョンは Docker Hub のイメージタグと一致させ、README の compose 例のタグも合わせる。
 - コメント、テスト名（日本語の文）、エラーメッセージ、コミットメッセージ（「〜する」で終わる一行）、PR の本文は日本語。README・`docs/*.md`・CHANGELOG は英語、`docs/dev/` は日本語。
