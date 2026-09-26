@@ -375,3 +375,66 @@ async fn s3_tables_の_context_では場所の無い_create_table_を弾かず�
         "line 1:23: no viable alternative at input 'CREATE TABLE t (n int NOT'"
     );
 }
+
+/// 本物は引用符とコメントの外の `;` で区切り、空白だけでない片が 2 つ以上あれば、構文エラー・DESCRIBE の
+/// 存在確認・No location・NV より先に弾く。`Got:` の後ろは受け取った文の末尾の空白だけを落としたもの
+/// （2026-09-26 実測。#228）。
+#[tokio::test]
+async fn 引用符とコメントの外の_セミコロンの後ろに文かコメントがあれば構文チェックより先に弾く() {
+    let harness = Harness::builder(select_response()).start().await;
+
+    for (sql, got) in [
+        ("SELECT 1; -- c", "SELECT 1; -- c"),
+        ("SELECT 1; /* c */", "SELECT 1; /* c */"),
+        ("SELECT 1;\n-- c", "SELECT 1;\n-- c"),
+        ("SELECT 1;SELECT 2", "SELECT 1;SELECT 2"),
+        ("SELECT 'a;b'; -- c", "SELECT 'a;b'; -- c"),
+        ("  SELECT  1; -- c  ", "  SELECT  1; -- c"),
+        ("SELECT 1\n; -- c\n", "SELECT 1\n; -- c"),
+        ("SELEC 1; -- c", "SELEC 1; -- c"),
+        ("DESCRIBE t; -- c", "DESCRIBE t; -- c"),
+        (
+            "CREATE TABLE t (n int NOT NULL); -- c",
+            "CREATE TABLE t (n int NOT NULL); -- c",
+        ),
+    ] {
+        let (code, error) = harness
+            .call("StartQueryExecution", json!({ "QueryString": sql }))
+            .await;
+        assert_eq!(code, 400, "{sql:?}: {error}");
+        assert_eq!(error["AthenaErrorCode"], "MALFORMED_QUERY", "{sql:?}");
+        assert_eq!(
+            error["Message"],
+            format!("Only one sql statement is allowed. Got: {got}"),
+            "{sql:?}"
+        );
+    }
+    assert!(harness.syntax_checks().is_empty(), "構文チェックより先");
+    assert!(harness.trino_requests().is_empty(), "実行は作らない");
+}
+
+/// 空白だけの片（`;;`、`; ;`、末尾の空白・改行・CRLF）と、文字列・引用符付きの名前・コメントの中の `;` は
+/// 本物では複数の文にならない（2026-09-26 実測。#228）。athena-local は今までどおり構文チェックに回す。
+#[tokio::test]
+async fn 空白だけの片や引用符とコメントの中の_セミコロンは複数の文に数えない() {
+    let harness = Harness::builder(select_response()).start().await;
+    let sqls = [
+        "SELECT 1;;",
+        "SELECT 1; ;",
+        "SELECT 1;\r\n",
+        "-- c\nSELECT 1;",
+        "SELECT 1 -- c\n;",
+        "SELECT 'a;b'",
+        "SELECT 1 AS \"a;b\"",
+        "SELECT 1 -- a;b",
+        "SELECT 1 /* a;b */",
+    ];
+
+    for sql in sqls {
+        let (code, body) = harness
+            .call("StartQueryExecution", json!({ "QueryString": sql }))
+            .await;
+        assert_eq!(code, 200, "{sql:?}: {body}");
+    }
+    assert_eq!(harness.syntax_checks(), sqls);
+}

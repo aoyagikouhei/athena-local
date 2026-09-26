@@ -59,6 +59,7 @@
 ## Trino（[measurements/trino.md](measurements/trino.md)）
 
 - [ ] Trino 470・400 のすべての値と、440 の存在するテーブルへの probe（D1・D2）と `updateType`（#111 の足場で 480・475 は測れたが、470 はローカル FS の設定名が無く、400 は cgroup v2 で JVM が落ち、440 は file メタストアに書けなかった）
+- [ ] 複数の文（`Only one sql statement is allowed`）と、`ClientRequestToken`・`OutputLocation` の検証との順番、`ExecutionParameters` 付きのとき、バッククォートの中の `;`、閉じていない引用符・コメントの中の `;`。#228 で測ったのは構文エラー・存在の確認・No location・NV・2 catalogs より先であることと、`'`・`"`・`--`・`/* */` の中の `;` が区切りにならないことだけ。athena-local はトークンと OutputLocation の後・構文チェックの前に、受け取った SQL（パラメータを当てる前）で数え、閉じていない引用符・コメントは末尾までを中身とする（2026-09-26）
 
 ## 済み
 

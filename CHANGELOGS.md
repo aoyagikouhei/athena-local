@@ -11,6 +11,8 @@ later name the date they were measured on.
 
 ### Changed
 
+- A `QueryString` holding more than one statement, such as `SELECT 1; -- c`, is
+  rejected at `StartQueryExecution` with real Athena's message ([docs](docs/api.md)).
 - The companion `.metadata` of a literals-only `SELECT` (such as `SELECT 1`)
   now starts with the `QueryExecutionId`, as on real Athena
   ([docs](docs/result-files.md#companion-metadata-files)).

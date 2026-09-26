@@ -75,6 +75,10 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
         Err(response) => return *response,
     };
 
+    // 複数の文は構文エラーより先に弾く（2026-09-26 実測。#228）。トークン・OutputLocation との順は測っていない。
+    if let Some(message) = multiple_statements(&request.query_string) {
+        return invalid_request_with_code(message, "MALFORMED_QUERY");
+    }
     // 本物は構文エラーを StartQueryExecution で弾き、実行を作らない（ExecutionParameters があっても元の SQL で数える）。
     // 文言は Trino のもの、コードは 2026-09-14 に実測した MALFORMED_QUERY。
     if let Some(message) = app.trino.syntax_error(&request.query_string).await {
@@ -167,6 +171,24 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
 /// submit の結果を応答に変換する。Created のときだけ実行を始める。
 /// Existing で spawn_query を呼んでも mark_running の「QUEUED からだけ進める」ガードが
 /// 二重実行を弾く（ミューテーション確認で実測）が、既存の実行に手を触れないのが本物の意味。
+/// 本物は引用符とコメントの外の `;` で区切り、空白だけでない片（コメントだけの片も数える）が 2 つ以上あれば、
+/// 構文エラー・DESCRIBE の存在確認・No location・NV より先にこの文言で弾く。`Got:` の後ろは受け取った文の
+/// 末尾の空白だけを落としたもの（先頭の空白は残る）。末尾の `;` だけ（`SELECT 1;`・`SELECT 1;;`）は弾かない
+/// （2026-09-26 実測。#228）。
+fn multiple_statements(sql: &str) -> Option<String> {
+    const WHITESPACE: [char; 4] = [' ', '\t', '\r', '\n'];
+    let count = athena_sql::statements(sql)
+        .into_iter()
+        .filter(|piece| !piece.trim_matches(WHITESPACE).is_empty())
+        .count();
+    (count > 1).then(|| {
+        format!(
+            "Only one sql statement is allowed. Got: {}",
+            sql.trim_end_matches(WHITESPACE)
+        )
+    })
+}
+
 fn submit_response(app: &App, id: String, outcome: SubmitOutcome) -> Response {
     match outcome {
         SubmitOutcome::Created => {
