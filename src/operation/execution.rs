@@ -5,22 +5,27 @@ use axum::response::Response;
 use uuid::Uuid;
 
 use crate::athena::{StartQueryExecutionRequest, StartQueryExecutionResponse};
-use crate::config::DEFAULT_WORK_GROUP;
+use crate::config::{Config, DEFAULT_WORK_GROUP};
+use crate::failure::Failure;
 use crate::handler::App;
 use crate::request::parse;
 use crate::response::{invalid_request_with_code, ok};
 use crate::results::ResultLocation;
 use crate::store::{ImmediateFailure, Reported, Submission, SubmitOutcome};
+use crate::trino::Trino;
 
 use super::background_execution::spawn_query;
+use super::comment_parse_error;
 use super::context_catalog;
 use super::create_table_catalog;
-use super::entity_check::{self, Check};
+use super::entity_check::{self, Check, Probe};
 use super::quoted_names;
 use super::reported_query;
 use super::start_request::{
     client_request_token, context_defaults, result_location, single_statement,
 };
+use super::table_format::TargetStatement;
+use super::target_table;
 use super::unquoted_ddl;
 
 /// 同じ ClientRequestToken の再送で衝突したときの文言（2026-09-17 実測）。
@@ -196,10 +201,25 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
         }
     }
 
-    // 本物は DESCRIBE の直後のブロックコメントを Hive の ParseException で FAILED にする（#242）。表と分かったとき
-    // だけにする（測ったのは表）。Iceberg 表は本物が成功させた（2026-09-26 実測 d1。#244）ので対象外にする。
-    if matches!(check, Check::Table { iceberg: false })
-        && let Some(failure) = reported_query::describe_parse_error(&statement)
+    // 本物の Hive のパーサは、SHOW CREATE TABLE・DESCRIBE・ALTER TABLE のキーワードの間や
+    // 名前の直前のブロックコメントで ParseException を返す。対象の表の形式で本物が実際に失敗させるかが
+    // 変わる（2026-09-26 実測。#244）。MSCK REPAIR TABLE・ALTER TABLE ... ADD COLUMNS はここでは判定しない
+    // （Trino に文が無く構文チェックで弾かれるので、構文チェックの前で扱う）。
+    // `check`（`Check::Reject(Box<Response>)` を含む）を async の境界（`.await`）越しに借用すると、
+    // `axum::body::Body` が `Sync` でないせいで `dispatch` が `Handler` を実装できなくなる。判定だけ先に
+    // bool にして渡す。
+    let describe_table_hive = matches!(check, Check::Table { iceberg: false });
+    if let Some(parse_error) = comment_parse_error::detect(&statement)
+        && let Some(failure) = comment_parse_error_failure(
+            &app.trino,
+            &app.config,
+            &statement,
+            describe_table_hive,
+            resolved.as_deref(),
+            database.as_deref(),
+            parse_error,
+        )
+        .await
     {
         immediate_failure = Some(ImmediateFailure {
             failure,
@@ -228,6 +248,60 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
     );
 
     submit_response(app, id, outcome)
+}
+
+/// 構文チェックの後の判定: `comment_parse_error::detect` が対象にした文で、本物が実際に FAILED にするか。DESCRIBE は
+/// 開始時の `check`（`entity_check::check` の結果）をそのまま使い（呼び出し側で先に bool にする。
+/// `Check::Reject` の `Box<Response>` を async の境界越しに借用すると `dispatch` が `Handler` を実装
+/// できなくなる）、SHOW CREATE TABLE・ALTER TABLE の RENAME TO・DROP COLUMN は名前を読み直して
+/// `entity_check::probe` をもう 1 回だけ投げる（問い合わせが増えるのはブロックコメントが決め手の位置に
+/// あるときだけ。design-checklist #39）。
+async fn comment_parse_error_failure(
+    trino: &Trino,
+    config: &Config,
+    statement: &str,
+    describe_table_hive: bool,
+    resolved: Option<&str>,
+    database: Option<&str>,
+    parse_error: comment_parse_error::ParseError,
+) -> Option<Failure> {
+    use comment_parse_error::Target;
+
+    match parse_error.target {
+        Target::Describe => describe_table_hive.then(|| parse_error.into()),
+        Target::ShowCreateTable | Target::AlterDropColumn | Target::AlterRename => {
+            // ALTER の 3 動作は名前の前のキーワードが同じ `ALTER TABLE` なので、`target_table` の読み方は
+            // ADD COLUMNS と共有する（`table_format::TargetStatement` に RENAME TO・DROP COLUMN 用の腕は無い）。
+            let target_statement = if parse_error.target == Target::ShowCreateTable {
+                TargetStatement::ShowCreateTable
+            } else {
+                TargetStatement::AlterTableAddColumns
+            };
+            let raw_catalog = resolved.or(config.default_catalog.as_deref());
+            let default_database = database.or(config.default_database.as_deref());
+            let target = target_table::parse_target_table(
+                statement,
+                target_statement,
+                raw_catalog,
+                default_database,
+            )?;
+            match entity_check::probe(
+                trino,
+                config,
+                &target.catalog,
+                &target.schema,
+                &target.table,
+            )
+            .await
+            {
+                Probe::Missing | Probe::View | Probe::Table { iceberg: false } => {
+                    Some(parse_error.into())
+                }
+                Probe::Table { iceberg: true } | Probe::NoCatalog | Probe::Unknown => None,
+            }
+        }
+        Target::MsckRepair | Target::AlterAddColumns => None,
+    }
 }
 
 /// submit の結果を応答に変換する。Created のときだけ実行を始める。

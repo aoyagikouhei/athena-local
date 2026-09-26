@@ -7,8 +7,6 @@
 //! EXPLAIN・SHOW VIEWS IN は送ったまま。落とした文は Context のカタログ・DB で同じ表を指すので、athena-local は
 //! 実行もその文で行う。
 
-use crate::failure::Failure;
-
 use super::target_table::table_name_start;
 
 /// 本物が `awsdatacatalog.` を落とす文の、名前の前のキーワードの並びと、カタログを含む名前の部品の数。
@@ -56,19 +54,6 @@ pub(super) fn drop_database(query: &str, context_catalog: Option<&str>) -> Optio
         let (query, database, _) = drop_first_part(query, keywords, 2, |_| true)?;
         Some(Rewritten { query, database })
     })
-}
-
-/// DESCRIBE の直後がブロックコメントなら、本物の Hive の ParseException（2026-09-22 実測 `DESCRIBE /* c */ t`、
-/// 2026-09-26 実測 m10 `DESCRIBE <db>./* c */<t>`）。文言の `'DESCRIBE'` は書いた綴りにする（測ったのは大文字）。
-/// 行コメント・DESC・先頭のコメントは測っていないので対象にしない。
-pub(super) fn describe_parse_error(query: &str) -> Option<Failure> {
-    let keyword = query
-        .get(..8)
-        .filter(|word| word.eq_ignore_ascii_case("DESCRIBE"))?;
-    query[8..]
-        .trim_start_matches([' ', '\t', '\r', '\n'])
-        .starts_with("/*")
-        .then(|| Failure::describe_parse_error(keyword))
 }
 
 /// `keywords` の後ろの名前がちょうど `parts` 部ですべて無引用で、1 部目が `first` に当たれば、1 部目と直後の
@@ -215,32 +200,6 @@ mod tests {
             assert_eq!(dropped(query), None, "{query}");
         }
         assert_eq!(drop_database("DESCRIBE db.t", Some("nocatalog")), None);
-    }
-
-    #[test]
-    fn describe_の直後のブロックコメントだけ_parse_exception_にする() {
-        for query in [
-            "DESCRIBE /* c */ t",
-            "DESCRIBE /* c */t",
-            "describe\n/* c */ t",
-        ] {
-            assert!(describe_parse_error(query).is_some(), "{query}");
-        }
-        assert_eq!(
-            describe_parse_error("describe /* c */ t").map(|failure| failure.reason),
-            Some(
-                "FAILED: ParseException line 1:0 cannot recognize input near 'describe' '/' '*' in describe statement"
-                    .to_string()
-            )
-        );
-        for query in [
-            "DESCRIBE -- c\nt",
-            "DESCRIBE t /* c */",
-            "DESC /* c */ t",
-            "DESCRIBEX /* c */ t",
-        ] {
-            assert!(describe_parse_error(query).is_none(), "{query}");
-        }
     }
 
     #[test]

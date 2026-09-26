@@ -123,17 +123,20 @@ async fn 構文エラー以外の失敗は開始時には返さず実行に任�
 }
 
 #[tokio::test]
-async fn ブロックコメント付きの_show_create_table_も本物と違いそのまま通る() {
-    // 本物は分類だけ正しく返し、実行時に ParseException で弾く（2026-09-18 実測）。
-    // athena-local は受け取った SQL をそのまま Trino に投げるので成功する。
-    // docs/caveats.md の SQL dialect に書いてある差を、SQL を書き換えないことで固定する。
+async fn ブロックコメント付きの_show_create_table_は本物どおり_failed_になる() {
+    // 本物は Hive のパーサの ParseException で失敗させる（2026-09-26 実測。#244。tests/comment_parse_error.rs
+    // にほかの位置・文・表の形式の組み合わせがある）。構文チェック自体は通るので、開始時の 400 ではなく
+    // 開始後の FAILED になる。
     let sql = "/* c */ SHOW CREATE TABLE t";
     let harness = Harness::builder(select_response())
         .route(
-            sql,
+            "SELECT (SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = 'default_catalog'), (SELECT table_type FROM system.jdbc.tables WHERE table_cat = 'default_catalog' AND table_schem = 'default_schema' AND table_name = 't')",
             json!({
-                "columns": [{ "name": "Create Table", "type": "varchar" }],
-                "data": [["CREATE TABLE t (id integer)"]]
+                "columns": [
+                    { "name": "_col0", "type": "varchar" },
+                    { "name": "_col1", "type": "varchar" }
+                ],
+                "data": [["hive", "TABLE"]]
             }),
         )
         .start()
@@ -141,12 +144,16 @@ async fn ブロックコメント付きの_show_create_table_も本物と違い�
 
     let execution = harness.run_query(json!({ "QueryString": sql })).await;
 
-    assert_eq!(execution["QueryExecution"]["Status"]["State"], "SUCCEEDED");
+    assert_eq!(execution["QueryExecution"]["Status"]["State"], "FAILED");
+    assert_eq!(
+        execution["QueryExecution"]["Status"]["StateChangeReason"],
+        "FAILED: ParseException line 1:0 cannot recognize input near '/' '*' 'c'"
+    );
     assert_eq!(harness.syntax_checks(), [sql]);
-    // 形式の問い合わせ（#160 で S3 無効でも飛ぶ）が 1 本前に入るが、本体は受け取った SQL のまま。
+    // 対象の表の形式を確かめる probe だけが飛び、SHOW CREATE TABLE の本体は Trino に送らない。
     let sqls = harness.trino_sqls();
-    assert_eq!(sqls.len(), 2, "{sqls:?}");
-    assert_eq!(sqls.last().map(String::as_str), Some(sql));
+    assert_eq!(sqls.len(), 1, "{sqls:?}");
+    assert!(sqls[0].starts_with("SELECT"), "{sqls:?}");
 }
 
 /// 本物は引用符付きの名前を取る DESCRIBE などを、Trino が受ける形でも開始時に弾く（2026-09-25 実測。#204）。

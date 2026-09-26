@@ -1,5 +1,7 @@
 //! 本物の Athena が StartQueryExecution の時点で Glue に問い合わせる、DESCRIBE・DESC・SHOW COLUMNS の
 //! 対象の存在の確認（#207）。形式の問い合わせ（`table_format::probe_sql`）と同じ SQL を開始前にも投げる。
+//! 応答の解釈（`probe`）は `execution.rs` のブロックコメントの ParseException の判定（#244）も、
+//! SHOW CREATE TABLE・ALTER TABLE の対象を確かめるのに共有する。
 
 use axum::response::Response;
 use uuid::Uuid;
@@ -18,12 +20,25 @@ pub(super) enum Check {
     /// ビュー。本物は引用符付きの名前でも実行するので、`quoted_names` を見ずに実行する（2026-09-25 実測 W4）。
     Run,
     /// 表。`quoted_names` に進む（Continue と同じ）。表への DESCRIBE の Query から修飾を落とすのに使う（#242）。
-    /// `iceberg` は probe（`table_format::probe_sql`）の `_col0`（コネクタ名）が `iceberg` かどうか
-    /// （追加の問い合わせはしない）。Iceberg 表への DESCRIBE の直後のブロックコメントは本物が成功させる
-    /// （`execution.rs` の `describe_parse_error` の対象外にする。2026-09-26 実測 d1。#244）。
+    /// `iceberg` は `probe` の結果（追加の問い合わせはしない）。Iceberg 表への DESCRIBE の直後のブロックコメントは
+    /// 本物が成功させる（`execution.rs` のブロックコメントの判定の対象外にする。2026-09-26 実測 d1。#244）。
     Table { iceberg: bool },
     /// 対象外の文・確かめられなかった。`quoted_names` に進む（今までどおり）。
     Continue,
+}
+
+/// `probe` の結果。
+pub(super) enum Probe {
+    /// カタログが無い。
+    NoCatalog,
+    /// テーブル（かスキーマ）が無い。
+    Missing,
+    /// ビュー。
+    View,
+    /// 表。`iceberg` はコネクタ名（`probe_sql` の `_col0`）が `iceberg` かどうか。
+    Table { iceberg: bool },
+    /// 問い合わせが失敗した・応答の形が違う（偽 Trino が本体の応答を返すときも）。
+    Unknown,
 }
 
 /// 本物の判定の順序は、4 部以上の名前 → S3 Tables の別名 → カタログの有無 → テーブルの有無 → ビュー →
@@ -54,53 +69,78 @@ pub(super) async fn check(
     if config.catalog_map.contains_key(&target.catalog) && names_catalog(query, statement) {
         return Check::Continue;
     }
-    // 本物は大文字の名前でも実在のテーブルを見つける（2026-09-25 実測 W1）。Trino はカタログ・スキーマ・
-    // テーブルを小文字で持ち、引用符付きの名前も大文字小文字を区別せずに引くので、どれも小文字にして引く。
-    // カタログは本体と同じ別名を当てた Trino 側の名前。
-    let trino_catalog = config.trino_catalog(&target.catalog).to_lowercase();
-    let sql = table_format::probe_sql(
-        &trino_catalog,
-        &target.schema.to_lowercase(),
-        &target.table.to_lowercase(),
-    );
-    // system.* を修飾名で引くので、セッションのカタログ・スキーマは付けない（無いカタログでも問い合わせが通る）。
-    let Ok(outcome) = trino.execute(&sql, None, None, &Cancel::default()).await else {
-        return Check::Continue;
-    };
-    let columns: Vec<&str> = outcome.columns.iter().map(|c| c.name.as_str()).collect();
-    let [row] = outcome.rows.as_slice() else {
-        return Check::Continue;
-    };
-    if columns != ["_col0", "_col1"] || row.len() != 2 {
-        return Check::Continue;
-    }
-    match (row[0].is_null(), row[1].as_str()) {
+    match probe(
+        trino,
+        config,
+        &target.catalog,
+        &target.schema,
+        &target.table,
+    )
+    .await
+    {
         // カタログが無い。本物の文言を測ったのは名前にカタログを書いた形だけ（W1 の nocat）。
-        (true, _) if names_catalog(query, statement) => {
+        Probe::NoCatalog if names_catalog(query, statement) => {
             Check::Reject(Box::new(invalid_request_with_code(
                 format!("Catalog '{}' does not exist", target.catalog),
                 "DATACATALOG_NOT_FOUND",
             )))
         }
-        (true, _) => Check::Continue,
+        Probe::NoCatalog => Check::Continue,
         // テーブル（かスキーマ）が無い。Request ID は本物も毎回違う（2026-09-25 実測 W5）。
-        (false, None) if row[1].is_null() => Check::Reject(Box::new(invalid_request_with_code(
+        Probe::Missing => Check::Reject(Box::new(invalid_request_with_code(
             format!(
                 "Entity Not Found (Service: AmazonDataCatalog; Status Code: 400; Error Code: EntityNotFoundException; Request ID: {}; Proxy: null)",
                 Uuid::new_v4()
             ),
             "INVALID_INPUT",
         ))),
-        (false, Some("VIEW")) => Check::Run,
-        (false, Some("TABLE")) => table_check(&row[0]),
-        _ => Check::Continue,
+        Probe::View => Check::Run,
+        Probe::Table { iceberg } => Check::Table { iceberg },
+        Probe::Unknown => Check::Continue,
     }
 }
 
-/// `row[1]` が `TABLE`（表）だったときの `Check`。`row[0]`（`probe_sql` の `_col0`、コネクタ名）が
-/// `"iceberg"` かどうかを `Check::Table` に持たせる。
-fn table_check(connector: &serde_json::Value) -> Check {
-    Check::Table {
+/// テーブルの形式と存在を `table_format::probe_sql` で確かめる（`table_format::probe_format` と違い、対象が
+/// ビューかどうかも読み分ける）。本物は大文字の名前でも実在のテーブルを見つける（2026-09-25 実測 W1）。
+/// Trino はカタログ・スキーマ・テーブルを小文字で持ち、引用符付きの名前も大文字小文字を区別せずに引くので、
+/// どれも小文字にして引く。カタログは本体と同じ別名を当てた Trino 側の名前。
+pub(super) async fn probe(
+    trino: &Trino,
+    config: &Config,
+    catalog: &str,
+    schema: &str,
+    table: &str,
+) -> Probe {
+    let trino_catalog = config.trino_catalog(catalog).to_lowercase();
+    let sql = table_format::probe_sql(
+        &trino_catalog,
+        &schema.to_lowercase(),
+        &table.to_lowercase(),
+    );
+    // system.* を修飾名で引くので、セッションのカタログ・スキーマは付けない（無いカタログでも問い合わせが通る）。
+    let Ok(outcome) = trino.execute(&sql, None, None, &Cancel::default()).await else {
+        return Probe::Unknown;
+    };
+    let columns: Vec<&str> = outcome.columns.iter().map(|c| c.name.as_str()).collect();
+    let [row] = outcome.rows.as_slice() else {
+        return Probe::Unknown;
+    };
+    if columns != ["_col0", "_col1"] || row.len() != 2 {
+        return Probe::Unknown;
+    }
+    match (row[0].is_null(), row[1].as_str()) {
+        (true, _) => Probe::NoCatalog,
+        (false, None) if row[1].is_null() => Probe::Missing,
+        (false, Some("VIEW")) => Probe::View,
+        (false, Some("TABLE")) => table_probe(&row[0]),
+        _ => Probe::Unknown,
+    }
+}
+
+/// `row[1]` が `TABLE`（表）だったときの `Probe`。`row[0]`（`probe_sql` の `_col0`、コネクタ名）が
+/// `"iceberg"` かどうかを `Probe::Table` に持たせる。
+fn table_probe(connector: &serde_json::Value) -> Probe {
+    Probe::Table {
         iceberg: connector.as_str() == Some("iceberg"),
     }
 }
@@ -116,14 +156,14 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn table_check_は_コネクタ名が_iceberg_かどうかで_iceberg_を決める() {
+    fn table_probe_は_コネクタ名が_iceberg_かどうかで_iceberg_を決める() {
         assert!(matches!(
-            table_check(&json!("iceberg")),
-            Check::Table { iceberg: true }
+            table_probe(&json!("iceberg")),
+            Probe::Table { iceberg: true }
         ));
         assert!(matches!(
-            table_check(&json!("hive")),
-            Check::Table { iceberg: false }
+            table_probe(&json!("hive")),
+            Probe::Table { iceberg: false }
         ));
     }
 }
