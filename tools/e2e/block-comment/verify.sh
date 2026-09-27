@@ -19,6 +19,16 @@
 # 変わらない前提（#242 の DESCRIBE・今までの Trino の制約による開始時 400 の 2 件・既存の SHOW CREATE
 # TABLE／ALTER DROP COLUMN × Iceberg の成功）。
 #
+# issue #257 で、.claude/issue-notes/257.md の「実測の結果」（2026-09-27・ROUND=3）にある、#244 で
+# 測っていなかった形を足す: 名前の中・後ろ・句の中のコメント（G1〜G3）、DESCRIBE EXTENDED のコメント
+# （DE1）、REPLACE COLUMNS・CHANGE COLUMN（R1・R3）、先頭コメントの中身が 2 文字の記号・閉じていない
+# 引用符（E1・E2・E5）、ALTER の後ろのコメントで awsdatacatalog. を含む DROP COLUMN（POS1。ErrorMessage・
+# Query とも受け取ったままの文で数える点が #244 までの規則と違う）。これらは「新しい挙動」の群で、#257 の
+# 実装前（このスクリプトを書いた時点の main）では FAIL するのが正しい。あわせて、本 issue で送ってみたが
+# 実装で変えない「回帰」の群（G1・G3・DE1 のほかの表・位置、SET LOCATION、#256 の形の awsdatacatalog. 付き
+# コメント無し DROP COLUMN）も足した。これらの期待値は本物の Athena ではなく、今のビルドを実際に流して
+# 観測した値（SUCCEEDED・Trino 自身のエラー文言・開始時 400 のいずれか）をそのまま固定したもの。
+#
 # 前提コマンド: tools/dev.sh 経由で動かす（toolbox に全部入っている）
 #
 # 使い方:
@@ -99,6 +109,15 @@ pop_result() {
   LAST_POPPED_STATUS="${RESULT_STATUS[$idx]}"
   LAST_POPPED_DETAIL="${RESULT_DETAIL[$idx]}"
   unset "RESULT_NAMES[$idx]" "RESULT_STATUS[$idx]" "RESULT_DETAIL[$idx]"
+}
+
+# 直前に record した 1 件を FAIL に格下げし、理由を書き足す（#257 の POS1・AT9 専用。Query が
+# 受け取ったまま／書き換え後のどちらかを、case_failed の判定とは別に確かめるため）。
+downgrade_last_result() {
+  local extra="$1"
+  local idx=$((${#RESULT_STATUS[@]} - 1))
+  RESULT_STATUS[$idx]="FAIL"
+  RESULT_DETAIL[$idx]="${RESULT_DETAIL[$idx]} ${extra}"
 }
 
 print_table() {
@@ -454,6 +473,21 @@ check_failed_result() {
         diff="$diff .txt=有り(期待 無し)"
       fi
       ;;
+    prefixed)
+      # reason が "FAILED: " で始まらない（Hive のブロックコメント検知を通らず、Trino が実際に
+      # 実行して返した本物のエラー。write_failure が "FAILED: " を足す。#257 の G1V・G1M）。
+      if mc_exists "$body_stat"; then
+        local content
+        content=$(mc cat "local/$BUCKET/$key" 2>/dev/null)
+        if [ "$content" != "FAILED: $reason" ]; then
+          ok=0
+          diff="$diff .txtの中身が違う"
+        fi
+      else
+        ok=0
+        diff="$diff .txt=無し(期待 有り)"
+      fi
+      ;;
     *)
       ok=0
       diff="$diff 未知の txt_mode=${txt_mode}"
@@ -654,6 +688,94 @@ run_new_behavior_cases() {
   # 実装前は FAILED のままなので、このケースは今のビルドで FAIL するのが正しい。
   case_succeeded "DS4" "DESCRIBE /* c */（Iceberg・#242の欠陥を#244で直す）" \
     "DESCRIBE /* c */ $I" iceberg "$SCHEMA"
+
+  # --- #257: #244 で測っていなかった位置・形（.claude/issue-notes/257.md の実測の結果）。
+  # 実装前はどれも FAIL するのが正しい（Trino の構文がそのまま通るか、開始時 400 になるかのどちらかで、
+  # 期待している「本物どおりの FAILED」にはならない）。
+
+  # G1: SHOW CREATE TABLE のコメントが名前の中（DB の後の . の直後）にあるとき（実測 g1）。
+  local g1_sql g1_prefix g1_pos g1_reason
+  g1_sql="SHOW CREATE TABLE ${SCHEMA}./* c */${H}"
+  g1_prefix="${g1_sql%%/*}"
+  g1_pos=${#g1_prefix}
+  g1_reason="FAILED: ParseException line 1:${g1_pos} cannot recognize input near '${SCHEMA}' '.' '/' in table name"
+  case_failed "G1" "SHOW CREATE TABLE DB./* c */T（名前の中）" \
+    "$g1_sql" AwsDataCatalog "$SCHEMA" \
+    "$g1_reason" 1 1003 "$g1_reason" UTILITY SHOW_CREATE_TABLE same
+
+  # G2: MSCK REPAIR TABLE のコメントが名前の後ろにあるとき（実測 g2）。
+  local g2_sql g2_prefix g2_pos g2_reason
+  g2_sql="MSCK REPAIR TABLE ${SCHEMA}.${H} /* c */"
+  g2_prefix="${g2_sql%%/*}"
+  g2_pos=${#g2_prefix}
+  g2_reason="FAILED: ParseException line 1:${g2_pos} missing EOF at '/' near '${H}'"
+  case_failed "G2" "MSCK REPAIR TABLE DB.T /* c */（名前の後ろ）" \
+    "$g2_sql" AwsDataCatalog "$SCHEMA" \
+    "$g2_reason" 1 1003 "$g2_reason" DDL MSCK_REPAIR same
+
+  # G3: ALTER TABLE のコメントが句の中（名前と ADD COLUMNS の間）にあるとき（実測 g3）。
+  local g3_sql g3_prefix g3_pos g3_reason
+  g3_sql="ALTER TABLE ${SCHEMA}.${H} /* c */ ADD COLUMNS (c20 int)"
+  g3_prefix="${g3_sql%%/*}"
+  g3_pos=${#g3_prefix}
+  g3_reason="FAILED: ParseException line 1:${g3_pos} cannot recognize input near '/' '*' 'c' in alter table statement"
+  case_failed "G3" "ALTER TABLE DB.T /* c */ ADD COLUMNS（句の中）" \
+    "$g3_sql" AwsDataCatalog "$SCHEMA" \
+    "$g3_reason" 1 1003 "$g3_reason" DDL ALTER_TABLE_ADD_COLUMN same
+
+  # DE1: DESCRIBE EXTENDED のコメントが直後（EXTENDED の後）にあるとき（実測 de1）。
+  local de1_sql de1_prefix de1_pos de1_reason
+  de1_sql="DESCRIBE EXTENDED /* c */ ${SCHEMA}.${H}"
+  de1_prefix="${de1_sql%%/*}"
+  de1_pos=${#de1_prefix}
+  de1_reason="FAILED: ParseException line 1:${de1_pos} cannot recognize input near '/' '*' 'c' in specifying describe table types"
+  case_failed "DE1" "DESCRIBE EXTENDED /* c */ DB.T（EXTENDED の後）" \
+    "$de1_sql" AwsDataCatalog "$SCHEMA" \
+    "$de1_reason" 1 1003 "$de1_reason" UTILITY DESCRIBE_TABLE same
+
+  # R1・R3: REPLACE COLUMNS・CHANGE COLUMN も ALTER の直後のコメントで ParseException になる
+  # （実測 r1・r3。ErrorMessage は StateChangeReason と別で、AT5 と同じ「サポート外」の文言）。
+  local ar_reason="FAILED: ParseException line 1:0 cannot recognize input near 'ALTER' '/' '*' in alter statement"
+  local ar_errmsg="Query type not supported by DDL engine."
+
+  case_failed "R1" "ALTER /* c */ TABLE REPLACE COLUMNS" \
+    "ALTER /* c */ TABLE ${SCHEMA}.${H} REPLACE COLUMNS (n int, s string)" AwsDataCatalog "$SCHEMA" \
+    "$ar_reason" 2 1006 "$ar_errmsg" DDL ALTER_TABLE_REPLACE_COLUMN same
+
+  case_failed "R3" "ALTER /* c */ TABLE CHANGE COLUMN" \
+    "ALTER /* c */ TABLE ${SCHEMA}.${H} CHANGE COLUMN n n2 int" AwsDataCatalog "$SCHEMA" \
+    "$ar_reason" 2 1006 "$ar_errmsg" DDL ALTER_TABLE_CHANGE_COLUMN same
+
+  # E1・E2・E5: 先頭コメントの中身が 2 文字の記号・閉じていない引用符のとき（実測 e1・e2・e5）。
+  case_failed "E1" "先頭コメント /* <= */" \
+    "/* <= */ SHOW CREATE TABLE ${SCHEMA}.${H}" AwsDataCatalog "$SCHEMA" \
+    "FAILED: ParseException line 1:0 cannot recognize input near '/' '*' '<='" 1 1003 \
+    "FAILED: ParseException line 1:0 cannot recognize input near '/' '*' '<='" UTILITY SHOW_CREATE_TABLE same
+
+  case_failed "E2" "先頭コメント /* != */" \
+    "/* != */ SHOW CREATE TABLE ${SCHEMA}.${H}" AwsDataCatalog "$SCHEMA" \
+    "FAILED: ParseException line 1:0 cannot recognize input near '/' '*' '!='" 1 1003 \
+    "FAILED: ParseException line 1:0 cannot recognize input near '/' '*' '!='" UTILITY SHOW_CREATE_TABLE same
+
+  case_failed "E5" "先頭コメント /* 'a */（閉じていない引用符）" \
+    "/* 'a */ SHOW CREATE TABLE ${SCHEMA}.${H}" AwsDataCatalog "$SCHEMA" \
+    "FAILED: ParseException line 1:0 cannot recognize input near '/' '*' 'a'" 1 1003 \
+    "FAILED: ParseException line 1:0 cannot recognize input near '/' '*' 'a'" UTILITY SHOW_CREATE_TABLE same
+
+  # POS1: ALTER の後のコメントで awsdatacatalog. を含む DROP COLUMN。ErrorMessage・Query とも
+  # 受け取ったままの文で数える（実測 pos1。落とした後の文で数えていた #244 までの規則と違う点）。
+  local pos1_sql pos1_prefix pos1_t pos1_errmsg pos1_got_query
+  pos1_sql="ALTER /* c */ TABLE awsdatacatalog.${SCHEMA}.${H} DROP COLUMN n"
+  pos1_prefix="ALTER /* c */ TABLE awsdatacatalog.${SCHEMA}."
+  pos1_t=${#pos1_prefix}
+  pos1_errmsg="line 1:${pos1_t}: no viable alternative at input '${pos1_prefix}'"
+  case_failed "POS1" "ALTER /* c */ TABLE awsdatacatalog.DB.T DROP COLUMN" \
+    "$pos1_sql" AwsDataCatalog "$SCHEMA" \
+    "$ar_reason" 2 1006 "$pos1_errmsg" DDL ALTER_TABLE_DROP_COLUMN same
+  pos1_got_query=$(jqx "$LAST_EXEC_JSON" '.QueryExecution.Query // "無し"')
+  if [ "$pos1_got_query" != "$pos1_sql" ]; then
+    downgrade_last_result "Query=\"${pos1_got_query}\"(期待は受け取ったままの \"${pos1_sql}\")"
+  fi
 }
 
 # --- ケース（回帰。今のビルドでも PASS するはず） ---
@@ -692,6 +814,69 @@ run_regression_cases() {
   # ADD COLUMNS の文法が無いので athena-local は今までどおり構文チェックで弾く（偽 Trino では確かめられない）。
   case_start_reject "REG11" "ALTER /* c */ TABLE ADD COLUMNS（Iceberg・Trino に無い構文のまま）" \
     "ALTER /* c */ TABLE $I ADD COLUMNS (c int)" iceberg "$SCHEMA"
+
+  # --- #257: 本 issue で送ってみたが実装で変えない形。期待値は本物ではなく、今のビルドを実際に
+  # 流して観測した値（.claude/issue-notes/257.md には無い。このスクリプトの探索用の別実行で確認済み）。
+
+  # G1 の形・Iceberg 表: 本物も成功する形（issue #257 本文）。今のビルドも Trino がそのまま実行して
+  # SUCCEEDED になる（Hive の表だけを止める #244 の判定は Iceberg には掛からない）。
+  case_succeeded "G1I" "SHOW CREATE TABLE DB./* c */T（Iceberg・名前の中）" \
+    "SHOW CREATE TABLE ${SCHEMA}./* c */${I}" iceberg "$SCHEMA"
+
+  # G1 の形・ビュー: Trino 自身が実行して「view であって table でない」と断る（NOT_SUPPORTED）。
+  # ParseException の文言にはならない。
+  local g1v_reason="NOT_SUPPORTED: line 1:1: Relation 'hive.${SCHEMA}.${V}' is a view, not a table"
+  case_failed "G1V" "SHOW CREATE TABLE DB./* c */T（ビュー・名前の中）" \
+    "SHOW CREATE TABLE ${SCHEMA}./* c */${V}" AwsDataCatalog "$SCHEMA" \
+    "$g1v_reason" 2 1200 "$g1v_reason" UTILITY SHOW_CREATE_TABLE prefixed
+
+  # G1 の形・無い表: Trino 自身が実行して TABLE_NOT_FOUND を返す。
+  local g1m_reason="TABLE_NOT_FOUND: line 1:1: Table 'hive.${SCHEMA}.${M}' does not exist"
+  case_failed "G1M" "SHOW CREATE TABLE DB./* c */T（無い表・名前の中）" \
+    "SHOW CREATE TABLE ${SCHEMA}./* c */${M}" AwsDataCatalog "$SCHEMA" \
+    "$g1m_reason" 2 1301 "$g1m_reason" UTILITY SHOW_CREATE_TABLE prefixed
+
+  # G3 の形・ビュー: Trino に ADD COLUMNS（複数形）の文法が無いので、表がビューでも開始時 400
+  # （REG10・REG11 と同じ理由。ビューかどうかを見る前に構文チェックで弾かれる）。
+  case_start_reject "G3V" "ALTER TABLE DB.T /* c */ ADD COLUMNS（ビュー・句の中）" \
+    "ALTER TABLE ${SCHEMA}.${V} /* c */ ADD COLUMNS (c20 int)" AwsDataCatalog "$SCHEMA"
+
+  # DE1 の形・Iceberg・ビュー: Trino の DESCRIBE 文法に EXTENDED が無く、"EXTENDED" 自体を表名として
+  # 読んでから続きの修飾名で構文エラーになる（表の種類によらず開始時 400）。
+  case_start_reject "DE1I" "DESCRIBE EXTENDED /* c */ DB.T（Iceberg・EXTENDED の後）" \
+    "DESCRIBE EXTENDED /* c */ ${SCHEMA}.${I}" iceberg "$SCHEMA"
+
+  case_start_reject "DE1V" "DESCRIBE EXTENDED /* c */ DB.T（ビュー・EXTENDED の後）" \
+    "DESCRIBE EXTENDED /* c */ ${SCHEMA}.${V}" AwsDataCatalog "$SCHEMA"
+
+  # ほかの位置（名前の後ろの空白を挟んだ末尾）: Trino がそのまま実行して SUCCEEDED になる。
+  case_succeeded "G1POS2" "SHOW CREATE TABLE DB.T /* c */（名前の後ろ・末尾）" \
+    "SHOW CREATE TABLE ${SCHEMA}.${H} /* c */" AwsDataCatalog "$SCHEMA"
+
+  # R2: SET LOCATION は Trino に構文が無いので開始時 400（本文の予想どおり）。
+  case_start_reject "R2" "ALTER /* c */ TABLE SET LOCATION（Trino に無い構文）" \
+    "ALTER /* c */ TABLE ${SCHEMA}.${H} SET LOCATION 's3://dummy/loc/'" AwsDataCatalog "$SCHEMA"
+
+  # AT9: #256 の形（コメント無し）。awsdatacatalog. は #242 の drop_catalog で落ち、athena-local は落とした後の
+  # 文で Hive 表の DROP COLUMN を Trino に送らずに FAILED にする（#256 の plain_alter_failure）。位置は
+  # StateChangeReason が落とした後の文の COLUMN の 0 始まり、ErrorMessage がその + 1（落とす前と後のどちらで
+  # 数えるかは本物で未実測）。ほかの H に触るケースをすべて終えたこの位置でだけ実行する。
+  local at9_sql at9_rewritten at9_before_column at9_p1 at9_p2 at9_reason at9_errmsg at9_got_query
+  at9_sql="ALTER TABLE awsdatacatalog.${SCHEMA}.${H} DROP COLUMN n"
+  # Query（GetQueryExecution が返す・#242 の drop_catalog）は awsdatacatalog. を落とした 2 部の名前。
+  at9_rewritten="ALTER TABLE ${SCHEMA}.${H} DROP COLUMN n"
+  at9_before_column="${at9_rewritten%%COLUMN*}"
+  at9_p1=${#at9_before_column}
+  at9_p2=$((at9_p1 + 1))
+  at9_reason="FAILED: ParseException line 1:${at9_p1} mismatched input 'COLUMN' expecting PARTITION near 'DROP' in drop partition statement"
+  at9_errmsg="line 1:${at9_p2}: mismatched input 'COLUMN' expecting 'PARTITION'"
+  case_failed "AT9" "ALTER TABLE awsdatacatalog.DB.T DROP COLUMN（コメント無し・#256）" \
+    "$at9_sql" AwsDataCatalog "$SCHEMA" \
+    "$at9_reason" 2 1006 "$at9_errmsg" DDL ALTER_TABLE_DROP_COLUMN same
+  at9_got_query=$(jqx "$LAST_EXEC_JSON" '.QueryExecution.Query // "無し"')
+  if [ "$at9_got_query" != "$at9_rewritten" ]; then
+    downgrade_last_result "Query=\"${at9_got_query}\"(期待は awsdatacatalog. を落とした \"${at9_rewritten}\")"
+  fi
 }
 
 GATE_STATUS=""

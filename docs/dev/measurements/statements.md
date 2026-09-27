@@ -138,6 +138,34 @@
 - 採用した判断: 実装は #244 の PR（.claude/issue-notes/244.md の設計判断）
 - 備考: #17 の `/* c */ SHOW CREATE TABLE`、#52 の `SHOW /* c */ CREATE TABLE`・`SHOW CREATE /* c */ TABLE`・無い表への `ALTER /* c */ TABLE`、#146 の `MSCK REPAIR /* c */ TABLE` と食い違いは無かった。#52 の「Iceberg への `ALTER /* c */ TABLE` は成功」もこのラウンドの a3 で再現した。コメント無しの DROP COLUMN・RENAME TO の Hive 表・無い表の失敗（#39・#43・#204・#208・#217 の生データ）は ErrorMessage がコメント入りと同じで、athena-local との差は #256
 
+### ブロックコメントの ParseException で #244 が測らなかった形（#257）
+- 日付: 2026-09-27（UTC 2026-09-26 20:51）／ issue: #257 ／ スクリプト: `tools/measure/block-comment-parse-error.sh`（`ROUND=3`）／ 生データ: `$HOME/athena-block-comment-parse-error-measurements/run-20260926-204740`
+- 相手: 本物の Athena（engine version 3、Context は特に書かない限り `Catalog=AwsDataCatalog,Database=<db>`）
+- 投げたもの: 24 項目（連携カタログの Context の fc1 は連携カタログが無く未測定）と準備・後始末。#244 と同じ Hive 表 `<H>`（`n int`、`PARTITIONED BY (p string)`）・Iceberg 表 `<I>`・ビューを作り、最後に消した（Iceberg を改名した先も消え、残りは無い）。StartQueryExecution は 34 回
+- 返ったもの（1/1003 の失敗は ErrorMessage が StateChangeReason と同じ。位置 `L:C` は `/` の行と 0 始まりの列）:
+
+  | 文 | 本物 |
+  |---|---|
+  | `SHOW CREATE TABLE <db>./* c */<H>`（名前の中） | FAILED 1/1003、`FAILED: ParseException line 1:C cannot recognize input near '<db>' '.' '/' in table name` |
+  | `MSCK REPAIR TABLE <db>.<H> /* c */`（名前の後ろ） | FAILED 1/1003、`FAILED: ParseException line 1:C missing EOF at '/' near '<H>'` |
+  | `ALTER TABLE <db>.<H> /* c */ ADD COLUMNS (c20 int)`（名前と句の間） | FAILED 1/1003、`FAILED: ParseException line 1:C cannot recognize input near '/' '*' 'c' in alter table statement` |
+  | 同じ形の Iceberg 表 | SUCCEEDED（列が足された） |
+  | `DESCRIBE EXTENDED /* c */ <db>.<H>` | FAILED 1/1003、`FAILED: ParseException line 1:18 cannot recognize input near '/' '*' 'c' in specifying describe table types`。Query は `DESCRIBE EXTENDED /* c */ <H>`（DB が落ちる） |
+  | `ALTER /* c */ TABLE <db>.<H> REPLACE COLUMNS (n int, s string)`・`... CHANGE COLUMN n n2 int` | FAILED 2/1006（ALTER_TABLE_REPLACE_COLUMN・ALTER_TABLE_CHANGE_COLUMN）、StateChangeReason `FAILED: ParseException line 1:0 cannot recognize input near 'ALTER' '/' '*' in alter statement`、ErrorMessage `Query type not supported by DDL engine.` |
+  | `ALTER /* c */ TABLE <db>.<H> SET LOCATION '...'` | SUCCEEDED |
+  | Iceberg 表への `/* c */ ALTER TABLE ... DROP COLUMN n`・`/* c */ ALTER TABLE ... RENAME TO`・`ALTER TABLE /* c */ ... RENAME TO` | SUCCEEDED |
+  | `ALTER /* c */ TABLE awsdatacatalog.<db>.<H> DROP COLUMN n` | FAILED 2/1006、StateChangeReason は上の ALTER の後の形、ErrorMessage `line 1:<T>: no viable alternative at input 'ALTER /* c */ TABLE awsdatacatalog.<db>.'`（`<T>` は表名の 1 文字目の 0 始まりの位置。+1 しない）。**Query は `awsdatacatalog.` を落とさず受け取ったまま** |
+  | `MSCK REPAIR TABLE awsdatacatalog.<db>.<H>`・同じ形で無い表 | **SUCCEEDED**（DDL/MSCK_REPAIR）。Query は `MSCK REPAIR TABLE <db>.<t>`（`awsdatacatalog.` が落ちる）。本体は `Tables missing on filesystem:\t<H>\n`・無い表は `Tables not in metastore:\t<t>\n`、`.metadata` 38 バイト |
+  | 先頭のコメント `/* <= */`・`/* != */`・`/* \|\| */`・`/* 'a''b' */`・`/* 'a */` + `SHOW CREATE TABLE <db>.<H>` | FAILED 1/1003、`FAILED: ParseException line 1:0 cannot recognize input near '/' '*' '<x>'`。`<x>` は `<=`・`!=`・`\|`（1 文字）・`'a''b'`（エスケープ込みの文字列全体）・`a`（閉じていない引用符は引用符を落とす） |
+  | Context の Catalog を省略（`Database=<db>` だけ）で `SHOW CREATE TABLE /* c */ <H>`・`ALTER /* c */ TABLE <H> DROP COLUMN n` | 既定の Context と同じ（1:18 の `in table name`、2/1006 と `line 1:51: mismatched input 'COLUMN' expecting 'PARTITION'`） |
+  | 既定の Context で `DESCRIBE /* c */ "s3tablescatalog/<bucket>".<ns>.<t>` | 開始時に InvalidRequestException `Unsupported DDL with 2 catalogs` |
+  | 既定の Context で `MSCK REPAIR /* c */ TABLE "s3tablescatalog/<bucket>".<ns>.<t>` | 開始時に InvalidRequestException、Trino 形の `line 1:1: mismatched input 'MSCK'. Expecting: 'ALTER', ...` |
+
+  - 名前の中・後ろ・句の中の位置も、#244 と同じく `/` の 0 始まりの位置だった
+  - 後始末の Iceberg 表の DROP TABLE は本体 1 バイト（`\n`）と `.metadata` 41 バイトを置いた。無い表への DROP TABLE IF EXISTS は本体 0 バイト・`.metadata` 無し
+- 採用した判断: （#257 の PR で書く）
+- 備考: pos1 の Query は、コメント無しの `ALTER TABLE awsdatacatalog.<db>.<t>`（#242 m33）で落ちるのと逆になった。一方 DESCRIBE EXTENDED はコメント入りでも DB が落ちた（コメント無しの `DESCRIBE EXTENDED <db>.<t>` の m7 と同じ）
+
 ## 本物だけが実行時に弾く形（`/* c */ SHOW CREATE TABLE`）
 
 ### 範囲外の発見（同じラウンド）
