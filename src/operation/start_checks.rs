@@ -98,14 +98,24 @@ pub(super) async fn decide(
     // 本物は DESCRIBE・SHOW COLUMNS の対象の存在を開始時に確かめ、無ければ弾き、ビューなら引用符付きの
     // 名前でも実行する（2026-09-25 実測。#207）。Context の Catalog が実在しなければ、既定のカタログで確かめる（#214）。
     let resolved = context_catalog::resolve(&app.trino, &app.config, &statement, catalog).await;
-    let check = entity_check::check(
-        &app.trino,
-        &app.config,
-        &statement,
-        resolved.as_deref(),
-        database.as_deref(),
-    )
-    .await;
+    // 構文チェックの前の失敗（`pre_syntax_check_failure` が Some）があるときは `entity_check::check` を
+    // 呼ばずに Continue 扱いにする（計画攻撃 A1。de1 の `DESCRIBE EXTENDED` は `EXTENDED` を表の名前と
+    // 読んでしまう `entity_check::check` が「表が無い」で開始時に 400 で弾くのを防ぐ）。今までの構文
+    // チェックの前の失敗（MSCK・ADD COLUMNS（複数形）・S3 Tables の STORED AS）はどれも
+    // `table_format::target_statement` で Describe・ShowColumns にならず、`entity_check::check` は
+    // もともと Continue を返す文だったので、この変更で挙動は変わらない（2026-09-27 実測。#257）。
+    let check = if pre_syntax_check_failure.is_some() {
+        Check::Continue
+    } else {
+        entity_check::check(
+            &app.trino,
+            &app.config,
+            &statement,
+            resolved.as_deref(),
+            database.as_deref(),
+        )
+        .await
+    };
     if let Check::Reject(response) = check {
         return Err(response);
     }

@@ -27,6 +27,10 @@ pub(super) enum Target {
     AlterAddColumns,
     AlterDropColumn,
     AlterRename,
+    /// `ALTER TABLE ... REPLACE COLUMNS`。ALTER の直後のブロックコメントだけが対象（2026-09-27 実測 r1。#257）。
+    AlterReplaceColumns,
+    /// `ALTER TABLE ... CHANGE COLUMN`。ALTER の直後のブロックコメントだけが対象（2026-09-27 実測 r3。#257）。
+    AlterChangeColumn,
 }
 
 /// 開始後に FAILED にする失敗の中身（`Failure` への変換は下の `From`）。
@@ -196,57 +200,113 @@ fn dot_comment(query: &str, name_start: usize) -> Option<(usize, &str)> {
 /// `DESCRIBE <db>./* c */<t>` を 2026-09-26 に m10 で確かめた（#242）。
 fn describe(query: &str) -> Option<ParseError> {
     let (hit, name_start) = scan(query, &["DESCRIBE"]).or_else(|| scan(query, &["DESC"]))?;
-    let hit = hit?;
-    if !valid_name(query, name_start) {
+    if let Some(hit) = hit {
+        if !valid_name(query, name_start) {
+            return None;
+        }
+        let (line, col) = position::position(query, hit.comment_at);
+        let reason = match hit.index {
+            0 => head_reason(query, hit.comment_at, line, col),
+            // DESCRIBE・DESC の後ろは、コメントの位置でなく DESCRIBE・DESC 自身の位置（実測 1:0。D5）。
+            1 => {
+                let (keyword, start) = hit.keyword?;
+                let (kline, kcol) = position::position(query, start);
+                format!(
+                    "FAILED: ParseException line {kline}:{kcol} cannot recognize input near '{keyword}' '/' '*' in describe statement"
+                )
+            }
+            _ => unreachable!("DESCRIBE のチェックポイントは 2 つ"),
+        };
+        return Some(ParseError {
+            target: Target::Describe,
+            reason,
+            error_message: None,
+            category: 1,
+            error_type: 1003,
+            hive_only: false,
+        });
+    }
+    // de1: `DESCRIBE EXTENDED` の `EXTENDED` の直後（2026-09-27 実測。#257）。`DESC EXTENDED`・
+    // `DESCRIBE FORMATTED` は未実測なので対象にしない（`describe_extended_comment` が `DESCRIBE` と
+    // `EXTENDED` の並びだけを見る）。
+    let comment_at = describe_extended_comment(query)?;
+    if !valid_name(query, comment_at) {
         return None;
     }
-    let (line, col) = position::position(query, hit.comment_at);
-    let reason = match hit.index {
-        0 => head_reason(query, hit.comment_at, line, col),
-        // DESCRIBE・DESC の後ろは、コメントの位置でなく DESCRIBE・DESC 自身の位置（実測 1:0。D5）。
-        1 => {
-            let (keyword, start) = hit.keyword?;
-            let (kline, kcol) = position::position(query, start);
-            format!(
-                "FAILED: ParseException line {kline}:{kcol} cannot recognize input near '{keyword}' '/' '*' in describe statement"
-            )
-        }
-        _ => unreachable!("DESCRIBE のチェックポイントは 2 つ"),
-    };
+    let (line, col) = position::position(query, comment_at);
+    let token = position::leading_token(query, comment_at);
     Some(ParseError {
         target: Target::Describe,
-        reason,
+        reason: format!(
+            "FAILED: ParseException line {line}:{col} cannot recognize input near '/' '*' '{token}' in specifying describe table types"
+        ),
         error_message: None,
         category: 1,
         error_type: 1003,
-        hive_only: false,
+        hive_only: true,
     })
+}
+
+/// `DESCRIBE EXTENDED` の `EXTENDED` の直後にブロックコメントがあれば、その位置（`/` の位置）を返す
+/// （de1。2026-09-27 実測。#257）。
+fn describe_extended_comment(query: &str) -> Option<usize> {
+    let mut cursor = athena_sql::Cursor::new(query);
+    if !(cursor.keyword("DESCRIBE") && cursor.keyword("EXTENDED")) {
+        return None;
+    }
+    let end = query.len() - cursor.rest().len();
+    position::comment_start(query, end)
 }
 
 fn msck_repair(query: &str) -> Option<ParseError> {
     let (hit, name_start) = scan(query, &["MSCK", "REPAIR", "TABLE"])?;
-    let hit = hit?;
     if !valid_name(query, name_start) {
         return None;
     }
-    let (line, col) = position::position(query, hit.comment_at);
-    let reason = match hit.index {
-        0 => head_reason(query, hit.comment_at, line, col),
-        1 | 2 => {
-            let (keyword, _) = hit.keyword?;
-            format!("FAILED: ParseException line {line}:{col} missing EOF at '/' near '{keyword}'")
-        }
-        3 => table_name_reason(query, hit.comment_at, line, col),
-        _ => unreachable!("MSCK REPAIR TABLE のチェックポイントは 4 つ"),
-    };
+    if let Some(hit) = hit {
+        let (line, col) = position::position(query, hit.comment_at);
+        let reason = match hit.index {
+            0 => head_reason(query, hit.comment_at, line, col),
+            1 | 2 => {
+                let (keyword, _) = hit.keyword?;
+                format!(
+                    "FAILED: ParseException line {line}:{col} missing EOF at '/' near '{keyword}'"
+                )
+            }
+            3 => table_name_reason(query, hit.comment_at, line, col),
+            _ => unreachable!("MSCK REPAIR TABLE のチェックポイントは 4 つ"),
+        };
+        return Some(ParseError {
+            target: Target::MsckRepair,
+            reason,
+            error_message: None,
+            category: 1,
+            error_type: 1003,
+            hive_only: false,
+        });
+    }
+    // g2: 名前の直後（2026-09-27 実測。#257）。
+    let (comment_at, spelling) = name_comment(query, name_start)?;
+    let (line, col) = position::position(query, comment_at);
     Some(ParseError {
         target: Target::MsckRepair,
-        reason,
+        reason: format!(
+            "FAILED: ParseException line {line}:{col} missing EOF at '/' near '{spelling}'"
+        ),
         error_message: None,
         category: 1,
         error_type: 1003,
-        hive_only: false,
+        hive_only: true,
     })
+}
+
+/// 名前の直後（読み終わった位置）にブロックコメントがあれば、その位置（`/` の位置）と名前の最後の
+/// 部品の綴り（書いたまま）を返す（g2。2026-09-27 実測。#257）。名前の中（`dot_comment` の対象）は
+/// `qualified_name` がコメントをトリビアとして読み飛ばして名前ごと読むので、ここには来ない。
+fn name_comment(query: &str, name_start: usize) -> Option<(usize, &str)> {
+    let name = athena_sql::Cursor::new(&query[name_start..]).qualified_name()?;
+    let comment_at = position::comment_start(query, name_start + name.end)?;
+    Some((comment_at, name.parts.last()?.text))
 }
 
 /// `.txt` の理由・AthenaError の中身を `ParseError` からそのまま作る（1 か所にまとめる。配線側は

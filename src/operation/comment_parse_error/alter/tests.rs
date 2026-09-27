@@ -161,6 +161,81 @@ fn alter_table_drop_column_は_category_2_error_type_1006_で_error_message_に_
     }
 }
 
+/// r1・r3 の共通のヘルパ（REPLACE COLUMNS・CHANGE COLUMN、ALTER の直後だけ。2026-09-27 実測。#257）。
+fn ddl_engine_unsupported_error(target: Target, reason: &str) -> ParseError {
+    ParseError {
+        target,
+        reason: reason.to_string(),
+        error_message: Some("Query type not supported by DDL engine.".to_string()),
+        category: 2,
+        error_type: 1006,
+        hive_only: true,
+    }
+}
+
+#[test]
+fn alter_table_add_columns_複数形_は名前と_add_columns_の間のコメントで_hive_only_の印付きで_some()
+{
+    assert_eq!(
+        detect("ALTER TABLE db.t /* c */ ADD COLUMNS (c int)"),
+        Some(ParseError {
+            target: Target::AlterAddColumns,
+            reason: "FAILED: ParseException line 1:17 cannot recognize input near '/' '*' 'c' in alter table statement".to_string(),
+            error_message: None,
+            category: 1,
+            error_type: 1003,
+            hive_only: true,
+        }),
+        "g3"
+    );
+    // 単数の ADD COLUMN は分類自体が対象外（D1）。
+    assert_eq!(
+        detect("ALTER TABLE db.t /* c */ ADD COLUMN (c int)"),
+        None,
+        "単数の ADD COLUMN（未実測）"
+    );
+    // ほかの動作（DROP COLUMN）の前のコメントは対象外。
+    assert_eq!(
+        detect("ALTER TABLE db.t /* c */ DROP COLUMN n"),
+        None,
+        "DROP COLUMN の前（未実測）"
+    );
+}
+
+#[test]
+fn alter_table_replace_columns_と_change_column_は_alter_の直後のコメントだけ_some() {
+    for (target, sql, alter_reason) in [
+        (
+            Target::AlterReplaceColumns,
+            "ALTER /* c */ TABLE db.t REPLACE COLUMNS (n int, s string)",
+            "FAILED: ParseException line 1:0 cannot recognize input near 'ALTER' '/' '*' in alter statement",
+        ),
+        (
+            Target::AlterChangeColumn,
+            "ALTER /* c */ TABLE db.t CHANGE COLUMN n n2 int",
+            "FAILED: ParseException line 1:0 cannot recognize input near 'ALTER' '/' '*' in alter statement",
+        ),
+    ] {
+        assert_eq!(
+            detect(sql),
+            Some(ddl_engine_unsupported_error(target, alter_reason)),
+            "{sql}"
+        );
+    }
+}
+
+#[test]
+fn alter_table_replace_columns_と_change_column_は先頭_table_の後のコメントは_none() {
+    for sql in [
+        "/* c */ ALTER TABLE db.t REPLACE COLUMNS (n int, s string)",
+        "ALTER TABLE /* c */ db.t REPLACE COLUMNS (n int, s string)",
+        "/* c */ ALTER TABLE db.t CHANGE COLUMN n n2 int",
+        "ALTER TABLE /* c */ db.t CHANGE COLUMN n n2 int",
+    ] {
+        assert_eq!(detect(sql), None, "{sql}（未実測）");
+    }
+}
+
 #[test]
 fn 対象外の_alter_の動作は_none_に固定する() {
     for (ids, sql) in [

@@ -150,6 +150,13 @@ fn alter_table_action(query: &str) -> Option<&'static str> {
             .keyword("COLUMNS")
             .then_some("ALTER_TABLE_REPLACE_COLUMN");
     }
+    // CHANGE COLUMN も、ALTER の直後のブロックコメントで本物が失敗させる形の分類に使う（2026-09-27
+    // 実測 r3。#257）。`CHANGE` だけ（`COLUMN` が続かない）は本物に構文が無いので分類しない。
+    if cursor.keyword("CHANGE") {
+        return cursor
+            .keyword("COLUMN")
+            .then_some("ALTER_TABLE_CHANGE_COLUMN");
+    }
     // RENAME TO だけ分類する。RENAME COLUMN は本物に構文が無い（2026-09-21 実測）ので、
     // `TO` を要求すればそのまま None に落ちる。
     if cursor.keyword("RENAME") {

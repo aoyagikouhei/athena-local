@@ -65,6 +65,26 @@ pub(super) fn parse_msck_target(
     parts_to_target(parse_qualified_name(name)?, default_catalog, default_schema)
 }
 
+/// `DESCRIBE EXTENDED` の対象（de1 の構文チェックの前の判定専用。#257）。`parse_target_table` の
+/// DESCRIBE の読み方は `EXTENDED` を名前の 1 部目と読んでしまうので使えない（`table_format::keywords`
+/// に `EXTENDED` を挟む腕は無い）。名前が引用符付きの部品を含むか 4 部以上なら None（`parse_msck_target`
+/// と同じ理由。2026-09-27 実測。#257）。`DESC EXTENDED`・`DESCRIBE FORMATTED` は対象にしない（未実測）。
+pub(super) fn parse_describe_extended_target(
+    query: &str,
+    default_catalog: Option<&str>,
+    default_schema: Option<&str>,
+) -> Option<TargetTable> {
+    let mut cursor = athena_sql::Cursor::new(query);
+    if !(cursor.keyword("DESCRIBE") && cursor.keyword("EXTENDED")) {
+        return None;
+    }
+    let name = cursor.qualified_name()?;
+    if name.parts.len() >= 4 || name.parts.iter().any(|part| part.text.starts_with('"')) {
+        return None;
+    }
+    parts_to_target(name.values(), default_catalog, default_schema)
+}
+
 /// `.` で区切った名前の並びから `TargetTable` を組み立てる（`parse_target_table`・`parse_msck_target` で共有）。
 /// 4 部以上は `<[String; N]>::try_from` がすべて失敗するのでここで None になる。
 fn parts_to_target(

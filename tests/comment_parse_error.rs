@@ -443,7 +443,12 @@ async fn msck_repair_table_のブロックコメントは_hive_無い表_ビュ�
 #[tokio::test]
 async fn msck_repair_table_は_iceberg_表ならコメントの有無によらず別の失敗になり_s3_に何も置かない()
 {
-    for sql in ["MSCK REPAIR TABLE t", "/* c */ MSCK REPAIR TABLE t"] {
+    // 3 つ目（名前の直後。g2。2026-09-27 実測。#257）も同じ別の失敗になる。
+    for sql in [
+        "MSCK REPAIR TABLE t",
+        "/* c */ MSCK REPAIR TABLE t",
+        "MSCK REPAIR TABLE t /* c */",
+    ] {
         let harness = Harness::builder(select_response())
             .route(
                 &probe_sql(DEFAULT_CATALOG, DEFAULT_SCHEMA, "t"),
@@ -546,4 +551,124 @@ async fn msck_repair_table_は_context_のカタログが実在しなければ�
         execution["Status"]["StateChangeReason"],
         "Query type not supported by Athena Iceberg at this time"
     );
+}
+
+/// 名前の直後のコメント（g2。2026-09-27 実測。#257）は、Hive 表だけ本物どおり FAILED になり、
+/// ビュー・無い表は今までどおり構文チェックへ進む（`hive_only` の印）。
+#[tokio::test]
+async fn msck_repair_table_は名前の直後のコメントで_hive_表だけ_failed_になる() {
+    const REASON: &str = "FAILED: ParseException line 1:20 missing EOF at '/' near 't'";
+    let sql = "MSCK REPAIR TABLE t /* c */";
+    let harness = Harness::builder(select_response())
+        .route(
+            &probe_sql(DEFAULT_CATALOG, DEFAULT_SCHEMA, "t"),
+            probe_response("hive", "TABLE"),
+        )
+        .results_s3()
+        .start()
+        .await;
+
+    let execution = harness
+        .run_query(json!({
+            "QueryString": sql,
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+        }))
+        .await["QueryExecution"]
+        .clone();
+
+    assert_eq!(execution["Status"]["State"], "FAILED", "{execution}");
+    assert_eq!(execution["Status"]["StateChangeReason"], REASON);
+    assert!(
+        !harness.syntax_checks().contains(&sql.to_string()),
+        "構文チェックへ進まない: {:?}",
+        harness.syntax_checks()
+    );
+}
+
+#[tokio::test]
+async fn msck_repair_table_は名前の直後のコメントでビュー_無い表なら今までどおり構文チェックへ進む()
+{
+    let sql = "MSCK REPAIR TABLE t /* c */";
+    for response in [probe_response("hive", "VIEW"), probe_response_missing()] {
+        let harness = Harness::builder(select_response())
+            .route(&probe_sql(DEFAULT_CATALOG, DEFAULT_SCHEMA, "t"), response)
+            .start()
+            .await;
+
+        harness.start_query(json!({ "QueryString": sql })).await;
+
+        assert!(
+            harness.syntax_checks().contains(&sql.to_string()),
+            "構文チェックへ進む: {:?}",
+            harness.syntax_checks()
+        );
+    }
+}
+
+/// `DESCRIBE EXTENDED` の `EXTENDED` の直後のコメント（de1。2026-09-27 実測。#257）は、Trino に
+/// `DESCRIBE EXTENDED` の構文が無いので構文チェックの前に判定する。Hive 表だけ本物どおり FAILED になる。
+#[tokio::test]
+async fn describe_extended_のブロックコメントは_hive_表だけ_failed_になる() {
+    const REASON: &str = "FAILED: ParseException line 1:18 cannot recognize input near '/' '*' 'c' in specifying describe table types";
+    let sql = "DESCRIBE EXTENDED /* c */ t";
+    let harness = Harness::builder(select_response())
+        .route(
+            &probe_sql(DEFAULT_CATALOG, DEFAULT_SCHEMA, "t"),
+            probe_response("hive", "TABLE"),
+        )
+        // A1: `entity_check::check` を飛ばさなければ `EXTENDED` を表の名前と読んで、この応答で
+        // 「表が無い」と判定し、StartQueryExecution 自体を 400 で弾いてしまう（`start_query` の
+        // 200 の assert が壊れて落ちる。ミューテーション (b) の的）。
+        .route(
+            &probe_sql(DEFAULT_CATALOG, DEFAULT_SCHEMA, "extended"),
+            probe_response_missing(),
+        )
+        .results_s3()
+        .start()
+        .await;
+
+    let execution = harness
+        .run_query(json!({
+            "QueryString": sql,
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+        }))
+        .await["QueryExecution"]
+        .clone();
+
+    assert_eq!(execution["Status"]["State"], "FAILED", "{execution}");
+    assert_eq!(execution["Status"]["StateChangeReason"], REASON);
+    assert!(
+        !harness.syntax_checks().contains(&sql.to_string()),
+        "構文チェックへ進まない: {:?}",
+        harness.syntax_checks()
+    );
+}
+
+/// A1: `EXTENDED` を表の名前と読んでしまう `entity_check::check` に「表が無い」で開始時に弾かれず、
+/// Iceberg・ビューは今までどおり構文チェックへ進む（構文チェックの前の失敗があるときは
+/// `entity_check::check` を呼ばない。計画攻撃 A1）。
+#[tokio::test]
+async fn describe_extended_のブロックコメントは_iceberg_ビューなら開始時に弾かれず構文チェックへ進む()
+ {
+    let sql = "DESCRIBE EXTENDED /* c */ t";
+    for response in [
+        probe_response("iceberg", "TABLE"),
+        probe_response("hive", "VIEW"),
+        probe_response_missing(),
+    ] {
+        let harness = Harness::builder(select_response())
+            .route(&probe_sql(DEFAULT_CATALOG, DEFAULT_SCHEMA, "t"), response)
+            .start()
+            .await;
+
+        // A1 が無ければ `entity_check::check` が `EXTENDED` を表の名前と読んで「表が無い」で
+        // 開始時に 400 を返してしまう。`start_query` は 200 を assert するので、それ自体が守り。
+        harness.start_query(json!({ "QueryString": sql })).await;
+
+        assert!(
+            harness.syntax_checks().contains(&sql.to_string()),
+            "構文チェックへ進む: {:?}",
+            harness.syntax_checks()
+        );
+    }
 }

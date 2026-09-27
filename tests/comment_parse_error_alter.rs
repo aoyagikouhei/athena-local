@@ -264,3 +264,141 @@ async fn alter_table_add_columns_複数形_のブロックコメントは名前�
         harness.syntax_checks()
     );
 }
+
+/// g3: 名前と複数形 `ADD COLUMNS` の間のコメント（2026-09-27 実測。#257）は、Hive 表だけ本物どおり
+/// FAILED になり、ビュー・無い表・Iceberg は今までどおり構文チェックへ進む（`hive_only` の印）。
+#[tokio::test]
+async fn alter_table_add_columns_複数形_は名前と_add_columns_の間のコメントで_hive_表だけ_failed_になる()
+ {
+    const REASON: &str = "FAILED: ParseException line 1:14 cannot recognize input near '/' '*' 'c' in alter table statement";
+    let sql = "ALTER TABLE t /* c */ ADD COLUMNS (c int)";
+    let harness = Harness::builder(select_response())
+        .route(
+            &probe_sql(DEFAULT_CATALOG, DEFAULT_SCHEMA, "t"),
+            probe_response("hive", "TABLE"),
+        )
+        .start()
+        .await;
+
+    let execution =
+        harness.run_query(json!({ "QueryString": sql })).await["QueryExecution"].clone();
+
+    assert_eq!(execution["Status"]["State"], "FAILED", "{execution}");
+    assert_eq!(execution["Status"]["StateChangeReason"], REASON);
+    assert_eq!(execution["Status"]["AthenaError"]["ErrorCategory"], 1);
+    assert_eq!(execution["Status"]["AthenaError"]["ErrorType"], 1003);
+    assert!(
+        !harness.syntax_checks().contains(&sql.to_string()),
+        "構文チェックへ進まない: {:?}",
+        harness.syntax_checks()
+    );
+}
+
+#[tokio::test]
+async fn alter_table_add_columns_複数形_は名前と_add_columns_の間のコメントでビュー_無い表_iceberg_なら今までどおり構文チェックへ進む()
+ {
+    let sql = "ALTER TABLE t /* c */ ADD COLUMNS (c int)";
+    for response in [
+        probe_response("hive", "VIEW"),
+        probe_response_missing(),
+        probe_response("iceberg", "TABLE"),
+    ] {
+        let harness = Harness::builder(select_response())
+            .route(&probe_sql(DEFAULT_CATALOG, DEFAULT_SCHEMA, "t"), response)
+            .start()
+            .await;
+
+        harness
+            .call("StartQueryExecution", json!({ "QueryString": sql }))
+            .await;
+
+        assert!(
+            harness.syntax_checks().contains(&sql.to_string()),
+            "構文チェックへ進む: {:?}",
+            harness.syntax_checks()
+        );
+    }
+}
+
+/// r1・r3: REPLACE COLUMNS・CHANGE COLUMN は ALTER の直後のコメントだけ本物どおり FAILED になる
+/// （2026-09-27 実測。#257）。SubstatementType は ALTER_TABLE_REPLACE_COLUMN・ALTER_TABLE_CHANGE_COLUMN。
+#[tokio::test]
+async fn alter_table_replace_columns_と_change_column_は_alter_の直後のコメントで_failed_になる() {
+    const REASON: &str = "FAILED: ParseException line 1:0 cannot recognize input near 'ALTER' '/' '*' in alter statement";
+    const MESSAGE: &str = "Query type not supported by DDL engine.";
+    for (sql, substatement_type) in [
+        (
+            "ALTER /* c */ TABLE t REPLACE COLUMNS (n int, s string)",
+            "ALTER_TABLE_REPLACE_COLUMN",
+        ),
+        (
+            "ALTER /* c */ TABLE t CHANGE COLUMN n n2 int",
+            "ALTER_TABLE_CHANGE_COLUMN",
+        ),
+    ] {
+        let harness = Harness::builder(select_response())
+            .route(
+                &probe_sql(DEFAULT_CATALOG, DEFAULT_SCHEMA, "t"),
+                probe_response("hive", "TABLE"),
+            )
+            .start()
+            .await;
+
+        let execution =
+            harness.run_query(json!({ "QueryString": sql })).await["QueryExecution"].clone();
+
+        assert_eq!(execution["Status"]["State"], "FAILED", "{sql}: {execution}");
+        assert_eq!(execution["Status"]["StateChangeReason"], REASON, "{sql}");
+        assert_eq!(
+            execution["Status"]["AthenaError"]["ErrorCategory"], 2,
+            "{sql}"
+        );
+        assert_eq!(
+            execution["Status"]["AthenaError"]["ErrorType"], 1006,
+            "{sql}"
+        );
+        assert_eq!(
+            execution["Status"]["AthenaError"]["ErrorMessage"], MESSAGE,
+            "{sql}"
+        );
+        assert_eq!(execution["SubstatementType"], substatement_type, "{sql}");
+        assert!(
+            !harness.syntax_checks().contains(&sql.to_string()),
+            "{sql}: 構文チェックへ進まない: {:?}",
+            harness.syntax_checks()
+        );
+    }
+}
+
+/// 先頭・TABLE の後のコメントは未実測なので None（今までどおり構文チェックへ進む。Trino に構文が無い
+/// ので、実際にはこの先で構文エラーになる想定だが、ここでは判定に介入しないことだけを確かめる）。
+#[tokio::test]
+async fn alter_table_replace_columns_と_change_column_は先頭_table_の後のコメントなら今までどおり構文チェックへ進む()
+ {
+    for sql in [
+        "/* c */ ALTER TABLE t REPLACE COLUMNS (n int, s string)",
+        "ALTER TABLE /* c */ t REPLACE COLUMNS (n int, s string)",
+        "/* c */ ALTER TABLE t CHANGE COLUMN n n2 int",
+        "ALTER TABLE /* c */ t CHANGE COLUMN n n2 int",
+    ] {
+        // 対象を Hive 表として返し、ALTER の直後のコメント（r1・r3）なら失敗させる状態でも、先頭・TABLE の後の
+        // コメントは判定せずに構文チェックへ進むことを確かめる。
+        let harness = Harness::builder(select_response())
+            .route(
+                &probe_sql(DEFAULT_CATALOG, DEFAULT_SCHEMA, "t"),
+                probe_response("hive", "TABLE"),
+            )
+            .start()
+            .await;
+
+        harness
+            .call("StartQueryExecution", json!({ "QueryString": sql }))
+            .await;
+
+        assert!(
+            harness.syntax_checks().contains(&sql.to_string()),
+            "{sql}: 構文チェックへ進む: {:?}",
+            harness.syntax_checks()
+        );
+    }
+}

@@ -267,6 +267,81 @@ fn msck_repair_table_の_4_つのチェックポイント() {
 }
 
 #[test]
+fn msck_repair_table_は名前の直後のコメントで_hive_only_の印付きで_some() {
+    assert_eq!(
+        detect("MSCK REPAIR TABLE db.t /* c */"),
+        Some(ParseError {
+            target: Target::MsckRepair,
+            reason: "FAILED: ParseException line 1:23 missing EOF at '/' near 't'".to_string(),
+            error_message: None,
+            category: 1,
+            error_type: 1003,
+            hive_only: true,
+        }),
+        "g2"
+    );
+    // 名前の中（`.` の後ろ）はコメントを名前の一部として読み飛ばすので、名前の直後の判定には来ない
+    // （名前の後ろにコメントが無ければ None。未実測）。
+    assert_eq!(
+        detect("MSCK REPAIR TABLE db./* c */t"),
+        None,
+        "名前の中（未実測）"
+    );
+}
+
+#[test]
+fn describe_extended_の直後のコメントは_hive_only_の印付きで_some() {
+    assert_eq!(
+        detect("DESCRIBE EXTENDED /* c */ db.t"),
+        Some(ParseError {
+            target: Target::Describe,
+            reason: "FAILED: ParseException line 1:18 cannot recognize input near '/' '*' 'c' in specifying describe table types".to_string(),
+            error_message: None,
+            category: 1,
+            error_type: 1003,
+            hive_only: true,
+        }),
+        "de1"
+    );
+    // 小文字の extended でも綴りによらず判定する（case-insensitive。境界入力）。
+    assert_eq!(
+        detect("describe extended /* c */ db.t"),
+        Some(ParseError {
+            target: Target::Describe,
+            reason: "FAILED: ParseException line 1:18 cannot recognize input near '/' '*' 'c' in specifying describe table types".to_string(),
+            error_message: None,
+            category: 1,
+            error_type: 1003,
+            hive_only: true,
+        }),
+        "de1・小文字"
+    );
+}
+
+#[test]
+fn describe_extended_以外の位置や形は_none() {
+    for (ids, sql) in [
+        ("DESC EXTENDED（未実測）", "DESC EXTENDED /* c */ db.t"),
+        (
+            "DESCRIBE FORMATTED（未実測）",
+            "DESCRIBE FORMATTED /* c */ db.t",
+        ),
+        // DESCRIBE の直後（EXTENDED の前）は #244 の既存の形のまま（回帰）。
+        (
+            "DESCRIBE の直後（#244 の既存の形。回帰）",
+            "DESCRIBE /* c */ EXTENDED db.t",
+        ),
+    ] {
+        // #244 の既存の形（DESCRIBE の直後）は Some（Target::Describe・hive_only false）のまま。
+        if ids.contains("既存の形") {
+            assert!(detect(sql).is_some(), "{ids}: {sql}");
+        } else {
+            assert_eq!(detect(sql), None, "{ids}: {sql}");
+        }
+    }
+}
+
+#[test]
 fn 名前が引用符付きの部品を含むか_4_部以上なら_none() {
     for (ids, sql) in [
         (
@@ -292,18 +367,8 @@ fn 名前が引用符付きの部品を含むか_4_部以上なら_none() {
 
 #[test]
 fn 決め手の位置より後ろにしかブロックコメントが無ければ_none() {
-    for (ids, sql) in [
-        (
-            "SHOW CREATE TABLE・名前の後ろ（未実測。D1）",
-            "SHOW CREATE TABLE db.t /* c */",
-        ),
-        (
-            "ALTER TABLE・名前と ADD の間（未実測。D1）",
-            "ALTER TABLE db.t /* c */ ADD COLUMNS (c int)",
-        ),
-    ] {
-        assert_eq!(detect(sql), None, "{ids}: {sql}");
-    }
+    // SHOW CREATE TABLE・名前の後ろ（未実測。D1）。
+    assert_eq!(detect("SHOW CREATE TABLE db.t /* c */"), None);
 }
 
 #[test]

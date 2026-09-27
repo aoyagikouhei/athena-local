@@ -13,7 +13,6 @@ pub(super) fn alter(query: &str) -> Option<ParseError> {
         return None;
     }
     let (hit, name_start) = scan(query, &["ALTER", "TABLE"])?;
-    let hit = hit?;
     if !valid_name(query, name_start) {
         return None;
     }
@@ -24,21 +23,65 @@ pub(super) fn alter(query: &str) -> Option<ParseError> {
         Some("ALTER_TABLE_ADD_COLUMN") if adds_columns_plural(query) => Target::AlterAddColumns,
         Some("ALTER_TABLE_DROP_COLUMN") => Target::AlterDropColumn,
         Some("ALTER_TABLE_RENAME") => Target::AlterRename,
+        Some("ALTER_TABLE_REPLACE_COLUMN") => Target::AlterReplaceColumns,
+        Some("ALTER_TABLE_CHANGE_COLUMN") => Target::AlterChangeColumn,
         _ => return None,
     };
-    let (line, col) = position::position(query, hit.comment_at);
-    let reason = match hit.index {
-        0 => head_reason(query, hit.comment_at, line, col),
-        // ALTER の後ろは、コメントの位置でなく ALTER 自身の位置（実測 1:0。空白 2 つ・改行でも 1:0。D5）。
-        1 => {
-            let (alter, start) = hit.keyword?;
-            let (aline, acol) = position::position(query, start);
-            format!(
-                "FAILED: ParseException line {aline}:{acol} cannot recognize input near '{alter}' '/' '*' in alter statement"
+
+    // r1・r3: REPLACE COLUMNS・CHANGE COLUMN は ALTER の直後のコメント（hit.index == 1）のときだけ
+    // 本物が失敗させる（2026-09-27 実測。#257。先頭・TABLE の後のコメントは未実測で None）。
+    if matches!(
+        target,
+        Target::AlterReplaceColumns | Target::AlterChangeColumn
+    ) {
+        let hit = hit.filter(|hit| hit.index == 1)?;
+        let (alter, start) = hit.keyword?;
+        let (line, col) = position::position(query, start);
+        return Some(ParseError {
+            target,
+            reason: format!(
+                "FAILED: ParseException line {line}:{col} cannot recognize input near '{alter}' '/' '*' in alter statement"
+            ),
+            error_message: Some(DDL_ENGINE_UNSUPPORTED.to_string()),
+            category: 2,
+            error_type: 1006,
+            hive_only: true,
+        });
+    }
+
+    let (reason, hive_only) = match hit {
+        Some(hit) => {
+            let (line, col) = position::position(query, hit.comment_at);
+            let reason = match hit.index {
+                0 => head_reason(query, hit.comment_at, line, col),
+                // ALTER の後ろは、コメントの位置でなく ALTER 自身の位置（実測 1:0。空白 2 つ・改行でも 1:0。D5）。
+                1 => {
+                    let (alter, start) = hit.keyword?;
+                    let (aline, acol) = position::position(query, start);
+                    format!(
+                        "FAILED: ParseException line {aline}:{acol} cannot recognize input near '{alter}' '/' '*' in alter statement"
+                    )
+                }
+                2 => table_name_reason(query, hit.comment_at, line, col),
+                _ => unreachable!("ALTER TABLE のチェックポイントは 3 つ"),
+            };
+            (reason, false)
+        }
+        None => {
+            // g3: 名前と複数形 ADD COLUMNS の間（Target::AlterAddColumns だけ。2026-09-27 実測。#257）。
+            if target != Target::AlterAddColumns {
+                return None;
+            }
+            let comment_at = add_columns_comment(query, name_start)?;
+            let (line, col) = position::position(query, comment_at);
+            let token = position::leading_token(query, comment_at);
+            (
+                format!(
+                    "FAILED: ParseException line {line}:{col} cannot recognize input near '/' '*' '{token}' in alter table statement"
+                ),
+                true,
             )
         }
-        2 => table_name_reason(query, hit.comment_at, line, col),
-        _ => unreachable!("ALTER TABLE のチェックポイントは 3 つ"),
     };
     // RENAME TO・DROP COLUMN だけ category 2・error_type 1006 で、ErrorMessage が reason と別（D4）。
     let (error_message, category, error_type) = match target {
@@ -52,8 +95,18 @@ pub(super) fn alter(query: &str) -> Option<ParseError> {
         error_message,
         category,
         error_type,
-        hive_only: false,
+        hive_only,
     })
+}
+
+/// 名前と複数形 `ADD COLUMNS` の間にブロックコメントがあれば、その位置（`/` の位置）を返す（g3。
+/// 2026-09-27 実測。#257）。単数の `ADD COLUMN`・ほかの動作は呼び出し側（`alter` の `target` の判定）が
+/// 先に弾く。
+fn add_columns_comment(query: &str, name_start: usize) -> Option<usize> {
+    let mut cursor = athena_sql::Cursor::new(&query[name_start..]);
+    let name = cursor.qualified_name()?;
+    let comment_at = position::comment_start(query, name_start + name.end)?;
+    (cursor.keyword("ADD") && cursor.keyword("COLUMNS")).then_some(comment_at)
 }
 
 /// `ADD` の直後が複数形の `COLUMNS` か（単数形の `ADD COLUMN` は Trino だけの綴りで対象外。D1）。

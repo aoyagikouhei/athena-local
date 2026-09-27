@@ -15,13 +15,16 @@ use super::table_format::{TableFormat, TargetStatement};
 use super::target_table;
 
 /// 構文チェックの前の判定: `query` が `MSCK REPAIR TABLE` か、`comment_parse_error::detect` が
-/// `AlterAddColumns`（`ALTER TABLE ... ADD COLUMNS` の複数形にブロックコメントが決め手の位置にある形）を
-/// 返すときだけ対象の存在を確かめる。対象が Iceberg 表なら、ブロックコメントの有無・位置によらず本物は
-/// 別の失敗（`Failure::msck_iceberg`）で FAILED にする。Hive・ビュー・無い表は、ブロックコメントが決め手の
+/// `AlterAddColumns`（`ALTER TABLE ... ADD COLUMNS` の複数形にブロックコメントが決め手の位置にある形）・
+/// `AlterReplaceColumns`・`AlterChangeColumn`（ALTER の直後のコメント。r1・r3）・`Describe` の
+/// `hive_only` なチェックポイント（`DESCRIBE EXTENDED` の `EXTENDED` の直後。de1）のどれかを返すときだけ
+/// 対象の存在を確かめる（Trino にこれらの構文が無く、構文チェックへ進むと必ず構文エラーになるため。
+/// 2026-09-27 実測。#257）。対象が Iceberg 表なら、ブロックコメントの有無・位置によらず本物は
+/// 別の失敗（`Failure::msck_iceberg`）で FAILED にする（MSCK だけ）。Hive・ビュー・無い表は、ブロックコメントが決め手の
 /// 位置にあるとき（`detect` が Some）だけ、その ParseException で FAILED にする。名前が引用符付きの部品を
 /// 含むか 4 部以上・カタログが無い・問い合わせが失敗したとき（`Probe::NoCatalog`・`Probe::Unknown`）は
 /// 何もせず、今までどおり構文チェックへ進む（2026-09-26 実測。#244）。問い合わせが増えるのは MSCK と、
-/// コメント入りの ADD COLUMNS のときだけ（design-checklist #39）。
+/// コメント入りの ADD COLUMNS・REPLACE COLUMNS・CHANGE COLUMN・DESCRIBE EXTENDED のときだけ（design-checklist #39）。
 pub(super) async fn pre_syntax_check_failure(
     trino: &Trino,
     config: &Config,
@@ -41,10 +44,18 @@ pub(super) async fn pre_syntax_check_failure(
     };
     let is_msck = classification::substatement_type(query) == Some("MSCK_REPAIR");
     let comment = comment_parse_error::detect(query);
-    let add_columns_comment = comment
-        .clone()
-        .filter(|error| !is_msck && error.target == Target::AlterAddColumns);
-    if !is_msck && add_columns_comment.is_none() {
+    // MSCK 以外で構文チェックの前に判定するのは、Trino に構文が無い ALTER TABLE の ADD COLUMNS（複数形）・
+    // REPLACE COLUMNS・CHANGE COLUMN と、DESCRIBE EXTENDED（`EXTENDED` の直後のコメントだけ。`hive_only`
+    // で見分ける。DESCRIBE の他のチェックポイントは Trino がそのまま構文チェックを通すので、構文チェックの
+    // 後（`comment_parse_error_failure`）で判定する）だけ（2026-09-27 実測。#257）。
+    let pre_check_comment = comment.clone().filter(|error| {
+        !is_msck
+            && (matches!(
+                error.target,
+                Target::AlterAddColumns | Target::AlterReplaceColumns | Target::AlterChangeColumn
+            ) || (error.target == Target::Describe && error.hive_only))
+    });
+    if !is_msck && pre_check_comment.is_none() {
         return None;
     }
 
@@ -54,6 +65,11 @@ pub(super) async fn pre_syntax_check_failure(
 
     let target = if is_msck {
         target_table::parse_msck_target(query, raw_catalog, default_database)?
+    } else if pre_check_comment
+        .as_ref()
+        .is_some_and(|error| error.target == Target::Describe)
+    {
+        target_table::parse_describe_extended_target(query, raw_catalog, default_database)?
     } else {
         target_table::parse_target_table(
             query,
@@ -90,7 +106,7 @@ pub(super) async fn pre_syntax_check_failure(
     let comment = if is_msck {
         comment.filter(|error| error.target == Target::MsckRepair)
     } else {
-        add_columns_comment
+        pre_check_comment
     }?;
 
     // `comment.hive_only` が true なチェックポイント（#257 の g1 など）は、ビュー・無い表を今までどおり
@@ -164,7 +180,12 @@ pub(super) async fn comment_parse_error_failure(
             };
             ok.then(|| parse_error.into())
         }
-        Target::MsckRepair | Target::AlterAddColumns => None,
+        // REPLACE COLUMNS・CHANGE COLUMN は Trino に構文が無く、構文チェックの前（`pre_syntax_check_failure`）
+        // だけで判定する（r1・r3。#257）。このパスは Trino が構文を通した文だけが届くので、実際には来ない。
+        Target::MsckRepair
+        | Target::AlterAddColumns
+        | Target::AlterReplaceColumns
+        | Target::AlterChangeColumn => None,
     }
 }
 
