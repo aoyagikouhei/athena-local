@@ -533,6 +533,10 @@ is_failed() {
 # （trap の保険が対象にする組の集合）。CREATE TABLE が失敗したら後始末は未測定の行だけ残す。
 run_create_then_drop_ctx() {
   local ctx=$1 label=$2 sql=$3 qref=$4
+  # 後始末の DROP はバッククォートと、先頭の引用符付きのカタログ（b7）を外した名前で投げる
+  # （バッククォート・引用符付きのカタログの DROP が S3 Tables の Context で通るかは測っていないため）。
+  qref=${qref//\`/}
+  qref=${qref#\"*\".}
   local key="$ctx|$qref"
   if run_in_ctx "$ctx" "$label" "$sql"; then
     PENDING_DROPS_CTX[$key]=1
