@@ -10,7 +10,8 @@ athena-local を通さず、手元の Trino（Hive / Iceberg カタログ、ロ�
   `CATALOG_DIR`（既定 `tools/compose/catalog`）で版とカタログを差し替えられる。同時実行は `docs/dev/development.md` の「足場の環境と同時実行」
 - `catalog/` — `fs.local.enabled=true`（482 以降の名前）
 - `catalog-legacy/` — `fs.native-local.enabled=true`（古い版の名前）
-- `catalog-nofsflag/` — ファイルシステムの有効化行が無い（さらに古い版）
+- `catalog-nofsflag/` — ファイルシステムの有効化行が無く、`file://` を Hadoop の FS で書く（440・400）。書き込み先は `/tmp`（`/data` は root の持ち物で trino が書けない）、`hive.security=allow-all`（古い版の既定は DROP TABLE と ADD COLUMN を拒む）
+- `catalog-hadoop/` — `catalog-nofsflag` に `fs.hadoop.enabled=true` を足したもの（ローカル FS の設定名が無く、Hadoop の FS が既定で無効な 470）
 - `probe.sh` — 起動済みの Trino に一連の SQL を投げ、生の応答を `$OUT_DIR/<ラベル>.<ページ>.json` に残す（#39）
 - `versions.sh` — 版ごとに `trino` を作り直して `probe.sh` を流し、値を表にする（#111）
 
@@ -21,8 +22,10 @@ tools/dev.sh tools/e2e/trino-probe/versions.sh                     # 既定の 4
 tools/dev.sh TRINO_TAGS=482 tools/e2e/trino-probe/versions.sh      # 対照（docs/dev/measurements/trino.md の #39 の表と完全一致で PASS）
 ```
 
-- 版ごとに `catalog` → `catalog-legacy` → `catalog-nofsflag` の順に起動し、`SHOW SCHEMAS FROM hive` と
-  `SHOW SCHEMAS FROM iceberg` が `error` 無しで返った構成を採用する。3 つとも通らなければ SKIP
+- 版ごとに `catalog` → `catalog-legacy` → `catalog-nofsflag` → `catalog-hadoop` の順に起動し、`SHOW SCHEMAS FROM hive` と
+  `SHOW SCHEMAS FROM iceberg` が `error` 無しで返った構成を採用する。どれも通らなければ SKIP
+- 起動が同梱の JDK の cgroup v2 の不具合（`CgroupInfo` の `NullPointerException`）で落ちたら、`JAVA_TOOL_OPTIONS=-XX:-UseContainerSupport` を
+  付けて同じ catalog から起動し直す（400。compose.yml の trino は `JAVA_TOOL_OPTIONS` を値なしで受け取るので、渡さなければコンテナにも入らない）
 - `/v1/info` の `nodeVersion` がタグと違えば FAIL（`TRINO_TAG` が compose に届かず 482 が走る事故を防ぐ）
 - 旧版の値は INFO として記録し、482 と違う列を詳細に出す。終了コードは FAIL の件数
 - 環境変数: `TRINO_TAGS`、`START_TIMEOUT`（既定 120 秒）、`PULL_TIMEOUT`（既定 600 秒）、`KEEP_UP=1`（最後の版を残す）

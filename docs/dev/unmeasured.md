@@ -23,13 +23,11 @@
 
 - 32 文字未満かつ 128 バイト超の組は測る対象から外す。UTF-8 は 1 文字が最大 4 バイトなので 31 文字は最大 124 バイトで、その組は作れない（#153、2026-09-24）
 
-## Trino（[measurements/trino.md](measurements/trino.md)）
-
-- [ ] Trino 470・400 のすべての値と、440 の存在するテーブルへの probe（D1・D2）と `updateType`（#111 の足場で 480・475 は測れたが、470 はローカル FS の設定名が無く、400 は cgroup v2 で JVM が落ち、440 は file メタストアに書けなかった）
-
 ## 済み
 
 その後の issue で測ったもの。結果は measurements にある。
+
+- Trino 470・400 のすべての値と、440 の存在するテーブルへの probe（D1・D2）と `updateType`（#111 で測れなかった）→ #308（2026-09-27）で足場を直して測った。3 版とも 482 と同じ（[measurements/trino.md](measurements/trino.md)）
 
 - `.csv` と `.metadata` の Content-Type が実測のたびに割れる件（下の元の文言）→ #70（2026-09-23）で規則を実測した。割れていたのは SQL の違い（リテラルだけの `SELECT` と `SHOW` 系は binary）。#76 で形を足した（[measurements/result-files.md](measurements/result-files.md)）
   - 元の文言: `.csv` と `.metadata` の Content-Type が実測のたびに `binary/octet-stream` と `application/octet-stream` に割れる（#1・#17）。athena-local は多数派の `application/` 固定。`.txt` の側は #39 で決着した（`.metadata` を置く文だけ `application/`、それ以外は `binary/`。docs/result-files.md に表あり）

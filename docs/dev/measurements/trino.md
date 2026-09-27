@@ -61,6 +61,25 @@
   - 対照の 482 も同じ値を返したが、`versions.sh` の 482 の期待値が件数の形（`[["hive",1]]` など）のままで、`TRINO_TAGS=482` では FAIL 1（D1〜D4 の不一致）になった。#173 で probe.sh だけを直し、期待値を直し忘れていた（既定の 5 版には 482 が入らないので、INFO の「差あり」に隠れていた）
 - 採用: `versions.sh` の期待値を `table_type` の形に直した（#131）。直した後の `TRINO_TAGS=482` は PASS。480・475 の D1〜D4 は新しい期待値と同じなので、#111 の結論（`connector_name` と probe_sql の結果と `updateType` が 482 と同じ）は変わらない
 
+### Trino 470・440・400（#111 で測れなかった版）
+- 日付: 2026-09-27 ／ issue: #308 ／ スクリプト: `tools/e2e/trino-probe/versions.sh`（`COMPOSE_PROJECT_NAME=athena-local-308 tools/dev.sh TRINO_TAGS="470 440 400 482" ...`） ／ 生データ: `/tmp/athena-local-issue111-trino.qTKv7P`（直す前）、`/tmp/athena-local-issue111-trino.PRbuQ2`（`hive.security` を足す前）、`/tmp/athena-local-issue111-trino.60Fzac`（採用した走行）
+- 相手: 手元の Trino 470 / 440 / 400 と対照の 482（WSL2 上の Docker、toolbox の中から compose の trino を差し替え）
+- 投げたもの: #111 と同じ。足場を次のように直した
+  - 470・440 の hive プラグインの `trino-filesystem-manager` の jar に `fs.local.enabled`・`fs.native-local.enabled` の文字列は無く、`fs.hadoop.enabled` がある。`file://` は Hadoop の FS で扱う。470 はこれが既定で無効（#111 の `No factory for location`）なので、`fs.hadoop.enabled=true` を足した `catalog-hadoop` を 4 つ目に足した
+  - `/data` はどの版のイメージでも root の持ち物（`drwxr-xr-x root root`）で、trino（uid 1000）は書けない。#111 の 440 の `Could not write database schema` はこれで、`catalog-nofsflag`・`catalog-hadoop` の書き込み先を `/tmp/hive`・`/tmp/iceberg` にした
+  - 400 は `JAVA_TOOL_OPTIONS=-XX:-UseContainerSupport` で起動した（単体の `docker run` で `SERVER STARTED` を確かめた）。`versions.sh` は起動ログに `CgroupInfo` があれば、この値を付けて同じ catalog から起動し直す
+  - 書き込みを直した後、440・400 の Hive の `DROP TABLE`・`ADD COLUMN` が `PERMISSION_DENIED`（`Access Denied: Cannot drop table default.t_drop`／`Cannot add a column to table default.t_alter`）になった。Iceberg は `DROP TABLE`／`ADD COLUMN` を返した。古い版の Hive コネクタの既定のアクセス制御によるものなので、`hive.security=allow-all` を足した
+- 返ったもの（採用した走行）:
+
+| 版 | 状態 | 採用 catalog | nodeVersion | A2 hive | A2 iceberg | D1 | D2 | D3 | D4 | C1 | C2 | 482 と同じか |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 482（対照） | PASS | catalog | 482 | hive | iceberg | [["hive","TABLE"]] | [["iceberg","TABLE"]] | [["hive",null]] | [["iceberg",null]] | DROP TABLE | ADD COLUMN | 同じ |
+| 470 | INFO | catalog-hadoop | 470 | hive | iceberg | [["hive","TABLE"]] | [["iceberg","TABLE"]] | [["hive",null]] | [["iceberg",null]] | DROP TABLE | ADD COLUMN | 同じ |
+| 440 | INFO | catalog-nofsflag | 440 | hive | iceberg | [["hive","TABLE"]] | [["iceberg","TABLE"]] | [["hive",null]] | [["iceberg",null]] | DROP TABLE | ADD COLUMN | 同じ |
+| 400 | INFO | catalog-nofsflag | 400 | hive | iceberg | [["hive","TABLE"]] | [["iceberg","TABLE"]] | [["hive",null]] | [["iceberg",null]] | DROP TABLE | ADD COLUMN | 同じ |
+
+- 備考: 本物の Athena ではない。#111 の 440 の差（存在する表の probe が 0）は、版の差ではなくメタストアに書けなかったことによる準備の失敗だった。これで 400〜482 のどの版も、`connector_name`・probe_sql の結果・`updateType` が 482 と同じ。ただし 400・440 で Hive の DDL を通すには、コネクタの既定のアクセス制御（`PERMISSION_DENIED`）を `hive.security` で緩める必要がある（athena-local 側の違いではなく Trino の設定）
+
 ### MERGE の updateType と `.metadata`
 - 日付: 不明（ノートに日付が無い。時系列は 19:00〜19:07。#49（2026-09-22 17:2x）で 17 項目だった verify.sh が 19 項目になっているので 2026-09-22 と推定） ／ issue: #56 ／ スクリプト: `tools/e2e/minio/verify.sh`（旧 `39-e2e/verify.sh`）（ケース 9 を追加）
 - 相手: 手元の Trino 482 + MinIO（`tools/e2e/minio/`（旧 `39-e2e/`） の足場、athena-local 経由）
