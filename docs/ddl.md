@@ -1,6 +1,6 @@
 # DDL that depends on the target table's format
 
-How `DROP TABLE`, `ALTER TABLE ... ADD COLUMNS` / `REPLACE COLUMNS`, `SHOW CREATE TABLE`, `DESCRIBE` and `SHOW COLUMNS` write their result files depending on the target table's format, and how athena-local detects that format.
+How `DROP TABLE`, `ALTER TABLE ... ADD COLUMNS` / `REPLACE COLUMNS`, `SHOW CREATE TABLE`, `DESCRIBE` and `SHOW COLUMNS` write their result files depending on the target table's format, and how athena-local detects that format; and how `DESCRIBE EXTENDED` / `DESCRIBE FORMATTED` run.
 
 `DROP TABLE` and `ALTER TABLE ... ADD COLUMNS` write a different `<id>.txt`
 and `.metadata` companion depending on whether the Trino catalog holding the
@@ -123,9 +123,8 @@ at the head of the `.metadata`, no `UpdateCount`), which differs from Athena
 when the target is an Iceberg table or a view. The rows of `DESCRIBE` and
 `SHOW COLUMNS` fall back to the Hive shape as well (padded to 20 characters,
 Hive's type spelling, a `# Partition Information` block for partition
-columns). `DESCRIBE EXTENDED` and `DESCRIBE FORMATTED` are read with `EXTENDED` /
-`FORMATTED` as the table name, so they always get the Hive row (how Athena
-treats them on an Iceberg table has not been measured).
+columns). `DESCRIBE EXTENDED` and `DESCRIBE FORMATTED` look up the format the
+same way; see the next section.
 
 A view is detected by its `table_type`, whichever connector backs its
 catalog, and gets the view row of the table above. Trino's
@@ -135,3 +134,86 @@ catalog, and gets the view row of the table above. Trino's
 For `DROP TABLE`, that last fallback happens to match what real Athena does
 for `DROP TABLE IF EXISTS` on a missing table too (measured 2026-09-21). See
 [Caveats](caveats.md#alter-table-and-format-dependent-ddl) for the limits of this detection.
+
+## `DESCRIBE EXTENDED` and `DESCRIBE FORMATTED`
+
+Trino has no grammar for `DESCRIBE EXTENDED`, `DESCRIBE FORMATTED`, or a
+`DESCRIBE` naming a column or a `PARTITION (...)`, but Athena runs them as
+Hive DDL (measured 2026-09-27). athena-local recognises these statements
+before Trino's syntax check, does not send them, and instead sends
+`DESCRIBE <name>` (plus `SHOW CREATE TABLE` and `"<table>$properties"` for an
+Iceberg table) and builds Athena's rows from the answers.
+
+Only the forms measured on real Athena take this path; every other form keeps
+the old behaviour (Trino's syntax check rejects it at start):
+
+| Statement | Hive table | Partitioned Hive table | View | Iceberg table |
+| --- | --- | --- | --- | --- |
+| `DESCRIBE EXTENDED <t>` | runs | runs | runs | fails: `EXTENDED keyword is not supported for Iceberg tables.` |
+| `DESCRIBE FORMATTED <t>` | runs | runs | runs | runs |
+| `DESCRIBE EXTENDED <t> <column>` | runs | old behaviour | old behaviour | fails: `EXTENDED keyword is not supported for Iceberg tables.` |
+| `DESCRIBE FORMATTED <t> <column>` | runs | old behaviour | old behaviour | fails: `FORMATTED keyword is not supported for Iceberg table columns.` |
+| `DESCRIBE <t> <column>` | old behaviour | old behaviour | old behaviour | runs |
+| `DESCRIBE EXTENDED` / `FORMATTED <t> PARTITION (<key>='<value>')` | old behaviour | runs | old behaviour | old behaviour |
+| `DESCRIBE <t> PARTITION (<key>='<value>')` | old behaviour | old behaviour | old behaviour | fails: `PARTITION keyword is not supported for Iceberg tables.` |
+
+`DESC` is the same as `DESCRIBE`. Only `QueryExecutionContext.Catalog`
+`AwsDataCatalog` (any case) or an omitted catalog was measured; under any other
+context catalog (S3 Tables included) every form keeps the old behaviour. A name
+in backquotes, a name followed by a
+block comment Athena's Hive parser rejects (see
+[Caveats](caveats.md#block-comments-athenas-hive-parser-rejects)), a
+`PARTITION (...)` with more than one key and a table whose connector is
+neither `hive` nor `iceberg` also keep the old behaviour.
+
+What runs is `UTILITY` / `DESCRIBE_TABLE` with a `<id>.txt` result, on a view
+too (unlike a plain `DESCRIBE` on a view, which is `DESC_VIEW`). On a Hive table
+or a view it is written as `application/octet-stream` with no `UpdateCount`;
+on an Iceberg table as `binary/octet-stream` with an `UpdateCount` of `0`, the
+same split as a plain `DESCRIBE`. `GetQueryResults` has the three `string`
+columns `col_name` / `data_type` / `comment` (eleven columns, adding `min`,
+`max`, `num_nulls`, `distinct_count`, `avg_col_len`, `max_col_len`,
+`num_trues` and `num_falses`, for `DESCRIBE FORMATTED <t> <column>`), one value
+per row as for a plain `DESCRIBE`. `Query` loses the database and
+`awsdatacatalog.` from the name the way a plain `DESCRIBE` on a table does,
+on a view too, and two spaces between `DESCRIBE` and `EXTENDED` / `FORMATTED`
+become one (a newline, three spaces or more and a tab are kept as sent; only
+two spaces were measured).
+
+The rows follow Athena's layout. The column part is the same as a plain
+`DESCRIBE` (padded to 20 characters on a Hive table or a view; the partition
+columns stay out of the upper list for `FORMATTED`). The detail part — the
+`Detailed Table Information` / `Detailed Partition Information` line of
+`EXTENDED`, the `# Detailed Table Information`, `# Detailed Partition Information`
+and `# Storage Information` blocks of `FORMATTED`, and the `Name:`,
+`Location:`, `# Table properties:` and `# Iceberg storage table properties:`
+lines of `FORMATTED` on an Iceberg table — comes from Glue on real Athena.
+athena-local keeps the headings and the rows it can fill from Trino (database,
+table, columns, partition keys, table or view, and for an Iceberg table the
+location, `format` and `write.format.default`) or that were the same on every
+table measured (`LastAccessTime: UNKNOWN`, `Protect Mode: None`,
+`Retention: 0`, `Compressed: No`, empty bucket and sort columns), and leaves
+out the rest: owner, create time, SerDe and input / output format classes,
+bucket count, a Hive table's location, `Table Parameters` /
+`Partition Parameters`, a view's `# View Information`, and the Iceberg
+properties Trino does not report (`compression_level`, `write_compression`
+and the other `write.*` keys). The `Name:` of an Iceberg table is
+`iceberg.<database>.<table>`, as on Athena.
+
+Failures are decided when the query starts, and reported like Athena's
+(measured 2026-09-27):
+
+| Case | `StateChangeReason` | `ErrorCategory` / `ErrorType` | Files |
+| --- | --- | --- | --- |
+| missing table | `FAILED: SemanticException [Error 10001]: Table not found <table>` | 2 / 1006 | `<id>.txt` with the reason, no `.metadata` |
+| missing database | `FAILED: SemanticException [Error 10072]: Database does not exist: <database>` | 2 / 1006 | same |
+| missing column | `FAILED: Execution Error, return code 1 from org.apache.hadoop.hive.ql.exec.DDLTask. cannot find field <column> from [0:<c0>, 1:<c1>, ...]` | 1 / 1003 | same |
+| missing partition | `FAILED: SemanticException [Error 10006]: Partition not found {<key>=<value>}` | 2 / 1006 | same |
+| `EXTENDED`, a column with `FORMATTED` or `PARTITION` on an Iceberg table | see the first table | 2 / 1100 | none |
+
+Only the name-only forms were measured on a missing table or database; with a
+column or a `PARTITION (...)` on a missing table, the old behaviour is kept.
+
+`DESCRIBE EXTENDED` or `DESCRIBE FORMATTED` with no name is rejected at start
+with `Entity Not Found`, as on Athena (Athena, like athena-local, looks up a
+table called `extended` / `formatted`).

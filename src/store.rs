@@ -76,6 +76,9 @@ pub struct Execution {
     /// GetQueryExecution が `query`・`database` の代わりに返す値。実行は `query` で行うが、本物が受け取った文の
     /// まま返す場合（カタログを落として実行したビューの SHOW COLUMNS。#242）に入る。
     pub reported: Option<Reported>,
+    /// 名前だけの `DESCRIBE EXTENDED`／`FORMATTED` を実行する（#275）。真なら `background_execution::run` が
+    /// `query` を Trino に送らず、別に組んだ `DESCRIBE <名前>` などを送って行を作り直す。
+    pub describe_extended: bool,
     /// StopQueryExecution が立て、実行中のタスクが見る。
     pub cancel: Arc<Cancel>,
 }
@@ -164,6 +167,8 @@ pub struct Submission {
     pub immediate_failure: Option<ImmediateFailure>,
     /// GetQueryExecution に返す値（`Execution::reported`）。
     pub reported: Option<Reported>,
+    /// `Execution::describe_extended` に渡す値（#275）。
+    pub describe_extended: bool,
 }
 
 impl Store {
@@ -192,6 +197,7 @@ impl Store {
             fingerprint,
             immediate_failure,
             reported,
+            describe_extended,
         } = submission;
 
         let mut inner = self.lock();
@@ -222,6 +228,7 @@ impl Store {
             failure: None,
             immediate_failure,
             reported,
+            describe_extended,
             cancel: Arc::default(),
         };
         inner.executions.insert(id.to_string(), execution);

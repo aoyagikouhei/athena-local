@@ -644,26 +644,37 @@ async fn describe_extended_のブロックコメントは_hive_表だけ_failed_
     );
 }
 
-/// de1 は Hive 表だけで失敗させるので（測ったのは Hive 表だけ。#257）、Iceberg・ビューは構文チェックの
+/// de1 は Hive 表だけで失敗させるので（測ったのは Hive 表だけ。#257）、Iceberg・ビュー・無い表は構文チェックの
 /// 前の失敗にならず、今までどおり構文チェックへ進む（`entity_check::check` を飛ばす計画攻撃 A1 の分岐は
-/// 通らない。A1 は Hive 表のテストが固定している）。
+/// 通らない。A1 は Hive 表のテストが固定している）。本物の Trino はこの文を構文チェックで弾くが、偽 Trino は
+/// 通すので、その後の `entity_check::check` まで進む。#275 から `entity_check` は `EXTENDED` を読み飛ばして
+/// `t` を対象にするので、無い表は開始時の Entity Not Found になる（Iceberg・ビューは開始する）。
 #[tokio::test]
-async fn describe_extended_のブロックコメントは_iceberg_ビューなら開始時に弾かれず構文チェックへ進む()
+async fn describe_extended_のブロックコメントは_iceberg_ビュー_無い表なら開始時に弾かれず構文チェックへ進む()
  {
     let sql = "DESCRIBE EXTENDED /* c */ t";
-    for response in [
-        probe_response("iceberg", "TABLE"),
-        probe_response("hive", "VIEW"),
-        probe_response_missing(),
+    for (response, expected_status) in [
+        (probe_response("iceberg", "TABLE"), 200),
+        (probe_response("hive", "VIEW"), 200),
+        (probe_response_missing(), 400),
     ] {
         let harness = Harness::builder(select_response())
             .route(&probe_sql(DEFAULT_CATALOG, DEFAULT_SCHEMA, "t"), response)
             .start()
             .await;
 
-        // A1 が無ければ `entity_check::check` が `EXTENDED` を表の名前と読んで「表が無い」で
-        // 開始時に 400 を返してしまう。`start_query` は 200 を assert するので、それ自体が守り。
-        harness.start_query(json!({ "QueryString": sql })).await;
+        let (status, body) = harness
+            .call("StartQueryExecution", json!({ "QueryString": sql }))
+            .await;
+        assert_eq!(status, expected_status, "{body}");
+        if status == 400 {
+            assert!(
+                body["Message"]
+                    .as_str()
+                    .is_some_and(|message| message.starts_with("Entity Not Found")),
+                "{body}"
+            );
+        }
 
         assert!(
             harness.syntax_checks().contains(&sql.to_string()),

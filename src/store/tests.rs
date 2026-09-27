@@ -56,6 +56,7 @@ fn submitted() -> Store {
             fingerprint: fingerprint("SELECT 1"),
             immediate_failure: None,
             reported: None,
+            describe_extended: false,
         },
     );
     store
@@ -77,6 +78,7 @@ fn 投入から成功までの状態が進む() {
             fingerprint: fingerprint("SELECT ?"),
             immediate_failure: None,
             reported: None,
+            describe_extended: false,
         },
     );
 
@@ -206,6 +208,7 @@ fn submission_with_token(query: &str, token: &str) -> Submission {
         fingerprint: fingerprint(query),
         immediate_failure: None,
         reported: None,
+        describe_extended: false,
     }
 }
 

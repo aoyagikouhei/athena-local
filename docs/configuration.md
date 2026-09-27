@@ -39,7 +39,13 @@ which is replaced by the Trino catalog of the `AwsDataCatalog` alias (see
 whose first part is an unquoted `awsdatacatalog` in any case, in the context
 catalogs and statements real Athena was measured to run it in, whose first part
 is replaced by the same Trino catalog (see
-[Caveats](caveats.md#parameters-and-catalog-aliases)). Unqualified table names with the
+[Caveats](caveats.md#parameters-and-catalog-aliases)). `DESCRIBE EXTENDED`,
+`DESCRIBE FORMATTED` and `DESCRIBE` with a column or a `PARTITION (...)` clause,
+which Trino has no grammar for, are not sent at all: athena-local sends
+`DESCRIBE <name>` and a few metadata queries of its own and builds Athena's
+rows from them (see
+[`DESCRIBE EXTENDED` and `DESCRIBE FORMATTED`](ddl.md#describe-extended-and-describe-formatted)).
+Unqualified table names with the
 context carrying the catalog and database remain the most portable form.
 
 Some Athena catalog names cannot exist in Trino. Reading S3 Tables through Athena

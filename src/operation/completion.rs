@@ -33,13 +33,32 @@ pub(super) async fn iceberg_partition_specs(
     }
 }
 
+/// `describe_target_name` が試す `DESCRIBE`／`DESC` の直後の修飾子の候補（`target_table::keywords` の
+/// DESCRIBE の候補と同じ考え方。修飾子付きを先に置く）。
+const DESCRIBE_TARGET_MODIFIERS: &[Option<&str>] = &[Some("EXTENDED"), Some("FORMATTED"), None];
+
 /// DESCRIBE の対象の名前の、元の SQL での範囲。`iceberg_partition_specs` が Trino に投げる名前。
+/// `EXTENDED`／`FORMATTED`（あれば）を読み飛ばしてから名前を読むので、`describe_extended` が実行する
+/// `DESCRIBE FORMATTED <名前>` の表示用の文（execution.query）でも正しく名前を取れる（計画攻撃 A1。#275）。
+///
+/// 候補ごとに新しい `Cursor` からやり直し、**名前まで読めた**最初の候補を採る
+/// （`target_table::parse_target_table` と同じバックトラック。独立レビュー
+/// completion.rs:describe_target_name:reserved_word_name_collision）。修飾子の綴りが実際には名前の 1 部目
+/// （`DESCRIBE extended.orders` など）だと、`EXTENDED`／`FORMATTED` を消費した候補は直後の `.` で
+/// `qualified_name` が読めず失敗するので、修飾子無しの候補に落ちて名前を正しく読む。
 pub(super) fn describe_target_name(query: &str) -> Option<&str> {
-    let mut cursor = athena_sql::Cursor::new(query);
-    if !(cursor.keyword("DESCRIBE") || cursor.keyword("DESC")) {
-        return None;
-    }
-    Some(cursor.qualified_name()?.text)
+    DESCRIBE_TARGET_MODIFIERS.iter().find_map(|modifier| {
+        let mut cursor = athena_sql::Cursor::new(query);
+        if !(cursor.keyword("DESCRIBE") || cursor.keyword("DESC")) {
+            return None;
+        }
+        if let Some(modifier) = modifier
+            && !cursor.keyword(modifier)
+        {
+            return None;
+        }
+        Some(cursor.qualified_name()?.text)
+    })
 }
 
 /// EXPLAIN の結果を本物と同じくプランの行ごとに分ける。Trino は `Query Plan` 列の 1 行に改行入りの
@@ -280,6 +299,12 @@ mod tests {
             ("DESCRIBE t ;", Some("t")),
             // 対照（x1）
             ("SELECT 1", None),
+            // 実在の修飾子（独立レビュー completion.rs:describe_target_name:reserved_word_name_collision。#275）
+            ("DESCRIBE EXTENDED cat.db.t", Some("cat.db.t")),
+            ("DESCRIBE FORMATTED t", Some("t")),
+            // 名前の 1 部目が修飾子と同じ綴り（同上。修飾子と取り違えず名前として読む）
+            ("DESCRIBE extended.orders", Some("extended.orders")),
+            ("DESCRIBE formatted", Some("formatted")),
         ];
         for &(query, expected) in cases {
             assert_eq!(describe_target_name(query), expected, "{query:?}");

@@ -237,7 +237,7 @@ async fn namespace_missing(
 
 /// `schema_probe_sql` が `SCHEMA_NOT_FOUND` で失敗したときだけ真。成功（ある）とほかの失敗（確かめられない）は偽で、
 /// 呼び出し側は今までどおりに倒す。修飾名で引くので、セッションのカタログ・スキーマは付けない。
-async fn schema_missing(trino: &Trino, sql: &str) -> bool {
+pub(super) async fn schema_missing(trino: &Trino, sql: &str) -> bool {
     matches!(
         trino.execute(sql, None, None, &Cancel::default()).await,
         Err(error) if error.name.as_deref() == Some("SCHEMA_NOT_FOUND")

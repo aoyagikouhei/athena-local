@@ -144,7 +144,10 @@ Behaviour that matches real Athena:
     run, and report `Query`, as `DESCRIBE t`. A comment in the dropped part is
     kept (`DESCRIBE db./* c */t` becomes `DESCRIBE /* c */t`). On a view the
     name keeps its database, and the catalog stays in `Query` although the
-    statement runs without it.
+    statement runs without it. `DESCRIBE EXTENDED` and `DESCRIBE FORMATTED`
+    lose the database on a view too, and two spaces between the keywords
+    become one (`DESCRIBE  EXTENDED db.t` reports `DESCRIBE EXTENDED t`; see
+    [DDL](ddl.md#describe-extended-and-describe-formatted)).
   - Whenever the database or the catalog is dropped from `Query`,
     `GetQueryExecution` reports the name's database, spelled as written, as
     `QueryExecutionContext.Database`, even when the request sent another
@@ -219,6 +222,9 @@ Behaviour that matches real Athena:
   Athena (measured 2026-09-24); athena-local knows the target is a view only
   once the query has run, so the value is decided when the query completes
   and `GetQueryExecution` reports `DESCRIBE_TABLE` or `SHOW_COLUMNS` until then.
+  `DESCRIBE EXTENDED` and `DESCRIBE FORMATTED` stay `DESCRIBE_TABLE` on a view
+  (measured 2026-09-27; see
+  [DDL](ddl.md#describe-extended-and-describe-formatted)).
   `VACUUM` is `DML` and `OPTIMIZE` is `DDL`.
   Statements whose `SubstatementType` was not measured leave the field out.
   Leading whitespace and comments (`-- ...`, `/* ... */`, possibly interleaved)

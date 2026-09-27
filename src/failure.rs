@@ -3,6 +3,8 @@
 
 use crate::trino::QueryError;
 
+mod describe;
+
 /// AthenaError.ErrorCategory。
 pub const SYSTEM: i32 = 1;
 pub const USER: i32 = 2;

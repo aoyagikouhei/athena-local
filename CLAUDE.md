@@ -35,7 +35,7 @@ CI（`.github/workflows/ci.yml`）の中身とリリース（`v*` タグで `doc
 
 壊すと事故になる不変条件:
 
-- 書き換えの条件（パラメータ、`TRINO_CATALOG_MAP` の別名に一致する修飾名、文の前後の空白と `;`、DESCRIBE などの `awsdatacatalog.` と表への DESCRIBE の DB、S3 Tables の Context の `CREATE TABLE AwsDataCatalog.<名前空間>.<表>` の 1 部目を空白にするもの、S3 Tables の Context の CTAS の `awsdatacatalog.<DB>.<表>` の 1 部目を `AwsDataCatalog` の Trino 名にするもの、無引用の `awsdatacatalog` を 1 部目に書いた名前のうち本物が実行したと測った Context と文の組（`operation/unquoted_alias.rs`）の 1 部目を同じく当てるもの）のどれにも当たらなければ、Trino に送る SQL は受け取った SQL と 1 文字も違わない（テストで保証）。条件を足したら、この一覧と `docs/configuration.md` の "not rewritten" の約束も直す。
+- 書き換えの条件（パラメータ、`TRINO_CATALOG_MAP` の別名に一致する修飾名、文の前後の空白と `;`、DESCRIBE などの `awsdatacatalog.` と表への DESCRIBE の DB、S3 Tables の Context の `CREATE TABLE AwsDataCatalog.<名前空間>.<表>` の 1 部目を空白にするもの、S3 Tables の Context の CTAS の `awsdatacatalog.<DB>.<表>` の 1 部目を `AwsDataCatalog` の Trino 名にするもの、無引用の `awsdatacatalog` を 1 部目に書いた名前のうち本物が実行したと測った Context と文の組（`operation/unquoted_alias.rs`）の 1 部目を同じく当てるもの）のどれにも当たらなければ、Trino に送る SQL は受け取った SQL と 1 文字も違わない（テストで保証）。例外として、Trino に構文が無い `DESCRIBE EXTENDED`／`FORMATTED` と列・PARTITION 指定の DESCRIBE（`operation/describe_extended.rs` が認識した文）は受け取った文を送らず、`DESCRIBE <名前>` と追加の問い合わせを別のクエリとして送る（#275）。条件を足したら、この一覧と `docs/configuration.md` の "not rewritten" の約束も直す。
 - 構文チェックは `PREPARE athena_local_syntax_check FROM\n<sql>` で、Trino のエラー位置を 1 行戻す。前置きを変えるときは `src/trino.rs` と偽 Trino（`tests/common/mod.rs`）の `SYNTAX_CHECK_PREFIX` を両方直す。
 - 結果ファイル（本体、次に `.metadata`）を置いてから `SUCCEEDED` にする（クライアントは SUCCEEDED を見た直後に S3 を読む）。
 - `Store::finish` は終端状態では何もしない（先に `CANCELLED` になったクエリにあとから届いた結果は捨てる）。取り消しは `Store::cancel` で同期に `CANCELLED` にし、実行中のタスクがページ境界でフラグを見て `nextUri` に `DELETE` を送る。
@@ -47,7 +47,7 @@ CI（`.github/workflows/ci.yml`）の中身とリリース（`v*` タグで `doc
 結合テストは `tests/common/mod.rs` の `Harness`（偽 Trino・偽 S3・本物の `athena_local::router` を同じプロセスに立てる）を使う。ヘルパの一覧は docs/dev/architecture.md の「テストの足場」。
 
 - `config.rs` のテストは本物の環境変数を触らない（テストが並列に走るため）。`parse_results` に環境変数を読むクロージャを渡して差し替える。
-- ユニットテストはインラインの `#[cfg(test)] mod tests` に置く。例外は本体とテストを合わせて 400 行を超えたファイルで、テストを子モジュール `<name>/tests.rs`（`mod.rs` 無し）に出している: `src/results.rs`（#75）と、`src/operation/` の `classification.rs`・`target_table.rs`・`table_format.rs`（#162）、`src/operation/unquoted_ddl/create_table/hive.rs`（#248）、`src/store.rs`（#251）、`src/operation/comment_parse_error/alter.rs`（#257）、`src/catalog.rs`（#260）。
+- ユニットテストはインラインの `#[cfg(test)] mod tests` に置く。例外は本体とテストを合わせて 400 行を超えたファイルで、テストを子モジュール `<name>/tests.rs`（`mod.rs` 無し）に出している: `src/results.rs`（#75）と、`src/operation/` の `classification.rs`・`target_table.rs`・`table_format.rs`（#162）、`src/operation/unquoted_ddl/create_table/hive.rs`（#248）、`src/store.rs`（#251）、`src/operation/comment_parse_error/alter.rs`（#257）、`src/catalog.rs`（#260）、`src/operation/utility_rows.rs`・`describe_extended.rs`・`describe_detail.rs`（#275）。
 
 ## ドキュメントの置き場
 
@@ -73,7 +73,7 @@ CI（`.github/workflows/ci.yml`）の中身とリリース（`v*` タグで `doc
 
 - **本物の Athena に合わせることが目的**。文言、エラーコード、型の見え方、ファイル名などは本番 Athena で実測した値に合わせ、コメントに「2026-09-14 実測」のように書いてある。実測していない振る舞いは推測で埋めない。項目を省く（例: `substatement_type` が `None`）か、`docs/caveats.md` に「not measured」と書いて `docs/dev/unmeasured.md` に載せる。測ったら `docs/dev/measurements/` に記録し、unmeasured から消す。設計・範囲の選択肢を人間に示すときは、実測に近い方を推奨にする（規模・issue の範囲・別 issue に分けられることは推奨を下げる理由にせず、コストとして添える。#242）。
 - **合わせるのは、調べたクライアントが送る文の成功系、失敗の状態とエラーコード、クライアントが読む文言だけ**（範囲の定義と理由は decisions.md の「合わせる範囲」）。それ以外の本物との差は `docs/caveats.md` に 1 行書いて終わりにし、issue は立てない。`docs/dev/unmeasured.md` の行は起票の理由にしない。範囲外として閉じる issue には `out-of-scope` のラベルを付け、一覧を `docs/dev/roadmap.md` の「3.」に足す。先行実測の対象は unmeasured.md ではなく roadmap.md の未実装機能。
-- **SQL の本文を書き換えるのは、本物の Athena がそう扱うと実測した場合だけ**（理由と経緯は decisions.md の「SQL の字句処理と文の分類」）。Athena と Trino の書き方の違い（小数リテラルの型、DDL、`OPTIMIZE` / `VACUUM`）を Trino で通すための変換はせず、`docs/caveats.md` に回避策を書く（手元で通って本物で落ちる SQL を作らない）。書き換えは `athena-sql` が持つ元の SQL の位置（バイト範囲）の差し替えだけにし、触らない部分は 1 文字も変えず、Trino のエラーの位置を受け取った SQL に戻せるようにする。書き換えた SQL は実行の中だけに置き、`Store` の `Query` は受け取ったままにする（例外は、本物の `Query` がそうなっている、文の前後の空白と `;` を落とす入口の正規化（#240）と、DESCRIBE などの修飾を落とす書き換え（#242）と、CTAS でない CREATE TABLE の 3 部の名前のカタログを落とす表示（#271。実行する文は変えない）だけ）。全体を包む（`EXECUTE IMMEDIATE`）か別のクエリを投げる（構文チェックの `PREPARE`、パラメータ分類の `SELECT (<値>)`）で足りるなら書き換えない。
+- **SQL の本文を書き換えるのは、本物の Athena がそう扱うと実測した場合だけ**（理由と経緯は decisions.md の「SQL の字句処理と文の分類」）。Athena と Trino の書き方の違い（小数リテラルの型、DDL、`OPTIMIZE` / `VACUUM`）を Trino で通すための変換はせず、`docs/caveats.md` に回避策を書く（手元で通って本物で落ちる SQL を作らない）。書き換えは `athena-sql` が持つ元の SQL の位置（バイト範囲）の差し替えだけにし、触らない部分は 1 文字も変えず、Trino のエラーの位置を受け取った SQL に戻せるようにする。書き換えた SQL は実行の中だけに置き、`Store` の `Query` は受け取ったままにする（例外は、本物の `Query` がそうなっている、文の前後の空白と `;` を落とす入口の正規化（#240）と、DESCRIBE などの修飾を落とす書き換え（#242）と、CTAS でない CREATE TABLE の 3 部の名前のカタログを落とす表示（#271。実行する文は変えない）と、`DESCRIBE EXTENDED`／`FORMATTED` のキーワードの間のちょうど空白 2 つを 1 つにする表示（#275）だけ）。全体を包む（`EXECUTE IMMEDIATE`）か別のクエリを投げる（構文チェックの `PREPARE`、パラメータ分類の `SELECT (<値>)`）で足りるなら書き換えない。
 - 挙動を変えたら `docs/`（対応オペレーションは `api.md`、Athena との差分は `caveats.md`、結果ファイルは `result-files.md` など）と CHANGELOGS.md の `[Unreleased]` も更新する。CHANGELOG は 1 項目 1〜2 行の箇条書きで、挙動の説明は書かずに docs の節へリンクする。CHANGELOG のバージョンは Docker Hub のイメージタグと一致させ、README の compose 例のタグも合わせる。
 - コメント、テスト名（日本語の文）、エラーメッセージ、コミットメッセージ（「〜する」で終わる一行）、PR の本文は日本語。README・`docs/*.md`・CHANGELOG は英語、`docs/dev/` は日本語。
 - **ユーザーへの返答は常に日本語で書く。** 途中の状況報告、質問、最終報告、コマンドの説明もすべて日本語。英語は README・`docs/*.md`・CHANGELOG の本文とコード中の識別子だけ。

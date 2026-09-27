@@ -15,6 +15,7 @@ use super::comment_parse_check::{
 use super::comment_parse_error;
 use super::context_catalog;
 use super::create_table_catalog;
+use super::describe_start;
 use super::entity_check::{self, Check};
 use super::quoted_names;
 use super::reported_query;
@@ -28,6 +29,9 @@ pub(super) struct Decision {
     pub(super) database: Option<String>,
     pub(super) immediate_failure: Option<ImmediateFailure>,
     pub(super) reported: Option<Reported>,
+    /// 名前だけの `DESCRIBE EXTENDED`／`FORMATTED` を実行する（#275）。真なら
+    /// `background_execution::run` が `execution.query` を Trino に送らず別の文を組む。
+    pub(super) describe_extended: bool,
 }
 
 /// `query` は `single_statement` が返した受け取った文、`catalog`・`database` は Context に既定値を当てたもの。
@@ -109,6 +113,17 @@ pub(super) async fn decide(
         )
         .await
     };
+    // 名前だけの修飾子付き DESCRIBE（列・PARTITION 指定はフェーズ 4）は、構文チェック・entity_check・
+    // quoted_names・unquoted_ddl・comment_parse_error の判定をすべて飛ばして実行するか、開始時の
+    // ImmediateFailure にする（本物は Hive 表・ビューを実行し、Iceberg は EXTENDED だけ開始して FAILED
+    // にした。2026-09-27 実測。#275）。コメント入りの DESCRIBE（de1 など）は #257 の経路に任せる。
+    if pre_syntax_check_failure.is_none()
+        && comment_parse_error::detect(&query).is_none()
+        && let Some(decision) =
+            describe_start::start(app, &query, catalog, database.as_deref()).await
+    {
+        return Ok(decision);
+    }
     // 本物は構文エラーを StartQueryExecution で弾き、実行を作らない（ExecutionParameters があっても元の SQL で数える）。
     // 文言は Trino のもの、コードは 2026-09-14 に実測した MALFORMED_QUERY。
     if pre_syntax_check_failure.is_none()
@@ -364,5 +379,6 @@ pub(super) async fn decide(
         database,
         immediate_failure,
         reported,
+        describe_extended: false,
     })
 }

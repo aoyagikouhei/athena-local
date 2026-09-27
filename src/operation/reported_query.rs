@@ -83,8 +83,9 @@ pub(super) fn drop_database(query: &str, context_catalog: Option<&str>) -> Optio
 
 /// `keywords` の後ろの名前がちょうど `parts` 部ですべて無引用で、1 部目が `first` に当たれば、1 部目と直後の
 /// `.`・空白を落とした文と、1 部目・2 部目の綴りを返す。引用符付きの部品を含む名前は、開始時の判定（`quoted_names`）に
-/// 任せて落とさない。
-fn drop_first_part(
+/// 任せて落とさない。`describe_extended` が EXTENDED／FORMATTED を挟んだ `DESCRIBE` の DB・カタログ落としに
+/// 再利用する（`keywords` に `["DESCRIBE", "EXTENDED"]` のような並びを渡せる。#275）。
+pub(super) fn drop_first_part(
     query: &str,
     keywords: &[&str],
     parts: usize,
@@ -118,7 +119,8 @@ pub(super) fn is_aws_data_catalog(name: &str) -> bool {
 
 /// `query` の `start..end` から、コメントだけを残して空白・`.`・無引用の名前を捨てる（本物は
 /// `DESCRIBE <db>./* c */<t>` の `/* c */` を残した。2026-09-26 実測 m10）。範囲に引用符付きの名前は来ない。
-fn remove_keeping_comments(query: &str, start: usize, end: usize) -> String {
+/// `describe_extended` がバッククォートを含む名前の DB・カタログ落としに再利用する（#275）。
+pub(super) fn remove_keeping_comments(query: &str, start: usize, end: usize) -> String {
     let bytes = query.as_bytes();
     let mut kept = String::from(&query[..start]);
     let mut i = start;

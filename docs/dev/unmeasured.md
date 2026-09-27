@@ -6,7 +6,7 @@
 
 ## 結果ファイル（[measurements/result-files.md](measurements/result-files.md)）
 
-- [ ] Iceberg のテーブルへの `DESCRIBE EXTENDED t`・`DESCRIBE FORMATTED t`・`DESCRIBE t PARTITION (...)`・`DESCRIBE t col` の `UpdateCount`・Content-Type・`.metadata`・行の形（`DESCRIBE t` は Hive で null・application、Iceberg で 0・binary・不透明。#160、2026-09-24）。athena-local は `EXTENDED` などを名前として読むので、どれも Hive 扱い（null・application）。`DESC t` は Hive で `DESCRIBE t` と同じと測った（#173）ので Iceberg でも `DESCRIBE` と同じに扱っていて、Iceberg の `DESC t` そのものは測っていない
+- [ ] `DESCRIBE EXTENDED`／`FORMATTED` と列・PARTITION 指定の DESCRIBE の測っていない組（#275 で測ったのは [statements.md](measurements/statements.md) の #275 の節の組だけ）: パーティション付き Hive 表・ビューへの列指定、Hive 表への無印の `DESCRIBE <t> <col>` の行（Query は #242 の m8 で測った）、Iceberg 表への `DESCRIBE EXTENDED`／`FORMATTED <t> PARTITION (...)`、ビューへの PARTITION 指定、キーが 2 つ以上の PARTITION 指定（無いときの文言の形）、キーワードの間の空白 3 つ以上・タブ（測ったのは空白 2 つが 1 つに畳まれる形だけ）、Context の Catalog が `AwsDataCatalog` 以外（S3 Tables・連携カタログ）のとき、Trino のカタログ名が `iceberg` 以外の Iceberg 表の `Name:`（本物は `iceberg.<DB>.<t>` だった。athena-local は固定で `iceberg` を書く）。athena-local はどれも今までどおり（開始時の構文チェックで弾く。空白は受け取ったまま）。ほかに、列名・PARTITION のキーの大文字小文字（athena-local は小文字にして Trino の列名と比べる）
 
 ## GetQueryResults（[measurements/query-results.md](measurements/query-results.md)）
 
