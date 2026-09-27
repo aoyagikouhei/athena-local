@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# issue #244 で作成。issue #257 で ROUND=3 を、issue #276 で ROUND=4・5 を追加。
+# issue #244 で作成。issue #257 で ROUND=3 を、issue #276 で ROUND=4・5・6 を追加。
 # 本物の Athena で、SHOW CREATE TABLE・ALTER TABLE・MSCK REPAIR TABLE・DESCRIBE の
 # キーワードの間や直後にブロックコメント（/* c */）を挟んだ SQL がどう扱われるか
 # （ParseException になるか、成功するか、位置・綴りでどう変わるか）を実測する
@@ -16,7 +16,9 @@
 # run-20260927-032737）が設計の誤りで測り残した組（閉じていない引用符の字句を
 # 成功しない文に載せ直したもの、元の名前だけに awsdatacatalog. が付いた RENAME TO
 # （改名先は 2 部のまま）、awsdatacatalog. 付きの名前の後ろに置いたコメントの位置、
-# S3 Tables を Context の Catalog に直接指定したときの判定）を測る。
+# S3 Tables を Context の Catalog に直接指定したときの判定）を測る。ROUND=6（#276）は
+# S3 Tables の Context の MSCK REPAIR TABLE が開始時に弾かれる（ROUND=5 の s5_msck）範囲を、
+# コメントの有無・位置、名前の部の数、無い表で測る（フィクスチャは作らない）。
 #
 # 出どころ（.claude/issue-notes/244.md・257.md・276.md、issue #244・#257・#276 本文）:
 #   #242（DESCRIBE の直後のブロックコメントを本物どおり FAILED にする）の設計時に見つかった、
@@ -55,6 +57,11 @@
 #   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=5 \
 #     S3TABLES_CATALOG=s3tablescatalog/your-bucket S3TABLES_NS=your_ns S3TABLES_TABLE=your_table \
 #     bash tools/measure/block-comment-parse-error.sh
+#   ラウンド 6（issue #276。下の「項目（ROUND=6、issue #276）」。S3TABLES_* が必須。
+#   フィクスチャは作らない）:
+#   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=6 \
+#     S3TABLES_CATALOG=s3tablescatalog/your-bucket S3TABLES_NS=your_ns S3TABLES_TABLE=your_table \
+#     bash tools/measure/block-comment-parse-error.sh
 #
 # 必要な環境変数:
 #   OUTPUT    結果の出力先。s3://bucket/prefix/ の形（末尾の / を付ける）。
@@ -64,7 +71,8 @@
 #                （$RUN_DIR/available-databases.bytes に一覧を残す。実名を含む）。
 #   ROUND        既定 1（A・S・R・D 群）。2 にすると「項目（ROUND=2）」、3 にすると
 #                「項目（ROUND=3、issue #257）」、4 にすると「項目（ROUND=4、issue #276）」、
-#                5 にすると「項目（ROUND=5、issue #276）」だけを流す（フィクスチャの作成・
+#                5 にすると「項目（ROUND=5、issue #276）」、6 にすると「項目（ROUND=6、
+#                issue #276）」だけを流す（フィクスチャの作成・
 #                形式の裏取り・後始末・衝突確認・preflight・マスク・summary の仕組みは
 #                全ラウンド共通）。
 #   CATALOG      既定 AwsDataCatalog
@@ -396,6 +404,19 @@
 #   s5_msck     MSCK REPAIR /* c */ TABLE <S3TABLES_TABLE>
 #   s5_desc_nc  DESCRIBE <S3TABLES_TABLE>                                 対照（コメント無し）
 #
+# 項目（ROUND=6、issue #276。S3 Tables の Context の MSCK REPAIR TABLE。ROUND=5 の s5_msck が
+# 開始時に「Unsupported DDL query for S3 table buckets」で弾かれた範囲を決める。Context は
+# どれも Catalog=<S3TABLES_CATALOG>,Database=<S3TABLES_NS>。S3TABLES_* が揃っていなければ
+# 何も投げずに止まる。フィクスチャ（H・I・V）は作らず、既存の S3 Tables の表を読むだけ）:
+#   s6_nc   MSCK REPAIR TABLE <TABLE>                    コメント無し・1 部
+#   s6_nc2  MSCK REPAIR TABLE <NS>.<TABLE>               コメント無し・2 部
+#   s6_c0   /* c */ MSCK REPAIR TABLE <TABLE>            先頭
+#   s6_c1   MSCK /* c */ REPAIR TABLE <TABLE>            MSCK の後
+#   s6_c2   MSCK REPAIR /* c */ TABLE <TABLE>            REPAIR の後（対照。ROUND=5 の s5_msck と同じ文）
+#   s6_c3   MSCK REPAIR TABLE /* c */ <TABLE>            TABLE の後（名前の直前）
+#   s6_c4   MSCK REPAIR TABLE <TABLE> /* c */            名前の後ろ
+#   s6_m    MSCK REPAIR TABLE athena_local_probe_244_missing   無い表・コメント無し
+#
 # summary の note には、ROUND=4 までと同じ情報（attempts=N など）に加えて、送った文の長さ
 # （len=N。python3 の len()、文字数）と、awsdatacatalog. を落とした文でのコメントの対応位置
 # （comment_col_raw=N が受け取った文でのコメントの開始列、comment_col_dropped=N が
@@ -460,9 +481,9 @@ RETRY_MAX=${RETRY_MAX:-4}
 RETRY_DELAY=${RETRY_DELAY:-5}
 ROUND=${ROUND:-1}
 case "$ROUND" in
-  1 | 2 | 3 | 4 | 5) ;;
+  1 | 2 | 3 | 4 | 5 | 6) ;;
   *)
-    echo "ROUND には 1・2・3・4・5 のどれかを指定してください（既定 1）" >&2
+    echo "ROUND には 1・2・3・4・5・6 のどれかを指定してください（既定 1）" >&2
     exit 1
     ;;
 esac
@@ -519,6 +540,10 @@ S3TABLES_BUCKET=""
 case "$S3TABLES_CATALOG" in
   */*) S3TABLES_BUCKET=${S3TABLES_CATALOG#*/} ;;
 esac
+if [ "$ROUND" = 6 ] && { [ -z "$S3TABLES_CATALOG" ] || [ -z "$S3TABLES_NS" ] || [ -z "$S3TABLES_TABLE" ]; }; then
+  echo "ROUND=6 は S3 Tables の Context の項目だけなので、S3TABLES_CATALOG・S3TABLES_NS・S3TABLES_TABLE を揃えてください" >&2
+  exit 1
+fi
 FEDERATED_CATALOG=${FEDERATED_CATALOG:-}
 FEDERATED_DB=${FEDERATED_DB:-}
 FEDERATED_TABLE=${FEDERATED_TABLE:-}
@@ -1181,11 +1206,14 @@ fi
 # 作った直後に SHOW CREATE TABLE で形式を裏取りする（DROP 後は呼べない）。
 # ============================================================================
 
+# ROUND=6 は既存の S3 Tables の表を読むだけで、フィクスチャを作らない（H_OK・I_OK・V_OK は 0 のまま
+# なので、後始末の DROP も投げない）。
+FMT_H=unknown
+FMT_I=unknown
+if [ "$ROUND" != 6 ]; then
 echo
 echo "フィクスチャを作成します（DDL）。"
 FIXTURES_ATTEMPTED=1
-FMT_H=unknown
-FMT_I=unknown
 
 if run create-h "CREATE EXTERNAL TABLE $DB.$H (n int) PARTITIONED BY (p string) LOCATION '$LOC_H'"; then
   H_OK=1
@@ -1206,6 +1234,7 @@ if run create-v "CREATE VIEW $DB.$V AS SELECT 1 AS n"; then
 else
   echo "== V（ビュー）を作れませんでした。V を使う項目は未測定にします。"
 fi
+fi # ROUND != 6（フィクスチャの作成）
 
 # ============================================================================
 # ROUND=1: A・S・R・D 群（既定）。
@@ -1810,6 +1839,24 @@ fi
 fi # ROUND=5
 
 # ============================================================================
+# ROUND=6（issue #276）: S3 Tables の Context の MSCK REPAIR TABLE。ROUND=5 の s5_msck が
+# 開始時に弾かれた範囲（コメントの有無・位置、名前の部の数、無い表）を測る。S3TABLES_* が
+# 揃っていることは冒頭で確かめてある。スキャンは無く、表も作らない。
+# ============================================================================
+
+if [ "$ROUND" = 6 ]; then
+S6_CTX="Catalog=$S3TABLES_CATALOG,Database=$S3TABLES_NS"
+run_in_ctx "$S6_CTX" s6_nc  "MSCK REPAIR TABLE $S3TABLES_TABLE"
+run_in_ctx "$S6_CTX" s6_nc2 "MSCK REPAIR TABLE $S3TABLES_NS.$S3TABLES_TABLE"
+run_in_ctx "$S6_CTX" s6_c0  "/* c */ MSCK REPAIR TABLE $S3TABLES_TABLE"
+run_in_ctx "$S6_CTX" s6_c1  "MSCK /* c */ REPAIR TABLE $S3TABLES_TABLE"
+run_in_ctx "$S6_CTX" s6_c2  "MSCK REPAIR /* c */ TABLE $S3TABLES_TABLE"
+run_in_ctx "$S6_CTX" s6_c3  "MSCK REPAIR TABLE /* c */ $S3TABLES_TABLE"
+run_in_ctx "$S6_CTX" s6_c4  "MSCK REPAIR TABLE $S3TABLES_TABLE /* c */"
+run_in_ctx "$S6_CTX" s6_m   "MSCK REPAIR TABLE $MISSING"
+fi # ROUND=6
+
+# ============================================================================
 # 後始末: 作った 3 つを DROP する。
 # ============================================================================
 
@@ -1932,7 +1979,7 @@ elif [ "$ROUND" = 4 ]; then
   GROUP_F_LABELS="s3t_ctx_desc s3t_ctx_msck fed_ctx_desc fed_ctx_msck"
   ROUND4_LABELS="$GROUP_A_LABELS $GROUP_B_LABELS $GROUP_C_LABELS $GROUP_D_LABELS $GROUP_E_LABELS $GROUP_F_LABELS"
   ALL_LABELS="$PREFLIGHT_LABELS $FIXTURE_LABELS $ROUND4_LABELS $CLEANUP_LABELS"
-else
+elif [ "$ROUND" = 5 ]; then
   # issue #276（ROUND=5）。ROUND=4 が測り残した組を測り直す。実行順と同じ、群 Q（閉じていない
   # 引用符の字句）→ 群 P（awsdatacatalog. 付きの名前の後ろのコメント）→ 群 R（元の名前だけに
   # awsdatacatalog. が付いた RENAME TO。M → H → V）→ 群 S（S3 Tables の Context）。
@@ -1942,6 +1989,10 @@ else
   GROUP_S_LABELS="s5_desc s5_msck s5_desc_nc"
   ROUND5_LABELS="$GROUP_Q_LABELS $GROUP_P_LABELS $GROUP_R_LABELS $GROUP_S_LABELS"
   ALL_LABELS="$PREFLIGHT_LABELS $FIXTURE_LABELS $ROUND5_LABELS $CLEANUP_LABELS"
+else
+  # issue #276（ROUND=6）。S3 Tables の Context の MSCK REPAIR TABLE だけ。フィクスチャと後始末は無い。
+  ROUND6_LABELS="s6_nc s6_nc2 s6_c0 s6_c1 s6_c2 s6_c3 s6_c4 s6_m"
+  ALL_LABELS="$PREFLIGHT_LABELS $ROUND6_LABELS"
 fi
 
 # summary.tsv から 1 行を読み、要点を 1 行にまとめて返す。
@@ -2041,7 +2092,7 @@ write_summary_txt() {
       echo "#   全文で見分ける（ROUND=2 の n5〜n7 と同じ方針）。I だけは r1i（REPLACE COLUMNS で"
       echo "#   n・s に作り直す）→ r3i（s を s2 に改名）→ pn4i（DROP COLUMN n）の順を固定し、"
       echo "#   列名をずらして競合を避ける。"
-    else
+    elif [ "$ROUND" = 5 ]; then
       echo "# DDL: あり（ROUND=5、issue #276）。フィクスチャの作成・後始末は ROUND=1 と同じ"
       echo "#   3 つ（${PREFIX}_h・${PREFIX}_i・${PREFIX}_v）。群 Q で閉じていない引用符の字句を"
       echo "#   ADD COLUMNS（列 c50〜c53）・読み取り専用の SHOW CREATE TABLE に載せ、群 P で"
@@ -2054,6 +2105,11 @@ write_summary_txt() {
       echo "#   読むだけで、新しく作らない（S3TABLES_* が揃っているときだけ）。summary の note には"
       echo "#   送った文の長さと、群 P・R では awsdatacatalog. を落とした文でのコメントの対応位置も"
       echo "#   出す（sql_measure 関数）。"
+    else
+      echo "# DDL: 無し（ROUND=6、issue #276）。フィクスチャは作らない。preflight の SHOW TABLES の後、"
+      echo "#   Context を Catalog=<S3TABLES_CATALOG>,Database=<S3TABLES_NS> にして、既存の S3 Tables の表に"
+      echo "#   MSCK REPAIR TABLE を 8 回（コメントの有無・位置、名前の部の数、無い表）投げるだけ。"
+      echo "#   成功した場合も MSCK はメタデータの読み取り（S3 Tables の表のパーティションは変えない見込み）。"
     fi
     echo "# 課金の見込み: スキャンする SELECT は投げていない。ALTER・DROP はメタデータのみ、"
     echo "#   CREATE は 0 行、SHOW/MSCK/DESCRIBE は読み取りのみ。Athena の最小課金 × クエリ数の見込み。"

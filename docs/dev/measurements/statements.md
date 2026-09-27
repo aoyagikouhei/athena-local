@@ -166,6 +166,51 @@
 - 採用した判断: 測った組（文×位置×Hive 表）だけ本物の文言で失敗させ、ビュー・無い表・ほかの位置は今までどおり送る。pos1 の形だけ Query を受け取ったまま返す。msck1・msck2 は athena-local が MSCK を実行できない（Trino に構文が無い）ので再現しない。`DESCRIBE EXTENDED` の DB の落としは #275、残りの未実測は #276（#257、ユーザーの判断）
 - 備考: pos1 の Query は、コメント無しの `ALTER TABLE awsdatacatalog.<db>.<t>`（#242 m33）で落ちるのと逆になった。一方 DESCRIBE EXTENDED はコメント入りでも DB が落ちた（コメント無しの `DESCRIBE EXTENDED <db>.<t>` の m7 と同じ）
 
+### ブロックコメントの ParseException で #257 が測り残した組（#276）
+- 日付: 2026-09-27 ／ issue: #276 ／ スクリプト: `tools/measure/block-comment-parse-error.sh`（`ROUND=4`・`5`・`6`）／ 生データ: `$HOME/athena-block-comment-parse-error-measurements/run-20260927-032737`（ROUND=4、StartQueryExecution 75 回）・`run-20260927-040340`（ROUND=5、43 回）・`run-20260927-055823`（ROUND=6、9 回）
+- 相手: 本物の Athena（engine version 3、Context は特に書かない限り `Catalog=AwsDataCatalog,Database=<db>`。API が返す Catalog は小文字の `awsdatacatalog`）
+- 投げたもの: #257 と同じ Hive 表 `<H>`（`n int`、`PARTITIONED BY (p string)`）・Iceberg 表 `<I>`（`n int`）・ビュー `<V>` を作り、最後に消した（改名先の候補も消し、残りは無い）。無い表は `<M>`。ROUND=4 は issue 本文の表の全行、ROUND=5 は ROUND=4 の設計の誤りで狙いを測れなかった形（閉じていない引用符を成功する文に載せた、改名先を 3 部にした、`awsdatacatalog.` の前後で位置が変わらない配置）の測り直しと S3 Tables の Context、ROUND=6 は S3 Tables の Context の MSCK の範囲。実装側で全項目を生データと突き合わせた（位置 12 件は受け取った文字列で検算）
+- 返ったもの（位置 `L:C` は 0 始まりの列。1/1003 の失敗は ErrorMessage が StateChangeReason と同じ）:
+
+  | 文 | Hive 表 | ビュー・無い表 | Iceberg 表 |
+  |---|---|---|---|
+  | `SHOW CREATE TABLE <db>./* c */<t>` | FAILED 1/1003、`cannot recognize input near '<db>' '.' '/' in table name`（#257 と同じ） | Hive 表と同じ | SUCCEEDED |
+  | `MSCK REPAIR TABLE <db>.<t> /* c */` | FAILED 1/1003、`missing EOF at '/' near '<t>'` | Hive 表と同じ | FAILED 2/1200 `Query type not supported by Athena Iceberg at this time` |
+  | `DESCRIBE EXTENDED /* c */ <db>.<t>` | FAILED 1/1003、`... in specifying describe table types` | Hive 表と同じ。Query は DB が落ちる | FAILED 2/1100 `EXTENDED keyword is not supported for Iceberg tables.` |
+  | `ALTER TABLE <db>.<t> /* c */ ADD COLUMNS (...)` | FAILED 1/1003、`... in alter table statement` | Hive 表と同じ | SUCCEEDED（本体 0 バイト・`.metadata` 無し） |
+  | `ALTER /* c */ TABLE <db>.<t> REPLACE COLUMNS (...)` | FAILED 2/1006、StateChangeReason `line 1:0 cannot recognize input near 'ALTER' '/' '*' in alter statement`、ErrorMessage `Query type not supported by DDL engine.` | Hive 表と同じ | FAILED 2/1200 `Query type not supported by Athena Iceberg at this time` |
+  | `ALTER /* c */ TABLE <db>.<t> CHANGE COLUMN ...` | REPLACE COLUMNS と同じ | Hive 表と同じ | FAILED 2/1100 `Cannot change missing column`（構文は通った。直前の REPLACE COLUMNS が失敗して列が無かった） |
+
+  | 文（Hive 表） | 本物 |
+  |---|---|
+  | `SHOW CREATE TABLE <db>.<H> /* c */` | FAILED 1/1003、`missing EOF at '/' near '<H>'` |
+  | `MSCK REPAIR TABLE awsdatacatalog./* c */<db>.<H>` | FAILED 1/1003、`line 1:18 cannot recognize input near '/' '*' 'c' in table name`。Query は `MSCK REPAIR TABLE /* c */<db>.<H>`（`awsdatacatalog.` が落ち、位置も落とした文で数える） |
+  | `MSCK REPAIR TABLE <db>./* c */<H>` | FAILED 1/1003、`cannot recognize input near '<db>' '.' '/' in table name` |
+  | `DESCRIBE FORMATTED /* c */ <db>.<H>` | FAILED 1/1003、`line 1:19 missing EOF at '/' near 'FORMATTED'`。Query は DB が落ちる |
+  | `ALTER TABLE <db>.<H> /* c */ DROP COLUMN n` | FAILED 2/1006、StateChangeReason `... in alter table statement`、ErrorMessage `mismatched input 'COLUMN' expecting 'PARTITION'`（位置は COLUMN の 0 始まり + 1） |
+  | `ALTER TABLE <db>.<H> /* c */ RENAME TO ...`・`... REPLACE COLUMNS`、`/* c */ ALTER TABLE ... REPLACE COLUMNS`・`CHANGE COLUMN`、`ALTER TABLE /* c */ ... REPLACE COLUMNS`・`CHANGE COLUMN` | FAILED 2/1006、StateChangeReason は `/` の位置の ParseException（先頭 `line 1:0 ... near '/' '*' 'c'`、TABLE の後 `line 1:12 ... in table name`、名前の後ろ `... in alter table statement`）、ErrorMessage `Query type not supported by DDL engine.` |
+  | Iceberg 表の `ALTER TABLE <db>.<I> /* c */ DROP COLUMN n` | SUCCEEDED |
+  | 先頭・名前の直前のコメント `/* >= */`・`/* <> */`・`/* == */`（`/* <= */`・`/* != */` の対照も） | 3 語目は 2 文字のまま（`near '/' '*' '>='` など） |
+  | 閉じていない引用符 `/* 'a */ ...` の後ろに別の `'` がある（後ろのコメントの中も含む） | 3 語目は `'a` から次の `'` までの文字列（`''a */ ALTER TABLE ... COMMENT ''`）。後ろに `'` が無ければ `'a'` |
+
+  | `awsdatacatalog.` 付き（H・V・無い表） | 位置を数える文 | 本物 | Query |
+  |---|---|---|---|
+  | ADD COLUMNS（先頭・TABLE の後・名前の後ろのコメント） | `awsdatacatalog.` を落とした文 | FAILED 1/1003 の ParseException | 落ちる |
+  | SHOW CREATE TABLE・MSCK REPAIR TABLE（名前の後ろのコメント） | 落とした文 | FAILED 1/1003、`missing EOF at '/' near '<t>'` | 落ちる |
+  | DESCRIBE（名前の後ろのコメント） | DB まで落とした文（`DESCRIBE <H> /* c */` の 34） | FAILED 1/1003、`missing EOF at '/' near '<H>'` | DB と `awsdatacatalog.` が落ちる |
+  | DROP COLUMN・RENAME TO（改名先は 2 部。コメントは先頭・TABLE の後・名前の後ろ・無し） | **受け取った文** | FAILED 2/1006、ErrorMessage `line 1:<T>: no viable alternative at input '<文頭から表名の直前まで>'`（`<T>` は表名の 1 文字目の 0 始まり。+1 しない）。コメントが名前の後ろか無ければ StateChangeReason は `line 1:39 cannot recognize input near '.' '<t>' '<次の語>' in alter table statement` | **受け取ったまま** |
+  | コメント無しの ADD COLUMNS | — | SUCCEEDED | 落ちる |
+  | 改名先も 3 部の `RENAME TO awsdatacatalog.<db>.<new>` | 受け取った文 | **開始時**に MALFORMED_QUERY `line 1:<N>: mismatched input '.' expecting <EOF>`（`<N>` は改名先の 2 つ目の `.` の 1 始まりの列） | — |
+
+  | S3 Tables の Context（`Catalog=s3tablescatalog/<bucket>,Database=<ns>`） | 本物 |
+  |---|---|
+  | `DESCRIBE /* c */ <t>`・`DESCRIBE <t>` | SUCCEEDED UTILITY/DESCRIBE_TABLE |
+  | `MSCK REPAIR TABLE <t>`・`<ns>.<t>`、コメントを先頭・MSCK の後・REPAIR の後・TABLE の後・名前の後ろに置いた形、無い表 | **開始時**に InvalidRequestException `Unsupported DDL query for S3 table buckets`（MALFORMED_QUERY）。コメント・部の数・表の有無によらない |
+
+- 測れなかったもの: 連携カタログの Context（アカウントに連携カタログが無い）。群 B の新しい位置のビュー・無い表・Iceberg 表（DROP COLUMN の Iceberg だけ測った）、`awsdatacatalog.` 付きの DROP COLUMN・RENAME TO の Iceberg 表、S3 Tables の Context の 3 部の名前の MSCK
+- 採用した判断: #276 は合わせる範囲（[decisions.md](../decisions.md) の「合わせる範囲」）の外として閉じ、この実測に基づく実装（新しい位置の失敗、S3 Tables の Context の MSCK を開始時に弾く）は取り込まない。測った事実だけをここに残す（2026-09-27、ユーザーの判断）。コメント無しの DESCRIBE EXTENDED・FORMATTED の実行は #275
+- 備考: #257 の pos1（ALTER の直後のコメント・DROP COLUMN・Hive 表）で見つけた「Query は受け取ったまま」は、DROP COLUMN・RENAME TO ではコメントの有無・位置・ビューか無い表かによらない規則だった（#256 のコメント無しの DROP COLUMN もこの形）。#257 の「ビュー・無い表は測っていない」形は、どれも Hive 表と同じだった
+
 ## 本物だけが実行時に弾く形（`/* c */ SHOW CREATE TABLE`）
 
 ### 範囲外の発見（同じラウンド）
