@@ -1,12 +1,15 @@
 //! QueryExecutionContext の Catalog が S3 Tables のとき、本物の Athena が Hive の `CREATE TABLE` として読んでから
 //! 開始時に弾く `LOCATION` と `EXTERNAL`（2026-09-26 実測 n1〜n32。#229。2026-09-27 実測 s1〜s18。#248）。Trino の文法には
-//! どちらも無いので、構文チェックより前に呼ぶ。LOCATION の無い `STORED AS`（開始して FAILED）と、LOCATION 付きの 3 部の
-//! 名前の 1 部目（実在しないカタログは Context によらず DATACATALOG_NOT_FOUND）も同じ読み方で取り出す。句や IF NOT EXISTS・
-//! 列の並びの有無・バッククォートによらないことは 2026-09-27 実測 t・u・v・w 群（#266）で確かめた。
+//! どちらも無いので、構文チェックより前に呼ぶ。LOCATION の無い `STORED AS`・`ROW FORMAT`・`CLUSTERED BY`・型付きの
+//! `PARTITIONED BY`・未知のキーの `TBLPROPERTIES`（開始して FAILED。#248・#270）と、LOCATION 付きの 3 部の名前の 1 部目
+//! （実在しないカタログは Context によらず DATACATALOG_NOT_FOUND）も同じ読み方で取り出す。句や IF NOT EXISTS・
+//! 列の並びの有無・バッククォートによらないことは 2026-09-27 実測 t・u・v・w 群（#266）と cl・pr・pn 群（#270）で確かめた。
 
 use athena_sql::{Cursor, skip_leading_trivia};
 
-use super::{ColumnOutcome, column};
+use crate::failure::Failure;
+
+use super::{ColumnOutcome, TWO_CATALOGS, column};
 
 /// S3 Tables の Context で LOCATION 付きの Hive の `CREATE TABLE` に本物が返す文言（位置なし）。
 const S3_TABLES_LOCATION: &str =
@@ -20,11 +23,42 @@ struct Hive<'a> {
     external: bool,
     /// 名前の部（書いたとおり）。バッククォートの名前は引用符ごとの 1 部。
     parts: Vec<&'a str>,
+    /// 列の並び `(..)` があるか。
+    columns: bool,
+    /// 型付きの列の並びの `PARTITIONED BY`（Hive の書き方）があるか。Iceberg の書き方（`(n)`・`bucket(4, n)`）は読めない。
+    partitioned: bool,
     clustered: bool,
     row_format: bool,
     stored_as: bool,
     location: bool,
+    /// `TBLPROPERTIES` のキーと値（引用符の中身）。
+    properties: Vec<(&'a str, &'a str)>,
 }
+
+/// S3 Tables の Context で未知のキーとして失敗させない TBLPROPERTIES のキー（大文字小文字によらない）。本物が受理したキー
+/// （2026-09-27 実測 tp1〜tp3・tp5・k1〜k4。`write_target_data_file_size_bytes` は文書に無いが受理された）、開始時に別の文言で
+/// 弾いた `compression_level`（k5）、Athena の文書が Iceberg の表に許すキーのうち測っていないもの（未知のキーかは分からないので
+/// 今までどおり構文チェックに任せる）。これ以外は未知のキー（a270・a266・`classification`・`A270` を測った。#270）。
+const ICEBERG_PROPERTY_KEYS: &[&str] = &[
+    "table_type",
+    "format",
+    "write_compression",
+    "vacuum_max_snapshot_age_seconds",
+    "vacuum_min_snapshots_to_keep",
+    "optimize_rewrite_delete_file_threshold",
+    "write_target_data_file_size_bytes",
+    "compression_level",
+    "optimize_rewrite_data_file_threshold",
+    "vacuum_max_metadata_files_to_keep",
+    "write_data_path_enabled",
+];
+
+/// S3 Tables の Context で `table_type` が `ICEBERG` 以外の TBLPROPERTIES に本物が返す文言（位置なし）。
+const S3_TABLES_ONLY_ICEBERG: &str = "Only ICEBERG table format is supported with S3 table buckets";
+
+/// `write_compression` の無い `compression_level` に本物が返す文言（位置なし）。
+const COMPRESSION_CODEC_REQUIRED: &str =
+    "Compression codec must be defined when compression_level property is specified.";
 
 /// 本物が Hive の `CREATE TABLE` として読んでから弾く文なら、その文言を返す（S3 Tables の Context でだけ呼ぶ）。
 ///
@@ -32,6 +66,9 @@ struct Hive<'a> {
 /// DATACATALOG_NOT_FOUND が先で（`location_catalog`）、ほかのカタログは測っていない）と、1 部のバッククォート（s11）。
 /// LOCATION があれば句によらず Table location（n1〜n5・n20・s1〜s6・s11・s16・u0〜u7）。LOCATION が無ければ
 /// `CREATE EXTERNAL TABLE` が句・IF NOT EXISTS・列の並びの有無によらず External の文言（n11・n12・s7〜s10・v0〜v9）。
+/// どちらでもなければ、TBLPROPERTIES の `table_type` が `ICEBERG` 以外（綴りによらない）なら、句・列の並びの有無・名前空間の
+/// 有無・ちょうど小文字の `awsdatacatalog` の 3 部によらず Only ICEBERG の文言（2026-09-27 実測 tp6・v1〜v6・a5・m7。#270）。
+/// `write_compression` の無い `compression_level` は Compression codec の文言（k5。ほかの句との組は測っていない）。
 pub(in crate::operation) fn s3_tables_rejection(query: &str) -> Option<&'static str> {
     let hive = read(query)?;
     match hive.parts.as_slice() {
@@ -42,27 +79,89 @@ pub(in crate::operation) fn s3_tables_rejection(query: &str) -> Option<&'static 
     if hive.location {
         return Some(S3_TABLES_LOCATION);
     }
-    hive.external.then_some(S3_TABLES_EXTERNAL)
+    if hive.external {
+        return Some(S3_TABLES_EXTERNAL);
+    }
+    if hive.properties.iter().any(|(key, value)| {
+        key.eq_ignore_ascii_case("table_type") && !value.eq_ignore_ascii_case("iceberg")
+    }) {
+        return Some(S3_TABLES_ONLY_ICEBERG);
+    }
+    let has_key = |name: &str| {
+        hive.properties
+            .iter()
+            .any(|(key, _)| key.eq_ignore_ascii_case(name))
+    };
+    (has_key("compression_level") && !has_key("write_compression"))
+        .then_some(COMPRESSION_CODEC_REQUIRED)
 }
 
-/// S3 Tables の Context で、本物が開始してから `Iceberg create table statement does not allow STORED AS/BY` で FAILED に
-/// した形（LOCATION の無い `CREATE TABLE <名前> [(列)] ... STORED AS <語>`。2026-09-26 実測 n21・2026-09-27 実測 s15・
-/// w0〜w2・w4〜w6・w8〜w10）。名前は 1・2 部と、1 部目が `awsdatacatalog` の類でちょうど小文字ではない 3 部（w2）。
-/// ちょうど小文字の 3 部は 2 catalogs が先（w3）、ROW FORMAT と組めば ROW FORMAT の文言（w7。どちらも #270）、CLUSTERED BY と
-/// 組む形とほかのカタログの 3 部は測っていないので false。
-pub(in crate::operation) fn s3_tables_stored_as(query: &str) -> bool {
-    read(query).is_some_and(|hive| {
-        let measured_name = match hive.parts.as_slice() {
-            [_] | [_, _] => true,
-            [catalog, _, _] => {
-                catalog.eq_ignore_ascii_case("awsdatacatalog") && *catalog != "awsdatacatalog"
-            }
-            _ => false,
-        };
-        measured_name
-            && !hive.external
-            && hive.stored_as
-            && !(hive.location || hive.clustered || hive.row_format)
+/// S3 Tables の Context で、本物が開始してから FAILED にした LOCATION の無い非 EXTERNAL の `CREATE TABLE` の失敗。句が 2 つ
+/// 以上あれば CLUSTERED BY > ROW FORMAT > STORED AS > 型付きの PARTITIONED BY > 列の並び無し > 未知のキーの TBLPROPERTIES の順に
+/// 1 つを選ぶ（2026-09-26 実測 n21・vc4・w0〜w10・z6〜z17、2026-09-27 実測 s15・cl1・pr1〜pr10・pn1〜pn6・pa4・tp4・tp7・
+/// ROUND=20 の k6〜k8・c1〜c4。#248・#266・#270）。名前空間が無くても句の失敗が先（m1〜m6）。名前は 1・2 部と、1 部目が
+/// `awsdatacatalog` の類でちょうど小文字ではない 3 部。ちょうど小文字の 3 部は 2 catalogs が先（w3・a1〜a4）、ほかの
+/// カタログの 3 部は測っていないので None。未知のキーが 2 つ以上なら最初のキーを書いた綴りのまま出す（k7・k8）。
+/// `table_type` の値・`compression_level` は開始時に弾く（`s3_tables_rejection`）ので、ここへ来ない。
+pub(in crate::operation) fn s3_tables_failure(query: &str) -> Option<Failure> {
+    let hive = read(query)?;
+    let measured_name = match hive.parts.as_slice() {
+        [_] | [_, _] => true,
+        [catalog, _, _] => {
+            catalog.eq_ignore_ascii_case("awsdatacatalog") && *catalog != "awsdatacatalog"
+        }
+        _ => false,
+    };
+    if !measured_name || hive.external || hive.location {
+        return None;
+    }
+    if hive.clustered {
+        return Some(Failure::iceberg_does_not_allow("CLUSTERED BY"));
+    }
+    if hive.row_format {
+        return Some(Failure::iceberg_does_not_allow("ROW FORMAT"));
+    }
+    if hive.stored_as {
+        return Some(Failure::iceberg_does_not_allow("STORED AS/BY"));
+    }
+    if hive.partitioned {
+        return Some(Failure::invalid_partitioned_by());
+    }
+    if !hive.columns {
+        return Some(Failure::at_least_one_column());
+    }
+    unknown_property_key(&hive).map(Failure::unsupported_table_property_key)
+}
+
+/// TBLPROPERTIES の最初の未知のキー（書いた綴り）。
+fn unknown_property_key<'a>(hive: &Hive<'a>) -> Option<&'a str> {
+    hive.properties.iter().map(|(key, _)| *key).find(|key| {
+        !ICEBERG_PROPERTY_KEYS
+            .iter()
+            .any(|known| key.eq_ignore_ascii_case(known))
+    })
+}
+
+/// S3 Tables の Context で、名前の 1 部目がちょうど小文字の `awsdatacatalog` の 3 部の、LOCATION の無い非 EXTERNAL の
+/// `CREATE TABLE` に Trino に無い句（STORED AS・ROW FORMAT・CLUSTERED BY・型付きの PARTITIONED BY・未知のキーの
+/// TBLPROPERTIES）があれば、本物は開始時に `Unsupported ddl with 2 catalogs: <文>`（前後の空白を落とした文）で弾いた
+/// （2026-09-26 実測 w3、2026-09-27 実測 a1〜a4。#270）。構文チェックより前に、`s3_tables_rejection` の後で呼ぶ
+/// （`table_type` が ICEBERG 以外なら Only ICEBERG が先。a5）。句の無い形は構文チェックの後の判定（#224）が同じ文言で弾く。
+pub(in crate::operation) fn s3_tables_two_catalogs(query: &str) -> Option<String> {
+    let hive = read(query)?;
+    let [catalog, _, _] = hive.parts.as_slice() else {
+        return None;
+    };
+    let hive_clause = hive.stored_as
+        || hive.row_format
+        || hive.clustered
+        || hive.partitioned
+        || unknown_property_key(&hive).is_some();
+    (*catalog == "awsdatacatalog" && !hive.external && !hive.location && hive_clause).then(|| {
+        format!(
+            "{TWO_CATALOGS}: {}",
+            query.trim_matches([' ', '\t', '\r', '\n'])
+        )
     })
 }
 
@@ -119,7 +218,7 @@ fn read(query: &str) -> Option<Hive<'_>> {
         return None;
     }
     clause(&mut cursor, "COMMENT", string_literal)?;
-    clause(&mut cursor, "PARTITIONED", |cursor| {
+    let partitioned = clause(&mut cursor, "PARTITIONED", |cursor| {
         cursor.keyword("BY") && cursor.punct(b'(') && column_list(sql, statement_start, cursor)
     })?;
     let clustered = clause(&mut cursor, "CLUSTERED", |cursor| {
@@ -138,14 +237,21 @@ fn read(query: &str) -> Option<Hive<'_>> {
         cursor.keyword("AS") && cursor.identifier()
     })?;
     let location = clause(&mut cursor, "LOCATION", string_literal)?;
-    clause(&mut cursor, "TBLPROPERTIES", properties)?;
+    let properties = if cursor.keyword("TBLPROPERTIES") {
+        properties(&mut cursor)?
+    } else {
+        Vec::new()
+    };
     cursor.at_end().then_some(Hive {
         external,
         parts,
+        columns,
+        partitioned,
         clustered,
         row_format,
         stored_as,
         location,
+        properties,
     })
 }
 
@@ -212,19 +318,32 @@ fn column_names(cursor: &mut Cursor) -> bool {
     }
 }
 
-/// `TBLPROPERTIES` の後ろの `('k'='v', ...)`（1 組 n20・2 組 s6）。
-fn properties(cursor: &mut Cursor) -> bool {
+/// `TBLPROPERTIES` の後ろの `('k'='v', ...)`（1 組 n20・2 組 s6）のキーと値。読めなければ None。
+fn properties<'a>(cursor: &mut Cursor<'a>) -> Option<Vec<(&'a str, &'a str)>> {
     if !cursor.punct(b'(') {
-        return false;
+        return None;
     }
+    let mut properties = Vec::new();
     loop {
-        if !(string_literal(cursor) && cursor.punct(b'=') && string_literal(cursor)) {
-            return false;
+        let key = string_content(cursor)?;
+        if !cursor.punct(b'=') {
+            return None;
         }
+        properties.push((key, string_content(cursor)?));
         if !cursor.punct(b',') {
-            return cursor.punct(b')');
+            return cursor.punct(b')').then_some(properties);
         }
     }
+}
+
+/// `'...'` を 1 つ読み、引用符の中身（`''` はそのまま）を返す。
+fn string_content<'a>(cursor: &mut Cursor<'a>) -> Option<&'a str> {
+    let literal = skip_leading_trivia(cursor.rest());
+    if !string_literal(cursor) {
+        return None;
+    }
+    let literal = &literal[..literal.len() - cursor.rest().len()];
+    Some(&literal[1..literal.len() - 1])
 }
 
 /// `(` の直後から列の並びを `)` の直後まで読む。文言が決まる形・実測していない形なら false。

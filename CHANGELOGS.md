@@ -11,6 +11,10 @@ later name the date they were measured on.
 
 ### Changed
 
+- Under an S3 Tables context catalog, a plain `CREATE TABLE` with Hive's `ROW FORMAT`,
+  `CLUSTERED BY`, typed `PARTITIONED BY`, an unknown `TBLPROPERTIES` key or no column list
+  now fails like real Athena, and a non-Iceberg `table_type` is rejected at start
+  ([docs](docs/caveats.md#plain-create-table)).
 - Under an S3 Tables context catalog, `CREATE TABLE AwsDataCatalog.<namespace>.<table>`
   reports `Query` without the catalog and the namespace as the context
   `Database`, like real Athena ([docs](docs/caveats.md#plain-create-table)).

@@ -919,3 +919,30 @@ Content-Type と `.metadata` を含む置き場所は本項が主で、[result-f
 - 読み取れる規則: 本物は CTAS を Trino の SqlFormatter で整形し直し、プロパティを 1 つ足して実行している（`CREATE TABLE <名前>` / `WITH (` / `   <プロパティ>`（利用者の WITH のプロパティ 1 つごとに 1 行）/ `) AS SELECT <項目>`（複数の項目は改行して `  n` / `, s`）/ `FROM` / `  <表>` / `WHERE (<比較>)`、括弧の問い合わせと WITH の CTE は 3 桁の字下げ、二項演算子は括弧で包む）。手元の Trino 482 で、この規則で組み直した CTAS が本物と同じ位置を返すことを 8 種類で確かめた（読み取り専用の問い合わせ。Trino に整形した文字列を返させる手段は無かった）
 - 採用した判断: 接尾辞はエンジンで失敗した CTAS・INSERT すべて（エンジンの文言が `.` で終わらなければ `.` を足す）、位置は測った形だけ整形後の位置に写す（decisions.md の #272 の項）
 - 備考: #273 の先行実測（ROUND=19、`run-20260927-001229` の f7）で、S3 Tables の Context の名前空間への 2 部の CTAS の位置は送った文のまま（`line 1:98`）だった。#251 の t3（S3 Tables の Context の `awsdatacatalog.<DB>.<表>` の CTAS）は `line 6:3`。本物の COLUMN_NOT_FOUND の文言（`or requester is not authorized to access requested resources`）は Trino と違う（athena-local は Trino の文言のまま）
+
+### S3 Tables の Context の LOCATION の無い非 EXTERNAL の CREATE TABLE の句ごとの失敗と優先順（#270）
+- 日付: 2026-09-27（ROUND=16 は UTC 2026-09-26 23:15、ROUND=20 は UTC 2026-09-27 04:10）／ issue: #270 ／ スクリプト: `tools/measure/unquoted-ddl.sh`（`ROUND=16`・`ROUND=20`）／ 生データ: `$HOME/athena-unquoted-ddl-measurements/run-20260926-231526`・`run-20260927-041009`（#266 の vc1・vc4・w7・z6〜z17 は `run-20260926-221348`・`run-20260926-223637`）
+- 相手: 本物の Athena（Context は書いたもの以外 `Catalog=s3tablescatalog/<bucket>,Database=<ns>`。LOCATION・EXTERNAL 無し）
+- 投げたもの: ROUND=16 の 31 項目（cl・pr・pn・pa・tp 群）と ROUND=20 の 32 項目（x0・k・v・c・a・m 群）。受理された表は SHOW CREATE TABLE を取ってから消した（後始末の残りは無い）
+- 返ったもの（開始して FAILED の項目は、どれも結果ファイル本体・`.metadata` が無い）:
+
+  | 文（`CREATE TABLE <t>` の後ろ） | 本物 |
+  |---|---|
+  | `(n int) ROW FORMAT SERDE '..'`・`ROW FORMAT DELIMITED FIELDS TERMINATED BY ','`（COMMENT・IF NOT EXISTS・2 部・`AwsDataCatalog` の 3 部・列リスト無し・バッククォート。vc4・z6〜z14） | FAILED 2/1200 `Iceberg create table statement does not allow ROW FORMAT` |
+  | `(n int) CLUSTERED BY (n) INTO 4 BUCKETS`（z16・pn2・pn5） | FAILED 2/1200 `... does not allow CLUSTERED BY` |
+  | `(n int) PARTITIONED BY (p int)`・`(n int)`（列リストにある名前を型付きで。z15・cl1・pn1・pn4・pa4）、列リスト無しの `PARTITIONED BY (p int)`（c3） | FAILED 2/1006 `Invalid PARTITIONED BY clause in Iceberg create table statement` |
+  | `(n int) TBLPROPERTIES ('a270'='b')`・`('classification'='csv')`・`('A270'='b')`（z17・pn3・k6・k8） | FAILED 2/1200 `Unsupported table property key: <書いた綴りのキー>` |
+  | `(n int) TBLPROPERTIES ('a270x'='b', 'a270y'='c')`（k7） | FAILED 2/1200 `Unsupported table property key: a270x`（最初のキー） |
+  | 列リスト無し: 句が無い（c1）・`TBLPROPERTIES ('table_type'='ICEBERG')`（c2）・`COMMENT` だけ（c4）・未知のキー（pn6） | FAILED 2/1006 `At least one column is required for Iceberg create table statement` |
+  | 句の対（pr1〜pr10・w7・w8・z10） | CLUSTERED BY > ROW FORMAT > STORED AS > 型付きの PARTITIONED BY > 未知のキーの順に 1 つ（5 句の 10 対すべて） |
+  | `TBLPROPERTIES` の `table_type`（値 `ICEBERG`・`iceberg`）・`format`・`write_compression`・`TABLE_TYPE`・`vacuum_max_snapshot_age_seconds`・`vacuum_min_snapshots_to_keep`・`optimize_rewrite_delete_file_threshold`・`write_target_data_file_size_bytes`（tp1〜tp5・k1〜k4、`run-20260925-233600` の h3）、Iceberg の書き方の `PARTITIONED BY (n)`・`(bucket(4, n))`・`(day(d))`（pa1〜pa3）、`COMMENT` だけ（vc1） | SUCCEEDED |
+  | `TBLPROPERTIES ('compression_level'='3')`（k5） | 開始時に `Compression codec must be defined when compression_level property is specified.`（MALFORMED_QUERY） |
+  | `TBLPROPERTIES` の `table_type` が `HIVE`・`hive`・`DELTA`（ROW FORMAT・PARTITIONED BY・未知のキー・列リスト無しと組んでも。tp6・v1〜v6） | 開始時に `Only ICEBERG table format is supported with S3 table buckets`（MALFORMED_QUERY） |
+  | ちょうど小文字の `awsdatacatalog.<ns>.<t>` の ROW FORMAT・CLUSTERED BY・PARTITIONED BY・未知のキー・STORED AS（a1〜a4・w3） | 開始時に `Unsupported ddl with 2 catalogs: <文>`。`table_type` が HIVE なら Only ICEBERG が先（a5） |
+  | 名前空間が無い `<nope>.<t>`・`AwsDataCatalog.<nope>.<t>`・Context の Database が無い名前空間で、ROW FORMAT・STORED AS・PARTITIONED BY・未知のキー・CLUSTERED BY（m1〜m6） | 句の失敗が先（名前空間が無いことでは失敗しない）。`table_type` が HIVE なら開始時に Only ICEBERG（m7）。句が無ければ `Cannot find or access the specified table`（m0） |
+  | `(n int) PARTITIONED BY (nosuch270)`（pa5） | FAILED 2/1100 `Cannot find source column: nosuch270` |
+  | `(n int) PARTITIONED BY (n) ROW FORMAT SERDE '..'`（pa6） | 開始時に `line 1:54: mismatched input 'PARTITIONED'. Expecting: 'COMMENT', 'WITH', <EOF>` |
+
+- 採用した判断: `hive.rs` の `s3_tables_failure` が句の優先順で失敗を 1 つ選び、構文チェックより前に開始して FAILED にする（名前空間の確認より前）。`table_type` の値・`compression_level` は `s3_tables_rejection`、ちょうど小文字の 3 部は `s3_tables_two_catalogs` が開始時に弾く。未知のキーは、受理を測ったキーと Athena の文書のキーと `compression_level` の外（文書にあるが測っていないキーは未知にしない）。本物が受理する Iceberg の書き方は Trino の構文エラーのまま（書き換えない）
+- 備考: 受理された表の SHOW CREATE TABLE は、どれも `TBLPROPERTIES ('table_type'='iceberg', 'write_compression'='zstd')` を持つ（指定しなくても）。pa5 は Iceberg の書き方の PARTITIONED BY が Trino に無いので athena-local では届かない
+

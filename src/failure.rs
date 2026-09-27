@@ -128,14 +128,43 @@ impl Failure {
         }
     }
 
-    /// S3 Tables の Context の LOCATION の無い `CREATE TABLE <名前> (列) STORED AS <語>` に本物が返した固定の文言
-    /// （`.txt` も `.metadata` も置かない。2026-09-26 実測 n21・2026-09-27 実測 s15。#248）。
-    pub fn iceberg_stored_as() -> Self {
+    /// S3 Tables の Context の LOCATION の無い `CREATE TABLE` の句（`STORED AS/BY`・`ROW FORMAT`・`CLUSTERED BY`）に本物が
+    /// 返した固定の文言（`.txt` も `.metadata` も置かない。2026-09-26 実測 n21・vc4・z16、2026-09-27 実測 s15。#248・#270）。
+    pub fn iceberg_does_not_allow(clause: &str) -> Self {
+        Self::iceberg_create_table(
+            format!("Iceberg create table statement does not allow {clause}"),
+            1200,
+        )
+    }
+
+    /// 同じ Context の型付きの `PARTITIONED BY (p int)`（2026-09-26 実測 z15、2026-09-27 実測 cl1・pa4。#270）。
+    pub fn invalid_partitioned_by() -> Self {
+        Self::iceberg_create_table(
+            "Invalid PARTITIONED BY clause in Iceberg create table statement".to_string(),
+            1006,
+        )
+    }
+
+    /// 同じ Context の列の並びの無い文（2026-09-27 実測 pn6。#270）。
+    pub fn at_least_one_column() -> Self {
+        Self::iceberg_create_table(
+            "At least one column is required for Iceberg create table statement".to_string(),
+            1006,
+        )
+    }
+
+    /// 同じ Context の未知のキーの `TBLPROPERTIES`。キーは書いた綴りのまま（2026-09-26 実測 z17、2026-09-27 実測 pn3・
+    /// tp4・tp7。#270）。
+    pub fn unsupported_table_property_key(key: &str) -> Self {
+        Self::iceberg_create_table(format!("Unsupported table property key: {key}"), 1200)
+    }
+
+    fn iceberg_create_table(reason: String, error_type: i32) -> Self {
         Self {
-            reason: "Iceberg create table statement does not allow STORED AS/BY".to_string(),
+            reason,
             error_message: None,
             category: USER,
-            error_type: 1200,
+            error_type,
             retryable: false,
         }
     }

@@ -103,21 +103,106 @@
 #   M10 S3 Tables の Context
 #      CREATE TABLE IF NOT EXISTS nosuchcatalog266.e2e229ns.t266 (n int) STORED AS PARQUET LOCATION 's3://b/p/'
 #      → M8 と同じ（IF NOT EXISTS・STORED AS があっても DATACATALOG_NOT_FOUND が先）
-#   R1（回帰） S3 Tables の Context
+#   #270 で足したケース（S3 Tables の Context・LOCATION も EXTERNAL も無い CREATE TABLE で、本物は開始してから
+#   句どうしの優先順 CLUSTERED BY > ROW FORMAT > STORED AS > 型付き PARTITIONED BY > 未知の TBLPROPERTIES に
+#   したがって FAILED にする。結果ファイル本体も .metadata も置かない。StatementType DDL・SubstatementType
+#   CREATE_TABLE・Retryable false。実測は .claude/issue-notes/270.md の ROUND=16）:
+#   N1 S3 Tables の Context
+#      CREATE TABLE t270row1 (n int) ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'
+#      → 開始して FAILED、StateChangeReason・AthenaError.ErrorMessage ちょうど
+#        "Iceberg create table statement does not allow ROW FORMAT"（ErrorCategory 2・ErrorType 1200）
+#   N2 S3 Tables の Context
+#      CREATE TABLE t270row2 (n int) ROW FORMAT DELIMITED FIELDS TERMINATED BY ','
+#      → N1 と同じ文言（DELIMITED でも SERDE と変わらない）
+#   N3 S3 Tables の Context
+#      CREATE TABLE t270clu (n int) CLUSTERED BY (n) INTO 4 BUCKETS
+#      → 開始して FAILED、"Iceberg create table statement does not allow CLUSTERED BY"（2/1200）
+#   N4 S3 Tables の Context
+#      CREATE TABLE t270part (n int) PARTITIONED BY (p int)（型付き列）
+#      → 開始して FAILED、"Invalid PARTITIONED BY clause in Iceberg create table statement"（2/1006）
+#   N5 S3 Tables の Context
+#      CREATE TABLE t270prop (n int) TBLPROPERTIES ('a270'='b')（未知のキー 1 つ）
+#      → 開始して FAILED、"Unsupported table property key: a270"（2/1200）
+#   N6 S3 Tables の Context
+#      CREATE TABLE t270nocol TBLPROPERTIES ('a270'='b')（列リスト無し + 未知のキー）
+#      → 開始して FAILED、"At least one column is required for Iceberg create table statement"（2/1006。
+#        列が無いことが未知のキーより先）
+#   N7 S3 Tables の Context
+#      CREATE TABLE AwsDataCatalog.e2e229ns.t270awsdc (n int) ROW FORMAT SERDE 'x'（大文字混じりの 3 部）
+#      → N1 と同じ文言。GetQueryExecution の Query は 1 部目を落とした
+#        "CREATE TABLE e2e229ns.t270awsdc (n int) ROW FORMAT SERDE 'x'"、
+#        QueryExecutionContext.Database は "e2e229ns"（#271 の挙動が #270 の失敗でも効く）
+#   N8（優先順の対） S3 Tables の Context
+#      CREATE TABLE t270pair1 (n int) CLUSTERED BY (n) INTO 4 BUCKETS ROW FORMAT SERDE 'x'
+#      → N3 と同じ（CLUSTERED BY が ROW FORMAT より先）
+#   N9（優先順の対） S3 Tables の Context
+#      CREATE TABLE t270pair2 (n int) PARTITIONED BY (p int) TBLPROPERTIES ('a270'='b')
+#      → N4 と同じ（型付き PARTITIONED BY が未知の TBLPROPERTIES より先）
+#
+#   R1（#270 の範囲。旧: #266 の広がりの外の回帰） S3 Tables の Context
 #      CREATE TABLE t266 (n int) ROW FORMAT SERDE 'x' STORED AS TEXTFILE
-#      → 400、MALFORMED_QUERY（ROW FORMAT + STORED AS は #266 の広がりの外。Trino の構文エラーのまま。
-#        文言は変更前のビルドで実測して確認した実際のもの）
-#   R2（回帰） S3 Tables の Context
+#      → N1 と同じ（ROW FORMAT が STORED AS より先。#270 で Trino の構文エラーから開始後の FAILED に変わる）
+#   R2（#270 の範囲。旧: #266 の広がりの外の回帰） S3 Tables の Context
 #      CREATE TABLE t266 (n int) CLUSTERED BY (n) INTO 4 BUCKETS STORED AS PARQUET
-#      → 400、MALFORMED_QUERY（CLUSTERED BY + STORED AS も #266 の広がりの外。Trino の構文エラーのまま）
-#   R3（回帰） S3 Tables の Context
+#      → N3 と同じ（CLUSTERED BY が STORED AS より先。同じく #270 で変わる）
+#   R3（#270 の範囲。旧: #266 の広がりの外の回帰） S3 Tables の Context
 #      CREATE TABLE awsdatacatalog.e2e229ns.t266 (n int) STORED AS PARQUET
-#      → 400、MALFORMED_QUERY（ちょうど小文字の awsdatacatalog の 3 部 + STORED AS は #270 の範囲。
-#        Trino の構文エラーのまま）
+#      → 開始時に弾く（400、MALFORMED_QUERY、"Unsupported ddl with 2 catalogs: <文>"。<文> は受け取った文の
+#        前後の空白を落としたもの。ちょうど小文字の 3 部は句によらず 2 catalogs が先で、#270 で Trino の構文
+#        エラーから開始時の 2 catalogs に変わる）
 #   R4（回帰） 既定の Context
 #      CREATE EXTERNAL TABLE hive.default.t266 (n int) LOCATION 's3://b/p/'
 #      → 400、MALFORMED_QUERY（Trino にあるカタログを 1 部目に書いた EXTERNAL は S3 Tables の判定の外。
-#        Trino の構文エラーのまま）
+#        Trino の構文エラーのまま。#270 でも変わらない）
+#   R5（回帰） S3 Tables の Context
+#      CREATE TABLE t270reg1 (n int) PARTITIONED BY (n)（Iceberg の書き方。型の無い列名だけ）
+#      → 400、MALFORMED_QUERY（本物は SUCCEEDED だが、athena-local は Athena と Trino の書き方の違いを
+#        埋める書き換えをしない方針なので、#270 の後も Trino の構文エラーのまま。文言は変更前のビルドで
+#        実測して確認した実際のもの）
+#   R6（回帰） S3 Tables の Context
+#      CREATE TABLE t270reg2 (n int) TBLPROPERTIES ('table_type'='ICEBERG')（Iceberg で有効なキー）
+#      → 400、MALFORMED_QUERY（本物は SUCCEEDED だが、同じ理由で #270 の後も Trino の構文エラーのまま）
+#
+#   #270 のフェーズ 2 で足したケース（LOCATION も EXTERNAL も無い CREATE TABLE の TBLPROPERTIES の
+#   table_type・compression_level を開始時に弾く、列の並び無し + 型付き PARTITIONED BY・複数の未知のキー・
+#   名前空間が無い 2 部 + ROW FORMAT を開始して FAILED にする、Trino に TBLPROPERTIES が無いことによる回帰）:
+#   P1 S3 Tables の Context
+#      CREATE TABLE t270ty1 (n int) TBLPROPERTIES ('table_type'='hive')
+#      → 400、MALFORMED_QUERY／"Only ICEBERG table format is supported with S3 table buckets"
+#   P2 S3 Tables の Context
+#      CREATE TABLE t270ty2 (n int) ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'
+#      TBLPROPERTIES ('table_type'='HIVE')
+#      → P1 と同じ（ROW FORMAT があっても table_type が ICEBERG 以外が先）
+#   P3 S3 Tables の Context
+#      CREATE TABLE t270cl3 (n int) TBLPROPERTIES ('compression_level'='3')
+#      → 400、MALFORMED_QUERY／"Compression codec must be defined when compression_level property is
+#        specified."
+#   P4 S3 Tables の Context
+#      CREATE TABLE awsdatacatalog.e2e229ns.t270awsdc3 (n int) ROW FORMAT SERDE
+#      'org.apache.hadoop.hive.serde2.OpenCSVSerde'（ちょうど小文字の 3 部）
+#      → 400、MALFORMED_QUERY／"Unsupported ddl with 2 catalogs: <前後の空白を落とした文>"
+#   P5 S3 Tables の Context
+#      CREATE TABLE t270bare（列の並びも句も無し）
+#      → 開始して FAILED、"At least one column is required for Iceberg create table statement"（2/1006）
+#   P6 S3 Tables の Context
+#      CREATE TABLE t270barepart PARTITIONED BY (p int)（列の並び無し + 型付き PARTITIONED BY）
+#      → 開始して FAILED、"Invalid PARTITIONED BY clause in Iceberg create table statement"（2/1006。
+#        列が無いことより PARTITIONED BY の句が先）
+#   P7 S3 Tables の Context
+#      CREATE TABLE t270multi (n int) TBLPROPERTIES ('a270x'='b', 'a270y'='c')（未知のキー 2 つ）
+#      → 開始して FAILED、"Unsupported table property key: a270x"（2/1200。書いた順の最初のキー）
+#   P8 S3 Tables の Context
+#      CREATE TABLE e2e270nope.t270row4 (n int) ROW FORMAT SERDE
+#      'org.apache.hadoop.hive.serde2.OpenCSVSerde'（e2e270nope は作らない 2 部の名前空間）
+#      → 開始して FAILED、"Iceberg create table statement does not allow ROW FORMAT"（2/1200。
+#        名前空間の存在確認より句の判定が先）
+#   P9（回帰） S3 Tables の Context
+#      CREATE TABLE t270reg3 (n int) TBLPROPERTIES ('vacuum_max_snapshot_age_seconds'='432000')
+#      （本物が受理する Iceberg の有効なキーだが Trino に TBLPROPERTIES が無い）
+#      → 400、MALFORMED_QUERY（Trino の構文エラーのまま。文言はローカルの Trino で実測した実際のもの）
+#
+#   #270 の変更を入れる前（このブランチの着手前ビルド）に流すと、N1〜N9・R1〜R3・P1〜P9 が FAIL し、L・M 系と
+#   R4〜R6 は PASS になる想定（#270 の変更は別の担当がこのあと src に入れる）。
 #
 # 前提コマンド: tools/dev.sh 経由で動かす（toolbox に全部入っている）
 #
@@ -154,6 +239,10 @@ NS="e2e229ns"
 # #266 で足したケースの表名・実在しないカタログ名（L1〜L12 の t229 と区別する）
 T266="t266"
 NOSUCHCATALOG266="nosuchcatalog266"
+# #270 で足したケースの表名接頭辞（既存の t229・t266 と区別する）
+T270="t270"
+# #270 のフェーズ 2（P8）で使う、わざと作らない 2 部の名前空間
+NS_MISSING="e2e270nope"
 
 ATHENA_BIND="127.0.0.1:8129"
 ATHENA_BASE="http://${ATHENA_BIND}"
@@ -375,6 +464,31 @@ athena_wait() {
   return 1
 }
 
+# --- S3（MinIO）側の確認（toolbox の mc で minio:9000 を直接見る。tools/e2e/create-table-catalog/verify.sh の
+#     mc_stat・mc_exists と同じ確かめ方。#270） ---
+
+# `mc stat --json <key>` を実行して、key ちょうど一致するオブジェクトの JSON を返す。無ければ
+# {"status":"error"} を返す（mc stat が前方一致もヒットさせる注意は tools/e2e/minio/lib.sh の mc_stat と同じ）。
+mc_stat() {
+  local key="$1" name
+  name=$(basename "$key")
+  local raw
+  raw=$(mc stat --json "local/$BUCKET/$key" 2>/dev/null)
+  if [ -z "$raw" ]; then
+    echo '{"status":"error"}'
+    return
+  fi
+  echo "$raw" | jq -s --arg name "$name" '
+    map(select(.name == $name and (.status // "success") == "success"))
+    | if length > 0 then .[0] else {"status":"error"} end
+  '
+}
+
+mc_exists() {
+  local stat_json="$1"
+  [ -n "$stat_json" ] && ! echo "$stat_json" | jq -e '.status == "error"' >/dev/null 2>&1
+}
+
 # --- ケースの判定 ---
 
 # StartQueryExecution が開始時に弾かれることを確かめる。expect_message は完全一致。
@@ -449,10 +563,15 @@ case_start_ok() {
   fi
 }
 
-# L12: 開始できて FAILED になり、StateChangeReason が expect_reason と一致することを確かめる。
+# L12・#270 の N・R 系: 開始できて FAILED になることを確かめる。StateChangeReason・AthenaError（ErrorCategory 固定
+# 2・ErrorType・ErrorMessage・Retryable 固定 false）・StatementType 固定 DDL・SubstatementType 固定 CREATE_TABLE が
+# 本物の形と一致すること、結果ファイル（本体・.metadata）が MinIO に無いことも見る（create-table-catalog/verify.sh の
+# case_fail_at_runtime と同じ確かめ方。#270）。expect_query・expect_database を渡せば GetQueryExecution の Query・
+# QueryExecutionContext.Database も確かめる（#271 で 3 部の AwsDataCatalog の 1 部目を落とす形。渡さなければ見ない）。
 case_start_failed() {
-  local no="$1" name="$2" sql="$3" catalog="$4" database="$5" expect_reason="$6"
-  local start qid final state reason
+  local no="$1" name="$2" sql="$3" catalog="$4" database="$5" expect_reason="$6" expect_error_type="$7"
+  local expect_query="${8:-}" expect_database="${9:-}"
+  local start qid final ok=1 detail=""
   start=$(start_raw "$sql" "$catalog" "$database")
   qid=$(echo "$start" | jq -r '.QueryExecutionId // empty')
   if [ -z "$qid" ]; then
@@ -460,12 +579,54 @@ case_start_failed() {
     return
   fi
   final=$(athena_wait "$qid")
+  local state reason category type_ err_message retryable stmt substmt
   state=$(echo "$final" | jq -r '.QueryExecution.Status.State // empty')
   reason=$(echo "$final" | jq -r '.QueryExecution.Status.StateChangeReason // empty')
-  if [ "$state" = "FAILED" ] && [ "$reason" = "$expect_reason" ]; then
-    record "$no $name" PASS "QueryExecutionId=$qid State=$state StateChangeReason=\"$reason\""
+  category=$(echo "$final" | jq -r '.QueryExecution.Status.AthenaError.ErrorCategory // empty')
+  type_=$(echo "$final" | jq -r '.QueryExecution.Status.AthenaError.ErrorType // empty')
+  err_message=$(echo "$final" | jq -r '.QueryExecution.Status.AthenaError.ErrorMessage // empty')
+  # Retryable は真偽値なので `// empty`（jq は false も偽扱いする）は使えない。null かどうかで分ける。
+  retryable=$(echo "$final" | jq -r \
+    'if .QueryExecution.Status.AthenaError.Retryable == null then "" else (.QueryExecution.Status.AthenaError.Retryable | tostring) end')
+  stmt=$(echo "$final" | jq -r '.QueryExecution.StatementType // empty')
+  substmt=$(echo "$final" | jq -r '.QueryExecution.SubstatementType // empty')
+
+  [ "$state" = "FAILED" ] || { ok=0; detail="$detail State=${state:-無し}(期待 FAILED)"; }
+  [ "$reason" = "$expect_reason" ] || { ok=0; detail="$detail StateChangeReason=\"$reason\"(期待 \"$expect_reason\")"; }
+  [ "$category" = "2" ] || { ok=0; detail="$detail ErrorCategory=${category:-無し}(期待 2)"; }
+  [ "$type_" = "$expect_error_type" ] || { ok=0; detail="$detail ErrorType=${type_:-無し}(期待 $expect_error_type)"; }
+  [ "$err_message" = "$expect_reason" ] || { ok=0; detail="$detail ErrorMessage=\"$err_message\"(期待 \"$expect_reason\")"; }
+  [ "$retryable" = "false" ] || { ok=0; detail="$detail Retryable=${retryable:-無し}(期待 false)"; }
+  [ "$stmt" = "DDL" ] || { ok=0; detail="$detail StatementType=${stmt:-無し}(期待 DDL)"; }
+  [ "$substmt" = "CREATE_TABLE" ] || { ok=0; detail="$detail SubstatementType=${substmt:-無し}(期待 CREATE_TABLE)"; }
+
+  if [ -n "$expect_query" ]; then
+    local query
+    query=$(echo "$final" | jq -r '.QueryExecution.Query // empty')
+    [ "$query" = "$expect_query" ] || { ok=0; detail="$detail Query=\"$query\"(期待 \"$expect_query\")"; }
+  fi
+  if [ -n "$expect_database" ]; then
+    local db
+    db=$(echo "$final" | jq -r '.QueryExecution.QueryExecutionContext.Database // empty')
+    [ "$db" = "$expect_database" ] || { ok=0; detail="$detail Database=${db:-無し}(期待 $expect_database)"; }
+  fi
+
+  local body_key="${PREFIX}/${qid}.txt" body_stat meta_stat
+  body_stat=$(mc_stat "$body_key")
+  if mc_exists "$body_stat"; then
+    ok=0
+    detail="$detail 結果ファイル本体がある(期待は無し): $body_key"
+  fi
+  meta_stat=$(mc_stat "${body_key}.metadata")
+  if mc_exists "$meta_stat"; then
+    ok=0
+    detail="$detail .metadata がある(期待は無し): ${body_key}.metadata"
+  fi
+
+  if [ "$ok" = "1" ]; then
+    record "$no $name" PASS "QueryExecutionId=$qid State=$state StateChangeReason=\"$reason\" ErrorType=$type_ 結果ファイル無し"
   else
-    record "$no $name" FAIL "State=${state:-無し}(期待 FAILED) StateChangeReason=\"$reason\"(期待 \"$expect_reason\")"
+    record "$no $name" FAIL "${detail# } [id=$qid]"
   fi
 }
 
@@ -529,7 +690,7 @@ run_cases() {
   # L12: S3 Tables の Context・LOCATION の無い STORED AS は開始して FAILED（#248）。
   case_start_failed "L12" "S3Tables の Context・LOCATION の無い STORED AS" \
     "CREATE TABLE t229 (n int) STORED AS ORC" "$S3_TABLES_CATALOG" "$NS" \
-    "Iceberg create table statement does not allow STORED AS/BY"
+    "Iceberg create table statement does not allow STORED AS/BY" 1200
 
   # --- #266: LOCATION の無い EXTERNAL・STORED AS の判定の広がり、実在しないカタログの EXTERNAL・
   #     IF NOT EXISTS + STORED AS の 3 部 + LOCATION、変わらない回帰 ---
@@ -547,27 +708,27 @@ run_cases() {
   # M3: LOCATION の無い STORED AS は 2 部の名前でも開始して FAILED。
   case_start_failed "M3" "S3Tables の Context・LOCATION 無しの STORED AS・2 部の名前" \
     "CREATE TABLE ${NS}.${T266} (n int) STORED AS PARQUET" "$S3_TABLES_CATALOG" "$NS" \
-    "Iceberg create table statement does not allow STORED AS/BY"
+    "Iceberg create table statement does not allow STORED AS/BY" 1200
 
   # M4: 同じく、IF NOT EXISTS があっても変わらない。
   case_start_failed "M4" "S3Tables の Context・LOCATION 無しの STORED AS・IF NOT EXISTS" \
     "CREATE TABLE IF NOT EXISTS ${T266} (n int) STORED AS PARQUET" "$S3_TABLES_CATALOG" "$NS" \
-    "Iceberg create table statement does not allow STORED AS/BY"
+    "Iceberg create table statement does not allow STORED AS/BY" 1200
 
   # M5: 同じく、COMMENT があっても変わらない。
   case_start_failed "M5" "S3Tables の Context・LOCATION 無しの STORED AS・COMMENT" \
     "CREATE TABLE ${T266} (n int) COMMENT 'c' STORED AS PARQUET" "$S3_TABLES_CATALOG" "$NS" \
-    "Iceberg create table statement does not allow STORED AS/BY"
+    "Iceberg create table statement does not allow STORED AS/BY" 1200
 
   # M6: 同じく、大文字混じりの AwsDataCatalog の 3 部でも変わらない。
   case_start_failed "M6" "S3Tables の Context・LOCATION 無しの STORED AS・AwsDataCatalog の 3 部" \
     "CREATE TABLE AwsDataCatalog.${NS}.${T266} (n int) STORED AS PARQUET" "$S3_TABLES_CATALOG" "$NS" \
-    "Iceberg create table statement does not allow STORED AS/BY"
+    "Iceberg create table statement does not allow STORED AS/BY" 1200
 
   # M7: 同じく、列リストが無くても変わらない。
   case_start_failed "M7" "S3Tables の Context・LOCATION 無しの STORED AS・列リスト無し" \
     "CREATE TABLE ${T266} STORED AS PARQUET" "$S3_TABLES_CATALOG" "$NS" \
-    "Iceberg create table statement does not allow STORED AS/BY"
+    "Iceberg create table statement does not allow STORED AS/BY" 1200
 
   # M8: 実在しないカタログの EXTERNAL の 3 部 + LOCATION は既定の Context でも DATACATALOG_NOT_FOUND。
   case_reject "M8" "既定の Context・実在しないカタログの EXTERNAL + LOCATION" \
@@ -585,27 +746,156 @@ run_cases() {
     "$S3_TABLES_CATALOG" "$NS" \
     DATACATALOG_NOT_FOUND "Catalog '${NOSUCHCATALOG266}' does not exist"
 
-  # R1（回帰）: ROW FORMAT + STORED AS は #266 の広がりの外。Trino の構文エラーのまま
-  # （文言は着手前ビルド f7f2116 で実測して確認した実際のもの）。
-  case_reject "R1" "S3Tables の Context・ROW FORMAT + STORED AS は構文チェックへ（回帰）" \
+  # --- #270: LOCATION も EXTERNAL も無い CREATE TABLE の句どうしの優先順（CLUSTERED BY > ROW FORMAT >
+  #     STORED AS > 型付き PARTITIONED BY > 未知の TBLPROPERTIES）、3 部の AwsDataCatalog + 句、優先順の対、
+  #     ちょうど小文字の 3 部 + STORED AS の 2 catalogs、Iceberg の書き方の回帰 ---
+
+  # N1: ROW FORMAT SERDE 単独は開始して FAILED。
+  case_start_failed "N1" "S3Tables の Context・ROW FORMAT SERDE 単独は開始して FAILED" \
+    "CREATE TABLE ${T270}row1 (n int) ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'" \
+    "$S3_TABLES_CATALOG" "$NS" \
+    "Iceberg create table statement does not allow ROW FORMAT" 1200
+
+  # N2: 同じく、ROW FORMAT DELIMITED でも変わらない。
+  case_start_failed "N2" "S3Tables の Context・ROW FORMAT DELIMITED 単独は開始して FAILED" \
+    "CREATE TABLE ${T270}row2 (n int) ROW FORMAT DELIMITED FIELDS TERMINATED BY ','" \
+    "$S3_TABLES_CATALOG" "$NS" \
+    "Iceberg create table statement does not allow ROW FORMAT" 1200
+
+  # N3: CLUSTERED BY 単独は開始して FAILED。
+  case_start_failed "N3" "S3Tables の Context・CLUSTERED BY 単独は開始して FAILED" \
+    "CREATE TABLE ${T270}clu (n int) CLUSTERED BY (n) INTO 4 BUCKETS" \
+    "$S3_TABLES_CATALOG" "$NS" \
+    "Iceberg create table statement does not allow CLUSTERED BY" 1200
+
+  # N4: 型付きの PARTITIONED BY 単独は開始して FAILED。
+  case_start_failed "N4" "S3Tables の Context・型付き PARTITIONED BY 単独は開始して FAILED" \
+    "CREATE TABLE ${T270}part (n int) PARTITIONED BY (p int)" \
+    "$S3_TABLES_CATALOG" "$NS" \
+    "Invalid PARTITIONED BY clause in Iceberg create table statement" 1006
+
+  # N5: 未知のキー 1 つの TBLPROPERTIES 単独は開始して FAILED。
+  case_start_failed "N5" "S3Tables の Context・未知のキーの TBLPROPERTIES 単独は開始して FAILED" \
+    "CREATE TABLE ${T270}prop (n int) TBLPROPERTIES ('a270'='b')" \
+    "$S3_TABLES_CATALOG" "$NS" \
+    "Unsupported table property key: a270" 1200
+
+  # N6: 列リスト無し + 未知のキーの TBLPROPERTIES だけでも開始して FAILED（列が無いことが未知のキーより先）。
+  case_start_failed "N6" "S3Tables の Context・列リスト無し+未知のキーの TBLPROPERTIES は開始して FAILED" \
+    "CREATE TABLE ${T270}nocol TBLPROPERTIES ('a270'='b')" \
+    "$S3_TABLES_CATALOG" "$NS" \
+    "At least one column is required for Iceberg create table statement" 1006
+
+  # N7: 3 部の AwsDataCatalog + ROW FORMAT は N1 と同じ文言。Query は 1 部目を落とした形、Database は
+  # 名前空間になる（#271 の挙動が #270 の失敗でも効く）。
+  case_start_failed "N7" "S3Tables の Context・AwsDataCatalog の 3 部 + ROW FORMAT は N1 と同じ" \
+    "CREATE TABLE AwsDataCatalog.${NS}.${T270}awsdc (n int) ROW FORMAT SERDE 'x'" \
+    "$S3_TABLES_CATALOG" "$NS" \
+    "Iceberg create table statement does not allow ROW FORMAT" 1200 \
+    "CREATE TABLE ${NS}.${T270}awsdc (n int) ROW FORMAT SERDE 'x'" "$NS"
+
+  # N8（優先順の対）: CLUSTERED BY + ROW FORMAT は CLUSTERED BY が先（N3 と同じ）。
+  case_start_failed "N8" "S3Tables の Context・CLUSTERED BY+ROW FORMAT は CLUSTERED BY が先" \
+    "CREATE TABLE ${T270}pair1 (n int) CLUSTERED BY (n) INTO 4 BUCKETS ROW FORMAT SERDE 'x'" \
+    "$S3_TABLES_CATALOG" "$NS" \
+    "Iceberg create table statement does not allow CLUSTERED BY" 1200
+
+  # N9（優先順の対）: 型付き PARTITIONED BY + 未知の TBLPROPERTIES は PARTITIONED BY が先（N4 と同じ）。
+  case_start_failed "N9" "S3Tables の Context・PARTITIONED BY+未知の TBLPROPERTIES は PARTITIONED BY が先" \
+    "CREATE TABLE ${T270}pair2 (n int) PARTITIONED BY (p int) TBLPROPERTIES ('a270'='b')" \
+    "$S3_TABLES_CATALOG" "$NS" \
+    "Invalid PARTITIONED BY clause in Iceberg create table statement" 1006
+
+  # R1（#270 の範囲。旧: #266 の広がりの外の回帰）: ROW FORMAT + STORED AS は N1 と同じ（ROW FORMAT が
+  # STORED AS より先。#270 で Trino の構文エラーから開始後の FAILED に変わる）。
+  case_start_failed "R1" "S3Tables の Context・ROW FORMAT+STORED AS は ROW FORMAT が先" \
     "CREATE TABLE ${T266} (n int) ROW FORMAT SERDE 'x' STORED AS TEXTFILE" "$S3_TABLES_CATALOG" "$NS" \
-    MALFORMED_QUERY "line 1:27: mismatched input 'ROW'. Expecting: 'COMMENT', 'WITH', <EOF>"
+    "Iceberg create table statement does not allow ROW FORMAT" 1200
 
-  # R2（回帰）: CLUSTERED BY + STORED AS も #266 の広がりの外。Trino の構文エラーのまま。
-  case_reject "R2" "S3Tables の Context・CLUSTERED BY + STORED AS は構文チェックへ（回帰）" \
+  # R2（#270 の範囲。旧: #266 の広がりの外の回帰）: CLUSTERED BY + STORED AS は N3 と同じ（CLUSTERED BY が
+  # STORED AS より先。同じく #270 で変わる）。
+  case_start_failed "R2" "S3Tables の Context・CLUSTERED BY+STORED AS は CLUSTERED BY が先" \
     "CREATE TABLE ${T266} (n int) CLUSTERED BY (n) INTO 4 BUCKETS STORED AS PARQUET" "$S3_TABLES_CATALOG" "$NS" \
-    MALFORMED_QUERY "line 1:27: mismatched input 'CLUSTERED'. Expecting: 'COMMENT', 'WITH', <EOF>"
+    "Iceberg create table statement does not allow CLUSTERED BY" 1200
 
-  # R3（回帰）: ちょうど小文字の awsdatacatalog の 3 部 + STORED AS は #270 の範囲。Trino の構文エラーのまま。
-  case_reject "R3" "S3Tables の Context・ちょうど小文字 awsdatacatalog の 3 部 + STORED AS は構文チェックへ（回帰）" \
-    "CREATE TABLE awsdatacatalog.${NS}.${T266} (n int) STORED AS PARQUET" "$S3_TABLES_CATALOG" "$NS" \
-    MALFORMED_QUERY "line 1:51: mismatched input 'STORED'. Expecting: 'COMMENT', 'WITH', <EOF>"
+  # R3（#270 の範囲。旧: #266 の広がりの外の回帰）: ちょうど小文字の awsdatacatalog の 3 部 + STORED AS は
+  # 句によらず開始時の 2 catalogs が先（#270 で Trino の構文エラーから開始時の 2 catalogs に変わる）。
+  local r3_sql="CREATE TABLE awsdatacatalog.${NS}.${T266} (n int) STORED AS PARQUET"
+  case_reject "R3" "S3Tables の Context・ちょうど小文字 awsdatacatalog の 3 部+STORED AS は開始時の 2 catalogs" \
+    "$r3_sql" "$S3_TABLES_CATALOG" "$NS" \
+    MALFORMED_QUERY "Unsupported ddl with 2 catalogs: $r3_sql"
 
   # R4（回帰）: 既定の Context・Trino にあるカタログを 1 部目に書いた EXTERNAL は S3 Tables の判定の外。
-  # Trino の構文エラーのまま（部分一致で確認。位置情報が先頭に付く）。
+  # Trino の構文エラーのまま（部分一致で確認。位置情報が先頭に付く。#270 でも変わらない）。
   case_reject_contains "R4" "既定の Context・Trino にあるカタログの EXTERNAL + LOCATION は構文チェックへ（回帰）" \
     "CREATE EXTERNAL TABLE hive.default.${T266} (n int) LOCATION 's3://b/p/'" AwsDataCatalog default \
     MALFORMED_QUERY "mismatched input 'EXTERNAL'"
+
+  # R5（回帰）: Iceberg の書き方の PARTITIONED BY（型の無い列名だけ）は本物は SUCCEEDED だが、athena-local は
+  # Athena と Trino の書き方の違いを埋める書き換えをしない方針なので、#270 の後も Trino の構文エラーのまま。
+  case_reject "R5" "S3Tables の Context・Iceberg 書き方の PARTITIONED BY は構文チェックへ（回帰）" \
+    "CREATE TABLE ${T270}reg1 (n int) PARTITIONED BY (n)" "$S3_TABLES_CATALOG" "$NS" \
+    MALFORMED_QUERY "line 1:31: mismatched input 'PARTITIONED'. Expecting: 'COMMENT', 'WITH', <EOF>"
+
+  # R6（回帰）: Iceberg で有効な TBLPROPERTIES（table_type=ICEBERG）も本物は SUCCEEDED だが、同じ理由で
+  # #270 の後も Trino の構文エラーのまま。
+  case_reject "R6" "S3Tables の Context・Iceberg で有効な TBLPROPERTIES は構文チェックへ（回帰）" \
+    "CREATE TABLE ${T270}reg2 (n int) TBLPROPERTIES ('table_type'='ICEBERG')" "$S3_TABLES_CATALOG" "$NS" \
+    MALFORMED_QUERY "line 1:31: mismatched input 'TBLPROPERTIES'. Expecting: 'COMMENT', 'WITH', <EOF>"
+
+  # --- #270 のフェーズ 2: TBLPROPERTIES の table_type・compression_level を開始時に弾く、列の並び無し+
+  #     型付き PARTITIONED BY・複数の未知のキー・名前空間の無い 2 部+ROW FORMAT を開始して FAILED にする、
+  #     Trino に TBLPROPERTIES が無いことによる回帰 ---
+
+  # P1: table_type が ICEBERG 以外の TBLPROPERTIES は開始時に Only ICEBERG で弾く。
+  case_reject "P1" "S3Tables の Context・table_type が hive の TBLPROPERTIES" \
+    "CREATE TABLE ${T270}ty1 (n int) TBLPROPERTIES ('table_type'='hive')" "$S3_TABLES_CATALOG" "$NS" \
+    MALFORMED_QUERY "Only ICEBERG table format is supported with S3 table buckets"
+
+  # P2: 同じく、ROW FORMAT があっても table_type が ICEBERG 以外が先。
+  case_reject "P2" "S3Tables の Context・ROW FORMAT+table_type が HIVE の TBLPROPERTIES" \
+    "CREATE TABLE ${T270}ty2 (n int) ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde' TBLPROPERTIES ('table_type'='HIVE')" \
+    "$S3_TABLES_CATALOG" "$NS" \
+    MALFORMED_QUERY "Only ICEBERG table format is supported with S3 table buckets"
+
+  # P3: write_compression の無い compression_level は開始時に Compression codec で弾く。
+  case_reject "P3" "S3Tables の Context・write_compression 無しの compression_level" \
+    "CREATE TABLE ${T270}cl3 (n int) TBLPROPERTIES ('compression_level'='3')" "$S3_TABLES_CATALOG" "$NS" \
+    MALFORMED_QUERY "Compression codec must be defined when compression_level property is specified."
+
+  # P4: ちょうど小文字の awsdatacatalog の 3 部 + ROW FORMAT は開始時の 2 catalogs（table_type の判定の対象外）。
+  local p4_sql="CREATE TABLE awsdatacatalog.${NS}.${T270}awsdc3 (n int) ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'"
+  case_reject "P4" "S3Tables の Context・ちょうど小文字 awsdatacatalog の 3 部+ROW FORMAT は開始時の 2 catalogs" \
+    "$p4_sql" "$S3_TABLES_CATALOG" "$NS" \
+    MALFORMED_QUERY "Unsupported ddl with 2 catalogs: $p4_sql"
+
+  # P5: 列の並びも句も無い CREATE TABLE は開始して FAILED（At least one column）。
+  case_start_failed "P5" "S3Tables の Context・列の並びも句も無い CREATE TABLE" \
+    "CREATE TABLE ${T270}bare" "$S3_TABLES_CATALOG" "$NS" \
+    "At least one column is required for Iceberg create table statement" 1006
+
+  # P6: 列の並びが無くても、型付きの PARTITIONED BY があれば列が無いことより句の判定が先。
+  case_start_failed "P6" "S3Tables の Context・列の並び無し+型付き PARTITIONED BY" \
+    "CREATE TABLE ${T270}barepart PARTITIONED BY (p int)" "$S3_TABLES_CATALOG" "$NS" \
+    "Invalid PARTITIONED BY clause in Iceberg create table statement" 1006
+
+  # P7: 未知のキーが 2 つ以上あれば、書いた順の最初のキーを綴りのまま出す。
+  case_start_failed "P7" "S3Tables の Context・未知のキー 2 つの TBLPROPERTIES" \
+    "CREATE TABLE ${T270}multi (n int) TBLPROPERTIES ('a270x'='b', 'a270y'='c')" "$S3_TABLES_CATALOG" "$NS" \
+    "Unsupported table property key: a270x" 1200
+
+  # P8: 名前空間が無い 2 部の名前でも、ROW FORMAT の判定が名前空間の存在確認より先。
+  case_start_failed "P8" "S3Tables の Context・名前空間の無い 2 部+ROW FORMAT は句の判定が先" \
+    "CREATE TABLE ${NS_MISSING}.${T270}row4 (n int) ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'" \
+    "$S3_TABLES_CATALOG" "$NS" \
+    "Iceberg create table statement does not allow ROW FORMAT" 1200
+
+  # P9（回帰）: 本物が受理する Iceberg の有効なキー（vacuum_max_snapshot_age_seconds）でも、Trino に
+  # TBLPROPERTIES が無いので今までどおり構文エラーのまま。
+  case_reject "P9" "S3Tables の Context・Iceberg で有効な vacuum のキーは構文チェックへ（回帰）" \
+    "CREATE TABLE ${T270}reg3 (n int) TBLPROPERTIES ('vacuum_max_snapshot_age_seconds'='432000')" \
+    "$S3_TABLES_CATALOG" "$NS" \
+    MALFORMED_QUERY "line 1:31: mismatched input 'TBLPROPERTIES'. Expecting: 'COMMENT', 'WITH', <EOF>"
 }
 
 main() {
