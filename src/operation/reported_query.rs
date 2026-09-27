@@ -6,7 +6,11 @@
 //! する。表への DESCRIBE・DESC はさらに DB も落とす（ビューは残す）。SELECT・INSERT・CTAS・CREATE VIEW・
 //! EXPLAIN・SHOW VIEWS IN は送ったまま。落とした文は Context のカタログ・DB で同じ表を指すので、athena-local は
 //! 実行もその文で行う。
+//!
+//! CTAS でない CREATE TABLE の 3 部の名前も、本物は成功でも失敗でも 1 部目を落とし、Context の Database を修飾の DB に
+//! した（2026-09-27 実測 ROUND=17 と過去の生データ。#271）。こちらは GetQueryExecution に返す値だけで、実行する文は変えない。
 
+use super::classification::substatement_type;
 use super::target_table::table_name_start;
 
 /// 本物が `awsdatacatalog.` を落とす文の、名前の前のキーワードの並びと、カタログを含む名前の部品の数。
@@ -38,6 +42,27 @@ pub(super) fn drop_catalog(query: &str, context_catalog: Option<&str>) -> Option
     }
     CATALOG_DROPPED.iter().find_map(|(keywords, parts)| {
         let (query, _, database) = drop_first_part(query, keywords, *parts, is_aws_data_catalog)?;
+        Some(Rewritten { query, database })
+    })
+}
+
+/// CTAS でない `CREATE TABLE [IF NOT EXISTS]` の無引用のちょうど 3 部の名前で、1 部目が `awsdatacatalog`（大文字小文字に
+/// よらない）なら、落とした文と修飾の DB（文中の綴り）を返す。本物は Context・成功失敗・句によらず落とし、Context の
+/// Database も修飾の DB にした（2 部では変わらない。2026-09-27 実測 q0〜q14・過去の生データ i4・j1〜j4・j9。#271）。
+/// athena-local で開始できるのは S3 Tables の Context の形だけ（ほかは構文チェックか開始時の判定が弾く）なので、
+/// `CREATE EXTERNAL TABLE` の並びは持たない。CTAS はここで除く（`drop_first_part` は文の種類を見ないので、S3 Tables の
+/// CTAS の Query を受け取ったまま返す `reported` を上書きしてしまう。本物の CTAS は送ったまま）。
+pub(super) fn drop_create_table_catalog(query: &str) -> Option<Rewritten> {
+    if substatement_type(query) != Some("CREATE_TABLE") {
+        return None;
+    }
+    [
+        &["CREATE", "TABLE"][..],
+        &["CREATE", "TABLE", "IF", "NOT", "EXISTS"],
+    ]
+    .iter()
+    .find_map(|keywords| {
+        let (query, _, database) = drop_first_part(query, keywords, 3, is_aws_data_catalog)?;
         Some(Rewritten { query, database })
     })
 }
@@ -200,6 +225,54 @@ mod tests {
             assert_eq!(dropped(query), None, "{query}");
         }
         assert_eq!(drop_database("DESCRIBE db.t", Some("nocatalog")), None);
+    }
+
+    #[test]
+    fn ctas_でない_create_table_の_3_部は_1_部目を落とし_修飾の名前を返す() {
+        let dropped = |query| drop_create_table_catalog(query).map(|r| (r.query, r.database));
+        for (query, statement, database) in [
+            (
+                "CREATE TABLE AwsDataCatalog.ns.t (n int)",
+                "CREATE TABLE ns.t (n int)",
+                "ns",
+            ),
+            (
+                "CREATE TABLE IF NOT EXISTS AWSDATACATALOG.Ns.t (n int)",
+                "CREATE TABLE IF NOT EXISTS Ns.t (n int)",
+                "Ns",
+            ),
+            (
+                "create table awsdatacatalog . ns . t (n int) STORED AS PARQUET",
+                "create table ns . t (n int) STORED AS PARQUET",
+                "ns",
+            ),
+            // 名前の前のコメントは範囲の外で、落とす範囲のコメントは残す。
+            (
+                "CREATE TABLE /* c */ AwsDataCatalog /* 表 */\n. ns.t (n int)",
+                "CREATE TABLE /* c */ /* 表 */ns.t (n int)",
+                "ns",
+            ),
+        ] {
+            assert_eq!(
+                dropped(query),
+                Some((statement.to_string(), database.to_string())),
+                "{query}"
+            );
+        }
+        for query in [
+            "CREATE TABLE AwsDataCatalog.ns.t AS SELECT 1 AS n",
+            "CREATE TABLE IF NOT EXISTS AwsDataCatalog.ns.t AS SELECT 1 AS n",
+            "CREATE VIEW AwsDataCatalog.ns.v AS SELECT 1 AS n",
+            "CREATE EXTERNAL TABLE AwsDataCatalog.ns.t (n int) LOCATION 's3://b/p/'",
+            "CREATE TABLE ns.t (n int)",
+            "CREATE TABLE t (n int)",
+            "CREATE TABLE iceberg.ns.t (n int)",
+            "CREATE TABLE \"AwsDataCatalog\".ns.t (n int)",
+            "CREATE TABLE AwsDataCatalog.ns.\"t\" (n int)",
+            "CREATE TABLE AwsDataCatalog.ns.t.u (n int)",
+        ] {
+            assert_eq!(dropped(query), None, "{query}");
+        }
     }
 
     #[test]

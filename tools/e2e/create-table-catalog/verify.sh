@@ -11,6 +11,11 @@
 # （.claude/issue-notes/227.md の実測・設計判断・計画）。
 # #237 で、S3 Tables の Context の `AwsDataCatalog.<名前空間>.<表>` は名前空間があれば 1 部目を空白にして
 # Trino に送り、表を作るように変わった（docs/dev/decisions.md の #237 の項）。M3 の期待値はそれに合わせてある（#254）。
+# #271 で、GetQueryExecution が返す Query から 1 部目のカタログと直後の "." を落とし
+# （`CREATE TABLE <名前空間>.<表> (n int)`）、返す QueryExecutionContext の Database を文に書いた名前空間に
+# する（成功でも失敗でも同じ。本物の実測に合わせた。.claude/issue-notes/271.md）。M3・M4・M9 の期待値はそれに
+# 合わせてある。1 部の名前（M7・M8）は 3 部の名前ではない（落とす 1 部目が無い）ので Query・Database とも
+# 変わらない。
 #
 # この足場は compose のローカル Trino の iceberg カタログを S3 Tables の別名（TRINO_CATALOG_MAP の
 # `s3tablescatalog/e2e227=iceberg`）にし、名前空間 e2e227ns を事前に作って、athena-local の
@@ -27,13 +32,17 @@
 #      → 400、DATACATALOG_NOT_FOUND／Message "Catalog 'NoSuchCatalog227' does not exist"
 #   M3 S3 Tables の Context
 #      CREATE TABLE AwsDataCatalog.e2e227ns.t227 (n int)（名前空間 e2e227ns は実在）
-#      → 200 と QueryExecutionId、最終状態 SUCCEEDED（Query は受け取ったまま、StatementType DDL・
-#        SubstatementType CREATE_TABLE）。iceberg.e2e227ns に表 t227 ができる（確かめたら消す。#237・#254）
+#      → 200 と QueryExecutionId、最終状態 SUCCEEDED。Query は 1 部目と直後の "." が落ちた
+#        "CREATE TABLE e2e227ns.t227 (n int)"、QueryExecutionContext.Database は文の名前空間 "e2e227ns"
+#        （送った Database と同じ綴り。StatementType DDL・SubstatementType CREATE_TABLE）。iceberg.e2e227ns
+#        に表 t227 ができる（確かめたら消す。#237・#254・#271）
 #   M4 S3 Tables の Context（Database=e2e227missing。名前空間は作らない）
 #      CREATE TABLE AwsDataCatalog.e2e227missing.t227 (n int)
 #      → 200 と QueryExecutionId、最終状態 FAILED（StateChangeReason・AthenaError.ErrorMessage
 #        "Cannot find or access the specified table"、ErrorCategory 2・ErrorType 1100・Retryable false、
-#        StatementType DDL・SubstatementType CREATE_TABLE）。結果ファイル本体も .metadata も置かない
+#        StatementType DDL・SubstatementType CREATE_TABLE）。Query は 1 部目が落ちた
+#        "CREATE TABLE e2e227missing.t227 (n int)"、QueryExecutionContext.Database は文の名前空間
+#        "e2e227missing"（送った Database と同じ綴り。#271）。結果ファイル本体も .metadata も置かない
 #        （MinIO に無い）。iceberg に表 t227 ができていない
 #   M5 既定の Context
 #      CREATE TABLE AwsDataCatalog.default.t227 (n int)
@@ -44,17 +53,33 @@
 #   M7（#251） S3 Tables の Context（Database=e2e227missing。M4 と同じ、名前空間は作らない）
 #      CREATE TABLE t227one (n int)（1 部の名前）
 #      → 200 と QueryExecutionId、最終状態 FAILED（M4 と同じ文言・ErrorCategory 2・ErrorType 1100・
-#        Retryable false、StatementType DDL・SubstatementType CREATE_TABLE）。結果ファイル本体も
-#        .metadata も置かない（MinIO に無い）。iceberg に表ができていない
+#        Retryable false、StatementType DDL・SubstatementType CREATE_TABLE）。1 部の名前なので Query は
+#        受け取ったまま "CREATE TABLE t227one (n int)"、QueryExecutionContext.Database は送った
+#        "e2e227missing" のまま（#271 でも変わらない）。結果ファイル本体も .metadata も置かない
+#        （MinIO に無い）。iceberg に表ができていない
 #   M8（#251） S3 Tables の Context（Database=e2e227ns。名前空間は実在）
 #      CREATE TABLE t227one (n int)（1 部の名前）
-#      → 200 と QueryExecutionId、最終状態 SUCCEEDED（Query は受け取ったまま）。iceberg.e2e227ns に表
-#        t227one ができる（確かめたら消す）
+#      → 200 と QueryExecutionId、最終状態 SUCCEEDED。1 部の名前なので Query は受け取ったまま、
+#        QueryExecutionContext.Database は送った "e2e227ns" のまま（#271 でも変わらない）。iceberg.e2e227ns
+#        に表 t227one ができる（確かめたら消す）
+#   M9（#271）新設 S3 Tables の Context（Database=e2e227ns。実在する名前空間を送る）
+#      CREATE TABLE AwsDataCatalog.e2e227missing.t227 (n int)（文の名前空間は送った Database と違う）
+#      → 200 と QueryExecutionId、最終状態 FAILED（M4 と同じ文言・ErrorCategory 2・ErrorType 1100・
+#        Retryable false、StatementType DDL・SubstatementType CREATE_TABLE）。Query は 1 部目が落ちた
+#        "CREATE TABLE e2e227missing.t227 (n int)"、QueryExecutionContext.Database は送った "e2e227ns" では
+#        なく文の名前空間 "e2e227missing" に変わる（2026-09-26 実測 j2 と同じ形。失敗でも Database は文の
+#        名前空間になる）。結果ファイル本体も .metadata も置かない（MinIO に無い）。iceberg に表ができていない
 #
 # #251 の変更を入れる前にこの足場を流すと、M7 は今の実装では 1 部の名前を Context のまま Trino に送ってしまう
 # （unquoted_ddl::rejection が 1 部の名前には NO_LOCATION を返さず、開始時に弾かれない）ため、想定の
 # `Cannot find or access the specified table`（1100）にならず FAIL になる想定。M8 は元から通っている経路
 # （名前空間があるので Trino が普通に作れる）なので PASS のまま（回帰）。M1〜M6 は #251 の対象外で変わらない。
+#
+# #271 の変更を入れる前にこの足場を流すと、M3・M4・M9 は Query・QueryExecutionContext.Database が今までどおり
+# （Query は受け取ったまま、Database は送ったまま）返るため、期待する「1 部目を落とした Query」「文の名前空間の
+# Database」と食い違って FAIL になる想定（M3・M4 は Database の綴り自体は送った値と文の名前空間が同じなので
+# Query の食い違いだけで FAIL、M9 は送った "e2e227ns" と文の名前空間 "e2e227missing" が違うので Query・Database
+# 両方の食い違いで FAIL）。M1・M2・M5・M6・M7・M8 は #271 の対象外で変わらず PASS になる想定。
 #
 # 前提コマンド: tools/dev.sh 経由で動かす（toolbox に全部入っている）
 #
@@ -422,15 +447,18 @@ case_reject() {
   fi
 }
 
-# M4: 開始できて最終的に FAILED になることを確かめる。加えて結果ファイル（本体・.metadata）が MinIO に
-# 無いこと、iceberg に表ができていないことも見る。
+# M4・M9: 開始できて最終的に FAILED になることを確かめる。加えて結果ファイル（本体・.metadata）が MinIO に
+# 無いこと、iceberg に表ができていないことも見る。expect_query・expect_database は GetQueryExecution が返す
+# Query・QueryExecutionContext.Database の期待値（#271。送った SQL・Database とは限らず、1 部目を落とした
+# 文・文の名前空間になることがある）。
 case_fail_at_runtime() {
   local no="$1" name="$2" sql="$3" catalog="$4" database="$5" check_schema="$6" check_table="$7"
+  local expect_query="$8" expect_database="$9"
   if ! run_and_wait "$sql" "$catalog" "$database"; then
     record "$no $name" FAIL "開始できなかった: $(echo "$LAST_START" | tr -d '\n' | cut -c1-200)"
     return
   fi
-  local state reason category type_ retryable stmt substmt ok=1 detail=""
+  local state reason category type_ retryable stmt substmt query db ok=1 detail=""
   state=$(echo "$LAST_RESP" | jq -r '.QueryExecution.Status.State // empty')
   reason=$(echo "$LAST_RESP" | jq -r '.QueryExecution.Status.StateChangeReason // empty')
   category=$(echo "$LAST_RESP" | jq -r '.QueryExecution.Status.AthenaError.ErrorCategory // empty')
@@ -440,6 +468,8 @@ case_fail_at_runtime() {
     'if .QueryExecution.Status.AthenaError.Retryable == null then "" else (.QueryExecution.Status.AthenaError.Retryable | tostring) end')
   stmt=$(echo "$LAST_RESP" | jq -r '.QueryExecution.StatementType // empty')
   substmt=$(echo "$LAST_RESP" | jq -r '.QueryExecution.SubstatementType // empty')
+  query=$(echo "$LAST_RESP" | jq -r '.QueryExecution.Query // empty')
+  db=$(echo "$LAST_RESP" | jq -r '.QueryExecution.QueryExecutionContext.Database // empty')
   [ "$state" = "FAILED" ] || { ok=0; detail="$detail State=${state:-無し}(期待 FAILED)"; }
   [ "$reason" = "Cannot find or access the specified table" ] || { ok=0; detail="$detail StateChangeReason=\"$reason\""; }
   [ "$category" = "2" ] || { ok=0; detail="$detail ErrorCategory=${category:-無し}(期待 2)"; }
@@ -447,6 +477,8 @@ case_fail_at_runtime() {
   [ "$retryable" = "false" ] || { ok=0; detail="$detail Retryable=${retryable:-無し}(期待 false)"; }
   [ "$stmt" = "DDL" ] || { ok=0; detail="$detail StatementType=${stmt:-無し}(期待 DDL)"; }
   [ "$substmt" = "CREATE_TABLE" ] || { ok=0; detail="$detail SubstatementType=${substmt:-無し}(期待 CREATE_TABLE)"; }
+  [ "$query" = "$expect_query" ] || { ok=0; detail="$detail Query=\"$query\"(期待 \"$expect_query\")"; }
+  [ "$db" = "$expect_database" ] || { ok=0; detail="$detail Database=${db:-無し}(期待 $expect_database)"; }
 
   local body_key="${PREFIX}/${LAST_ID}.txt" body_stat meta_stat
   body_stat=$(mc_stat "$body_key")
@@ -468,28 +500,33 @@ case_fail_at_runtime() {
   fi
 
   if [ "$ok" = "1" ]; then
-    record "$no $name" PASS "State=$state StateChangeReason=\"$reason\" ErrorCategory=$category ErrorType=$type_ Retryable=$retryable StatementType=$stmt SubstatementType=$substmt 結果ファイル無し 表無し [id=$LAST_ID]"
+    record "$no $name" PASS "State=$state StateChangeReason=\"$reason\" ErrorCategory=$category ErrorType=$type_ Retryable=$retryable StatementType=$stmt SubstatementType=$substmt Query=\"$query\" Database=$db 結果ファイル無し 表無し [id=$LAST_ID]"
   else
     record "$no $name" FAIL "${detail# } [id=$LAST_ID]"
   fi
 }
 
-# M3: 開始できて SUCCEEDED になり、Query が受け取ったままで、iceberg に表ができることを確かめる。後のケースに
-# 持ち越さないよう、確かめたら表を消す（名前空間は trap が消す）。
+# M3・M8: 開始できて SUCCEEDED になり、iceberg に表ができることを確かめる。expect_query・expect_database は
+# GetQueryExecution が返す Query・QueryExecutionContext.Database の期待値（#271。送った SQL・Database と
+# 同じこともあれば、1 部目を落とした文・文の名前空間になることもある）。後のケースに持ち越さないよう、
+# 確かめたら表を消す（名前空間は trap が消す）。
 case_create_succeeds() {
   local no="$1" name="$2" sql="$3" catalog="$4" database="$5" check_schema="$6" check_table="$7"
+  local expect_query="$8" expect_database="$9"
   if ! run_and_wait "$sql" "$catalog" "$database"; then
     record "$no $name" FAIL "開始できなかった: $(echo "$LAST_START" | tr -d '\n' | cut -c1-200)"
     return
   fi
-  local state reason query stmt substmt ok=1 detail=""
+  local state reason query db stmt substmt ok=1 detail=""
   state=$(echo "$LAST_RESP" | jq -r '.QueryExecution.Status.State // empty')
   reason=$(echo "$LAST_RESP" | jq -r '.QueryExecution.Status.StateChangeReason // empty')
   query=$(echo "$LAST_RESP" | jq -r '.QueryExecution.Query // empty')
+  db=$(echo "$LAST_RESP" | jq -r '.QueryExecution.QueryExecutionContext.Database // empty')
   stmt=$(echo "$LAST_RESP" | jq -r '.QueryExecution.StatementType // empty')
   substmt=$(echo "$LAST_RESP" | jq -r '.QueryExecution.SubstatementType // empty')
   [ "$state" = "SUCCEEDED" ] || { ok=0; detail="$detail State=${state:-無し}(期待 SUCCEEDED) StateChangeReason=\"$reason\""; }
-  [ "$query" = "$sql" ] || { ok=0; detail="$detail Query=\"$query\"(期待 \"$sql\")"; }
+  [ "$query" = "$expect_query" ] || { ok=0; detail="$detail Query=\"$query\"(期待 \"$expect_query\")"; }
+  [ "$db" = "$expect_database" ] || { ok=0; detail="$detail Database=${db:-無し}(期待 $expect_database)"; }
   [ "$stmt" = "DDL" ] || { ok=0; detail="$detail StatementType=${stmt:-無し}(期待 DDL)"; }
   [ "$substmt" = "CREATE_TABLE" ] || { ok=0; detail="$detail SubstatementType=${substmt:-無し}(期待 CREATE_TABLE)"; }
 
@@ -502,7 +539,7 @@ case_create_succeeds() {
   trino_exec "DROP TABLE IF EXISTS iceberg.${check_schema}.${check_table}" iceberg default >/dev/null 2>&1 || true
 
   if [ "$ok" = "1" ]; then
-    record "$no $name" PASS "State=$state Query は受け取ったまま StatementType=$stmt SubstatementType=$substmt 表あり（消した） [id=$LAST_ID]"
+    record "$no $name" PASS "State=$state Query=\"$query\" Database=$db StatementType=$stmt SubstatementType=$substmt 表あり（消した） [id=$LAST_ID]"
   else
     record "$no $name" FAIL "${detail# } [id=$LAST_ID]"
   fi
@@ -522,14 +559,18 @@ run_cases() {
     DATACATALOG_NOT_FOUND "Catalog 'NoSuchCatalog227' does not exist"
 
   # M3: S3 Tables の Context・1 部目 AwsDataCatalog・名前空間あり。1 部目を空白にして Trino に送り、表を作る（#237）。
+  # 返る Query は 1 部目を落とした文、Database は文の名前空間 e2e227ns（#271）。
   case_create_succeeds "M3" "S3Tables の Context・AwsDataCatalog・名前空間あり" \
     "CREATE TABLE AwsDataCatalog.${NS}.t227 (n int)" "$S3_TABLES_CATALOG" "$NS" \
-    "$NS" "t227"
+    "$NS" "t227" \
+    "CREATE TABLE ${NS}.t227 (n int)" "$NS"
 
   # M4: S3 Tables の Context・1 部目 AwsDataCatalog・名前空間なし。開始して FAILED。
+  # 返る Query は 1 部目を落とした文、Database は文の名前空間 e2e227missing（#271）。
   case_fail_at_runtime "M4" "S3Tables の Context・AwsDataCatalog・名前空間なし" \
     "CREATE TABLE AwsDataCatalog.${NS_MISSING}.t227 (n int)" "$S3_TABLES_CATALOG" "$NS_MISSING" \
-    "$NS_MISSING" "t227"
+    "$NS_MISSING" "t227" \
+    "CREATE TABLE ${NS_MISSING}.t227 (n int)" "$NS_MISSING"
 
   # M5: 既定の Context・1 部目 AwsDataCatalog。No location のまま。
   case_reject "M5" "既定の Context・AwsDataCatalog" \
@@ -542,14 +583,27 @@ run_cases() {
     MALFORMED_QUERY "No location was specified for table. An S3 location must be specified"
 
   # M7（#251）: S3 Tables の Context・1 部の名前・Database が名前空間の無い e2e227missing。開始して FAILED。
+  # 1 部の名前なので Query・Database とも送ったまま変わらない（#271 でも回帰なし）。
   case_fail_at_runtime "M7" "S3Tables の Context・1 部の名前・名前空間なし" \
     "CREATE TABLE t227one (n int)" "$S3_TABLES_CATALOG" "$NS_MISSING" \
-    "$NS_MISSING" "t227one"
+    "$NS_MISSING" "t227one" \
+    "CREATE TABLE t227one (n int)" "$NS_MISSING"
 
   # M8（#251）: S3 Tables の Context・1 部の名前・Database が実在する名前空間 e2e227ns。作られる。
+  # 1 部の名前なので Query・Database とも送ったまま変わらない（#271 でも回帰なし）。
   case_create_succeeds "M8" "S3Tables の Context・1 部の名前・名前空間あり" \
     "CREATE TABLE t227one (n int)" "$S3_TABLES_CATALOG" "$NS" \
-    "$NS" "t227one"
+    "$NS" "t227one" \
+    "CREATE TABLE t227one (n int)" "$NS"
+
+  # M9（#271）: S3 Tables の Context・Database は実在する名前空間 e2e227ns を送るが、文の名前空間は
+  # 実在しない e2e227missing。名前空間が無いので開始して FAILED（M4 と同じ文言）。返る Query は 1 部目を
+  # 落とした文、Database は送った e2e227ns ではなく文の名前空間 e2e227missing に変わる
+  # （2026-09-26 実測 j2 と同じ形）。
+  case_fail_at_runtime "M9" "S3Tables の Context・Database は実在する別名前空間・文は名前空間なし" \
+    "CREATE TABLE AwsDataCatalog.${NS_MISSING}.t227 (n int)" "$S3_TABLES_CATALOG" "$NS" \
+    "$NS_MISSING" "t227" \
+    "CREATE TABLE ${NS_MISSING}.t227 (n int)" "$NS_MISSING"
 }
 
 main() {

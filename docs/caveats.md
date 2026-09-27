@@ -468,11 +468,17 @@ it as without the comment. `MSCK REPAIR TABLE` on an Iceberg table, with or with
   When the namespace exists, athena-local creates the table there, as real
   Athena does: it sends Trino the statement with the first part and its `.`
   replaced by spaces (line breaks kept, so Trino's error positions still match
-  the statement you sent), while `Query` stays as sent. It does the same when
+  the statement you sent). It does the same when
   it cannot tell whether the namespace exists
   ([#227](https://github.com/aoyagikouhei/athena-local/issues/227),
   [#237](https://github.com/aoyagikouhei/athena-local/issues/237), measured
-  2026-09-26, and with `IF NOT EXISTS` on 2026-09-27). An unquoted two-part
+  2026-09-26, and with `IF NOT EXISTS` on 2026-09-27). Whether such a
+  statement succeeds or fails, `GetQueryExecution` returns `Query` without
+  the first part and its `.` (comments kept), and the context `Database` as
+  the namespace written in the statement, as real Athena does
+  ([#271](https://github.com/aoyagikouhei/athena-local/issues/271), measured
+  2026-09-26 and 2026-09-27; not measured: the `Database` spelling when the
+  namespace is written with upper-case letters). An unquoted two-part
   `<namespace>.<table>` whose namespace does not exist in the context catalog
   fails the same way, without being sent to Trino
   ([#231](https://github.com/aoyagikouhei/athena-local/issues/231), measured

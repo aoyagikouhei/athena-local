@@ -157,6 +157,16 @@ Behaviour that matches real Athena:
   The `ClientRequestToken` idempotency check still compares the request as
   sent. Syntax errors and the start-time messages below are worked out from
   the statement as sent, too.
+- Real Athena also drops the catalog from `Query` for a plain (non-CTAS)
+  `CREATE TABLE` on an unquoted three-part name, in any context, whether the
+  statement succeeds or fails, and reports the name's database as
+  `QueryExecutionContext.Database`. Of these, athena-local only starts
+  `CREATE TABLE AwsDataCatalog.<namespace>.<table>` under an S3 Tables
+  context catalog, and reports it that way; the statement it runs is not
+  changed by this (see [Caveats](caveats.md#plain-create-table)). Hive
+  statements that real Athena treats the same way (`CREATE EXTERNAL TABLE`,
+  `SHOW PARTITIONS`, `CREATE DATABASE`, ...) do not parse on Trino and are
+  rejected when they start (measured 2026-09-27).
 - A syntax error makes `StartQueryExecution` fail with `InvalidRequestException`
   (`AthenaErrorCode` `MALFORMED_QUERY`) instead of creating a `FAILED` query, as
   Athena does. The message is Trino's, with positions counted in the original SQL

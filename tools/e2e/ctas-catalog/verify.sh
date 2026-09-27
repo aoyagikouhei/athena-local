@@ -37,7 +37,8 @@
 #        MinIO に本体は無く、`.metadata` は成功した CTAS の形（Trino のクエリ ID・`CREATE TABLE`・件数 1・`rows bigint`。#251）
 #   C3（回帰。#237） 同じ Context
 #      CREATE TABLE AwsDataCatalog.e2e232ns.t232b (n int)（CTAS でない。e2e232ns は iceberg の名前空間）
-#      → SUCCEEDED、iceberg.e2e232ns.t232b ができる（#232 で #237 の挙動が変わっていないことの確認）
+#      → SUCCEEDED、iceberg.e2e232ns.t232b ができる（#232 で #237 の挙動が変わっていないことの確認）。
+#        Query は 1 部目を落とした `CREATE TABLE e2e232ns.t232b (n int)`（本物どおり。#271）
 #   C4（#251） 同じ Context
 #      CREATE TABLE IF NOT EXISTS AwsDataCatalog.E2e232Missing.t232c4 AS SELECT 1 AS n（IF NOT EXISTS・hive に無い DB）
 #      → C2 と同じ FAILED（IF NOT EXISTS でも同じ）
@@ -412,12 +413,12 @@ mc_exists() {
 
 # --- ケースの判定 ---
 
-# C1・C3: SUCCEEDED になり、Query を受け取ったまま返し、指定の SubstatementType になり、期待のカタログ・
-# スキーマに表ができ、もう一方のカタログ・スキーマには表が無いことを確かめる。
+# C1・C3: SUCCEEDED になり、Query を受け取ったまま（13 番目の引数があればその文）返し、指定の SubstatementType になり、
+# 期待のカタログ・スキーマに表ができ、もう一方のカタログ・スキーマには表が無いことを確かめる。
 case_success() {
   local no="$1" name="$2" sql="$3" catalog="$4" database="$5" expect_substmt="$6"
   local expect_catalog="$7" expect_schema="$8" expect_table="$9"
-  local other_catalog="${10}" other_schema="${11}" other_table="${12}"
+  local other_catalog="${10}" other_schema="${11}" other_table="${12}" expect_query="${13:-$3}"
   if ! run_and_wait "$sql" "$catalog" "$database"; then
     record "$no $name" FAIL "開始できなかった: $(echo "$LAST_START" | tr -d '\n' | cut -c1-200)"
     return
@@ -431,7 +432,7 @@ case_success() {
     reason=$(echo "$LAST_RESP" | jq -r '.QueryExecution.Status.StateChangeReason // empty')
     ok=0; detail="$detail State=${state:-無し}(期待 SUCCEEDED) StateChangeReason=\"$reason\""
   }
-  [ "$query" = "$sql" ] || { ok=0; detail="$detail Query=\"$query\"(期待 受け取ったまま)"; }
+  [ "$query" = "$expect_query" ] || { ok=0; detail="$detail Query=\"$query\"(期待 \"$expect_query\")"; }
   [ "$substmt" = "$expect_substmt" ] || { ok=0; detail="$detail SubstatementType=${substmt:-無し}(期待 $expect_substmt)"; }
 
   local rows
@@ -537,7 +538,8 @@ run_cases() {
     "CREATE TABLE AwsDataCatalog.${CONTEXT_NS}.t232b (n int)" "$S3_TABLES_CATALOG" "$CONTEXT_NS" \
     "CREATE_TABLE" \
     iceberg "$CONTEXT_NS" t232b \
-    "" "" ""
+    "" "" "" \
+    "CREATE TABLE ${CONTEXT_NS}.t232b (n int)"
 
   # C4（#251）: C2 と同じだが IF NOT EXISTS 付き。C2 と同じ FAILED になる想定。
   case_fail_at_runtime "C4" "S3Tables の Context・IF NOT EXISTS の CTAS・hive の DB 無し" \

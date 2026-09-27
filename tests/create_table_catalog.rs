@@ -273,7 +273,9 @@ fn s3_tables_request(query: &str) -> Value {
 }
 
 /// 名前空間は小文字にして引き（Trino は小文字で持つ）、無ければ Trino に本体を送らずに FAILED で終える。理由と
-/// AthenaError・文の種類は本物と同じで、結果ファイルの本体も `.metadata` も置かない（j2・j3・j9）。
+/// AthenaError・文の種類は本物と同じで、結果ファイルの本体も `.metadata` も置かない（j2・j3・j9）。Query は 1 部目と
+/// 直後の `.` を落とし、Context の Database は文の名前空間（文中の綴り）にする（本物は FAILED でもそうした。2026-09-26
+/// 実測 j2・j3・j9 の生データ。#271）。
 #[tokio::test]
 async fn s3_tables_の_context_で名前空間が無ければ開始して_trino_に送らず_failed_にする() {
     let probe = schema_probe_sql("iceberg", "missing");
@@ -290,14 +292,24 @@ async fn s3_tables_の_context_で名前空間が無ければ開始して_trino_
         .start()
         .await;
 
-    for query in [
-        "CREATE TABLE AwsDataCatalog.Missing.t (n int)",
-        "CREATE TABLE IF NOT EXISTS AWSDATACATALOG.missing.t (n int)",
+    for (query, reported, database) in [
+        (
+            "CREATE TABLE AwsDataCatalog.Missing.t (n int)",
+            "CREATE TABLE Missing.t (n int)",
+            "Missing",
+        ),
+        (
+            "CREATE TABLE IF NOT EXISTS AWSDATACATALOG.missing.t (n int)",
+            "CREATE TABLE IF NOT EXISTS missing.t (n int)",
+            "missing",
+        ),
     ] {
         let execution = harness.run_query(s3_tables_request(query)).await;
         let execution = &execution["QueryExecution"];
         let status = &execution["Status"];
         assert_eq!(status["State"], "FAILED", "{query}: {execution}");
+        assert_eq!(execution["Query"], reported);
+        assert_eq!(execution["QueryExecutionContext"]["Database"], database);
         assert_eq!(
             status["StateChangeReason"],
             "Cannot find or access the specified table"
@@ -320,8 +332,9 @@ async fn s3_tables_の_context_で名前空間が無ければ開始して_trino_
 
 /// 名前空間があるとき、本物は 1 部目を無視して名前空間に作った（2026-09-26 実測 j1・j4。#237）。athena-local は
 /// 1 部目から 2 部目の直前まで（`.`・空白・コメントを含む）を文字数ぶんの空白にした文を Trino に送り（改行は残して
-/// Trino のエラー位置を受け取った文に合わせる）、Query は受け取ったまま返す。問い合わせが `SCHEMA_NOT_FOUND` 以外で
-/// 失敗したとき（確かめられない）も、2 部の名前（#231）と同じく Trino に送る。
+/// Trino のエラー位置を受け取った文に合わせる）。Query は 1 部目と直後の `.`・空白を落とし（コメントは残す）、Context の
+/// Database は文の名前空間（文中の綴り）にする（本物の j1・j4 の Query も落ちていた。#271）。問い合わせが
+/// `SCHEMA_NOT_FOUND` 以外で失敗したとき（確かめられない）も、2 部の名前（#231）と同じく Trino に送る。
 #[tokio::test]
 async fn s3_tables_の_context_で名前空間があれば_1_部目を空白にして_trino_に送る() {
     let harness = Harness::builder(select_response())
@@ -340,33 +353,41 @@ async fn s3_tables_の_context_で名前空間があれば_1_部目を空白に�
             "CREATE TABLE AwsDataCatalog.ns.t (n int)",
             "ns",
             "CREATE TABLE                ns.t (n int)",
+            "CREATE TABLE ns.t (n int)",
+            "ns",
         ),
         (
             "CREATE TABLE IF NOT EXISTS AWSDATACATALOG.Ns.t (n int)",
             "ns",
             "CREATE TABLE IF NOT EXISTS                Ns.t (n int)",
+            "CREATE TABLE IF NOT EXISTS Ns.t (n int)",
+            "Ns",
         ),
         (
             "CREATE TABLE AwsDataCatalog /* 表 */\n. ns.t (n int)",
             "ns",
             "CREATE TABLE                       \n  ns.t (n int)",
+            "CREATE TABLE /* 表 */ns.t (n int)",
+            "ns",
         ),
         (
             "CREATE TABLE AwsDataCatalog.other.t (n int)",
             "other",
             "CREATE TABLE                other.t (n int)",
+            "CREATE TABLE other.t (n int)",
+            "other",
         ),
     ];
     let mut expected_sqls = Vec::new();
-    for (query, namespace, sent) in cases {
+    for (query, namespace, sent, reported, database) in cases {
         let execution = harness.run_query(s3_tables_request(query)).await;
         let execution = &execution["QueryExecution"];
         assert_eq!(
             execution["Status"]["State"], "SUCCEEDED",
             "{query}: {execution}"
         );
-        assert_eq!(execution["Query"], query, "Query は受け取ったまま");
-        assert_eq!(execution["QueryExecutionContext"]["Database"], "ns");
+        assert_eq!(execution["Query"], reported);
+        assert_eq!(execution["QueryExecutionContext"]["Database"], database);
         assert_eq!(execution["StatementType"], "DDL");
         assert_eq!(execution["SubstatementType"], "CREATE_TABLE");
         assert_eq!(sent.chars().count(), query.chars().count(), "{query}");
