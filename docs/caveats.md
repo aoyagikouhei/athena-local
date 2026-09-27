@@ -204,9 +204,10 @@ Real Athena starts these queries and then fails them at run time: the
 statement is classified as usual (`StatementType`, `SubstatementType` and a
 `<id>.txt` `OutputLocation` are the same as without the comment), but
 `Status.State` is `FAILED`. athena-local looks up the table's format in Trino,
-does not send the statement itself (nor, for `MSCK` and `ADD COLUMNS`, which
-Trino has no grammar for, its syntax check), and fails it the same way
-(measured 2026-09-26):
+does not send the statement itself (nor, for `MSCK`, `ADD COLUMNS`,
+`REPLACE COLUMNS`, `CHANGE COLUMN` and `DESCRIBE EXTENDED`, which Trino has no
+grammar for, its syntax check), and fails it the same way (measured
+2026-09-26 and 2026-09-27):
 
 | Statement | Fails on | Runs on |
 | --- | --- | --- |
@@ -215,6 +216,7 @@ Trino has no grammar for, its syntax check), and fails it the same way
 | `MSCK REPAIR TABLE` | a Hive table, a view, a missing table | — (an Iceberg table fails differently, below) |
 | `ALTER TABLE ... ADD COLUMNS` | a Hive table, a view, a missing table | — (Athena runs it on an Iceberg table, but Trino has no `ADD COLUMNS`, so athena-local still rejects it at the syntax check) |
 | `ALTER TABLE ... DROP COLUMN`, `RENAME TO` | a Hive table, a view, a missing table | an Iceberg table |
+| `ALTER TABLE ... REPLACE COLUMNS`, `CHANGE COLUMN` (comment after `ALTER` only) | a Hive table | — (a view, a missing table and an Iceberg table were not measured; Trino has no grammar for these, so athena-local rejects them at the syntax check as before) |
 
 A table whose Trino connector is neither `hive` nor `iceberg` (for example
 `memory`) has no Athena counterpart, so athena-local does not check its format
@@ -223,11 +225,18 @@ or the lookup fails.
 
 The comment has to come first, or between the keywords, or right before the
 table name (`SHOW /* c */ CREATE TABLE t`, `MSCK REPAIR TABLE /* c */ t`,
-`/* c */ ALTER TABLE t ADD COLUMNS (c int)`, and so on). A comment inside or
-after the table name was not measured and is sent to Trino as written. So is
-`ALTER /* c */ TABLE t` with `ADD PARTITION`, `DROP PARTITION` or `SET
-TBLPROPERTIES`, which succeed on Athena (those spellings are Trino syntax
-errors anyway — see [`ALTER TABLE` and format-dependent DDL](#alter-table-and-format-dependent-ddl)).
+`/* c */ ALTER TABLE t ADD COLUMNS (c int)`, and so on). Four more positions
+were measured on a Hive table only, and fail on a Hive table only: right after
+the `.` of an unquoted two-part name in `SHOW CREATE TABLE db./* c */t`, after
+the name in `MSCK REPAIR TABLE db.t /* c */`, between the name and
+`ADD COLUMNS` in `ALTER TABLE db.t /* c */ ADD COLUMNS (c int)`, and after
+`EXTENDED` in `DESCRIBE EXTENDED /* c */ db.t`. A view, a missing table and the
+other positions were not measured and are handled as before: sent to Trino as
+written, or rejected at the syntax check when Trino has no grammar for the
+statement. `ALTER /* c */ TABLE t` with `ADD PARTITION`, `DROP PARTITION` or
+`SET TBLPROPERTIES` is not failed either, as it succeeds on Athena (those
+spellings are Trino syntax errors anyway — see
+[`ALTER TABLE` and format-dependent DDL](#alter-table-and-format-dependent-ddl)).
 
 The failure is `ErrorCategory` 1 / `ErrorType` 1003 with a `ParseException`
 reason, and `<id>.txt` holds that reason with no `.metadata`:
@@ -241,21 +250,36 @@ reason, and `<id>.txt` holds that reason with no `.metadata`:
 | before the table name | `FAILED: ParseException line L:C cannot recognize input near '/' '*' 'c' in table name` |
 | after `ALTER` | `FAILED: ParseException line 1:0 cannot recognize input near 'ALTER' '/' '*' in alter statement` |
 | after `DESCRIBE` / `DESC` | `FAILED: ParseException line 1:0 cannot recognize input near 'DESCRIBE' '/' '*' in describe statement` |
+| inside the name (`db./* c */t`) | `FAILED: ParseException line L:C cannot recognize input near 'db' '.' '/' in table name` |
+| after the name of `MSCK REPAIR TABLE` | `FAILED: ParseException line L:C missing EOF at '/' near 't'` |
+| between the name and `ADD COLUMNS` | `FAILED: ParseException line L:C cannot recognize input near '/' '*' 'c' in alter table statement` |
+| after `DESCRIBE EXTENDED` | `FAILED: ParseException line L:C cannot recognize input near '/' '*' 'c' in specifying describe table types` |
 
 The keywords in the message are spelled as written (`near 'show'` for
 `show /* c */ create table t`). `'c'` stands for the first token inside the
 comment (`abc` for `/* abc */`, `1.5` for `/* 1.5 */`, `'x'` for `/* 'x' */`,
-`a` for `/* a.b */`, `*` for `/**/`). `L:C` is the line (from 1) and column
+`a` for `/* a.b */`, `*` for `/**/`, `<=` for `/* <= */`, `!=` for `/* != */`,
+`|` for `/* || */`, and `a` for `/* 'a */` when no later quote closes the
+string; other two-character operators are not measured and read as one
+character). `L:C` is the line (from 1) and column
 (from 0) of the `/`, counted after every run of two or more whitespace
 characters (newlines included) is squeezed into one space: `SHOW\n/* c */` is
 `2:0`, but `SHOW\n\n/* c */` and `SHOW  /* c */` are both `1:5`.
 
-Two `ALTER TABLE` actions differ: with `DROP COLUMN` and `RENAME TO` the
-failure is `ErrorCategory` 2 / `ErrorType` 1006, and `AthenaError.ErrorMessage`
-is not the reason but what Athena reports for the same statement without the
-comment — `line 1:N: mismatched input 'COLUMN' expecting 'PARTITION'` (`N`
-counts the comment) and `Query type not supported by DDL engine.`
-respectively. `MSCK REPAIR TABLE` on an Iceberg table, with or without a comment, fails with
+Four `ALTER TABLE` actions differ: with `DROP COLUMN`, `RENAME TO`,
+`REPLACE COLUMNS` and `CHANGE COLUMN` the failure is `ErrorCategory` 2 /
+`ErrorType` 1006, and `AthenaError.ErrorMessage` is not the reason —
+`line 1:N: mismatched input 'COLUMN' expecting 'PARTITION'` for `DROP COLUMN`
+(`N` counts the comment) and `Query type not supported by DDL engine.` for the
+other three. When a Hive table's `DROP COLUMN` is written
+`ALTER /* c */ TABLE awsdatacatalog.<database>.<table>`, the message is
+`line 1:T: no viable alternative at input 'ALTER /* c */ TABLE awsdatacatalog.<database>.'`
+instead (`T` is the column of the table name, counted in the statement as
+received), and `GetQueryExecution` returns the `Query` as received, keeping
+`awsdatacatalog.` (measured 2026-09-27; without the comment it is dropped, see
+[Parameters and catalog aliases](#parameters-and-catalog-aliases)). Other
+statements with both a comment and `awsdatacatalog.` were not measured and drop
+it as without the comment. `MSCK REPAIR TABLE` on an Iceberg table, with or without a comment, fails with
 `Query type not supported by Athena Iceberg at this time` (`ErrorCategory` 2 /
 `ErrorType` 1200) and writes no `<id>.txt`.
 
@@ -320,10 +344,11 @@ respectively. `MSCK REPAIR TABLE` on an Iceberg table, with or without a comment
   Trino unchanged depending on the table (see below). Athena's own
   spellings (`ADD COLUMNS`, `SET TBLPROPERTIES`, and so on) are rejected by
   Trino's syntax check instead (the item above).
-- **`ALTER TABLE` classification covers eight forms.** `SET TBLPROPERTIES`,
+- **`ALTER TABLE` classification covers nine forms.** `SET TBLPROPERTIES`,
   `ADD COLUMNS`, `DROP COLUMN`, `SET LOCATION`, `REPLACE COLUMNS`,
-  `ADD PARTITION`, `DROP PARTITION` and `RENAME TO` each get the
-  `SubstatementType` Athena returns (measured 2026-09-21). Note that
+  `ADD PARTITION`, `DROP PARTITION`, `RENAME TO` and `CHANGE COLUMN` each get
+  the `SubstatementType` Athena returns (measured 2026-09-21; `CHANGE COLUMN`,
+  `ALTER_TABLE_CHANGE_COLUMN`, 2026-09-27). Note that
   `ALTER_TABLE_REPLACE_COLUMN` is singular although the statement is plural;
   the singular statement `REPLACE COLUMN` is a syntax error on Athena
   (`mismatched input 'REPLACE'`, `MALFORMED_QUERY`, measured 2026-09-24) and is
@@ -332,7 +357,7 @@ respectively. `MSCK REPAIR TABLE` on an Iceberg table, with or without a comment
   run time, so athena-local classifies these forms regardless of the target's
   format. Any other `ALTER TABLE` form is left unclassified, the same as any
   other statement whose `SubstatementType` was not measured (see
-  [Supported API](api.md#supported-api)). Only two of the eight can actually be run
+  [Supported API](api.md#supported-api)). Only two of the nine can actually be run
   through athena-local — `DROP COLUMN` and `RENAME TO`, on an Iceberg table
   (see below for the other tables). The other six are
   rejected at the syntax check or at `StartQueryExecution` (the items above),

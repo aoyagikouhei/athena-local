@@ -163,7 +163,7 @@
 
   - 名前の中・後ろ・句の中の位置も、#244 と同じく `/` の 0 始まりの位置だった
   - 後始末の Iceberg 表の DROP TABLE は本体 1 バイト（`\n`）と `.metadata` 41 バイトを置いた。無い表への DROP TABLE IF EXISTS は本体 0 バイト・`.metadata` 無し
-- 採用した判断: （#257 の PR で書く）
+- 採用した判断: 測った組（文×位置×Hive 表）だけ本物の文言で失敗させ、ビュー・無い表・ほかの位置は今までどおり送る。pos1 の形だけ Query を受け取ったまま返す。msck1・msck2 は athena-local が MSCK を実行できない（Trino に構文が無い）ので再現しない。`DESCRIBE EXTENDED` の DB の落としは #275、残りの未実測は #276（#257、ユーザーの判断）
 - 備考: pos1 の Query は、コメント無しの `ALTER TABLE awsdatacatalog.<db>.<t>`（#242 m33）で落ちるのと逆になった。一方 DESCRIBE EXTENDED はコメント入りでも DB が落ちた（コメント無しの `DESCRIBE EXTENDED <db>.<t>` の m7 と同じ）
 
 ## 本物だけが実行時に弾く形（`/* c */ SHOW CREATE TABLE`）

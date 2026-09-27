@@ -2,6 +2,7 @@
 //! 切り出したもの（挙動を変えない移動。#257）。値の出どころは `comment_parse_error/tests.rs` のモジュール冒頭コメント参照。
 
 use super::super::*;
+use super::awsdatacatalog_drop_column_error_message;
 
 /// `comment_parse_error::tests::parse_exception` と同じ内容(複製。#257 フェーズ 0 の一致台帳)。
 fn parse_exception(target: Target, reason: &str) -> ParseError {
@@ -258,5 +259,83 @@ fn 対象外の_alter_の動作は_none_に固定する() {
         ),
     ] {
         assert_eq!(detect(sql), None, "{ids}: {sql}");
+    }
+}
+
+/// pos1: ALTER の直後のコメント・無引用ちょうど 3 部・1 部目 awsdatacatalog（大文字小文字によらない）・
+/// DROP COLUMN のときだけ ErrorMessage を返す（2026-09-27 実測 pos1。#257）。
+#[test]
+fn pos1_は_alter_の直後のコメントで無引用_3_部_awsdatacatalog_の_drop_column_なら_error_message_を返す()
+ {
+    for (ids, sql, expected) in [
+        (
+            "pos1 小文字",
+            "ALTER /* c */ TABLE awsdatacatalog.db.t DROP COLUMN n",
+            "line 1:38: no viable alternative at input 'ALTER /* c */ TABLE awsdatacatalog.db.'",
+        ),
+        (
+            "pos1 大文字（AwsDataCatalog の綴り）",
+            "ALTER /* c */ TABLE AwsDataCatalog.db.t DROP COLUMN n",
+            "line 1:38: no viable alternative at input 'ALTER /* c */ TABLE AwsDataCatalog.db.'",
+        ),
+        (
+            "pos1 ドットの前後に空白のある名前",
+            "ALTER /* c */ TABLE awsdatacatalog . db . t DROP COLUMN n",
+            "line 1:42: no viable alternative at input 'ALTER /* c */ TABLE awsdatacatalog . db . '",
+        ),
+    ] {
+        assert_eq!(
+            awsdatacatalog_drop_column_error_message(sql),
+            Some(expected.to_string()),
+            "{ids}: {sql}"
+        );
+    }
+}
+
+#[test]
+fn pos1_は対象外の形なら_none() {
+    for (ids, sql) in [
+        (
+            "2 部（カタログ無し）",
+            "ALTER /* c */ TABLE awsdatacatalog.t DROP COLUMN n",
+        ),
+        (
+            "4 部",
+            "ALTER /* c */ TABLE awsdatacatalog.db.s.t DROP COLUMN n",
+        ),
+        (
+            "引用符付きの部品",
+            "ALTER /* c */ TABLE awsdatacatalog.\"db\".t DROP COLUMN n",
+        ),
+        (
+            "RENAME TO（DROP COLUMN でない）",
+            "ALTER /* c */ TABLE awsdatacatalog.db.t RENAME TO u",
+        ),
+        (
+            "ADD COLUMNS（DROP COLUMN でない）",
+            "ALTER /* c */ TABLE awsdatacatalog.db.t ADD COLUMNS (c int)",
+        ),
+        (
+            "先頭のコメント（hit.index == 0）",
+            "/* c */ ALTER TABLE awsdatacatalog.db.t DROP COLUMN n",
+        ),
+        (
+            "TABLE の後のコメント（hit.index == 2）",
+            "ALTER TABLE /* c */ awsdatacatalog.db.t DROP COLUMN n",
+        ),
+        (
+            "ほかのカタログ（1 部目が awsdatacatalog でない）",
+            "ALTER /* c */ TABLE hive.db.t DROP COLUMN n",
+        ),
+        (
+            "コメント無し",
+            "ALTER TABLE awsdatacatalog.db.t DROP COLUMN n",
+        ),
+    ] {
+        assert_eq!(
+            awsdatacatalog_drop_column_error_message(sql),
+            None,
+            "{ids}: {sql}"
+        );
     }
 }

@@ -16,7 +16,7 @@ mod position;
 use crate::failure::{Failure, SYSTEM, USER};
 
 use alter::alter;
-pub(in crate::operation) use alter::plain_drop_column;
+pub(in crate::operation) use alter::{awsdatacatalog_drop_column_error_message, plain_drop_column};
 
 /// 本物の Hive のパーサがブロックコメントで失敗させる文の種類。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

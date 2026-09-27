@@ -370,6 +370,151 @@ async fn alter_table_replace_columns_と_change_column_は_alter_の直後のコ
     }
 }
 
+/// pos1: ALTER の直後のコメント・無引用 3 部・1 部目 awsdatacatalog（大文字小文字によらない）の
+/// DROP COLUMN は、Hive 表なら本物どおり受け取ったままの文（`awsdatacatalog.` を落とす前）で
+/// ErrorMessage を作り、Query も受け取ったまま返す（2026-09-27 実測 pos1。#257）。StateChangeReason は
+/// `drop_catalog` で落とした文で数えても変わらないので今までどおり。
+#[tokio::test]
+async fn alter_table_drop_column_の_awsdatacatalog_3_部_は_hive_表なら受け取ったままの文で_error_message_と_query_を返す()
+ {
+    let sql = "ALTER /* c */ TABLE awsdatacatalog.db.t DROP COLUMN n";
+    let harness = Harness::builder(select_response())
+        .catalog_map(&[("AwsDataCatalog", "hive")])
+        .route(
+            &probe_sql("hive", "db", "t"),
+            probe_response("hive", "TABLE"),
+        )
+        .start()
+        .await;
+
+    let execution = harness
+        .run_query(json!({
+            "QueryString": sql,
+            "QueryExecutionContext": { "Catalog": "AwsDataCatalog", "Database": "other" }
+        }))
+        .await["QueryExecution"]
+        .clone();
+
+    assert_eq!(execution["Status"]["State"], "FAILED", "{execution}");
+    assert_eq!(
+        execution["Status"]["StateChangeReason"],
+        "FAILED: ParseException line 1:0 cannot recognize input near 'ALTER' '/' '*' in alter statement"
+    );
+    assert_eq!(execution["Status"]["AthenaError"]["ErrorCategory"], 2);
+    assert_eq!(execution["Status"]["AthenaError"]["ErrorType"], 1006);
+    assert_eq!(
+        execution["Status"]["AthenaError"]["ErrorMessage"],
+        "line 1:38: no viable alternative at input 'ALTER /* c */ TABLE awsdatacatalog.db.'"
+    );
+    assert_eq!(
+        execution["Query"], sql,
+        "Query は受け取ったまま（awsdatacatalog. を落とさない）"
+    );
+}
+
+/// ビュー・無い表は pos1 の対象外（未実測）で今までどおり、`drop_catalog` で落とした文で ErrorMessage・Query
+/// を作る。
+#[tokio::test]
+async fn alter_table_drop_column_の_awsdatacatalog_3_部_はビュー_無い表なら今までどおり落とした文になる()
+ {
+    for (name, response, expected_message) in [
+        (
+            "v",
+            probe_response("hive", "VIEW"),
+            "line 1:31: mismatched input 'COLUMN' expecting 'PARTITION'",
+        ),
+        (
+            "nope",
+            probe_response_missing(),
+            "line 1:34: mismatched input 'COLUMN' expecting 'PARTITION'",
+        ),
+    ] {
+        let sql = format!("ALTER /* c */ TABLE awsdatacatalog.db.{name} DROP COLUMN n");
+        let dropped = format!("ALTER /* c */ TABLE db.{name} DROP COLUMN n");
+        let harness = Harness::builder(select_response())
+            .catalog_map(&[("AwsDataCatalog", "hive")])
+            .route(&probe_sql("hive", "db", name), response)
+            .start()
+            .await;
+
+        let execution = harness
+            .run_query(json!({
+                "QueryString": sql,
+                "QueryExecutionContext": { "Catalog": "AwsDataCatalog", "Database": "other" }
+            }))
+            .await["QueryExecution"]
+            .clone();
+
+        assert_eq!(
+            execution["Status"]["State"], "FAILED",
+            "{name}: {execution}"
+        );
+        assert_eq!(
+            execution["Status"]["AthenaError"]["ErrorMessage"], expected_message,
+            "{name}"
+        );
+        assert_eq!(
+            execution["Query"], dropped,
+            "{name}: pos1 の対象外は今までどおり落とした文"
+        );
+    }
+}
+
+/// RENAME TO は DROP COLUMN でないので pos1 の対象外（今までどおり落とした文のまま）。
+#[tokio::test]
+async fn alter_table_rename_to_の_awsdatacatalog_3_部_は_pos1_の対象外で今までどおり落とした文になる()
+ {
+    let sql = "ALTER /* c */ TABLE awsdatacatalog.db.t RENAME TO u";
+    let harness = Harness::builder(select_response())
+        .catalog_map(&[("AwsDataCatalog", "hive")])
+        .route(
+            &probe_sql("hive", "db", "t"),
+            probe_response("hive", "TABLE"),
+        )
+        .start()
+        .await;
+
+    let execution = harness
+        .run_query(json!({
+            "QueryString": sql,
+            "QueryExecutionContext": { "Catalog": "AwsDataCatalog", "Database": "other" }
+        }))
+        .await["QueryExecution"]
+        .clone();
+
+    assert_eq!(execution["Status"]["State"], "FAILED", "{execution}");
+    assert_eq!(
+        execution["Status"]["AthenaError"]["ErrorMessage"],
+        "Query type not supported by DDL engine."
+    );
+    assert_eq!(
+        execution["Query"], "ALTER /* c */ TABLE db.t RENAME TO u",
+        "RENAME TO は pos1 の対象外で今までどおり落とした文"
+    );
+}
+
+/// Context の Catalog がほかのカタログ（`drop_catalog` が落とさない）ときは、そもそも `awsdatacatalog.` が
+/// 落ちないので pos1 は関係せず、Query は受け取ったまま（drop_catalog が触らないだけ。今までどおり）。
+#[tokio::test]
+async fn alter_table_drop_column_の_awsdatacatalog_3_部_は_context_の_catalog_がほかなら今までどおりquery_は受け取ったまま()
+ {
+    let sql = "ALTER /* c */ TABLE awsdatacatalog.db.t DROP COLUMN n";
+    let harness = Harness::builder(select_response()).start().await;
+
+    let execution = harness
+        .run_query(json!({
+            "QueryString": sql,
+            "QueryExecutionContext": { "Catalog": "other", "Database": "db" }
+        }))
+        .await["QueryExecution"]
+        .clone();
+
+    assert_eq!(
+        execution["Query"], sql,
+        "drop_catalog がほかのカタログでは落とさないので Query は受け取ったまま"
+    );
+}
+
 /// 先頭・TABLE の後のコメントは未実測なので None（今までどおり構文チェックへ進む。Trino に構文が無い
 /// ので、実際にはこの先で構文エラーになる想定だが、ここでは判定に介入しないことだけを確かめる）。
 #[tokio::test]

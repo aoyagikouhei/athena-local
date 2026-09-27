@@ -11,6 +11,15 @@ later name the date they were measured on.
 
 ### Changed
 
+- A block comment right after the `.` of the name in `SHOW CREATE TABLE`, after
+  the name in `MSCK REPAIR TABLE`, before `ADD COLUMNS`, after
+  `DESCRIBE EXTENDED`, or after `ALTER` in `REPLACE COLUMNS` / `CHANGE COLUMN`
+  now fails on a Hive table like real Athena
+  ([docs](docs/caveats.md#block-comments-athenas-hive-parser-rejects)).
+- The `ParseException` reason reads `<=`, `!=` and an unclosed quote in a
+  leading comment like real Athena, and a commented `DROP COLUMN` on
+  `awsdatacatalog.<database>.<table>` keeps the received `Query`
+  ([docs](docs/caveats.md#block-comments-athenas-hive-parser-rejects)).
 - Under an S3 Tables context catalog, more Hive `CREATE TABLE` forms (`COMMENT`,
   `CLUSTERED BY`, `ROW FORMAT SERDE`, other `DELIMITED` terminators, several
   `TBLPROPERTIES`, a backquoted name, `EXTERNAL` without `LOCATION` on more

@@ -130,7 +130,8 @@ pub(super) async fn decide(
         Check::Run if statement != query => {
             reported = Some(Reported {
                 query: query.clone(),
-                database: sent_database,
+                // pos1（ALTER の直後のコメントの DROP COLUMN。後段）でも使うので clone する。
+                database: sent_database.clone(),
             });
             (statement, database)
         }
@@ -250,18 +251,38 @@ pub(super) async fn decide(
     );
     // コメント無しの ALTER TABLE の DROP COLUMN・RENAME TO も、本物は Hive 表・無い表で開始後に FAILED にする（#256）。
     let failure = match comment_parse_error::detect(&statement) {
-        Some(parse_error) => {
-            comment_parse_error_failure(
-                &app.trino,
-                &app.config,
-                &statement,
-                describe_table_hive,
-                resolved.as_deref(),
-                database.as_deref(),
-                parse_error,
-            )
-            .await
-        }
+        Some(parse_error) => comment_parse_error_failure(
+            &app.trino,
+            &app.config,
+            &statement,
+            describe_table_hive,
+            resolved.as_deref(),
+            database.as_deref(),
+            parse_error,
+        )
+        .await
+        .map(|(failure, hive)| {
+            // pos1: ALTER の直後のコメント・無引用 3 部・1 部目 awsdatacatalog（大文字小文字によらない）の
+            // DROP COLUMN は、対象が Hive 表なら受け取ったままの文（`query`。`awsdatacatalog.` を落とす前）で
+            // ErrorMessage を作り直し、`reported` に受け取った文と送った Database（`sent_database`）を入れて
+            // Query を受け取ったままにする（`Check::Run` の腕と同じ形。2026-09-27 実測 pos1。#257）。
+            let pos1 = hive
+                .then(|| comment_parse_error::awsdatacatalog_drop_column_error_message(&query))
+                .flatten();
+            match pos1 {
+                Some(error_message) => {
+                    reported = Some(Reported {
+                        query: query.clone(),
+                        database: sent_database.clone(),
+                    });
+                    Failure {
+                        error_message: Some(error_message),
+                        ..failure
+                    }
+                }
+                None => failure,
+            }
+        }),
         None => {
             plain_alter_failure(
                 &app.trino,

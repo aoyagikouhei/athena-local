@@ -131,7 +131,9 @@ pub(super) async fn pre_syntax_check_failure(
 /// `Check::Reject` の `Box<Response>` を async の境界越しに借用すると `dispatch` が `Handler` を実装
 /// できなくなる）、SHOW CREATE TABLE・ALTER TABLE の RENAME TO・DROP COLUMN は名前を読み直して
 /// `entity_check::probe` をもう 1 回だけ投げる（問い合わせが増えるのはブロックコメントが決め手の位置に
-/// あるときだけ。design-checklist #39）。
+/// あるときだけ。design-checklist #39）。返り値の `bool` は対象が Hive 表だったか（`start_checks.rs` が
+/// pos1（ALTER の直後のコメント・無引用 3 部・1 部目 awsdatacatalog の DROP COLUMN）の ErrorMessage の
+/// 差し替えに使う。2026-09-27 実測。#257）。
 pub(super) async fn comment_parse_error_failure(
     trino: &Trino,
     config: &Config,
@@ -140,11 +142,11 @@ pub(super) async fn comment_parse_error_failure(
     resolved: Option<&str>,
     database: Option<&str>,
     parse_error: comment_parse_error::ParseError,
-) -> Option<Failure> {
+) -> Option<(Failure, bool)> {
     use comment_parse_error::Target;
 
     match parse_error.target {
-        Target::Describe => describe_table_hive.then(|| parse_error.into()),
+        Target::Describe => describe_table_hive.then(|| (parse_error.into(), describe_table_hive)),
         Target::ShowCreateTable | Target::AlterDropColumn | Target::AlterRename => {
             // ALTER の 3 動作は名前の前のキーワードが同じ `ALTER TABLE` なので、`target_table` の読み方は
             // ADD COLUMNS と共有する（`table_format::TargetStatement` に RENAME TO・DROP COLUMN 用の腕は無い）。
@@ -169,6 +171,12 @@ pub(super) async fn comment_parse_error_failure(
                 &target.table,
             )
             .await;
+            let hive = matches!(
+                probe,
+                Probe::Table {
+                    format: Some(TableFormat::Hive)
+                }
+            );
             // `parse_error.hive_only` は #257 の g1 のような新しいチェックポイントだけ true
             // （ビュー・無い表は今までどおり Trino に送る）。#244 の既存のチェックポイントは false のまま。
             let ok = match probe {
@@ -178,7 +186,7 @@ pub(super) async fn comment_parse_error_failure(
                 Probe::Missing | Probe::View => !parse_error.hive_only,
                 Probe::Table { .. } | Probe::NoCatalog | Probe::Unknown => false,
             };
-            ok.then(|| parse_error.into())
+            ok.then(|| (parse_error.into(), hive))
         }
         // REPLACE COLUMNS・CHANGE COLUMN は Trino に構文が無く、構文チェックの前（`pre_syntax_check_failure`）
         // だけで判定する（r1・r3。#257）。このパスは Trino が構文を通した文だけが届くので、実際には来ない。

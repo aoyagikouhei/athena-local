@@ -4,6 +4,7 @@
 use crate::failure::DDL_ENGINE_UNSUPPORTED;
 
 use super::super::classification::substatement_type;
+use super::super::reported_query;
 use super::super::target_table::if_follows;
 use super::{ParseError, Target, head_reason, position, scan, table_name_reason, valid_name};
 
@@ -169,6 +170,36 @@ pub(in crate::operation) fn plain_drop_column(query: &str) -> Option<ParseError>
         error_type: 1006,
         hive_only: false,
     })
+}
+
+/// pos1: 受け取った文（`awsdatacatalog.` を落とす前）が「ALTER の直後のブロックコメント
+/// （`hit.index == 1`）・DROP COLUMN・無引用ちょうど 3 部の名前・1 部目が `awsdatacatalog`
+/// （大文字小文字によらない）」の形なら、本物の AthenaError.ErrorMessage を作る。位置は表名の
+/// 1 文字目の 0 始まり（`+1` しない）、input は文頭から表名の直前までを書いたままの綴り
+/// （2026-09-27 実測 pos1。#257）。対象が Hive 表かどうかは呼び出し側（`start_checks.rs`）が見る。
+pub(in crate::operation) fn awsdatacatalog_drop_column_error_message(
+    query: &str,
+) -> Option<String> {
+    if substatement_type(query) != Some("ALTER_TABLE_DROP_COLUMN") {
+        return None;
+    }
+    let (hit, name_start) = scan(query, &["ALTER", "TABLE"])?;
+    let _hit = hit.filter(|hit| hit.index == 1)?;
+    let name = athena_sql::Cursor::new(&query[name_start..]).qualified_name()?;
+    let [catalog, _db, table] = name.parts.as_slice() else {
+        return None;
+    };
+    if name.parts.iter().any(|part| part.text.starts_with('"'))
+        || !reported_query::is_aws_data_catalog(catalog.text)
+    {
+        return None;
+    }
+    let table_start = name_start + table.start;
+    let (line, col) = position::position(query, table_start);
+    Some(format!(
+        "line {line}:{col}: no viable alternative at input '{}'",
+        &query[..table_start]
+    ))
 }
 
 #[cfg(test)]
