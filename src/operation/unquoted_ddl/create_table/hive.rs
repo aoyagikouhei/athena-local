@@ -9,7 +9,7 @@ use athena_sql::{Cursor, skip_leading_trivia};
 
 use crate::failure::Failure;
 
-use super::{ColumnOutcome, column};
+use super::{ColumnOutcome, TWO_CATALOGS, column};
 
 /// S3 Tables の Context で LOCATION 付きの Hive の `CREATE TABLE` に本物が返す文言（位置なし）。
 const S3_TABLES_LOCATION: &str =
@@ -35,8 +35,30 @@ struct Hive<'a> {
     properties: Vec<(&'a str, &'a str)>,
 }
 
-/// 本物が S3 Tables で受理した TBLPROPERTIES のキー（大文字小文字によらない。2026-09-27 実測 tp1〜tp3・tp5。#270）。
-const ICEBERG_PROPERTY_KEYS: &[&str] = &["table_type", "format", "write_compression"];
+/// S3 Tables の Context で未知のキーとして失敗させない TBLPROPERTIES のキー（大文字小文字によらない）。本物が受理したキー
+/// （2026-09-27 実測 tp1〜tp3・tp5・k1〜k4。`write_target_data_file_size_bytes` は文書に無いが受理された）、開始時に別の文言で
+/// 弾いた `compression_level`（k5）、Athena の文書が Iceberg の表に許すキーのうち測っていないもの（未知のキーかは分からないので
+/// 今までどおり構文チェックに任せる）。これ以外は未知のキー（a270・a266・`classification`・`A270` を測った。#270）。
+const ICEBERG_PROPERTY_KEYS: &[&str] = &[
+    "table_type",
+    "format",
+    "write_compression",
+    "vacuum_max_snapshot_age_seconds",
+    "vacuum_min_snapshots_to_keep",
+    "optimize_rewrite_delete_file_threshold",
+    "write_target_data_file_size_bytes",
+    "compression_level",
+    "optimize_rewrite_data_file_threshold",
+    "vacuum_max_metadata_files_to_keep",
+    "write_data_path_enabled",
+];
+
+/// S3 Tables の Context で `table_type` が `ICEBERG` 以外の TBLPROPERTIES に本物が返す文言（位置なし）。
+const S3_TABLES_ONLY_ICEBERG: &str = "Only ICEBERG table format is supported with S3 table buckets";
+
+/// `write_compression` の無い `compression_level` に本物が返す文言（位置なし）。
+const COMPRESSION_CODEC_REQUIRED: &str =
+    "Compression codec must be defined when compression_level property is specified.";
 
 /// 本物が Hive の `CREATE TABLE` として読んでから弾く文なら、その文言を返す（S3 Tables の Context でだけ呼ぶ）。
 ///
@@ -44,6 +66,9 @@ const ICEBERG_PROPERTY_KEYS: &[&str] = &["table_type", "format", "write_compress
 /// DATACATALOG_NOT_FOUND が先で（`location_catalog`）、ほかのカタログは測っていない）と、1 部のバッククォート（s11）。
 /// LOCATION があれば句によらず Table location（n1〜n5・n20・s1〜s6・s11・s16・u0〜u7）。LOCATION が無ければ
 /// `CREATE EXTERNAL TABLE` が句・IF NOT EXISTS・列の並びの有無によらず External の文言（n11・n12・s7〜s10・v0〜v9）。
+/// どちらでもなければ、TBLPROPERTIES の `table_type` が `ICEBERG` 以外（綴りによらない）なら、句・列の並びの有無・名前空間の
+/// 有無・ちょうど小文字の `awsdatacatalog` の 3 部によらず Only ICEBERG の文言（2026-09-27 実測 tp6・v1〜v6・a5・m7。#270）。
+/// `write_compression` の無い `compression_level` は Compression codec の文言（k5。ほかの句との組は測っていない）。
 pub(in crate::operation) fn s3_tables_rejection(query: &str) -> Option<&'static str> {
     let hive = read(query)?;
     match hive.parts.as_slice() {
@@ -54,16 +79,30 @@ pub(in crate::operation) fn s3_tables_rejection(query: &str) -> Option<&'static 
     if hive.location {
         return Some(S3_TABLES_LOCATION);
     }
-    hive.external.then_some(S3_TABLES_EXTERNAL)
+    if hive.external {
+        return Some(S3_TABLES_EXTERNAL);
+    }
+    if hive.properties.iter().any(|(key, value)| {
+        key.eq_ignore_ascii_case("table_type") && !value.eq_ignore_ascii_case("iceberg")
+    }) {
+        return Some(S3_TABLES_ONLY_ICEBERG);
+    }
+    let has_key = |name: &str| {
+        hive.properties
+            .iter()
+            .any(|(key, _)| key.eq_ignore_ascii_case(name))
+    };
+    (has_key("compression_level") && !has_key("write_compression"))
+        .then_some(COMPRESSION_CODEC_REQUIRED)
 }
 
 /// S3 Tables の Context で、本物が開始してから FAILED にした LOCATION の無い非 EXTERNAL の `CREATE TABLE` の失敗。句が 2 つ
 /// 以上あれば CLUSTERED BY > ROW FORMAT > STORED AS > 型付きの PARTITIONED BY > 列の並び無し > 未知のキーの TBLPROPERTIES の順に
-/// 1 つを選ぶ（2026-09-26 実測 n21・vc4・w0〜w10・z6〜z17、2026-09-27 実測 s15・cl1・pr1〜pr10・pn1〜pn6・pa4・tp4・tp7。
-/// #248・#266・#270）。名前は 1・2 部と、1 部目が `awsdatacatalog` の類でちょうど小文字ではない 3 部。ちょうど小文字の 3 部は
-/// 2 catalogs が先（w3）、ほかのカタログの 3 部は測っていないので None。列の並びの無い形は、型付きの PARTITIONED BY と、
-/// 未知のキーの TBLPROPERTIES の無い形（句が無い・受理されるキーだけ）を測っていないので None。未知のキーは 1 つだけの形を
-/// 測った（理由には書いた綴りのまま出る）。`'table_type'='HIVE'` などの値の違いは測っていないので None。
+/// 1 つを選ぶ（2026-09-26 実測 n21・vc4・w0〜w10・z6〜z17、2026-09-27 実測 s15・cl1・pr1〜pr10・pn1〜pn6・pa4・tp4・tp7・
+/// ROUND=20 の k6〜k8・c1〜c4。#248・#266・#270）。名前空間が無くても句の失敗が先（m1〜m6）。名前は 1・2 部と、1 部目が
+/// `awsdatacatalog` の類でちょうど小文字ではない 3 部。ちょうど小文字の 3 部は 2 catalogs が先（w3・a1〜a4）、ほかの
+/// カタログの 3 部は測っていないので None。未知のキーが 2 つ以上なら最初のキーを書いた綴りのまま出す（k7・k8）。
+/// `table_type` の値・`compression_level` は開始時に弾く（`s3_tables_rejection`）ので、ここへ来ない。
 pub(in crate::operation) fn s3_tables_failure(query: &str) -> Option<Failure> {
     let hive = read(query)?;
     let measured_name = match hive.parts.as_slice() {
@@ -86,31 +125,43 @@ pub(in crate::operation) fn s3_tables_failure(query: &str) -> Option<Failure> {
         return Some(Failure::iceberg_does_not_allow("STORED AS/BY"));
     }
     if hive.partitioned {
-        return hive.columns.then(Failure::invalid_partitioned_by);
+        return Some(Failure::invalid_partitioned_by());
     }
-    let table_type_iceberg = hive.properties.iter().all(|(key, value)| {
-        !key.eq_ignore_ascii_case("table_type") || value.eq_ignore_ascii_case("iceberg")
-    });
-    let [unknown_key] = hive
-        .properties
-        .iter()
-        .map(|(key, _)| *key)
-        .filter(|key| {
-            !ICEBERG_PROPERTY_KEYS
-                .iter()
-                .any(|known| key.eq_ignore_ascii_case(known))
-        })
-        .collect::<Vec<_>>()[..]
-    else {
+    if !hive.columns {
+        return Some(Failure::at_least_one_column());
+    }
+    unknown_property_key(&hive).map(Failure::unsupported_table_property_key)
+}
+
+/// TBLPROPERTIES の最初の未知のキー（書いた綴り）。
+fn unknown_property_key<'a>(hive: &Hive<'a>) -> Option<&'a str> {
+    hive.properties.iter().map(|(key, _)| *key).find(|key| {
+        !ICEBERG_PROPERTY_KEYS
+            .iter()
+            .any(|known| key.eq_ignore_ascii_case(known))
+    })
+}
+
+/// S3 Tables の Context で、名前の 1 部目がちょうど小文字の `awsdatacatalog` の 3 部の、LOCATION の無い非 EXTERNAL の
+/// `CREATE TABLE` に Trino に無い句（STORED AS・ROW FORMAT・CLUSTERED BY・型付きの PARTITIONED BY・未知のキーの
+/// TBLPROPERTIES）があれば、本物は開始時に `Unsupported ddl with 2 catalogs: <文>`（前後の空白を落とした文）で弾いた
+/// （2026-09-26 実測 w3、2026-09-27 実測 a1〜a4。#270）。構文チェックより前に、`s3_tables_rejection` の後で呼ぶ
+/// （`table_type` が ICEBERG 以外なら Only ICEBERG が先。a5）。句の無い形は構文チェックの後の判定（#224）が同じ文言で弾く。
+pub(in crate::operation) fn s3_tables_two_catalogs(query: &str) -> Option<String> {
+    let hive = read(query)?;
+    let [catalog, _, _] = hive.parts.as_slice() else {
         return None;
     };
-    if !table_type_iceberg {
-        return None;
-    }
-    Some(if hive.columns {
-        Failure::unsupported_table_property_key(unknown_key)
-    } else {
-        Failure::at_least_one_column()
+    let hive_clause = hive.stored_as
+        || hive.row_format
+        || hive.clustered
+        || hive.partitioned
+        || unknown_property_key(&hive).is_some();
+    (*catalog == "awsdatacatalog" && !hive.external && !hive.location && hive_clause).then(|| {
+        format!(
+            "{TWO_CATALOGS}: {}",
+            query.trim_matches([' ', '\t', '\r', '\n'])
+        )
     })
 }
 

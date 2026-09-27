@@ -515,24 +515,49 @@ it as without the comment. `MSCK REPAIR TABLE` on an Iceberg table, with or with
   `NOT NULL` or a double-quoted column name, a nested `row(...)` column type,
   anything after the `LOCATION` path, an unquoted or missing path, or
   `TBLPROPERTIES` before `LOCATION`.
-  `CREATE TABLE [IF NOT EXISTS] <name> [(<columns>)] [COMMENT '<c>']
-  [PARTITIONED BY (<columns>)] STORED AS <format> [TBLPROPERTIES (...)]`
-  without `LOCATION`, on a one- or two-part name, a one-part name in
-  backquotes or a three-part one whose first part is `awsdatacatalog` in a
-  case other than all lower case, is accepted and fails like real Athena with
-  `Iceberg create table statement does not allow STORED AS/BY`
-  (`ErrorCategory` 2, `ErrorType` 1200), without being sent to Trino and
-  without result files (measured 2026-09-26 and 2026-09-27,
-  [#266](https://github.com/aoyagikouhei/athena-local/issues/266)). With
-  `ROW FORMAT` real Athena answers `does not allow ROW FORMAT` instead, and on
-  an all-lower-case `awsdatacatalog.<database>.<table>` it answers
-  `Unsupported ddl with 2 catalogs` at start; athena-local still returns
-  Trino's syntax error for both
-  ([#270](https://github.com/aoyagikouhei/athena-local/issues/270)). With
-  `CLUSTERED BY`, or on a three-part name in another catalog, `STORED AS` was
-  not measured and still gets Trino's syntax error. So do Hive clauses not
-  listed above (`WITH SERDEPROPERTIES`, `ESCAPED BY`, `SORTED BY`, `STORED AS
-  INPUTFORMAT ... OUTPUTFORMAT`, ...), which were not measured either.
+  Without `LOCATION` and without `EXTERNAL`, on a one- or two-part name, a
+  one-part name in backquotes or a three-part one whose first part is
+  `awsdatacatalog` in a case other than all lower case, these forms are
+  accepted and fail like real Athena, without being sent to Trino and without
+  result files (`ErrorCategory` 2, with or without `IF NOT EXISTS` or
+  `COMMENT`, and before the check that the namespace exists; measured
+  2026-09-26 and 2026-09-27,
+  [#266](https://github.com/aoyagikouhei/athena-local/issues/266),
+  [#270](https://github.com/aoyagikouhei/athena-local/issues/270)):
+
+  | Form | Reason | `ErrorType` |
+  |---|---|---|
+  | `CLUSTERED BY (<columns>) INTO <n> BUCKETS` | `Iceberg create table statement does not allow CLUSTERED BY` | 1200 |
+  | `ROW FORMAT SERDE '<class>'` or `ROW FORMAT DELIMITED ...` | `Iceberg create table statement does not allow ROW FORMAT` | 1200 |
+  | `STORED AS <format>` | `Iceberg create table statement does not allow STORED AS/BY` | 1200 |
+  | `PARTITIONED BY (<column> <type>, ...)` (Hive's typed form) | `Invalid PARTITIONED BY clause in Iceberg create table statement` | 1006 |
+  | no column list | `At least one column is required for Iceberg create table statement` | 1006 |
+  | a `TBLPROPERTIES` key outside the list below | `Unsupported table property key: <the first such key as written>` | 1200 |
+
+  With more than one of them, the reason is the first row of the table that
+  applies, as on real Athena. `TBLPROPERTIES` keys that are not reported
+  (in any case): `table_type`, `format`, `write_compression`,
+  `vacuum_max_snapshot_age_seconds`, `vacuum_min_snapshots_to_keep`,
+  `optimize_rewrite_delete_file_threshold`,
+  `write_target_data_file_size_bytes` and `compression_level` (measured), and
+  `optimize_rewrite_data_file_threshold`, `vacuum_max_metadata_files_to_keep`
+  and `write_data_path_enabled` (documented by AWS for Iceberg tables, not
+  measured). These are rejected at start instead (`MALFORMED_QUERY`):
+  `'table_type'` other than `ICEBERG` (any case), with `Only ICEBERG table
+  format is supported with S3 table buckets`, whatever else the statement
+  has; `compression_level` without `write_compression`, with `Compression
+  codec must be defined when compression_level property is specified.`; and
+  on an all-lower-case `awsdatacatalog.<database>.<table>`, any of the forms
+  in the table above, with `Unsupported ddl with 2 catalogs: <the statement>`.
+  The forms real Athena accepts (Iceberg's `PARTITIONED BY (<column>)` and
+  `PARTITIONED BY (bucket(4, <column>))`, `TBLPROPERTIES` with the keys
+  above) do not parse on Trino and still get Trino's syntax error; write them
+  with Trino's `WITH (...)` instead. `compression_level` together with
+  another failing form was not measured; athena-local rejects it at start the
+  same way. Not measured, and still Trino's syntax error: a three-part name
+  in another catalog, and Hive clauses not listed above (`WITH
+  SERDEPROPERTIES`, `ESCAPED BY`, `SORTED BY`, `STORED AS INPUTFORMAT ...
+  OUTPUTFORMAT`, ...).
 - **A three-part name whose catalog does not exist is rejected with
   `DATACATALOG_NOT_FOUND` also with `LOCATION`.** Under any context catalog,
   `CREATE [EXTERNAL] TABLE [IF NOT EXISTS] <catalog>.<database>.<table> ...

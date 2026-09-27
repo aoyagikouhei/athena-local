@@ -470,6 +470,131 @@ async fn s3_tables_の_context_の_location_の無い_stored_as_は開始して_
     assert!(harness.s3_puts().is_empty(), "{:?}", harness.s3_puts());
 }
 
+/// 1 部目がちょうど小文字の `awsdatacatalog` の 3 部の STORED AS は、本物は開始時に 2 catalogs で弾いた（2026-09-26 実測
+/// w3。#270）。Trino には STORED AS が無いので、構文チェックより前に弾く。
+#[tokio::test]
+async fn s3_tables_の_context_の小文字の_awsdatacatalog_の_3_部の_stored_as_は開始時に_2_catalogs_で弾く()
+ {
+    let harness = Harness::builder(select_response())
+        .catalog_map(&[("s3tablescatalog/b", "iceberg")])
+        .start()
+        .await;
+    let query = "CREATE TABLE awsdatacatalog.ns.t (n int) STORED AS PARQUET";
+    let (status, body) = harness
+        .call(
+            "StartQueryExecution",
+            json!({
+                "QueryString": format!(" {query} "),
+                "QueryExecutionContext": { "Catalog": "s3tablescatalog/b", "Database": "ns" }
+            }),
+        )
+        .await;
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(body["AthenaErrorCode"], "MALFORMED_QUERY");
+    assert_eq!(
+        body["Message"],
+        format!("Unsupported ddl with 2 catalogs: {query}")
+    );
+    assert!(harness.syntax_checks().is_empty(), "構文チェックを送らない");
+}
+
+/// S3 Tables の Context の `table_type` が ICEBERG 以外（句・ちょうど小文字の `awsdatacatalog` の 3 部によらない）と、
+/// `write_compression` の無い `compression_level` と、ちょうど小文字の `awsdatacatalog` の 3 部の Hive の句は、本物は開始時に
+/// 弾いた（2026-09-27 実測 tp6・v1〜v6・a1〜a5・k5。#270）。どれも Trino に無い句なので構文チェックより前に弾く。
+#[tokio::test]
+async fn s3_tables_の_context_の_table_type_と_compression_level_と小文字の_3_部の句は開始時に弾く()
+{
+    let harness = Harness::builder(select_response())
+        .catalog_map(&[("s3tablescatalog/b", "iceberg")])
+        .start()
+        .await;
+    let only_iceberg = "Only ICEBERG table format is supported with S3 table buckets";
+    let serde = "ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'";
+    for (query, message) in [
+        (
+            "CREATE TABLE t (n int) TBLPROPERTIES ('table_type'='hive')".to_string(),
+            only_iceberg.to_string(),
+        ),
+        (
+            format!("CREATE TABLE t (n int) {serde} TBLPROPERTIES ('table_type'='HIVE')"),
+            only_iceberg.to_string(),
+        ),
+        (
+            "CREATE TABLE awsdatacatalog.ns.t (n int) TBLPROPERTIES ('table_type'='HIVE')"
+                .to_string(),
+            only_iceberg.to_string(),
+        ),
+        (
+            "CREATE TABLE t (n int) TBLPROPERTIES ('compression_level'='3')".to_string(),
+            "Compression codec must be defined when compression_level property is specified."
+                .to_string(),
+        ),
+        (
+            format!("CREATE TABLE awsdatacatalog.ns.t (n int) {serde}"),
+            format!(
+                "Unsupported ddl with 2 catalogs: CREATE TABLE awsdatacatalog.ns.t (n int) {serde}"
+            ),
+        ),
+    ] {
+        let (status, body) = harness
+            .call(
+                "StartQueryExecution",
+                json!({
+                    "QueryString": query,
+                    "QueryExecutionContext": { "Catalog": "s3tablescatalog/b", "Database": "ns" }
+                }),
+            )
+            .await;
+        assert_eq!(status, 400, "{query}: {body}");
+        assert_eq!(body["AthenaErrorCode"], "MALFORMED_QUERY", "{query}");
+        assert_eq!(body["Message"], message, "{query}");
+    }
+    assert!(harness.syntax_checks().is_empty(), "構文チェックを送らない");
+}
+
+/// 名前空間が無くても、句の失敗が先（2026-09-27 実測 m1〜m6。#270）。名前空間は問い合わせない。句が無ければ今までどおり
+/// 名前空間を確かめて `Cannot find or access the specified table`（m0。#231）。
+#[tokio::test]
+async fn s3_tables_の_context_で名前空間が無くても_hive_の句の失敗が先() {
+    let harness = Harness::builder(select_response())
+        .catalog_map(&[("s3tablescatalog/b", "iceberg")])
+        .results_s3()
+        .start()
+        .await;
+    for (query, reason) in [
+        (
+            "CREATE TABLE nope.t (n int) ROW FORMAT SERDE 'x'",
+            "Iceberg create table statement does not allow ROW FORMAT",
+        ),
+        (
+            "CREATE TABLE nope.t (n int) PARTITIONED BY (p int)",
+            "Invalid PARTITIONED BY clause in Iceberg create table statement",
+        ),
+        (
+            "CREATE TABLE AwsDataCatalog.nope.t (n int) TBLPROPERTIES ('a270'='b')",
+            "Unsupported table property key: a270",
+        ),
+    ] {
+        let execution = harness
+            .run_query(json!({
+                "QueryString": query,
+                "QueryExecutionContext": { "Catalog": "s3tablescatalog/b", "Database": "ns" },
+                "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+            }))
+            .await;
+        let execution = &execution["QueryExecution"];
+        assert_eq!(
+            execution["Status"]["State"], "FAILED",
+            "{query}: {execution}"
+        );
+        assert_eq!(execution["Status"]["StateChangeReason"], reason, "{query}");
+    }
+    assert!(
+        harness.trino_requests().is_empty(),
+        "名前空間も本体も問い合わせない"
+    );
+}
+
 /// ROW FORMAT・CLUSTERED BY・型付きの PARTITIONED BY・未知のキーの TBLPROPERTIES・列の並び無しも、本物は開始してから
 /// 句ごとの文言で FAILED にし、結果ファイルを置かなかった（2026-09-26 実測 vc4・z6・z12・z13・z15〜z17、2026-09-27 実測
 /// pn6・pr3。#270）。Trino には無い句なので構文チェックも本体も送らない。`AwsDataCatalog` の 3 部は Query から 1 部目を

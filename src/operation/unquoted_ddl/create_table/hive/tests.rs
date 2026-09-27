@@ -298,10 +298,42 @@ fn 句が複数あれば実測の優先順で_1_つ選ぶ() {
     }
 }
 
+/// 列の並びが無ければ、型付きの PARTITIONED BY の後で `At least one column ...`（句が無い・受理されるキーだけ・COMMENT だけ
+/// でも。2026-09-27 実測 pn6・c1〜c4）。未知のキーは最初の 1 つを書いた綴りのまま出す（k6〜k8）。#270。
+#[test]
+fn 列の並び無しと未知のキーは本物の順と綴りで失敗させる() {
+    for (query, reason) in [
+        ("CREATE TABLE t", NO_COLUMN),
+        (
+            "CREATE TABLE t TBLPROPERTIES ('table_type'='ICEBERG')",
+            NO_COLUMN,
+        ),
+        ("CREATE TABLE t COMMENT 't comment'", NO_COLUMN),
+        ("CREATE TABLE t PARTITIONED BY (p int)", PARTITIONED_BY),
+        (
+            "CREATE TABLE t (n int) TBLPROPERTIES ('classification'='csv')",
+            "Unsupported table property key: classification",
+        ),
+        (
+            "CREATE TABLE t (n int) TBLPROPERTIES ('a270x'='b', 'a270y'='c')",
+            "Unsupported table property key: a270x",
+        ),
+        (
+            "CREATE TABLE t (n int) TBLPROPERTIES ('format'='parquet', 'A270'='b')",
+            "Unsupported table property key: A270",
+        ),
+    ] {
+        assert_eq!(
+            failure(query).map(|(reason, _)| reason).as_deref(),
+            Some(reason),
+            "{query}"
+        );
+    }
+}
+
 /// 失敗させない形。LOCATION・EXTERNAL は開始時の判定（`s3_tables_rejection`）、ちょうど小文字の `awsdatacatalog` の 3 部は
-/// 2 catalogs（w3）、本物が受理した形（Iceberg の書き方の PARTITIONED BY・有効な TBLPROPERTIES・COMMENT だけ。
-/// cl0・vc1・pa1〜pa3・tp1〜tp5）は Trino の構文チェックに任せる。ほかのカタログの 3 部、列の並びの無い型付きの
-/// PARTITIONED BY・句の無い形、未知のキー 2 つ、`'table_type'='HIVE'`（tp6 は開始時に弾く）は測っていない。
+/// 2 catalogs（w3・a1〜a4）、本物が受理した形（Iceberg の書き方の PARTITIONED BY・受理されるキー・COMMENT だけ。cl0・vc1・
+/// pa1〜pa3・tp1〜tp5・k1〜k4）と、文書にあるが測っていないキーは Trino の構文チェックに任せる。ほかのカタログの 3 部は測っていない。
 #[test]
 fn 失敗させない形と測っていない形は判定しない() {
     for query in [
@@ -319,13 +351,69 @@ fn 失敗させない形と測っていない形は判定しない() {
         "CREATE TABLE t (n int) TBLPROPERTIES ('TABLE_TYPE'='ICEBERG')",
         "CREATE TABLE t (n int) TBLPROPERTIES ('format'='parquet')",
         "CREATE TABLE t (n int) TBLPROPERTIES ('write_compression'='zstd')",
-        "CREATE TABLE t (n int) TBLPROPERTIES ('table_type'='HIVE')",
-        "CREATE TABLE t (n int) TBLPROPERTIES ('a270x'='b', 'a270y'='c')",
-        "CREATE TABLE t PARTITIONED BY (p int)",
-        "CREATE TABLE t",
-        "CREATE TABLE t TBLPROPERTIES ('table_type'='ICEBERG')",
+        "CREATE TABLE t (n int) TBLPROPERTIES ('vacuum_max_snapshot_age_seconds'='432000')",
+        "CREATE TABLE t (n int) TBLPROPERTIES ('vacuum_min_snapshots_to_keep'='1')",
+        "CREATE TABLE t (n int) TBLPROPERTIES ('optimize_rewrite_delete_file_threshold'='2')",
+        "CREATE TABLE t (n int) TBLPROPERTIES ('write_target_data_file_size_bytes'='536870912')",
+        "CREATE TABLE t (n int) TBLPROPERTIES ('optimize_rewrite_data_file_threshold'='5')",
+        "CREATE TABLE t (n int) TBLPROPERTIES ('vacuum_max_metadata_files_to_keep'='100')",
+        "CREATE TABLE t (n int) TBLPROPERTIES ('write_data_path_enabled'='true')",
     ] {
         assert_eq!(failure(query), None, "{query}");
+    }
+}
+
+/// `table_type` が `ICEBERG` 以外なら、本物は句・列の並び・ちょうど小文字の `awsdatacatalog` の 3 部によらず開始時に
+/// `Only ICEBERG ...` で弾いた（2026-09-27 実測 tp6・v1〜v6・a5・m7）。`write_compression` の無い `compression_level` は
+/// `Compression codec must be defined ...`（k5）。#270。
+#[test]
+fn table_type_が_iceberg_以外と_compression_level_だけは開始時に弾く() {
+    let only_iceberg = Some("Only ICEBERG table format is supported with S3 table buckets");
+    for query in [
+        "CREATE TABLE t (n int) TBLPROPERTIES ('table_type'='HIVE')",
+        "CREATE TABLE t (n int) TBLPROPERTIES ('table_type'='hive')",
+        "CREATE TABLE t (n int) TBLPROPERTIES ('table_type'='DELTA')",
+        "CREATE TABLE t (n int) ROW FORMAT SERDE 'x' TBLPROPERTIES ('table_type'='HIVE')",
+        "CREATE TABLE t (n int) PARTITIONED BY (p int) TBLPROPERTIES ('table_type'='HIVE')",
+        "CREATE TABLE t (n int) TBLPROPERTIES ('table_type'='HIVE', 'a270'='b')",
+        "CREATE TABLE t TBLPROPERTIES ('table_type'='HIVE')",
+        "CREATE TABLE awsdatacatalog.ns.t (n int) TBLPROPERTIES ('table_type'='HIVE')",
+        "CREATE TABLE nope.t (n int) TBLPROPERTIES ('table_type'='HIVE')",
+    ] {
+        assert_eq!(s3_tables_rejection(query), only_iceberg, "{query}");
+    }
+    assert_eq!(
+        s3_tables_rejection("CREATE TABLE t (n int) TBLPROPERTIES ('compression_level'='3')"),
+        Some("Compression codec must be defined when compression_level property is specified.")
+    );
+    for query in [
+        "CREATE TABLE t (n int) TBLPROPERTIES ('table_type'='ICEBERG')",
+        "CREATE TABLE t (n int) TBLPROPERTIES ('table_type'='iceberg')",
+        "CREATE TABLE t (n int) TBLPROPERTIES ('write_compression'='zstd', 'compression_level'='3')",
+    ] {
+        assert_eq!(s3_tables_rejection(query), None, "{query}");
+    }
+}
+
+/// 1 部目がちょうど小文字の `awsdatacatalog` の 3 部の STORED AS は、本物は開始時に `Unsupported ddl with 2 catalogs: <文>`
+/// （前後の空白を落とした文）で弾いた（2026-09-26 実測 w3。#270）。大文字混じりの綴り・LOCATION・EXTERNAL・2 部は対象外。
+#[test]
+fn 小文字の_awsdatacatalog_の_3_部の_stored_as_は_2_catalogs_で弾く() {
+    assert_eq!(
+        s3_tables_two_catalogs("  CREATE TABLE awsdatacatalog.ns.t (n int) STORED AS PARQUET\n")
+            .as_deref(),
+        Some(
+            "Unsupported ddl with 2 catalogs: CREATE TABLE awsdatacatalog.ns.t (n int) STORED AS PARQUET"
+        )
+    );
+    for query in [
+        "CREATE TABLE AwsDataCatalog.ns.t (n int) STORED AS PARQUET",
+        "CREATE TABLE awsdatacatalog.ns.t (n int) STORED AS PARQUET LOCATION 's3://b/p/'",
+        "CREATE EXTERNAL TABLE awsdatacatalog.ns.t (n int) STORED AS PARQUET",
+        "CREATE TABLE ns.t (n int) STORED AS PARQUET",
+        "CREATE TABLE awsdatacatalog.ns.t (n int)",
+    ] {
+        assert_eq!(s3_tables_two_catalogs(query), None, "{query}");
     }
 }
 
