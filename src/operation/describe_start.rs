@@ -95,8 +95,9 @@ pub(super) async fn start(
 
     match probe {
         // 表かスキーマが無い。名前空間の有無で文言を分ける（無い表・無い DB とも本物は開始して FAILED、
-        // 本体だけ置き `.metadata` は置かない。e_x・f_x・z3）。列指定・PARTITION 指定でも同じ判定を使う
-        // （本物は列・PARTITION を見る前に名前を先に引くはずなので、名前無しの形と同じ失敗にしてよい）。
+        // 本体だけ置き `.metadata` は置かない。e_x・f_x・z3）。測ったのは名前だけの形なので、列・PARTITION
+        // 指定を付けた形は推測で同じ失敗にせず今どおりにする（独立レビュー I1。#275）。
+        Probe::Missing if describe.suffix != Suffix::None => None,
         Probe::Missing => {
             let trino_catalog = app.config.trino_catalog(&target.catalog).to_lowercase();
             let sql = table_format::schema_probe_sql(&trino_catalog, &target.schema.to_lowercase());

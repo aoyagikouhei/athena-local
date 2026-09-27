@@ -211,6 +211,9 @@ Failures are decided when the query starts, and reported like Athena's
 | missing partition | `FAILED: SemanticException [Error 10006]: Partition not found {<key>=<value>}` | 2 / 1006 | same |
 | `EXTENDED`, a column with `FORMATTED` or `PARTITION` on an Iceberg table | see the first table | 2 / 1100 | none |
 
+Only the name-only forms were measured on a missing table or database; with a
+column or a `PARTITION (...)` on a missing table, the old behaviour is kept.
+
 `DESCRIBE EXTENDED` or `DESCRIBE FORMATTED` with no name is rejected at start
 with `Entity Not Found`, as on Athena (Athena, like athena-local, looks up a
 table called `extended` / `formatted`).

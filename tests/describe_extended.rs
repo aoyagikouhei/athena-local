@@ -424,6 +424,32 @@ async fn extended_は無い_db_を開始時に_failed_にし_database_を文中�
     assert_eq!(harness.trino_sqls(), [probe, schema_probe]);
 }
 
+/// 無い表に列・PARTITION 指定を付けた形は測っていない（e_x・f_x・z3 は名前だけの形）ので、名前だけの形の
+/// 失敗に倒さず今どおり構文チェックへ進む（偽 Trino は構文チェックを通すので、`syntax_checks()` に文が入る
+/// ことで確かめる。その後の entity_check が無い表を開始時の 400 にするが、本物の Trino では構文チェックで
+/// 先に 400 になる。独立レビュー I1。#275）。
+#[tokio::test]
+async fn 無い表に列_partition_指定を付けた形は今どおり構文チェックへ進む() {
+    for query in [
+        "DESCRIBE EXTENDED db.nope n",
+        "DESCRIBE EXTENDED db.nope PARTITION (p='x')",
+    ] {
+        let probe = probe_sql("default_catalog", "db", "nope");
+        let schema_probe = schema_probe_sql("default_catalog", "db");
+        let harness = Harness::builder(json!({ "columns": [], "data": [] }))
+            .route(&probe, missing_probe_response("hive"))
+            .route(&schema_probe, json!({ "columns": [], "data": [] }))
+            .start()
+            .await;
+
+        let (code, body) = harness
+            .call("StartQueryExecution", json!({ "QueryString": query }))
+            .await;
+        assert_eq!(code, 400, "{query}: {body}");
+        assert_eq!(harness.syntax_checks(), [query], "{query}");
+    }
+}
+
 /// 本物の e_i（Iceberg 表への EXTENDED。2026-09-27 実測）。開始時に FAILED、本体も `.metadata` も無い。
 #[tokio::test]
 async fn extended_は_iceberg_表を開始時に_failed_にし何も置かない() {
