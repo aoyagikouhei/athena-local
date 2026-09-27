@@ -3,7 +3,7 @@
 # issue #228 で ROUND=6、issue #240 で ROUND=7、issue #242 で ROUND=8、issue #229 で ROUND=9、
 # issue #248 で ROUND=10、issue #251 で ROUND=11・15、issue #260 で ROUND=12、
 # issue #266 で ROUND=13・14、issue #270 で ROUND=16・20、issue #271 で ROUND=17、
-# issue #272 で ROUND=18、issue #273 で ROUND=19 を追加
+# issue #272 で ROUND=18、issue #273 で ROUND=19、issue #279 で ROUND=22・23 を追加
 # 本物の Athena が StartQueryExecution の時点で弾く、無引用の DDL 3 種
 # （ALTER TABLE IF EXISTS、ALTER TABLE ... ADD COLUMN（単数）、場所の無い CREATE TABLE）の
 # 弾かれ方の規則（`line L:C` の位置、`no viable alternative at input '...'` の input の範囲、
@@ -316,6 +316,34 @@
 #     location のオーファンデータの有無も確かめる。開始できた全項目は、状態・
 #     StatementType/SubstatementType・ErrorCategory/ErrorType・StateChangeReason の全文・
 #     返った `QueryExecutionContext`・`Query`（repr）を summary に出す（ROUND=17 と同じ考え方）。
+#   - 【issue #279 で追加】ROUND=22 は、#260 の無引用の `awsdatacatalog.<db>.<t>` の置換で
+#     測れなかった／測っていない周辺（issue #279 本文の 1〜6）を測る P 群だけを測る。
+#     preflight・DB 確認は共通で走るが、O 群とは別に実在する表 `<PROBE>_p_real`（Hive、1 行）・
+#     Iceberg 表 `<PROBE>_p_ice`（LOCATION + `TBLPROPERTIES ('table_type'='ICEBERG')`、1 行）・
+#     ビュー `<PROBE>_p_view` を作り、全項目で使い回して最後に消す（LOCATION の組み立ては
+#     probe_location_t・probe_location_q と同じ形の `probe_location_p`。接頭辞を 279 にする）。
+#     p0・p0b は各群の対照として常に投げる（p0: `<DEF>` の SELECT、p0b: Context の Catalog 省略
+#     （`Database=<DB>` だけ）で #260 の o1 の形を再現）。p1〜p4（連携カタログ `<G>`。
+#     ROUND=13・14・17 と共有する `resolve_federated_catalog`・`delete_glue_catalog_if_created`
+#     をそのまま使い、CREATE_GLUE_CATALOG=1 で自分のアカウントの Glue を指すデータカタログを
+#     作れるときだけ測る。p1・p2 は `<GCTX>`=`Catalog=<G>,Database=<DB>` の SELECT・INSERT、
+#     p3・p4 は `<DEF>` で `<G>` を無引用の大文字混じりで書いた SELECT・INSERT）は `<G>` が
+#     無ければ未測定にする。p5〜p16（`<DEF>` の DELETE・UPDATE・MERGE（対照は 1 部なしの
+#     `<DB>.<ice>`。行を変えないよう `WHERE n = 999` の無害な no-op にする）・SHOW CREATE VIEW・
+#     DROP VIEW・DROP VIEW IF EXISTS・ALTER TABLE RENAME の 3 形（受理されたら名前を戻す）・
+#     SHOW COLUMNS・SHOW TBLPROPERTIES・SHOW PARTITIONS）は常に投げる。p17〜p26
+#     （`<S3CTX>`=`Catalog=<S3TABLES_CATALOG>,Database=<S3TABLES_NS>` と
+#     `<NOCAT>`=`Catalog=nosuchcatalog279,Database=<DB>` の EXPLAIN・CTAS・CREATE VIEW・
+#     引用符付きの部品を含む SELECT）は、`<S3CTX>` 側だけ S3TABLES_* が揃うときだけ測り、
+#     `<NOCAT>` 側は常に測る（CTAS・CREATE VIEW の受理された分は消す。CTAS・CREATE VIEW の
+#     後始末は `run_create_then_drop_ctx` を、ビューは h8 と同じ「作る Context と消す Context を
+#     分ける」手組みの後始末を使う）。p27・p28（`<DEF>` の INSERT の引用符付きの部品）・
+#     p29〜p32（`<DEF>` の SELECT。p29 は引用符付きが 2 つ、p30・p31 は 4 部の列の参照に
+#     引用符付きを含む形、p32 は o8 の再現）は常に投げる。成功した SELECT 系（p32 を含む）は
+#     結果ファイル本体を `aws s3 cp` のリダイレクトで取得して保存する（列名の行は summary に出す）。
+#     成功した INSERT（p2・p4・p27・p28）は、直後に `<label>-count` として
+#     `SELECT count(*) FROM <DB>.<PROBE>_p_real` を投げ、結果を同じ形で取得する（p0・p0b の
+#     直後の件数と比べれば増えたかが分かる）。
 #
 # 使い方:
 #   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db bash tools/measure/unquoted-ddl.sh
@@ -470,6 +498,14 @@
 #   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=20 \
 #     S3TABLES_CATALOG=s3tablescatalog/your-bucket S3TABLES_NS=your_ns \
 #     bash tools/measure/unquoted-ddl.sh
+#   ラウンド 22（issue #279。#260 で測れなかった／測っていない周辺（連携カタログ・S3 Tables・
+#   実在しないカタログの Context の DELETE・UPDATE・MERGE・DROP VIEW・ALTER TABLE RENAME など、
+#   引用符付きの部品、4 部の列の参照）だけを測る。S3TABLES_* が無ければ p17・p19・p21・p23・p24 が、
+#   連携カタログ（CREATE_GLUE_CATALOG=1）が無ければ p1〜p4 が未測定として残る）:
+#   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=22 \
+#     CREATE_GLUE_CATALOG=1 \
+#     S3TABLES_CATALOG=s3tablescatalog/your-bucket S3TABLES_NS=your_ns \
+#     bash tools/measure/unquoted-ddl.sh
 #   （資格情報はホストのシェルで AWS_ACCESS_KEY_ID などを export してから。または ~/.aws/credentials）
 #
 # 必要な環境変数:
@@ -555,13 +591,18 @@
 #                    （欠ければ全項目が未測定として残り、準備の `<PROBE>_src` 以外ほぼ何も
 #                    測れない。GLUE のデータカタログ（CREATE_GLUE_CATALOG）・FEDERATED_CATALOG は
 #                    このラウンドでは使わない）。ROUND=20 は k・v・c・a・m 群と対照 x0 の全項目
-#                    （合計 32）を測る（欠ければ全項目が未測定として残る）。
+#                    （合計 32）を測る（欠ければ全項目が未測定として残る）。ROUND=22 は
+#                    P 群（issue #279）を測る（S3TABLES_* が無ければ p17・p19・p21・p23・p24 が、
+#                    連携カタログ（FEDERATED_CATALOG か CREATE_GLUE_CATALOG=1）が無ければ
+#                    p1〜p4 が未測定として残る）。
 #   FEDERATED_CATALOG 連携カタログ（S3 Tables 以外）の名前。設定されていれば ROUND=10 の s14
 #                    （TRINO_CATALOG_MAP の別名や Trino にだけあるカタログの 3 部 + LOCATION が
 #                    実在するカタログのとき）と ROUND=12 の o3・o4（連携カタログの Context の
 #                    SELECT・INSERT）、ROUND=13 の x1〜x4（連携カタログの 3 部 + LOCATION）、
 #                    ROUND=14 の z1〜z5（同上の補足）、ROUND=17 の q24・q25（Context の DB と
-#                    文の DB が違う形の補足）も測る。ROUND=13・14・17 だけ、これが無くても
+#                    文の DB が違う形の補足）、ROUND=22 の p1〜p4（issue #279 の連携カタログの
+#                    Context の SELECT・INSERT と、無引用の大文字混じりの別名キー）も測る。
+#                    ROUND=13・14・17・22 だけ、これが無くても
 #                    CREATE_GLUE_CATALOG=1 なら自分のアカウントの Glue を指すデータカタログを
 #                    作って代わりに使う。無ければ該当項目だけ「未測定（FEDERATED_CATALOG
 #                    未設定）」として残す。
@@ -569,10 +610,11 @@
 #   FEDERATED_TABLE  同じく実在する表名。この 2 つと FEDERATED_CATALOG が揃ったときだけ、
 #                    ROUND=12 の o9（AwsDataCatalog 以外の別名キーを無引用の大文字混じりで
 #                    書いた形）を測る。無ければ o9 だけ「未測定」として残す。
-#   CREATE_GLUE_CATALOG ROUND=13・14・17 だけで使う。1 のとき、FEDERATED_CATALOG が未設定なら
+#   CREATE_GLUE_CATALOG ROUND=13・14・17・22 だけで使う。1 のとき、FEDERATED_CATALOG が未設定なら
 #                    `aws athena create-data-catalog` で自分のアカウントの Glue を指す
 #                    データカタログ（athena_local_probe_266_<乱数>cat）を作り、X 群の x1〜x4
-#                    （ROUND=13）・Z 群の z1〜z5（ROUND=14）・q24・q25（ROUND=17）の連携カタログ
+#                    （ROUND=13）・Z 群の z1〜z5（ROUND=14）・q24・q25（ROUND=17）・
+#                    p1〜p4（ROUND=22）の連携カタログ
 #                    代わりに使う（要 athena:CreateDataCatalog・GetDataCatalog・
 #                    DeleteDataCatalog・ListDataCatalogs、sts:GetCallerIdentity）。preflight で
 #                    aws sts get-caller-identity・aws athena list-data-catalogs の疎通を確かめ、
@@ -741,17 +783,29 @@
 #     取得し（SHOW CREATE TABLE が失敗しても続ける）、そのあと無引用 + IF EXISTS の DROP TABLE を
 #     投げて消す（結果は確かめ、SUCCEEDED にならなければ trap がもう一度ベストエフォートで投げる）。
 #     LOCATION は付けない（このラウンドは全部 LOCATION 無し）。
+#   - ROUND=22: 実在する表 `<接頭辞>_p_real`（Hive、1 行）・Iceberg 表 `<接頭辞>_p_ice`
+#     （LOCATION 付き、1 行）・ビュー `<接頭辞>_p_view` を作り、全項目で使い回して最後に消す
+#     （どれも trap でも保険をかける）。p19・p20（CTAS）は `run_create_then_drop_ctx`、
+#     p21・p22（CREATE VIEW）は h8 と同じ「作る Context と消す Context を分ける」手組みの
+#     後始末で受理されたその場で消す。ALTER TABLE RENAME の 3 形（p11〜p13）は、受理されたら
+#     次の項目の前に必ず名前を戻す。CREATE_GLUE_CATALOG=1 かつ FEDERATED_CATALOG 未設定のときは、
+#     ROUND=13・14・17 と同じ `athena_local_probe_266_<乱数>cat` を 1 つ作り、p 群の後始末が
+#     終わったあとに必ず削除を試みる。
 #
-# 課金について: ALTER TABLE・DROP TABLE はメタデータだけを見る／書く文で、実データの
+# 課金について: ALTER TABLE・DROP TABLE・DELETE・UPDATE・MERGE はメタデータだけを見る／書く文
+# （DELETE・UPDATE・MERGE は `WHERE n = 999` などの no-op で行を変えない）で、実データの
 # スキャンは無い。CREATE TABLE（実在する表の準備・C3・C20・C21・C22・C23、E・F 群、
 # ROUND=3 の H・Q・P 群、ROUND=5 の J 群、ROUND=9 の N 群、ROUND=10 の S 群、ROUND=11 の R 群、
 # ROUND=12 の O_TABLE の準備、ROUND=13 の T・U・V・W・X・Y 群、ROUND=14 の Z 群、ROUND=15 の
 # T 群、ROUND=16 の cl・pr・pn・pa・tp 群、ROUND=17 の準備（<PROBE>_qdup）と q 群、ROUND=18 の
-# 準備（<PROBE>_src）と p・w 群・c1y、ROUND=20 の k・v・c・a・m 群と対照 x0。いずれも 0〜3 行（t11 だけ 3 行、ほかは 0 行）もスキャンや
-# 書き込みは軽微。SHOW CREATE TABLE・ROUND=12 の SELECT・INSERT も 1 行だけ、ROUND=18 の i1・i2
-# （INSERT）は 0〜1 行。Athena の最小課金 × クエリ数の見込み。ROUND=5・10・11・13・14・15・16・17・18
-# の結果ファイルの読み出し（aws s3 cp）と ROUND=11・15・18 のオーファンデータ確認（aws s3 ls）は
-# Athena のクエリではなく S3 の GetObject／ListObjects で、課金には乗らない。ROUND=13・14・17 の
+# 準備（<PROBE>_src）と p・w 群・c1y、ROUND=20 の k・v・c・a・m 群と対照 x0、ROUND=22 の
+# 準備（<PROBE>_p_real・<PROBE>_p_ice）と p19・p20。
+# いずれも 0〜3 行（t11 だけ 3 行、ほかは 0 行）もスキャンや書き込みは軽微。SHOW CREATE TABLE・
+# ROUND=12 の SELECT・INSERT も 1 行だけ、ROUND=18 の i1・i2（INSERT）は 0〜1 行、ROUND=22 の
+# SELECT・INSERT・count(*) も 1 行だけ。Athena の最小課金 × クエリ数の見込み。
+# ROUND=5・10・11・13・14・15・16・17・18・22 の結果ファイルの読み出し（aws s3 cp）と
+# ROUND=11・15・18 のオーファンデータ確認（aws s3 ls）は Athena のクエリではなく S3 の
+# GetObject／ListObjects で、課金には乗らない。ROUND=13・14・17・22 の
 # create-data-catalog／get-data-catalog／delete-data-catalog／list-data-catalogs・
 # sts:GetCallerIdentity は Athena のクエリではなく、スキャン課金には乗らない。
 #
@@ -1136,6 +1190,43 @@
 #   （最大でその項目数 × 3 回）。Athena の API ではないので上の StartQueryExecution・
 #   GetQueryExecution の回数には含めない。
 #
+# == ROUND=22（P 群のみ。issue #279。preflight・DB 確認は共通） ==
+#
+#   [StartQueryExecution]
+#   preflight（SELECT 1 + SHOW TABLES）2
+#   + 準備（<PROBE>_p_real・<PROBE>_p_ice・INSERT・<PROBE>_p_view）4
+#   + 各群の対照 p0・p0b の 2
+#   + <DEF> の p5〜p16 の 15（DELETE・UPDATE・MERGE とその対照・SHOW CREATE VIEW・
+#     DROP VIEW（IF EXISTS・無し）・ALTER TABLE RENAME の 3 形・SHOW COLUMNS/TBLPROPERTIES/PARTITIONS）
+#   + <NOCAT>（nosuchcatalog279）の p18・p20・p22・p25・p26 の 5
+#   + <DEF> の p27・p28（INSERT の引用符付きの部品）・p29〜p32（SELECT）の 6
+#   + 後始末（<PROBE>_p_ice・<PROBE>_p_ice2・<PROBE>_p_real・<PROBE>_p_view の DROP）4
+#   + 連携カタログ <G>（FEDERATED_CATALOG か CREATE_GLUE_CATALOG=1）が使えるときだけの
+#     p1〜p4 の 4
+#   + S3TABLES_* が揃うときだけの <S3CTX> の p17・p19・p21・p23・p24 の 5
+#   = 38（S3TABLES_* も <G> も無し）／43（S3TABLES_* のみ）／42（<G> のみ）／47（両方あり）。
+#   これは ALTER TABLE RENAME（p11〜p13）・CTAS/CREATE VIEW（p19〜p22）・INSERT
+#   （p2・p4・p27・p28）がすべて開始時に弾かれるか FAILED になった場合の最小の見込みで、
+#   受理された分だけ revert（p11-revert〜p13-revert）・cleanup（p19-cleanup・p20-cleanup・
+#   p21-cleanup・p22-cleanup）・件数確認（p2-count・p4-count・p27-count・p28-count）が
+#   1 本ずつ増える（最大 +11。未測定の項目は StartQueryExecution を呼ばない）。
+#   このスクリプトの実測値は $START_CALL_FILE の行数（summary.txt に出る）。
+#
+#   [GetQueryExecution]
+#   開始できた項目だけ終端状態までポーリングし、終端後にもう 1 回まとめて取得する。
+#
+#   [Athena データカタログ管理 API]
+#   ROUND=13・14・17 と同じ（CREATE_GLUE_CATALOG=1 かつ FEDERATED_CATALOG 未設定のときだけ、
+#   sts:GetCallerIdentity・athena:ListDataCatalogs・athena:CreateDataCatalog・GetDataCatalog・
+#   DeleteDataCatalog を呼ぶ。ラベルの接頭辞が "p-" になるだけ）。Athena のクエリではないので
+#   上の StartQueryExecution・GetQueryExecution の回数には含めない。
+#
+#   [その他]
+#   FAILED になった項目ごとに、結果ファイル本体と `<OutputLocation>.metadata` の取得
+#   （aws s3 cp、それぞれ 1 回）を追加で呼ぶ。成功した SELECT（p0・p0b・p1・p3・p23〜p26・
+#   p29〜p32）は結果ファイル本体だけを同じ形で取得する。いずれも Athena の API ではないので
+#   上の StartQueryExecution・GetQueryExecution の回数には含めない。
+#
 # 実行ごとに $OUT_DIR/run-<日時>/ を作り、その中だけに書く。前の回の結果と混ざらない。
 #
 # 項目ごとに次を保存する（取れたものだけ）。
@@ -1161,12 +1252,20 @@ set -uo pipefail
 : "${DB:?DB にデータベース名を設定してください}"
 ROUND=${ROUND:-1}
 case "$ROUND" in
-  1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20) ;;
+  1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 22 | 23) ;;
   *)
-    echo "ROUND には 1・2・3・4・5・6・7・8・9・10・11・12・13・14・15・16・17・18・19・20 のどれかを指定してください（既定 1）" >&2
+    echo "ROUND には 1・2・3・4・5・6・7・8・9・10・11・12・13・14・15・16・17・18・19・20・22・23 のどれかを指定してください（既定 1。21 は他の実測ブランチが使用中）" >&2
     exit 1
     ;;
 esac
+# ROUND=23（issue #279 の 2 ラウンド目）は、ROUND=22 の準備・連携カタログ・後始末をそのまま使い、
+# INSERT の項目だけを測り直す（ROUND=22 は CTAS で作った表の s が varchar(1) で、2 文字の値の
+# INSERT が INVALID_CAST_ARGUMENT で落ち、行が入るかを測れなかった）。以降は ROUND=22 として走る。
+P_INSERT_ONLY=0
+if [ "$ROUND" = 23 ]; then
+  ROUND=22
+  P_INSERT_ONLY=1
+fi
 CATALOG=${CATALOG:-AwsDataCatalog}
 REGION=${REGION:-ap-northeast-1}
 # toolbox（tools/dev.sh）ではホストのホーム（DEV_HOST_HOME）。#129
@@ -1273,9 +1372,11 @@ cleanup() {
   fi
   local key
   for key in "${!PENDING_DROPS_CTX[@]}"; do
-    # ROUND=8 のビュー（<PROBE>_mv・<PROBE>_m36）は DROP VIEW で消す（#242）。
+    # ROUND=8 のビュー（<PROBE>_mv・<PROBE>_m36）と ROUND=22 のビュー（<PROBE>_p_view・
+    # <PROBE>_p21・<PROBE>_p22）は DROP VIEW で消す（#242・#279）。
     case "${key##*|}" in
-      "${PROBE_PREFIX}_mv" | "${PROBE_PREFIX}_m36") cleanup_drop_in_ctx "${key%|*}" "DROP VIEW IF EXISTS ${key##*|}" ;;
+      "${PROBE_PREFIX}_mv" | "${PROBE_PREFIX}_m36" | "${PROBE_PREFIX}_p_view" | "${PROBE_PREFIX}_p21" | "${PROBE_PREFIX}_p22")
+        cleanup_drop_in_ctx "${key%|*}" "DROP VIEW IF EXISTS ${key##*|}" ;;
       *) cleanup_drop_in_ctx "${key%|*}" "DROP TABLE IF EXISTS ${key##*|}" ;;
     esac
   done
@@ -1335,6 +1436,7 @@ $FEDERATED_TABLE	<FEDERATED_TABLE>
 ${DB^^}	<DB_UPPER>
 $GLUE_CATALOG_CREATED_NAME	<GLUE_PROBE_CATALOG>
 ${NOPE_NS_UPPER:-}	<NOPE_NS_UPPER>
+${GLUE_CATALOG_CREATED_NAME^^}	<GLUE_PROBE_CATALOG_UPPER>
 EOF
 }
 
@@ -3996,6 +4098,283 @@ else
 fi
 
 fi # ROUND=18
+# ROUND=22 だけ、P 群を投げる（issue #279。#260 の無引用の awsdatacatalog.<db>.<t> の置換で
+# 測れなかった／測っていない周辺を測る）。
+if [ "$ROUND" = 22 ]; then
+
+DEFAULT_CTX="Catalog=$CATALOG,Database=$DB"
+NOCAT_CTX="Catalog=nosuchcatalog279,Database=$DB"
+# LOCATION 付きの項目の置き場（probe_location_t・probe_location_q と同じ形。空のプレフィックス、
+# 接頭辞を 279 にする）。
+probe_location_p() { printf '%sathena-local-probe-279/%s/' "$OUTPUT" "$(new_name "$1")"; }
+
+if [ -n "$S3TABLES_CATALOG" ] && [ -n "$S3TABLES_NS" ]; then
+  S3T_CTX="Catalog=$S3TABLES_CATALOG,Database=$S3TABLES_NS"
+else
+  S3T_CTX=""
+fi
+
+# 成功した SELECT の結果ファイル本体だけを取得する（列名の行は summary に出す）。
+p_fetch_select() {
+  succeeded "$1" || return 0
+  fetch_s3_body "$(output_location_of "$1")" "$RUN_DIR/$1.output.txt" "$RUN_DIR/$1.output.txt.err"
+}
+# 成功した INSERT の直後に、同じ既定の Context で SELECT count(*) を投げて結果を取得する
+# （行が増えたかは、前後の <label>-count の結果を summary で見比べれば分かる）。
+p_insert_count() {
+  local label=$1
+  if succeeded "$label"; then
+    run_in_ctx "$DEFAULT_CTX" "$label-count" "SELECT count(*) FROM $DB.$P_REAL"
+    succeeded "$label-count" && fetch_s3_body "$(output_location_of "$label-count")" \
+      "$RUN_DIR/$label-count.output.txt" "$RUN_DIR/$label-count.output.txt.err"
+  else
+    skip "$label-count" "INSERT が失敗したため件数確認不要"
+  fi
+}
+
+# --- 準備: 実在する表 <PROBE>_p_real（Hive、1 行）・Iceberg 表 <PROBE>_p_ice（LOCATION 付き、
+#     1 行）・ビュー <PROBE>_p_view -------------------------------------------------------
+# 作ったものは最後の後始末で消す（途中で止めても trap の PENDING_DROPS・PENDING_DROPS_CTX が
+# ベストエフォートで消しにいく）。
+P_REAL="$(new_name p_real)"
+P_ICE="$(new_name p_ice)"
+P_ICE2="$(new_name p_ice2)"
+P_VIEW="$(new_name p_view)"
+
+PENDING_DROPS[$P_REAL]=1
+run_in_ctx "$DEFAULT_CTX" p-setup-real "CREATE TABLE $DB.$P_REAL AS SELECT 1 AS n, 'x' AS s"
+
+if [ "$P_INSERT_ONLY" = 1 ]; then
+# --- ROUND=23: INSERT だけ（値は s が varchar(1) に収まる 1 文字） -----------------------------
+# 最初の件数（1 行のはず）を取ってから、INSERT ごとに件数を取る（p_insert_count）。
+run_in_ctx "$DEFAULT_CTX" p-base-count "SELECT count(*) FROM $DB.$P_REAL"
+succeeded p-base-count && fetch_s3_body "$(output_location_of p-base-count)" \
+  "$RUN_DIR/p-base-count.output.txt" "$RUN_DIR/p-base-count.output.txt.err"
+# p35: 対照（1 部目無し、<DEF>）。
+run_in_ctx "$DEFAULT_CTX" p35 "INSERT INTO $DB.$P_REAL VALUES (3, 'c')"
+p_insert_count p35
+# p36: #260 の o2 の再現（S3 Tables の Context の無引用の 3 部）。
+if [ -n "$S3T_CTX" ]; then
+  run_in_ctx "$S3T_CTX" p36 "INSERT INTO awsdatacatalog.$DB.$P_REAL VALUES (2, 'y')"
+  p_insert_count p36
+else
+  skip p36 "S3TABLES_CATALOG・S3TABLES_NS が未設定"
+  skip p36-count "INSERT を投げていないため件数確認不要"
+fi
+# p37: #260 の o5 の再現（実在しないカタログの Context）。
+run_in_ctx "$NOCAT_CTX" p37 "INSERT INTO awsdatacatalog.$DB.$P_REAL VALUES (5, 'z')"
+p_insert_count p37
+# p2・p4: ROUND=22 と同じ文（値だけ 1 文字）。
+resolve_federated_catalog p
+if [ -n "$FC" ]; then
+  GCTX="Catalog=$FC,Database=$DB"
+  run_in_ctx "$GCTX" p2 "INSERT INTO awsdatacatalog.$DB.$P_REAL VALUES (20, 'g')"
+  p_insert_count p2
+  run_in_ctx "$DEFAULT_CTX" p4 "INSERT INTO ${FC^^}.$DB.$P_REAL VALUES (21, 'h')"
+  p_insert_count p4
+else
+  skip p2 "$FEDCAT_SKIP_REASON"
+  skip p2-count "連携カタログが使えないため件数確認不要"
+  skip p4 "$FEDCAT_SKIP_REASON"
+  skip p4-count "連携カタログが使えないため件数確認不要"
+fi
+# p27・p28: ROUND=22 と同じ文（値だけ 1 文字）。
+run_in_ctx "$DEFAULT_CTX" p27 "INSERT INTO awsdatacatalog.\"$DB\".$P_REAL VALUES (30, 'q')"
+p_insert_count p27
+run_in_ctx "$DEFAULT_CTX" p28 "INSERT INTO awsdatacatalog.$DB.\"$P_REAL\" VALUES (31, 'r')"
+p_insert_count p28
+
+P_LABELS="p35 p36 p37 p2 p4 p27 p28"
+fetch_failed_attachments $P_LABELS
+run_in_ctx "$DEFAULT_CTX" p-drop-real "DROP TABLE IF EXISTS $DB.$P_REAL"
+succeeded p-drop-real && unset "PENDING_DROPS[$P_REAL]"
+delete_glue_catalog_if_created p
+
+else
+PENDING_DROPS[$P_ICE]=1
+PENDING_DROPS[$P_ICE2]=1
+run_in_ctx "$DEFAULT_CTX" p-setup-ice \
+  "CREATE TABLE $DB.$P_ICE (n int, s string) LOCATION '$(probe_location_p ice)' TBLPROPERTIES ('table_type'='ICEBERG')"
+run_in_ctx "$DEFAULT_CTX" p-setup-ice-insert "INSERT INTO $DB.$P_ICE VALUES (1, 'x')"
+PENDING_DROPS_CTX["$DEFAULT_CTX|$P_VIEW"]=1
+run_in_ctx "$DEFAULT_CTX" p-setup-view "CREATE VIEW $DB.$P_VIEW AS SELECT 1 AS n"
+
+# --- 対照（各群で参照する、同じラウンドの基準） ---------------------------------------
+# p0: <DEF> での成功の対照。p0b: Context の Catalog 省略（Database=<DB> だけ）で #260 の
+# o1 の形（SELECT * FROM awsdatacatalog.<DB>.<t>）を再現する（<G>・S3TABLES_* の有無に
+# よらず投げられる）。
+run_in_ctx "$DEFAULT_CTX" p0 "SELECT * FROM awsdatacatalog.$DB.$P_REAL"
+p_fetch_select p0
+run_in_ctx "Database=$DB" p0b "SELECT * FROM awsdatacatalog.$DB.$P_REAL"
+p_fetch_select p0b
+
+# --- issue の 1: 連携カタログ <G>（CREATE_GLUE_CATALOG=1 かつ FEDERATED_CATALOG 未設定なら
+#     自分のアカウントの Glue を指すデータカタログを一時的に作る。ROUND=13・14・17 と共有する
+#     resolve_federated_catalog をそのまま使う） -----------------------------------------
+resolve_federated_catalog p
+
+if [ -n "$FC" ]; then
+  GCTX="Catalog=$FC,Database=$DB"
+  # <GCTX> で無引用の 3 部（o3・o4 の再現）。
+  run_in_ctx "$GCTX" p1 "SELECT * FROM awsdatacatalog.$DB.$P_REAL"
+  p_fetch_select p1
+  run_in_ctx "$GCTX" p2 "INSERT INTO awsdatacatalog.$DB.$P_REAL VALUES (20, 'g')"
+  p_insert_count p2
+  # <DEF> で <G> を無引用の大文字混じりで書いた別名キー（o9 の再現）。
+  run_in_ctx "$DEFAULT_CTX" p3 "SELECT * FROM ${FC^^}.$DB.$P_REAL"
+  p_fetch_select p3
+  run_in_ctx "$DEFAULT_CTX" p4 "INSERT INTO ${FC^^}.$DB.$P_REAL VALUES (21, 'h')"
+  p_insert_count p4
+else
+  skip p1 "$FEDCAT_SKIP_REASON"
+  skip p2 "$FEDCAT_SKIP_REASON"
+  skip p2-count "連携カタログが使えないため件数確認不要"
+  skip p3 "$FEDCAT_SKIP_REASON"
+  skip p4 "$FEDCAT_SKIP_REASON"
+  skip p4-count "連携カタログが使えないため件数確認不要"
+fi
+
+# --- issue の 2: <DEF> のほかの文（1 部目が無引用の awsdatacatalog） ------------------------
+# DELETE・UPDATE・MERGE は行を変えないよう、存在しない値（n = 999）を対象にした無害な
+# no-op にする（対照は 1 部なしの <DB>.<PROBE>_p_ice）。
+run_in_ctx "$DEFAULT_CTX" p5  "DELETE FROM awsdatacatalog.$DB.$P_ICE WHERE n = 999"
+run_in_ctx "$DEFAULT_CTX" p5c "DELETE FROM $DB.$P_ICE WHERE n = 999"
+run_in_ctx "$DEFAULT_CTX" p6  "UPDATE awsdatacatalog.$DB.$P_ICE SET s = 'z' WHERE n = 999"
+run_in_ctx "$DEFAULT_CTX" p6c "UPDATE $DB.$P_ICE SET s = 'z' WHERE n = 999"
+run_in_ctx "$DEFAULT_CTX" p7  "MERGE INTO awsdatacatalog.$DB.$P_ICE t USING (SELECT 999 AS n) s ON t.n = s.n WHEN MATCHED THEN UPDATE SET s = 'z'"
+run_in_ctx "$DEFAULT_CTX" p7c "MERGE INTO $DB.$P_ICE t USING (SELECT 999 AS n) s ON t.n = s.n WHEN MATCHED THEN UPDATE SET s = 'z'"
+
+# SHOW CREATE VIEW は DROP VIEW より前に投げる。
+run_in_ctx "$DEFAULT_CTX" p8 "SHOW CREATE VIEW awsdatacatalog.$DB.$P_VIEW"
+run_in_ctx "$DEFAULT_CTX" p9 "DROP VIEW IF EXISTS awsdatacatalog.$DB.$(new_name p_nosuch)"
+run_in_ctx "$DEFAULT_CTX" p10 "DROP VIEW awsdatacatalog.$DB.$P_VIEW"
+succeeded p10 && unset "PENDING_DROPS_CTX[$DEFAULT_CTX|$P_VIEW]"
+
+# ALTER TABLE ... RENAME TO の 3 つの形。受理されたら次の項目の前に必ず名前を戻す
+# （どの形が実際に効いたかを確かめるため、1 つずつ試す）。
+run_in_ctx "$DEFAULT_CTX" p11 "ALTER TABLE awsdatacatalog.$DB.$P_ICE RENAME TO awsdatacatalog.$DB.$P_ICE2"
+if succeeded p11; then
+  run_in_ctx "$DEFAULT_CTX" p11-revert "ALTER TABLE $DB.$P_ICE2 RENAME TO $DB.$P_ICE"
+  succeeded p11-revert || echo "== p11 で名前を戻せませんでした。$DB の <PROBE>_p_ice/<PROBE>_p_ice2 を確認してください。"
+else
+  skip p11-revert "RENAME が失敗したため後始末不要"
+fi
+run_in_ctx "$DEFAULT_CTX" p12 "ALTER TABLE $DB.$P_ICE RENAME TO awsdatacatalog.$DB.$P_ICE2"
+if succeeded p12; then
+  run_in_ctx "$DEFAULT_CTX" p12-revert "ALTER TABLE $DB.$P_ICE2 RENAME TO $DB.$P_ICE"
+  succeeded p12-revert || echo "== p12 で名前を戻せませんでした。$DB の <PROBE>_p_ice/<PROBE>_p_ice2 を確認してください。"
+else
+  skip p12-revert "RENAME が失敗したため後始末不要"
+fi
+# 対照（1 部なし）。
+run_in_ctx "$DEFAULT_CTX" p13 "ALTER TABLE $DB.$P_ICE RENAME TO $DB.$P_ICE2"
+if succeeded p13; then
+  run_in_ctx "$DEFAULT_CTX" p13-revert "ALTER TABLE $DB.$P_ICE2 RENAME TO $DB.$P_ICE"
+  succeeded p13-revert || echo "== p13 で名前を戻せませんでした。$DB の <PROBE>_p_ice/<PROBE>_p_ice2 を確認してください。"
+else
+  skip p13-revert "RENAME が失敗したため後始末不要"
+fi
+
+run_in_ctx "$DEFAULT_CTX" p14 "SHOW COLUMNS FROM awsdatacatalog.$DB.$P_REAL"
+run_in_ctx "$DEFAULT_CTX" p15 "SHOW TBLPROPERTIES awsdatacatalog.$DB.$P_REAL"
+run_in_ctx "$DEFAULT_CTX" p16 "SHOW PARTITIONS awsdatacatalog.$DB.$P_REAL"
+
+# --- issue の 3: <S3CTX>・<NOCAT> の Context で SELECT・INSERT 以外の文と、引用符付きの
+#     部品を含む名前 --------------------------------------------------------------------
+if [ -n "$S3T_CTX" ]; then
+  run_in_ctx "$S3T_CTX" p17 "EXPLAIN SELECT * FROM awsdatacatalog.$DB.$P_REAL"
+else
+  skip p17 "未測定（S3TABLES_* 未設定）"
+fi
+run_in_ctx "$NOCAT_CTX" p18 "EXPLAIN SELECT * FROM awsdatacatalog.$DB.$P_REAL"
+
+if [ -n "$S3T_CTX" ]; then
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" p19 \
+    "CREATE TABLE $S3TABLES_NS.$(new_name p19) AS SELECT * FROM awsdatacatalog.$DB.$P_REAL" \
+    "$S3TABLES_NS.$(new_name p19)"
+else
+  skip p19 "未測定（S3TABLES_* 未設定）"
+  skip p19-cleanup "CREATE TABLE を投げていないため後始末不要"
+fi
+# 対象 DB は文中で <DB> を明示するので、<NOCAT> の Context でも既定の DB に作られうる
+# （作れなければ既定の Context で消す。r 群と同じ考え方）。
+run_create_then_drop_ctx "$NOCAT_CTX" "$DEFAULT_CTX" p20 \
+  "CREATE TABLE $DB.$(new_name p20) AS SELECT * FROM awsdatacatalog.$DB.$P_REAL" \
+  "$DB.$(new_name p20)"
+
+if [ -n "$S3T_CTX" ]; then
+  if run_in_ctx "$S3T_CTX" p21 "CREATE VIEW $S3TABLES_NS.$(new_name p21) AS SELECT * FROM awsdatacatalog.$DB.$P_REAL"; then
+    PENDING_DROPS_CTX["$S3T_CTX|$(new_name p21)"]=1
+    run_in_ctx "$S3T_CTX" p21-cleanup "DROP VIEW IF EXISTS $S3TABLES_NS.$(new_name p21)"
+    succeeded p21-cleanup && unset "PENDING_DROPS_CTX[$S3T_CTX|$(new_name p21)]"
+  else
+    skip p21-cleanup "CREATE VIEW が失敗したため後始末不要"
+  fi
+else
+  skip p21 "未測定（S3TABLES_* 未設定）"
+  skip p21-cleanup "CREATE VIEW を投げていないため後始末不要"
+fi
+if run_in_ctx "$NOCAT_CTX" p22 "CREATE VIEW $DB.$(new_name p22) AS SELECT * FROM awsdatacatalog.$DB.$P_REAL"; then
+  PENDING_DROPS_CTX["$DEFAULT_CTX|$(new_name p22)"]=1
+  run_in_ctx "$DEFAULT_CTX" p22-cleanup "DROP VIEW IF EXISTS $DB.$(new_name p22)"
+  succeeded p22-cleanup && unset "PENDING_DROPS_CTX[$DEFAULT_CTX|$(new_name p22)]"
+else
+  skip p22-cleanup "CREATE VIEW が失敗したため後始末不要"
+fi
+
+if [ -n "$S3T_CTX" ]; then
+  run_in_ctx "$S3T_CTX" p23 "SELECT * FROM awsdatacatalog.\"$DB\".$P_REAL"
+  p_fetch_select p23
+  run_in_ctx "$S3T_CTX" p24 "SELECT * FROM awsdatacatalog.$DB.\"$P_REAL\""
+  p_fetch_select p24
+else
+  skip p23 "未測定（S3TABLES_* 未設定）"
+  skip p24 "未測定（S3TABLES_* 未設定）"
+fi
+run_in_ctx "$NOCAT_CTX" p25 "SELECT * FROM awsdatacatalog.\"$DB\".$P_REAL"
+p_fetch_select p25
+run_in_ctx "$NOCAT_CTX" p26 "SELECT * FROM awsdatacatalog.$DB.\"$P_REAL\""
+p_fetch_select p26
+
+# --- issue の 4: <DEF> の INSERT の引用符付きの部品 -----------------------------------------
+run_in_ctx "$DEFAULT_CTX" p27 "INSERT INTO awsdatacatalog.\"$DB\".$P_REAL VALUES (30, 'q')"
+p_insert_count p27
+run_in_ctx "$DEFAULT_CTX" p28 "INSERT INTO awsdatacatalog.$DB.\"$P_REAL\" VALUES (31, 'r')"
+p_insert_count p28
+
+# --- issue の 5: <DEF> の SELECT（引用符付きが 2 つ・4 部の列の参照・o8 の再現） ------------------
+run_in_ctx "$DEFAULT_CTX" p29 "SELECT * FROM awsdatacatalog.\"$DB\".\"$P_REAL\""
+p_fetch_select p29
+run_in_ctx "$DEFAULT_CTX" p30 "SELECT awsdatacatalog.$DB.$P_REAL.\"n\" FROM awsdatacatalog.$DB.$P_REAL"
+p_fetch_select p30
+run_in_ctx "$DEFAULT_CTX" p31 "SELECT awsdatacatalog.\"$DB\".$P_REAL.n FROM awsdatacatalog.$DB.$P_REAL"
+p_fetch_select p31
+# o8 の再現（引用符無し）。
+run_in_ctx "$DEFAULT_CTX" p32 "SELECT awsdatacatalog.$DB.$P_REAL.n FROM awsdatacatalog.$DB.$P_REAL"
+p_fetch_select p32
+
+P_LABELS="p0 p0b p1 p2 p3 p4 p5 p5c p6 p6c p7 p7c p8 p9 p10 p11 p12 p13 p14 p15 p16 p17 p18 p19 p20 p21 p22 p23 p24 p25 p26 p27 p28 p29 p30 p31 p32"
+
+# --- 付随物の取得（FAILED になった項目だけ。結果ファイルの有無の証拠になる） ------------------
+fetch_failed_attachments $P_LABELS
+
+# --- 後始末（作ったものを消す） ---------------------------------------------------------
+run_in_ctx "$DEFAULT_CTX" p-drop-ice "DROP TABLE IF EXISTS $DB.$P_ICE"
+succeeded p-drop-ice && unset "PENDING_DROPS[$P_ICE]"
+run_in_ctx "$DEFAULT_CTX" p-drop-ice2 "DROP TABLE IF EXISTS $DB.$P_ICE2"
+succeeded p-drop-ice2 && unset "PENDING_DROPS[$P_ICE2]"
+run_in_ctx "$DEFAULT_CTX" p-drop-real "DROP TABLE IF EXISTS $DB.$P_REAL"
+succeeded p-drop-real && unset "PENDING_DROPS[$P_REAL]"
+# p10 が SUCCEEDED でも、そうでなくても IF EXISTS で確実に消しにいく（M 群の m-drop-v と同じ考え方）。
+run_in_ctx "$DEFAULT_CTX" p-drop-view "DROP VIEW IF EXISTS $DB.$P_VIEW"
+succeeded p-drop-view && unset "PENDING_DROPS_CTX[$DEFAULT_CTX|$P_VIEW]"
+
+# 連携カタログ（CREATE_GLUE_CATALOG=1 で作ったもの）は、表・ビューを消したこのあとに明示的に
+# 消す（共有関数。結果を summary に出す。消せなければ trap がもう一度ベストエフォートで消しにいく）。
+delete_glue_catalog_if_created p
+
+fi # P_INSERT_ONLY
+fi # ROUND=22
 
 # ROUND=19 だけ、d・f・c 群を投げる（issue #273）。preflight・DB 確認は共通で走るが、
 # 実在する表 <PROBE>_real は作らない。
@@ -4370,6 +4749,27 @@ elif [ "$ROUND" = 19 ]; then
     ALL_LABELS="$ALL_LABELS $l $l-cleanup"
   done
   ALL_LABELS="$ALL_LABELS v-cleanup-src"
+elif [ "$ROUND" = 22 ] && [ "$P_INSERT_ONLY" = 1 ]; then
+  ALL_LABELS="$ALL_LABELS p-setup-real p-base-count"
+  for l in $P_LABELS; do
+    ALL_LABELS="$ALL_LABELS $l $l-count"
+  done
+  ALL_LABELS="$ALL_LABELS p-drop-real"
+elif [ "$ROUND" = 22 ]; then
+  ALL_LABELS="$ALL_LABELS p-setup-real p-setup-ice p-setup-ice-insert p-setup-view"
+  for l in $P_LABELS; do
+    ALL_LABELS="$ALL_LABELS $l"
+  done
+  for l in p2 p4 p27 p28; do
+    ALL_LABELS="$ALL_LABELS $l-count"
+  done
+  for l in p19 p20 p21 p22; do
+    ALL_LABELS="$ALL_LABELS $l-cleanup"
+  done
+  for l in p11 p12 p13; do
+    ALL_LABELS="$ALL_LABELS $l-revert"
+  done
+  ALL_LABELS="$ALL_LABELS p-drop-ice p-drop-ice2 p-drop-real p-drop-view"
 elif [ "$ROUND" = 8 ]; then
   ALL_LABELS="$ALL_LABELS m-setup-t m-setup-v m-setup-db2 m-setup-t2 $M_LABELS"
   ALL_LABELS="$ALL_LABELS m-drop-v36 m-drop-t35 m-drop-v m-drop-t m-drop-t2 m-drop-db2"
@@ -4910,6 +5310,68 @@ write_summary_txt() {
       echo "#   結果ファイルの読み出しは S3 の GetObject で、Athena のクエリ課金には乗らない。"
       echo "# 注意: これは実測した本物の Athena の挙動であり、将来の Athena の変更で変わりうる。"
       echo "#   実測値は既定とは限らない。"
+    elif [ "$ROUND" = 22 ]; then
+      echo "# issue #279（#208 ラウンド 22）: #260 の無引用の awsdatacatalog.<db>.<t> の置換で"
+      echo "#             測れなかった／測っていない周辺（連携カタログ・S3 Tables・実在しないカタログの"
+      echo "#             Context の DELETE・UPDATE・MERGE・DROP VIEW・SHOW CREATE VIEW・"
+      echo "#             ALTER TABLE RENAME・EXPLAIN・CTAS・CREATE VIEW、引用符付きの部品、"
+      echo "#             4 部の列の参照、無引用の大文字混じりの別名キー）を実測"
+      if [ "$P_INSERT_ONLY" = 1 ]; then
+        echo "# ROUND=23（issue #279 の 2 ラウンド目）: ROUND=22 の INSERT の項目（p2・p4・p27・p28。値を 1 文字に"
+        echo "#   直した）と、#260 の o2・o5 の再現（p36・p37）、対照 p35 だけを測る。StartQueryExecution の"
+        echo "#   見込み: preflight 2 + 準備 1 + 最初の件数 1 + INSERT 7 と件数 7 + 後始末 1 = 19（連携カタログか"
+        echo "#   S3TABLES_* が無ければ、その分の INSERT と件数が減る）。DDL は準備の表 1 つと一時的なデータカタログ"
+        echo "#   （CREATE_GLUE_CATALOG=1 のとき）だけで、最後に消す。以下の ROUND=22 の見込みは参考"
+      fi
+      echo "# 実行日時: $(date -Iseconds)"
+      if [ -n "$S3TABLES_CATALOG" ] && [ -n "$S3TABLES_NS" ]; then
+        echo "# S3TABLES_*: 設定あり（p17・p19・p21・p23・p24 を測る）"
+      else
+        echo "# S3TABLES_*: 未設定（p17・p19・p21・p23・p24 は未測定）"
+      fi
+      if [ -n "$FEDERATED_CATALOG" ]; then
+        echo "# FEDERATED_CATALOG: 設定あり（p1〜p4 を FEDERATED_CATALOG で測る）"
+      elif [ "${CREATE_GLUE_CATALOG:-}" = 1 ]; then
+        if [ -n "$FC" ]; then
+          echo "# CREATE_GLUE_CATALOG=1: データカタログを作成できた（p1〜p4 を測る）"
+        else
+          echo "# CREATE_GLUE_CATALOG=1: 設定あり（$FEDCAT_SKIP_REASON）"
+        fi
+      else
+        echo "# FEDERATED_CATALOG・CREATE_GLUE_CATALOG: 未設定（p1〜p4 は未測定）"
+      fi
+      echo "# StartQueryExecution の見込み本数: 38（S3TABLES_* も連携カタログも無し）／"
+      echo "#   43（S3TABLES_* のみ）／42（連携カタログのみ）／47（両方あり）"
+      echo "#   （最小の見込み。ALTER TABLE RENAME・CTAS/CREATE VIEW・INSERT が受理された分だけ"
+      echo "#   revert・cleanup・件数確認が 1 本ずつ増える。最大 +11）"
+      echo "#   このスクリプトの実測値: $(wc -l < "$START_CALL_FILE" | tr -d ' ') 回"
+      echo "# DDL: 実在する表 <PROBE>_p_real（Hive、1 行）・Iceberg 表 <PROBE>_p_ice"
+      echo "#   （LOCATION 付き、1 行）・ビュー <PROBE>_p_view を作り、全項目で使い回して"
+      echo "#   最後に消す。ALTER TABLE RENAME（p11〜p13）は、受理されたら次の項目の前に"
+      echo "#   必ず名前を戻す。CTAS・CREATE VIEW（p19〜p22）は、受理されたらその場で消す。"
+      echo "#   CREATE_GLUE_CATALOG=1 かつ FEDERATED_CATALOG 未設定のときは、ROUND=13・14・17 と"
+      echo "#   共有する athena_local_probe_266_<乱数>cat を 1 つ作り、後始末が終わったあとに"
+      echo "#   必ず削除を試みる。"
+      if [ "${CREATE_GLUE_CATALOG:-}" = 1 ] && [ -n "$FEDERATED_CATALOG" ]; then
+        : # FEDERATED_CATALOG が優先されるので、この回は作っていない。
+      elif [ "${CREATE_GLUE_CATALOG:-}" = 1 ]; then
+        case "${GLUE_CATALOG_DELETED:-}" in
+          1) echo "#   このスクリプトの実測: データカタログを作成し、削除できた。" ;;
+          0) echo "#   このスクリプトの実測: データカタログを作成したが、削除できなかった（要手動削除）。" ;;
+          *) echo "#   このスクリプトの実測: データカタログは作成していない（$FEDCAT_SKIP_REASON）。" ;;
+        esac
+      fi
+      echo "# 付随物: FAILED になった項目は、結果ファイル本体と <OutputLocation>.metadata を"
+      echo "#   aws s3 cp で読み出して保存する（<label>.output.txt・<label>.output.metadata）。"
+      echo "#   成功した SELECT は結果ファイル本体だけを、成功した INSERT は直後の"
+      echo "#   SELECT count(*)（<label>-count）の結果ファイル本体だけを同じ形で取得する。"
+      echo "# 課金: スキャンの無いクエリだけ（CREATE・SELECT・INSERT・count(*) はどれも 0〜1 行、"
+      echo "#   DROP・ALTER・DELETE・UPDATE・MERGE はメタデータのみか no-op）。結果ファイルの"
+      echo "#   読み出し、create/get/delete/list-data-catalog・sts:GetCallerIdentity は"
+      echo "#   Athena のクエリ課金には乗らない。"
+      echo "# 注意: これは実測した本物の Athena の挙動であり、将来の Athena の変更で変わりうる。"
+      echo "#   実測値は既定とは限らない（本物の Athena の挙動が変わっていれば、ここに書いた"
+      echo "#   見込みと食い違うことがある）。"
     elif [ "$ROUND" = 8 ]; then
       echo "# issue #242（#208 ラウンド 8）: DESCRIBE・DESC の GetQueryExecution の Query から修飾が落ちる範囲と"
       echo "#             QueryExecutionContext.Database の書き換え、ほかの文で awsdatacatalog. のカタログ部分が"
@@ -5090,7 +5552,8 @@ PYEOF
       fi
     done
     if [ "$ROUND" = 6 ] || [ "$ROUND" = 7 ] || [ "$ROUND" = 8 ] || [ "$ROUND" = 10 ] || [ "$ROUND" = 11 ] \
-      || [ "$ROUND" = 12 ] || [ "$ROUND" = 13 ] || [ "$ROUND" = 14 ] || [ "$ROUND" = 15 ] || [ "$ROUND" = 17 ] || [ "$ROUND" = 18 ] || [ "$ROUND" = 19 ]; then
+      || [ "$ROUND" = 12 ] || [ "$ROUND" = 13 ] || [ "$ROUND" = 14 ] || [ "$ROUND" = 15 ] || [ "$ROUND" = 17 ] \
+      || [ "$ROUND" = 18 ] || [ "$ROUND" = 19 ] || [ "$ROUND" = 22 ]; then
       case "$ROUND" in
         6) REPR_LABELS=$K_LABELS ;;
         7) REPR_LABELS=$L_LABELS ;;
@@ -5111,6 +5574,9 @@ PYEOF
         18) REPR_LABELS="$P_LABELS $W_LABELS c1y $I_LABELS" ;;
         # ROUND=19（issue #273）も開始できた d・f・c 群の全項目を対象にする（要件どおり）。
         19) REPR_LABELS="$D_LABELS $F_LABELS $C_LABELS" ;;
+        # ROUND=22（issue #279）も Query が書き換わったかが決め手なので、開始できた
+        # p 群の全項目を対象にする。
+        22) REPR_LABELS=$P_LABELS ;;
         *) REPR_LABELS=$R_LABELS ;;
       esac
       echo
@@ -5162,7 +5628,7 @@ PYEOF
         echo
       done
     fi
-    if [ "$ROUND" = 5 ] || [ "$ROUND" = 10 ] || [ "$ROUND" = 11 ] || [ "$ROUND" = 12 ] || [ "$ROUND" = 13 ] || [ "$ROUND" = 14 ] || [ "$ROUND" = 15 ] || [ "$ROUND" = 16 ] || [ "$ROUND" = 17 ] || [ "$ROUND" = 18 ] || [ "$ROUND" = 19 ] || [ "$ROUND" = 20 ]; then
+    if [ "$ROUND" = 5 ] || [ "$ROUND" = 10 ] || [ "$ROUND" = 11 ] || [ "$ROUND" = 12 ] || [ "$ROUND" = 13 ] || [ "$ROUND" = 14 ] || [ "$ROUND" = 15 ] || [ "$ROUND" = 16 ] || [ "$ROUND" = 17 ] || [ "$ROUND" = 18 ] || [ "$ROUND" = 19 ] || [ "$ROUND" = 20 ] || [ "$ROUND" = 22 ]; then
       echo
       if [ "$ROUND" = 15 ]; then
         echo "## 付随物（結果ファイル本体・.metadata。FAILED または SUCCEEDED の CTAS だけ。実名は伏せる）"
@@ -5179,6 +5645,7 @@ PYEOF
         17) ATTACH_LABELS=$Q_LABELS ;;
         18) ATTACH_LABELS="$P_LABELS $W_LABELS c1y $I_LABELS" ;;
         19) ATTACH_LABELS="$D_LABELS $F_LABELS $C_LABELS" ;;
+        22) ATTACH_LABELS=$P_LABELS ;;
         16) ATTACH_LABELS="$CL_LABELS $PR_LABELS $PN_LABELS $PA_LABELS $TP_LABELS $SC_LABELS" ;;
         20) ATTACH_LABELS="$X0_LABEL $K_LABELS $V_LABELS $C_LABELS $A_LABELS $M_LABELS $SC_LABELS" ;;
         *) ATTACH_LABELS=$R_LABELS ;;
@@ -5285,6 +5752,27 @@ PYEOF
           echo "- $label: line $rl:$rc → 対象の語（$(sanitize "$(hide "$needle")")）は line $tl:$tc"
         done
       fi
+    fi
+    if [ "$ROUND" = 22 ]; then
+      echo
+      echo "## 成功した SELECT の結果ファイルの列名の行（実名は伏せる）"
+      for label in p0 p0b p1 p3 p23 p24 p25 p26 p29 p30 p31 p32; do
+        f="$RUN_DIR/$label.output.txt"
+        [ -s "$f" ] || continue
+        echo "### $label"
+        echo "$(sanitize "$(hide "$(head -n1 "$f")")")"
+        echo
+      done
+      echo
+      echo "## 成功した INSERT の直後の SELECT count(*)（実名は伏せる。前後の <label>-count と"
+      echo "## p0・p0b の結果を見比べれば、行が増えたかが分かる）"
+      for label in p-base p35 p36 p37 p2 p4 p27 p28; do
+        f="$RUN_DIR/$label-count.output.txt"
+        [ -s "$f" ] || continue
+        echo "### $label-count"
+        echo "$(sanitize "$(hide "$(cat "$f")")")"
+        echo
+      done
     fi
   } > "$txt"
   echo "$txt"
