@@ -11,7 +11,8 @@
 //! 本物は Context の Catalog が `AwsDataCatalog` か省略のとき、無引用の `awsdatacatalog.<db>.<t>`（大文字小文字に
 //! よらない）を SELECT・INSERT・CTAS・CREATE VIEW・EXPLAIN で Glue のカタログとして実行した（2026-09-26 実測 m30〜m41。
 //! #246）。この形（無引用の 3 部の名前の 1 部目）に限り、別名マップの `AwsDataCatalog` のキー（大文字小文字によらない）も
-//! 当てる。ほかの別名キーと、ほかの Context は測っていないので当てない。
+//! 当てる。引用符付きの部品を含む名前と 4 部の列の参照（2026-09-27 実測 o6〜o8。#260）まで当てるかは、呼び出し側が
+//! Context と文の種類から [`UnquotedForms`] で決める。ほかの別名キーは測っていないので当てない。
 //!
 //! 文字列リテラルとコメントの中は読み飛ばす。置き換えた名前が短ければ閉じ引用符の後ろを空白で埋め、
 //! Trino のエラーに出る桁位置を受け取った SQL と揃える（`"tpch"   .tiny.nation` が通ることを Trino 482 で確認）。
@@ -23,13 +24,23 @@ use std::collections::HashMap;
 
 use athena_sql::{Cursor, comment_end, skip_quoted, skip_trivia, unquote};
 
+/// 無引用の `awsdatacatalog`（大文字小文字によらない）を 1 部目に書いた名前のうち、`AwsDataCatalog` の別名を当てる形。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnquotedForms {
+    /// 当てない。
+    None,
+    /// 無引用のちょうど 3 部の名前（#246）。
+    ThreeUnquotedParts,
+    /// 3 部か 4 部（列の参照）の名前で、2 部目以降に引用符付きの部品を含んでもよい（#260 の o6〜o8）。
+    WithQuotedPartsOrColumn,
+}
+
 /// 修飾名のカタログに別名を当てた SQL。置き換える箇所が無ければ受け取った SQL をそのまま返す。
-/// `aws_data_catalog_context` は Context の Catalog が `AwsDataCatalog` か省略のときに真にし、無引用の
-/// `awsdatacatalog.<db>.<t>` にも `AwsDataCatalog` の別名を当てる。
+/// `unquoted` は無引用の `awsdatacatalog` にも `AwsDataCatalog` の別名を当てる形。
 pub fn alias_qualified_names<'a>(
     sql: &'a str,
     aliases: &HashMap<String, String>,
-    aws_data_catalog_context: bool,
+    unquoted: UnquotedForms,
 ) -> Cow<'a, str> {
     // 区切りに使う文字はどれも ASCII なので、バイト単位で走査しても UTF-8 の途中で切ることはない。
     let bytes = sql.as_bytes();
@@ -37,7 +48,7 @@ pub fn alias_qualified_names<'a>(
         .iter()
         .find(|(key, _)| key.eq_ignore_ascii_case("awsdatacatalog"))
         .map(|(_, trino)| trino)
-        .filter(|_| aws_data_catalog_context);
+        .filter(|_| unquoted != UnquotedForms::None);
     let mut rewritten: Option<String> = None;
     let mut copied = 0;
     let mut i = 0;
@@ -67,7 +78,7 @@ pub fn alias_qualified_names<'a>(
                     Some(end) => {
                         if let Some(trino) = unquoted_alias
                             && !after_dot
-                            && is_unquoted_aws_data_catalog(sql, i, end)
+                            && is_unquoted_aws_data_catalog(sql, i, end, unquoted)
                         {
                             let out =
                                 rewritten.get_or_insert_with(|| String::with_capacity(sql.len()));
@@ -105,12 +116,33 @@ fn word_end(sql: &str, i: usize) -> Option<usize> {
     cursor.identifier().then(|| sql.len() - cursor.rest().len())
 }
 
-/// `sql[i..end]` が `awsdatacatalog`（大文字小文字によらない）で、そこから無引用のちょうど 3 部の名前が続くか。
-fn is_unquoted_aws_data_catalog(sql: &str, i: usize, end: usize) -> bool {
+/// `sql[i..end]` が `awsdatacatalog`（大文字小文字によらない）で、そこから `forms` の形の名前が続くか。
+fn is_unquoted_aws_data_catalog(sql: &str, i: usize, end: usize, forms: UnquotedForms) -> bool {
     sql[i..end].eq_ignore_ascii_case("awsdatacatalog")
-        && Cursor::new(&sql[i..]).qualified_name().is_some_and(|name| {
-            name.parts.len() == 3 && name.parts.iter().all(|part| !part.text.starts_with('"'))
-        })
+        && Cursor::new(&sql[i..])
+            .qualified_name()
+            .is_some_and(|name| match forms {
+                UnquotedForms::None => false,
+                UnquotedForms::ThreeUnquotedParts => {
+                    name.parts.len() == 3
+                        && name.parts.iter().all(|part| !part.text.starts_with('"'))
+                }
+                // 測った並びだけ: 無引用の 3 部、2 部目か 3 部目の 1 つだけ引用符付き（o6・o7）、無引用の 4 部（o8）。
+                UnquotedForms::WithQuotedPartsOrColumn => {
+                    let quoted: Vec<bool> = name
+                        .parts
+                        .iter()
+                        .map(|part| part.text.starts_with('"'))
+                        .collect();
+                    matches!(
+                        quoted.as_slice(),
+                        [false, false, false]
+                            | [false, true, false]
+                            | [false, false, true]
+                            | [false, false, false, false]
+                    )
+                }
+            })
 }
 
 /// 空白とコメントを読み飛ばした次の文字が `.` か。

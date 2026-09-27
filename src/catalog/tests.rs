@@ -10,7 +10,12 @@ fn aliases(pairs: &[(&str, &str)]) -> HashMap<String, String> {
 }
 
 fn alias(sql: &str) -> String {
-    alias_qualified_names(sql, &aliases(&[(S3_TABLES, "iceberg")]), true).into_owned()
+    alias_qualified_names(
+        sql,
+        &aliases(&[(S3_TABLES, "iceberg")]),
+        UnquotedForms::ThreeUnquotedParts,
+    )
+    .into_owned()
 }
 
 #[test]
@@ -35,7 +40,7 @@ fn 修飾名がいくつあってもそれぞれ置き換える() {
         r#"SELECT * FROM "s3tablescatalog/a".ns.t JOIN "s3tablescatalog/b"."ns"."u" USING (id)"#;
 
     assert_eq!(
-        alias_qualified_names(sql, &map, true),
+        alias_qualified_names(sql, &map, UnquotedForms::ThreeUnquotedParts),
         r#"SELECT * FROM "iceberg_a"        .ns.t JOIN "iceberg_b"        ."ns"."u" USING (id)"#
     );
 }
@@ -113,13 +118,16 @@ fn 引用符付きの名前は大文字小文字が違えば置き換えない()
         r#"SELECT * FROM "S3TablesCatalog/my-bucket".db.users"#,
         r#"SELECT * FROM "awsdatacatalog".db.users"#,
     ] {
-        assert_eq!(alias_qualified_names(sql, &map, true), sql);
+        assert_eq!(
+            alias_qualified_names(sql, &map, UnquotedForms::ThreeUnquotedParts),
+            sql
+        );
     }
 }
 
 fn alias_unquoted(sql: &str) -> String {
     let map = aliases(&[("AwsDataCatalog", "hive"), (S3_TABLES, "iceberg")]);
-    alias_qualified_names(sql, &map, true).into_owned()
+    alias_qualified_names(sql, &map, UnquotedForms::ThreeUnquotedParts).into_owned()
 }
 
 #[test]
@@ -144,9 +152,9 @@ fn aws_data_catalog_の_context_では無引用の_awsdatacatalog_を大文字�
 }
 
 #[test]
-fn 無引用の_awsdatacatalog_は測った形でなければ置き換えない() {
+fn 無引用の_3_部だけを当てる形では_3_部でない名前と引用符付きの部品を置き換えない() {
     for sql in [
-        // 3 部でない
+        // 3 部でない（4 部の列の参照は WithQuotedPartsOrColumn だけが当てる）
         "SELECT awsdatacatalog.c FROM t awsdatacatalog",
         "SELECT * FROM awsdatacatalog.db.t.c",
         // 1 部目でない
@@ -155,13 +163,62 @@ fn 無引用の_awsdatacatalog_は測った形でなければ置き換えない(
         // 名前の一部
         "SELECT * FROM xawsdatacatalog.db.t",
         "SELECT * FROM awsdatacatalog_x.db.t",
-        // 引用符付きの部品を含む
+        // 引用符付きの部品を含む（同上）
         "SELECT * FROM awsdatacatalog.\"db\".t",
+        "SELECT * FROM awsdatacatalog.db.\"t\"",
         // リテラルとコメントの中
         "SELECT 'awsdatacatalog.db.t'",
         "SELECT 1 -- awsdatacatalog.db.t",
     ] {
         assert_eq!(alias_unquoted(sql), sql);
+    }
+}
+
+fn alias_quoted_or_column(sql: &str) -> String {
+    let map = aliases(&[("AwsDataCatalog", "hive")]);
+    alias_qualified_names(sql, &map, UnquotedForms::WithQuotedPartsOrColumn).into_owned()
+}
+
+#[test]
+fn 引用符付きの部品と_4_部の列の参照も当てる形では測った名前を置き換える() {
+    for (sql, expected) in [
+        // o6・o7（2026-09-27 実測）
+        (
+            "SELECT * FROM awsdatacatalog.\"db\".t",
+            "SELECT * FROM \"hive\"        .\"db\".t",
+        ),
+        (
+            "SELECT * FROM awsdatacatalog.db.\"t\"",
+            "SELECT * FROM \"hive\"        .db.\"t\"",
+        ),
+        // o8: 列の参照と FROM の 2 か所
+        (
+            "SELECT awsdatacatalog.db.t.n FROM awsdatacatalog.db.t",
+            "SELECT \"hive\"        .db.t.n FROM \"hive\"        .db.t",
+        ),
+        // 無引用の 3 部（#246）も当てる
+        (
+            "SELECT * FROM AwsDataCatalog.db.t",
+            "SELECT * FROM \"hive\"        .db.t",
+        ),
+    ] {
+        assert_eq!(alias_quoted_or_column(sql), expected);
+    }
+}
+
+#[test]
+fn 引用符付きの部品と_4_部の列の参照も当てる形でも測っていない並びは置き換えない() {
+    for sql in [
+        "SELECT * FROM awsdatacatalog.db",
+        "SELECT awsdatacatalog.db.t.n.m FROM x",
+        // 引用符付きが 2 つ・4 部に引用符付きを含む（測ったのは o6・o7 の 1 つだけと、無引用の 4 部の o8）
+        "SELECT * FROM awsdatacatalog.\"db\".\"t\"",
+        "SELECT awsdatacatalog.db.t.\"n\" FROM x",
+        "SELECT awsdatacatalog.\"db\".t.n FROM x",
+        "SELECT * FROM \"awsdatacatalog\".db.t",
+        "SELECT * FROM x.awsdatacatalog.db.t",
+    ] {
+        assert_eq!(alias_quoted_or_column(sql), sql);
     }
 }
 
@@ -174,17 +231,17 @@ fn 無引用の位置に非_ascii_の文字があっても止まらずに後ろ�
 }
 
 #[test]
-fn aws_data_catalog_の_context_でなければ無引用の名前は置き換えない() {
+fn 形が_none_なら無引用の名前は置き換えない() {
     let map = aliases(&[("AwsDataCatalog", "hive")]);
     let sql = "SELECT * FROM awsdatacatalog.db.t";
-    assert_eq!(alias_qualified_names(sql, &map, false), sql);
+    assert_eq!(alias_qualified_names(sql, &map, UnquotedForms::None), sql);
 }
 
 #[test]
 fn 別名の方が長ければ空白で埋めずに置き換える() {
     let map = aliases(&[("a", "iceberg")]);
     assert_eq!(
-        alias_qualified_names(r#"SELECT * FROM "a".db.t"#, &map, true),
+        alias_qualified_names(r#"SELECT * FROM "a".db.t"#, &map, UnquotedForms::None),
         r#"SELECT * FROM "iceberg".db.t"#
     );
 }
@@ -193,7 +250,7 @@ fn 別名の方が長ければ空白で埋めずに置き換える() {
 fn 識別子の二重の引用符は中身として比べて別名では二重にする() {
     let map = aliases(&[("a\"b", "c\"d")]);
     assert_eq!(
-        alias_qualified_names(r#"SELECT * FROM "a""b".db.t"#, &map, true),
+        alias_qualified_names(r#"SELECT * FROM "a""b".db.t"#, &map, UnquotedForms::None),
         r#"SELECT * FROM "c""d".db.t"#
     );
 }
@@ -202,7 +259,7 @@ fn 識別子の二重の引用符は中身として比べて別名では二重�
 fn 桁は文字数で揃える() {
     let map = aliases(&[("カタログ/x", "t")]);
     let sql = r#"SELECT * FROM "カタログ/x".db.t"#;
-    let aliased = alias_qualified_names(sql, &map, true);
+    let aliased = alias_qualified_names(sql, &map, UnquotedForms::ThreeUnquotedParts);
 
     assert_eq!(aliased, r#"SELECT * FROM "t"     .db.t"#);
     assert_eq!(aliased.chars().count(), sql.chars().count());
@@ -212,14 +269,14 @@ fn 桁は文字数で揃える() {
 fn 置き換える箇所が無ければ受け取った_sql_を借りたまま返す() {
     let sql = r#"SELECT * FROM "s3tablescatalog/my-bucket".db.users"#;
     assert!(matches!(
-        alias_qualified_names(sql, &HashMap::new(), true),
+        alias_qualified_names(sql, &HashMap::new(), UnquotedForms::ThreeUnquotedParts),
         Cow::Borrowed(_)
     ));
     assert!(matches!(
         alias_qualified_names(
             "SELECT * FROM users",
             &aliases(&[(S3_TABLES, "iceberg")]),
-            true
+            UnquotedForms::ThreeUnquotedParts
         ),
         Cow::Borrowed(_)
     ));
