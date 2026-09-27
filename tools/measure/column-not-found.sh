@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# issue #283 で作成。
+# issue #283 で作成。ROUND=2 は #283 の 2 ラウンド目（ROUND=1 で Iceberg の表が作れず未測定だった
+# c13・c26〜c29 と、c22（CREATE VIEW）の再現と本体の中身、対照の c1 だけを測る）。
 # 本物の Athena が返す COLUMN_NOT_FOUND の文言（#272 の先行実測で見つけた
 # `Column '<名前>' cannot be resolved or requester is not authorized to access
 # requested resources`、手元の Trino 482 は `... cannot be resolved` まで）が、
@@ -25,9 +26,12 @@
 #   POLL_TIMEOUT    終端状態を待つ上限（秒）。既定 180
 #   RETRY_MAX       名前解決・接続の一時的な失敗を再試行する回数。既定 4
 #   RETRY_DELAY     再試行の間隔（秒）。既定 5
+#   ROUND           既定 1。1 は全項目。2 は c1・c13・c22・c26〜c29 だけ（準備は <PROBE>_real と
+#                   <PROBE>_ice だけ。ROUND=1 は Iceberg の表を長さの無い varchar で作ろうとして
+#                   `varchar type is specified without length` で失敗したので、string に直した）
 #
 # 準備（すべて $DB に作り、最後に消す。trap でも保険をかける）:
-#   <PROBE>_real   Hive の表（CTAS。n int, s varchar、行 1 つ）。場所は既定のまま
+#   <PROBE>_real   Hive の表（CTAS。n int, s varchar(1)、行 1 つ）。場所は既定のまま
 #                  （CTAS の管理表なので <OUTPUT>tables/<id>/ の下になる。drop-table-format.sh の
 #                  b・insert-location.sh の prep-h と同じ、WITH 句を付けない安全な形）。
 #   <PROBE>_other  JOIN 用にもう 1 つ、同じ形で作る Hive の表。
@@ -59,6 +63,7 @@
 #   <label>.reason.txt          StateChangeReason と AthenaError（**実名を含みうる**）
 #   <label>.body.err            結果ファイル本体の HeadObject が失敗した証拠（無いことの証拠）
 #   <label>.metadata.err        .metadata の HeadObject が失敗した証拠（無いことの証拠）
+#   <label>.body.txt            FAILED なのに結果ファイル本体があったときの中身（**実名を含みうる**）
 #   available-databases.txt     DB が指定/実在しなかったときに使った ListDatabases の一覧
 #
 # 最後に summary.tsv（機械可読）と summary.txt（そのまま貼れる整形済み）を作る。
@@ -82,6 +87,11 @@ OUT_DIR=${OUT_DIR:-${DEV_HOST_HOME:-$HOME}/athena-column-not-found-measurements}
 POLL_TIMEOUT=${POLL_TIMEOUT:-180}
 RETRY_MAX=${RETRY_MAX:-4}
 RETRY_DELAY=${RETRY_DELAY:-5}
+ROUND=${ROUND:-1}
+case "$ROUND" in
+  1 | 2) ;;
+  *) echo "ROUND は 1 か 2 です: $ROUND" >&2; exit 2 ;;
+esac
 
 # 実行のたびに変わる乱数入りの接頭辞。tools/measure/unquoted-ddl.sh と同じ考え方。
 RAND_SUFFIX=$(printf '%04x' $((RANDOM % 65536)))
@@ -474,6 +484,11 @@ print(err.get("ErrorMessage") or status.get("StateChangeReason") or "")' "$RUN_D
   if [ -n "$loc" ]; then
     body_exists=$(head_exists "$label.body" "$loc")
     meta_exists=$(head_exists "$label.metadata" "${loc}.metadata")
+    # FAILED なのに本体が置かれていたら中身も取る（ROUND=1 の c22・c23 の CREATE VIEW。
+    # コンテナ内のパスへの書き出しは消えるので、標準出力をシェルでリダイレクトする）
+    if [ "$state" = FAILED ] && [ "$body_exists" = yes ]; then
+      aws s3 cp --region "$REGION" "$loc" - > "$RUN_DIR/$label.body.txt" 2> "$RUN_DIR/$label.body-cp.err" || true
+    fi
   fi
 
   note="attempts=$(read_attempts "$label")"
@@ -554,15 +569,17 @@ else
   echo "== setup-real: 実在する表が作れませんでした。この表を使う項目は未測定にします。"
 fi
 
+if [ "$ROUND" = 1 ]; then
 OTHER_ATTEMPTED=1
 if run setup-other "CREATE TABLE $DB.$OTHER AS SELECT 1 AS n, 'x' AS s"; then
   OTHER_OK=1
 else
   echo "== setup-other: JOIN 用の表が作れませんでした。c6 は未測定にします。"
 fi
+fi
 
 ICE_ATTEMPTED=1
-if run setup-ice "CREATE TABLE $DB.$ICE (n int, s varchar) LOCATION '${OUTPUT}athena-local-probe-283/ice/' TBLPROPERTIES ('table_type'='ICEBERG')"; then
+if run setup-ice "CREATE TABLE $DB.$ICE (n int, s string) LOCATION '${OUTPUT}athena-local-probe-283/${RAND_SUFFIX}/ice/' TBLPROPERTIES ('table_type'='ICEBERG')"; then
   if run setup-ice-insert "INSERT INTO $DB.$ICE VALUES (1, 'x')"; then
     ICE_OK=1
   else
@@ -574,7 +591,13 @@ fi
 
 # --- 2. SELECT の各位置 -----------------------------------------------------------
 
-if [ "$REAL_OK" = 1 ]; then
+if [ "$ROUND" = 2 ]; then
+  if [ "$REAL_OK" = 1 ]; then
+    run c1  "SELECT nosuch283 FROM $DB.$REAL"
+  else
+    skip c1 "<PROBE>_real が作れなかったため未測定"
+  fi
+elif [ "$REAL_OK" = 1 ]; then
   run c0  "SELECT n FROM $DB.$REAL"
   run c1  "SELECT nosuch283 FROM $DB.$REAL"
   run c2  "SELECT n FROM $DB.$REAL WHERE nosuch283 = 1"
@@ -593,7 +616,9 @@ else
   done
 fi
 
-if [ "$REAL_OK" = 1 ] && [ "$OTHER_OK" = 1 ]; then
+if [ "$ROUND" = 2 ]; then
+  :
+elif [ "$REAL_OK" = 1 ] && [ "$OTHER_OK" = 1 ]; then
   run c6 "SELECT a.n FROM $DB.$REAL a JOIN $DB.$OTHER b ON a.nosuch283 = b.n"
 else
   skip c6 "<PROBE>_real か <PROBE>_other が作れなかったため未測定"
@@ -605,6 +630,7 @@ else
   skip c13 "<PROBE>_ice が作れなかったため未測定"
 fi
 
+if [ "$ROUND" = 1 ]; then
 # --- 3. 表を読まない形 -------------------------------------------------------------
 
 run c14 "SELECT nosuch283"
@@ -632,13 +658,14 @@ else
   skip c20 "<PROBE>_real が作れなかったため未測定"
   skip c21 "<PROBE>_real が作れなかったため未測定"
 fi
+fi
 
 # --- 6. CREATE VIEW ------------------------------------------------------------------
 
 if [ "$REAL_OK" = 1 ]; then
   V=$(new_name v)
   run_create_then_drop c22 "CREATE VIEW $DB.$V AS SELECT nosuch283 FROM $DB.$REAL" "$V" view
-  run_create_then_drop c23 "CREATE OR REPLACE VIEW $DB.$V AS SELECT nosuch283 FROM $DB.$REAL" "$V" view
+  [ "$ROUND" = 1 ] && run_create_then_drop c23 "CREATE OR REPLACE VIEW $DB.$V AS SELECT nosuch283 FROM $DB.$REAL" "$V" view
 else
   skip c22 "<PROBE>_real が作れなかったため未測定"
   skip c22-cleanup "<PROBE>_real が作れなかったため未測定"
@@ -648,7 +675,9 @@ fi
 
 # --- 7. 対照: #272 の文言の再現（CTAS・INSERT） ----------------------------------------
 
-if [ "$REAL_OK" = 1 ]; then
+if [ "$ROUND" = 2 ]; then
+  :
+elif [ "$REAL_OK" = 1 ]; then
   CTAS_T=$(new_name ctas)
   run_create_then_drop c24 "CREATE TABLE $DB.$CTAS_T AS SELECT nosuch283 FROM $DB.$REAL" "$CTAS_T" table
   run c25 "INSERT INTO $DB.$REAL SELECT nosuch283, 'y' FROM $DB.$REAL"
@@ -696,7 +725,13 @@ write_summary_txt() {
     echo "#             authorized to access requested resources）が CTAS・INSERT 以外の文でも"
     echo "#             同じ形かを実測（DELETE の WHERE は #272 と同じ 2026-09-17 の実測で確認済みのため対象外）"
     echo "# 実行日時: $(date -Iseconds)"
-    echo "# StartQueryExecution の見込み本数: 39〜42"
+    echo "# ROUND=$ROUND"
+    if [ "$ROUND" = 2 ]; then
+      echo "# StartQueryExecution の見込み本数: 13〜14（preflight 1 + 準備 3（real の CTAS、ice の CREATE・"
+      echo "#   INSERT）+ 項目 7（c1・c13・c22・c26〜c29）+ 後始末 2（real・ice の DROP）。c22 が"
+      echo "#   想定に反して受理されたらその場で消す後始末が 1 本増える）。以下の ROUND=1 の内訳は参考"
+    fi
+    echo "# StartQueryExecution の見込み本数（ROUND=1）: 39〜42"
     echo "#   （preflight 2（SELECT 1 は 1、ListDatabases は Athena のクエリではないので含めない）+"
     echo "#   準備 4（real・other の CTAS、ice の CREATE・INSERT）+ 主要項目 30（c0〜c29）+"
     echo "#   後始末 3（real・other・ice の DROP）。c22〜c24 が想定に反して受理されたら"
@@ -732,6 +767,14 @@ write_summary_txt() {
       elif [ "$start_msg" != "-" ]; then
         echo "  start: $start_code $start_msg"
       fi
+    done
+    local f
+    for f in "$RUN_DIR"/*.body.txt; do
+      [ -e "$f" ] || continue
+      echo
+      echo "## FAILED なのに置かれた結果ファイル本体の中身: $(basename "$f" .body.txt)（$(wc -c < "$f" | tr -d ' ') バイト。実名は伏せる。先頭 600 文字）"
+      hide "$(head -c 600 "$f")" | cat -A | head -20
+      echo
     done
   } > "$txt"
   echo "$txt"
