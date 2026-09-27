@@ -52,6 +52,70 @@ fn parse_target_table_は_desc_の直後の名前を読む() {
     }
 }
 
+/// `EXTENDED`／`FORMATTED` を挟んだ名前も読む（本物の qe1〜qe10・p1〜p5。#275）。
+#[test]
+fn parse_target_table_は_extended_と_formatted_を挟んだ名前を読む() {
+    for query in [
+        "DESCRIBE EXTENDED db.t",
+        "DESCRIBE FORMATTED db.t",
+        "DESC EXTENDED db.t",
+        "DESC FORMATTED db.t",
+        "describe extended db.t",
+        "DESCRIBE EXTENDED db.t n",
+        "DESCRIBE EXTENDED db.t PARTITION (p='x')",
+    ] {
+        assert_eq!(
+            parse_target_table(query, TargetStatement::Describe, Some("cat"), Some("ns")),
+            Some(TargetTable {
+                catalog: "cat".to_string(),
+                schema: "db".to_string(),
+                table: "t".to_string(),
+            }),
+            "{query}"
+        );
+    }
+}
+
+/// 名前無しの `DESCRIBE EXTENDED`／`FORMATTED` は、修飾子付きの候補では名前が読めず無修飾の候補に落ち、
+/// 今までどおり `EXTENDED`／`FORMATTED` を名前と読む（#257 の z1・z2 を壊さない）。
+#[test]
+fn parse_target_table_は名前無しの修飾子を無修飾の候補で名前として読む() {
+    for (query, table) in [
+        ("DESCRIBE EXTENDED", "extended"),
+        ("DESCRIBE FORMATTED", "formatted"),
+        ("DESC EXTENDED", "extended"),
+    ] {
+        assert_eq!(
+            parse_target_table(query, TargetStatement::Describe, Some("cat"), Some("ns")),
+            Some(TargetTable {
+                catalog: "cat".to_string(),
+                schema: "ns".to_string(),
+                table: table.to_string(),
+            }),
+            "{query}"
+        );
+    }
+}
+
+/// `extended` を 1 部目にした名前（`extended.t`）は、修飾子付きの候補では `EXTENDED` の直後が `.t` に
+/// なって名前として読めず、無修飾の候補に落ちて `extended.t` を 2 部の名前として読む。
+#[test]
+fn parse_target_table_は_extended_を_1_部目にした名前を無修飾の候補で読む() {
+    assert_eq!(
+        parse_target_table(
+            "DESCRIBE extended.t",
+            TargetStatement::Describe,
+            Some("cat"),
+            Some("ns")
+        ),
+        Some(TargetTable {
+            catalog: "cat".to_string(),
+            schema: "extended".to_string(),
+            table: "t".to_string(),
+        })
+    );
+}
+
 #[test]
 fn parse_target_table_は_2_パートの名前にスキーマを当て既定のカタログを使う() {
     assert_eq!(

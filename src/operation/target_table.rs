@@ -17,7 +17,11 @@ pub(super) struct TargetTable {
 
 /// `target_statement` の種類ごとに、名前の前に来るキーワードの並びの候補（`DROP TABLE` / `ALTER TABLE` /
 /// `SHOW CREATE TABLE` / `DESCRIBE` / `SHOW COLUMNS FROM`・`IN`）。DESCRIBE だけ `TABLE` を挟まない（#160）。
-/// 候補が複数あるのは SHOW COLUMNS（`FROM` でも `IN` でも同じ結果）と DESCRIBE（`DESC` も同じ結果）（#173）。
+/// 候補が複数あるのは SHOW COLUMNS（`FROM` でも `IN` でも同じ結果）と DESCRIBE（`DESC` も同じ結果、
+/// `EXTENDED`／`FORMATTED` を挟んでも同じ結果。#173・#275）。DESCRIBE の候補は修飾子付きを先に置き、
+/// `parse_target_table` の `find_map` が「名前まで読めた」候補を採るので、修飾子付きの候補で名前が
+/// 読めなければ（名前無しの `DESCRIBE EXTENDED` など）無修飾の候補に落ちて `EXTENDED` を名前と読む
+/// （#257 の z1・z2 を壊さない。計画攻撃 A1）。
 fn keywords(statement: TargetStatement) -> &'static [&'static [&'static str]] {
     match statement {
         TargetStatement::DropTable => &[&["DROP", "TABLE"]],
@@ -25,7 +29,14 @@ fn keywords(statement: TargetStatement) -> &'static [&'static [&'static str]] {
             &[&["ALTER", "TABLE"]]
         }
         TargetStatement::ShowCreateTable => &[&["SHOW", "CREATE", "TABLE"]],
-        TargetStatement::Describe => &[&["DESCRIBE"], &["DESC"]],
+        TargetStatement::Describe => &[
+            &["DESCRIBE", "EXTENDED"],
+            &["DESCRIBE", "FORMATTED"],
+            &["DESC", "EXTENDED"],
+            &["DESC", "FORMATTED"],
+            &["DESCRIBE"],
+            &["DESC"],
+        ],
         TargetStatement::ShowColumns => &[&["SHOW", "COLUMNS", "FROM"], &["SHOW", "COLUMNS", "IN"]],
     }
 }
@@ -36,6 +47,10 @@ fn keywords(statement: TargetStatement) -> &'static [&'static [&'static str]] {
 /// Trino の規則で小文字）を使い、無ければ `default_catalog` / `default_schema`（実行時の値。
 /// 別名解決前）を使う。カタログかスキーマが決まらなければ None（今までどおりに倒す）。
 ///
+/// `keywords` が複数候補を返すときは、キーワードの並びが一致するだけでなく**名前まで読めた**最初の候補を
+/// 採る（`find_map` の内側で `parse_qualified_name` まで呼ぶ。#275）。DESCRIBE で名前無しの修飾子
+/// （`DESCRIBE EXTENDED`）は、修飾子付きの候補では名前が読めず無修飾の候補に落ちる。
+///
 /// 字句処理は新しく書かず、`athena_sql::Cursor` の `keyword`・`qualified_name` を再利用する。
 pub(super) fn parse_target_table(
     query: &str,
@@ -43,10 +58,10 @@ pub(super) fn parse_target_table(
     default_catalog: Option<&str>,
     default_schema: Option<&str>,
 ) -> Option<TargetTable> {
-    let name = keywords(statement)
+    let parts = keywords(statement)
         .iter()
-        .find_map(|keywords| table_name_start(query, keywords))?;
-    parts_to_target(parse_qualified_name(name)?, default_catalog, default_schema)
+        .find_map(|keywords| parse_qualified_name(table_name_start(query, keywords)?))?;
+    parts_to_target(parts, default_catalog, default_schema)
 }
 
 /// `MSCK REPAIR TABLE` の対象。`table_format::TargetStatement` に MSCK の腕は無い（結果ファイルの

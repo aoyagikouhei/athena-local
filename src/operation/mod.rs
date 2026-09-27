@@ -9,6 +9,7 @@ mod context_catalog;
 mod create_table_catalog;
 mod ctas_query;
 mod ctas_reformat;
+mod describe_extended;
 mod entity_check;
 mod execution;
 mod format_probe;
