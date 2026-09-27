@@ -56,8 +56,10 @@ jobs:
 
   # 検証の足場（tools/e2e）のうち軽いものを toolbox（compose.yml の dev サービス）の中で流す（#130）。
   # request-errors は Trino も MinIO も要らない。paging-validation・quoted-names・context-catalog・sdk-retry は Trino だけ。
-  # それより下の 7 本は Trino と MinIO（minio-init）を使う。どの足場も開始時に自分で compose の down -v → up -d をする。
-  # 手元の所要（2026-09-27、イメージはキャッシュ済み。#265）は 1 本 13〜42 秒、足した 8 本で約 3 分。
+  # 残りの 7 本は Trino と MinIO（minio-init）を使う。どの足場も開始時に自分で compose の down -v → up -d をするので、
+  # 組に Trino だけの足場と MinIO も使う足場が混ざってよい。
+  # 直列の 1 ジョブでは 389 秒かかっていた（2026-09-27、run 36294840869）ので、足場を 3 組と toolbox の cargo test に分けて
+  # 並列に流す（#288）。組は足場の所要（上の run の実測、秒）の合計が均等になるように割る。
   # 入れない足場（#265）:
   #   retention       既定で負荷 240 秒 × 2（約 10 分）
   #   python-clients  setup-venvs.sh で PyPI から取る venv が要る（足場そのものは 90 秒）
@@ -67,6 +69,25 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
+    strategy:
+      # 1 組が落ちても残りの組を最後まで流し、落ちた足場をまとめて見る。
+      fail-fast: false
+      matrix:
+        include:
+          # 26（リリースビルド込み）+ 36 + 15 + 14 = 91 秒。cargo のキャッシュはこの組だけが保存する（下の save）。
+          - group: a
+            scripts: request-errors block-comment context-catalog sdk-retry
+            save-cache: true
+          # 32 + 24 + 19 + 15 = 90 秒
+          - group: b
+            scripts: paging-validation utility-rows s3-tables-location quoted-names
+          # 18 + 20 + 22 + 22 = 82 秒
+          - group: c
+            scripts: create-table-catalog ctas-catalog result-content-type minio
+          # toolbox の中の cargo test を amd64 でも通す（開発機は arm64 なので、ここが amd64 の唯一の確認。#184）。
+          # check ジョブの cargo test はホストのランナーで直に動くので、toolbox のイメージ・uid・マウントの上では通らない。
+          - group: cargo-test
+    name: e2e (${{ matrix.group }})
     env:
       # Docker Hub の匿名 pull の制限（ランナーは IP を共有する）に当たらないよう、docker.yml と同じ secrets でログインする。
       # secrets が無い（フォークからの PR）ときはログインを省く。
@@ -98,7 +119,9 @@ jobs:
 
       # toolbox の中の cargo のレジストリと release の成果物（CARGO_HOME / CARGO_TARGET_DIR はリポジトリの .toolbox の下）。
       # 足場が使うのは cargo build --release だけなので target は release に絞る（debug まで入れると数 GB になる）。
-      - uses: actions/cache@v6
+      # 同じ key に 4 つのジョブが保存しようとしないよう、取り出しと保存を分け、保存は save-cache の組だけにする。
+      - id: cargo-cache
+        uses: actions/cache/restore@v6
         with:
           path: |
             .toolbox/cargo/registry
@@ -107,23 +130,28 @@ jobs:
           restore-keys: |
             toolbox-cargo-${{ steps.toolbox.outputs.tag }}-
 
-      - run: tools/dev.sh tools/e2e/request-errors/verify.sh
-      # 1 本目のビルド（.toolbox/target/release/athena-local）をそのまま使う。
-      - run: tools/dev.sh SKIP_BUILD=1 tools/e2e/paging-validation/verify.sh
-      # 引用符付きの名前と DESCRIBE・SHOW COLUMNS の存在の確認（#207）。
-      - run: tools/dev.sh SKIP_BUILD=1 tools/e2e/quoted-names/verify.sh
-      # 実在しない QueryExecutionContext の Catalog をメタデータの文だけ既定に差し替える（#214）。
-      - run: tools/dev.sh SKIP_BUILD=1 tools/e2e/context-catalog/verify.sh
-      # boto3 のリトライと同じ ClientRequestToken の再送（#94）。
-      - run: tools/dev.sh SKIP_BUILD=1 tools/e2e/sdk-retry/verify.sh
-      # ここから MinIO も使う。CI の外にあったあいだに期待値が古くなって誰も気づかなかった（#254）ので、最近の挙動を固定する足場から並べる。
-      - run: tools/dev.sh SKIP_BUILD=1 tools/e2e/create-table-catalog/verify.sh
-      - run: tools/dev.sh SKIP_BUILD=1 tools/e2e/ctas-catalog/verify.sh
-      - run: tools/dev.sh SKIP_BUILD=1 tools/e2e/s3-tables-location/verify.sh
-      - run: tools/dev.sh SKIP_BUILD=1 tools/e2e/block-comment/verify.sh
-      - run: tools/dev.sh SKIP_BUILD=1 tools/e2e/utility-rows/verify.sh
-      - run: tools/dev.sh SKIP_BUILD=1 tools/e2e/result-content-type/verify.sh
-      - run: tools/dev.sh SKIP_BUILD=1 tools/e2e/minio/verify.sh
-      # toolbox の中の cargo test を amd64 でも通す（開発機は arm64 なので、ここが amd64 の唯一の確認。#184）。
-      # check ジョブの cargo test はホストのランナーで直に動くので、toolbox のイメージ・uid・マウントの上では通らない。
-      - run: tools/dev.sh cargo test --locked
+      # 組の 1 本目がリリースビルドをし、残りはその .toolbox/target/release/athena-local をそのまま使う（SKIP_BUILD=1）。
+      # 1 本が落ちたらその組はそこで止まる（run の既定のシェルは bash -e）。
+      - if: matrix.scripts
+        env:
+          SCRIPTS: ${{ matrix.scripts }}
+        run: |
+          skip=0
+          for s in $SCRIPTS; do
+            echo "::group::$s"
+            tools/dev.sh SKIP_BUILD=$skip "tools/e2e/$s/verify.sh"
+            echo "::endgroup::"
+            skip=1
+          done
+
+      - if: matrix.group == 'cargo-test'
+        run: tools/dev.sh cargo test --locked
+
+      # 旧い actions/cache と同じく、key がそのまま当たらなかったときだけ、成功した後に保存する。
+      - if: matrix.save-cache && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            .toolbox/cargo/registry
+            .toolbox/target/release
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
