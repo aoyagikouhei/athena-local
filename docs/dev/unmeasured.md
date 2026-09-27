@@ -1,37 +1,17 @@
 # 未実測の一覧
 
-各 issue の実装で「本物の Athena で測っていない」まま残した挙動。次に本物の Athena を叩ける機会に、まとめて測る。測ったら [measurements/](measurements/README.md) に書いてここから消す（「済み」の節へ移す）。[docs/caveats.md](../caveats.md) の「not measured」も直す。本物の Athena でも観測できない・誘発できないと分かったものは、測る対象から外して末尾の「測れないもの」へ理由つきで移す（[docs/caveats.md](../caveats.md) は「cannot be measured」の趣旨に直す）。出典は issue #<番号> のノート（git の履歴に残る）。
+各 issue の実装で「本物の Athena で測っていない」まま残した挙動。次に本物の Athena を叩ける機会に、まとめて測る。測ったら [measurements/](measurements/README.md) に書いてここから消す（「済み」の節へ移す）。[docs/caveats.md](../caveats.md) の「not measured」も直す。本物の Athena でも観測できない・誘発できないと分かったものは、測る対象から外して末尾の「測れないもの」へ理由つきで移す（[docs/caveats.md](../caveats.md) は「cannot be measured」の趣旨に直す）。出典は issue #<番号> のノート（git の履歴に残る）。この一覧に置くのは、合わせる範囲（[decisions.md](decisions.md) の「合わせる範囲」）に入る項目だけで、範囲の外の未実測は末尾の「範囲外（測らない）」に置く。この一覧の行は起票の理由にしない。issue にするのは [decisions.md](decisions.md) の「合わせる範囲」に入るか利用者の報告があるときだけで、それまではここに置いたままにする。
 
 話題の分け方は [measurements/](measurements/README.md) のファイルと揃えてある。
 
 ## 結果ファイル（[measurements/result-files.md](measurements/result-files.md)）
 
-- [ ] `SHOW CREATE TABLE`／`SHOW CREATE VIEW` 以外の `SHOW CREATE ...`（`SCHEMA`／`MATERIALIZED VIEW`／`FUNCTION`。Trino にはある）を本物の `StartQueryExecution` が受けるか、受けるなら `.txt` の Content-Type と `.metadata` の形式。athena-local は `.txt` の既定（binary、エンジン ID）に落としている（#151、2026-09-24。`SHOW SESSION`／`STATS` と同じく本物が弾く可能性が高い）
 - [ ] `DESCRIBE EXTENDED`／`FORMATTED` と列・PARTITION 指定の DESCRIBE の測っていない組（#275 で測ったのは [statements.md](measurements/statements.md) の #275 の節の組だけ）: パーティション付き Hive 表・ビューへの列指定、Hive 表への無印の `DESCRIBE <t> <col>` の行（Query は #242 の m8 で測った）、Iceberg 表への `DESCRIBE EXTENDED`／`FORMATTED <t> PARTITION (...)`、ビューへの PARTITION 指定、キーが 2 つ以上の PARTITION 指定（無いときの文言の形）、キーワードの間の空白 3 つ以上・タブ（測ったのは空白 2 つが 1 つに畳まれる形だけ）、Context の Catalog が `AwsDataCatalog` 以外（S3 Tables・連携カタログ）のとき、Trino のカタログ名が `iceberg` 以外の Iceberg 表の `Name:`（本物は `iceberg.<DB>.<t>` だった。athena-local は固定で `iceberg` を書く）。athena-local はどれも今までどおり（開始時の構文チェックで弾く。空白は受け取ったまま）。ほかに、列名・PARTITION のキーの大文字小文字（athena-local は小文字にして Trino の列名と比べる）
-
-- [ ] 複合型の中の varbinary の `[B@<hex>` の数字が、等しいバイト列で同じになるか、実行ごとに変わるか（#146 は `ARRAY[X'0102', X'03']` の違う 2 要素だけ。athena-local はバイト列の FNV-1a で決定的にしている。#149、2026-09-24）
-
-## 文の種類と構文（[measurements/statements.md](measurements/statements.md)）
-
-- [ ] `QueryExecutionContext` の Catalog が S3 Tables（`s3tablescatalog/<bucket>`）のとき、1〜2 部の名前の `DESCRIBE`・`SHOW COLUMNS` を本物がどう扱うか（実在しない表で Entity Not Found か、`Unsupported DDL with 2 catalogs` か）。測ったのは名前の 1 部目に S3 Tables のカタログを書いた形だけ。athena-local は Context から来た別名を種類によらず Trino 側の名前で存在を確かめ、実在しない表なら Entity Not Found にする（#216、2026-09-26）
-- [ ] `QueryExecutionContext` の Catalog が S3 Tables 以外の連携カタログのときや、`S3TablesCatalog/<bucket>` のように大文字を含むときの、場所の無い CTAS でない `CREATE TABLE`。#221 で小文字の `s3tablescatalog/<bucket>` なら作られると測った。athena-local は `s3tablescatalog/` で始まるかを大文字小文字を区別せずに見て No location を返さず、それ以外は `AwsDataCatalog` と同じに弾く（2026-09-26）
-- [ ] S3 Tables の Context の `Unsupported ddl with 2 catalogs: <文>` で、文の前後のタブ・改行が落ちるか。測ったのは前後の空白だけ（落ちた）。athena-local は空白・タブ・CR・LF を落とす（#224、2026-09-26）
-- [ ] Hive の `CREATE TABLE ... LOCATION` で、LAMBDA・FEDERATED 型の連携カタログを 1 部目か Context にした形（#266 は自分のアカウントの Glue を指す GLUE 型のデータカタログで測った）、実在する別カタログの Context で `AwsDataCatalog.<db>.<t>` に作った表がどちらのカタログに入るか（#266 の z3。両者が同じ Glue を指して区別できなかった）。athena-local は Trino にカタログがあれば構文チェックに任せる（#248・#266、2026-09-27）
-- [ ] S3 Tables の Context の Hive の `CREATE TABLE`（LOCATION・EXTERNAL の無い形）で、ほかのカタログの 3 部、`compression_level` とほかの失敗する句の組（athena-local は開始時の Compression codec を先にする）、Athena の文書にあるが測っていないキー（`optimize_rewrite_data_file_threshold`・`vacuum_max_metadata_files_to_keep`・`write_data_path_enabled`。athena-local は未知のキーにしない）、文書にも測った一覧にも無いキー（athena-local は未知のキーにする）、上の表に無い Hive の句（`WITH SERDEPROPERTIES`・`ESCAPED BY`・`SORTED BY`・`STORED AS INPUTFORMAT ... OUTPUTFORMAT` など。`read` が読まないので構文チェックに任せる）。句の優先順・列無し・`table_type` の値・小文字の `awsdatacatalog` の 3 部・名前空間が無いときは #270 で測った（2026-09-27）
-- [ ] 無引用の 3 部の名前の場所の無い `CREATE TABLE` で、1 部目が Trino にだけあるカタログ（`iceberg` など）や、本物に登録された連携カタログのとき（`DATACATALOG_NOT_FOUND` か No location か、S3 Tables の Context で名前空間を見るか）。測ったのは `awsdatacatalog` の大文字小文字違いと実在しないカタログだけ。athena-local は Trino にあれば実在として No location にし、S3 Tables の Context でも名前空間を見ない（#227、2026-09-26）
-- [ ] S3 Tables の Context で Database を省略した 1 部の `CREATE TABLE`・CTAS で、名前空間 `default` が実在するとき（本物は `default` を引いた。測ったアカウントには `default` が無く、CTAS でない形は `Cannot find or access the specified table`、CTAS は `$schema:default` の NOT_FOUND だった）。athena-local は `default` があれば受け取ったまま送る（#273、2026-09-27）
-- [ ] S3 Tables の Context の名前空間が無い CTAS（#273）の周り: Context の Catalog に大文字を含むときの内部名の綴り（athena-local は受け取ったまま）、無い表以外の解析エラー（無い列など）と名前空間の順序（athena-local は Trino の順）、ある名前空間をバッククォートで書いた CTAS の開始時の文言（測ったのは無い名前空間の f11 だけ）、パラメータ（ExecutionParameters）付き（2026-09-27）
-- [ ] `WITH NO DATA` の CTAS で Glue に無い DB のとき、問い合わせ部分が実行中に失敗する形（`CAST` など）を本物が実行するか。測ったのは失敗しない `WITH NO DATA`（t9。件数 0 の `.metadata`）だけ。athena-local は問い合わせ部分をそのまま実行するので、失敗すれば Trino のエラーで終える（#251、2026-09-27）
-- [ ] エンジンで失敗した CTAS の位置の整形（#272）の周り: パラメータ（ExecutionParameters）付きの CTAS の位置、測っていない SELECT の形（JOIN・GROUP BY・ORDER BY・関数・CASE・UNION・LIMIT・サブクエリ・複数の CTE・WHERE の AND/OR・二項演算子の右の字句）の整形、本物が足すプロパティの中身と利用者が同じキーを書いたときの行数、非 ASCII を含む文の桁（文字単位かバイト単位か）、S3 Tables の Context の 1 部の CTAS（名前空間は Context の Database）の位置、`.` で終わるエンジンの文言に接尾辞を付けるときの `.` の重なり。athena-local は測った形だけ位置を直し、ほかは Trino の位置のまま（2026-09-27）
-- [ ] Trino で失敗した CTAS でない `CREATE TABLE`（名前空間が無いなど）に本物が結果ファイル（`<id>.txt`）を置くか。測ったのは S3 Tables の Context の `Cannot find or access the specified table` だけ（置かなかった）。athena-local は Trino のエラーで FAILED になった DDL には `FAILED: <理由>` の `.txt` を置く（#227、2026-09-26）
-- [ ] CTAS の 4 部以上で引用符付きの部分がある名前（`a.b."c".d AS SELECT ...`）と、大文字を含む無引用の 4 部以上の CTAS の名前の書き方。#221 で無引用・小文字の 4 部の CTAS が `Invalid table name <名前>` になると測った。athena-local は引用符付きの部分があれば実行し、無引用なら DESCRIBE と同じく小文字でつないで弾く（2026-09-26）
-- [ ] `SHOW TABLES IN` の 3 部以上で、2 つ目の `.` の直後が `LIKE` やバッククォートの名前の形（`SHOW TABLES IN a.b.like`・``SHOW TABLES IN a.b.`c` ``）。#212 で直後が無引用の名前なら `mismatched input '.'`、引用符付きなら `extraneous input '.'` と測った。athena-local は `"` で始まらない形をすべて `mismatched input '.'` にする（2026-09-25）
 
 ## GetQueryResults（[measurements/query-results.md](measurements/query-results.md)）
 
 - [ ] Iceberg のテーブルの `DESCRIBE` で、フィールドが 2 つ以上の `struct` の区切り。測ったのは 1 フィールドの `struct<a: int>` だけ。athena-local は `map<string, int>` に倣って `, ` でつなぐ（#173、2026-09-24）
 - [ ] Iceberg のパーティション変換のうち、`identity`／`bucket`／`truncate`／`year`／`month`／`day`／`hour` 以外（`void` など）の `# Partition spec:` の下の行。athena-local は行を出さない（#173、2026-09-24）
-- [ ] Hive のテーブルの `DESCRIBE`／`SHOW COLUMNS` の 20 文字の詰めで、非 BMP 文字（絵文字など、UTF-16 で 2 単位）を 1 文字と数えるか。測ったのは BMP の `列名`・`コメント` だけ（文字数で数えた）。athena-local は Unicode のスカラ値の数で数える（#173、2026-09-24）
 - [ ] `SHOW SCHEMAS LIKE`／`SHOW DATABASES LIKE` のパターンの意味。実在するデータベース名の先頭 3 文字に `*` を付けても `%` を付けても 0 行だった（#173、2026-09-24）。athena-local は Trino の `LIKE` のまま
 - [ ] Hive・Iceberg の `DESCRIBE` で測っていない型（`timestamp with time zone`、`time`、`interval`、`json`、`uuid` など）の綴り。athena-local は Trino の綴りのまま（#173、2026-09-24）
 
@@ -41,37 +21,11 @@
 
 ## ClientRequestToken と保持期限（[measurements/client-request-token.md](measurements/client-request-token.md)）
 
-- [ ] トークン対応表と実行情報の本物の正確な保持期間（67 分を超えることまでは実測。#147（2026-09-24）: 完了直後の再送も、完了から約 67 分後の再送も同じ ID で、その時点の `GetQueryExecution` は SUCCEEDED のまま見つかり、`StopQueryExecution` も成功した。既定の 1 時間は athena-local 独自の値で、本物より短い）
-- [ ] 期限切れのトークンを再送すると本物で新しい ID になるか、期限切れの ID の `GetQueryExecution` が `QUERY_EXECUTION_NOT_FOUND` か、`StopQueryExecution` が 400 か（#147 は完了から約 67 分後に投げたが期限切れにならず、測れなかった）
-- [ ] `GetQueryExecution` が S3 Tables（`s3tablescatalog/<bucket>`）や連携カタログの `Catalog` をどう返すか（`AwsDataCatalog` と実在しない名前は小文字で返った。#157、2026-09-24。アカウントに他のカタログが無く測れていない）
-- [ ] SQL の修飾名のカタログ（`"AwsDataCatalog".db.t` など）を本物が大文字小文字を区別せずに解決するか（`QueryExecutionContext` の Catalog／Database は区別しない。#157、2026-09-24）
-- [ ] `Catalog` の「省略」と「既定と同じ値（`AwsDataCatalog`）の明示」を本物が別物として扱うか。#146 は値の違い（大文字小文字・実在しない名前）だけを測った。athena-local は `Database` に倣って別物（衝突）にしている（#150、2026-09-24）
-- [ ] 出力先を強制しない（`EnforceWorkGroupConfiguration: false`）ワークグループで、`OutputLocation` の「省略」と「既定と同じ値の明示」を本物が別物として扱うか。#146（2026-09-24）は強制するワークグループでしか測れず、そこでは同じ `QueryExecutionId` が返った（`Database` の省略と `default` の明示は衝突）
-- [ ] トークンの長さが文字数でもバイト数でも 128 を超えるとき（非 ASCII で 129 文字以上）、本物の文言が枠組みの検証（`Member must have length less than or equal to 128`）と `clientRequestToken exceeds maximum allowed length 128` のどちらか。#147（2026-09-24）は `あ`×50（50 文字・150 バイト）と ASCII 129 文字しか測っていない。athena-local は枠組みの検証（文字数）を先に置く（#153）
 - 32 文字未満かつ 128 バイト超の組は測る対象から外す。UTF-8 は 1 文字が最大 4 バイトなので 31 文字は最大 124 バイトで、その組は作れない（#153、2026-09-24）
-
-## ワークグループ（[measurements/work-groups.md](measurements/work-groups.md)）
-
-- [ ] `ListWorkGroups` の順序が名前順であること（3 件だけの根拠のまま。作成・削除を伴うので #113 では測らない）
-
-## エラー応答（[measurements/errors.md](measurements/errors.md)）
-
-- [ ] `QUEUED` のクエリへの `GetQueryResults` の文言（`RUNNING` のときの `Query has not yet finished. Current state: RUNNING` だけ実測。athena-local は `Current state: QUEUED` を返す。#102）。#146（2026-09-24）で軽い `SELECT` を 5 本続けて投げたが、キューの待ちが 47〜86 ミリ秒で、直後の `GetQueryExecution` はどれも SUCCEEDED だった（[measurements/query-results.md](measurements/query-results.md)）。捉えるには同時実行の上限まで詰めるなど別の手が要る
-
-## 実クライアントでの疎通（[measurements/clients.md](measurements/clients.md)）
-
-- [ ] Athena JDBC 3.0.0〜3.3.0 が素の protobuf の `.txt.metadata` を解けるか（#111 で測ったのは auto のある 3.4.0・3.5.0 だけ。3.3.0 以下は auto が無く、`ResultFetcher=S3` は `.txt.metadata` を取りに行かない。既定の経路 GetQueryResultsStream は athena-local が持たないので手元では測れない）
 
 ## Trino（[measurements/trino.md](measurements/trino.md)）
 
 - [ ] Trino 470・400 のすべての値と、440 の存在するテーブルへの probe（D1・D2）と `updateType`（#111 の足場で 480・475 は測れたが、470 はローカル FS の設定名が無く、400 は cgroup v2 で JVM が落ち、440 は file メタストアに書けなかった）
-- [ ] DESCRIBE などの修飾の落とし（#242）の周り: `.` の前のコメント（`<db> /* c */ . <t>`）、2 部の別の DB の SHOW COLUMNS・ALTER・DROP（Context の Database が変わるか）、ビューへの 3 部の DESCRIBE（Query と Database）、ビューの SHOW COLUMNS の 3 部で Context と違う DB を書いたときの Database（athena-local は送ったまま）、SHOW TABLES FROM、S3 Tables・連携カタログの Context、Context の Catalog 省略時（DESCRIBE の直後の行コメント・DESC の直後のブロックコメント・ビューへのブロックコメント・小文字の綴りは #244 で測った）。athena-local は Context の Catalog が AwsDataCatalog か省略で無引用・部品の数がちょうどのときだけ落とし、ビューの 3 部の DESCRIBE も SHOW COLUMNS と同じく Query を受け取った文で返し、ParseException は表への `DESCRIBE` の直後のブロックコメントだけ・文言は書いた綴りにする（2026-09-26）
-- [ ] CREATE TABLE の 3 部の名前のカタログ部分を Query から落とす（#271）の周り: 大文字の混ざる名前空間を書いたときの Context の Database の綴り（athena-local は文中の綴り。#242 の m12 に揃えた）、1 部目と `.` の間のコメント（`AwsDataCatalog /* c */ . <ns>.<t>`。athena-local は #242 の m10 と同じくコメントを残す）、S3 Tables の Context で名前の部品に引用符を含む形（athena-local は落とさない）（2026-09-27）
-- [ ] 無引用の `awsdatacatalog.<db>.<t>` の置換（#246・#260）の周り: 連携カタログの Context での SELECT・INSERT と `AwsDataCatalog` 以外の別名キー（連携カタログの名前）を無引用で書いた形（#260 の o3・o4・o9。連携カタログが無く未測定）、既定の Context で測った 5 種（SELECT・INSERT・CTAS・CREATE VIEW・EXPLAIN）以外の文（DELETE・UPDATE・MERGE・DROP VIEW・SHOW CREATE VIEW・`ALTER TABLE ... RENAME TO` の 2 つ目の名前など）、S3 Tables・実在しないカタログの Context の SELECT・INSERT 以外の文と引用符付きの部品、既定の Context の INSERT の引用符付きの部品、引用符付きの部品が 2 つの形・4 部の列の参照に引用符付きを含む形。athena-local は測った組（`operation/unquoted_alias.rs` の表）だけに `AwsDataCatalog` の別名を当て、ほかは受け取ったまま送る（2026-09-27）。測るのは #279
-- [ ] ブロックコメントの ParseException（#244・#257）の周り: #257 で新しく失敗させた形（`SHOW CREATE TABLE <db>./* c */<t>`・`MSCK REPAIR TABLE <db>.<t> /* c */`・`ALTER TABLE <db>.<t> /* c */ ADD COLUMNS`・`DESCRIBE EXTENDED /* c */`・`ALTER /* c */ TABLE ... REPLACE COLUMNS`・`CHANGE COLUMN`）のビュー・無い表・Iceberg 表、ほかの位置（SHOW CREATE TABLE の名前の後ろ、3 部の名前の中、MSCK の名前の中、ALTER の名前と DROP COLUMN・RENAME TO・REPLACE COLUMNS の間、REPLACE COLUMNS・CHANGE COLUMN の先頭・TABLE の後、`DESCRIBE FORMATTED /* c */`）、先頭コメントのほかの 2 文字の記号（`>=`・`<>`・`==`）と後ろに別の `'` がある閉じていない引用符、名前の直前の位置の字句、`awsdatacatalog.` 付き 3 部の名前とコメントのほかの組（RENAME TO・ADD COLUMNS、先頭・TABLE の後、ビュー・無い表）、連携カタログ・S3 Tables の Context。athena-local は測った組（Hive 表）だけ本物の文言で失敗させ、ほかは今までどおり送り、字句は測った `<=`・`!=` だけ 2 文字、閉じていない引用符は文の末尾まで閉じないときだけ引用符を飛ばし、`awsdatacatalog.` はコメント入りの DROP COLUMN の 1 形だけ受け取ったままにする（2026-09-27）。測るのは #276
-- [ ] コメント無しの ALTER TABLE の DROP COLUMN・RENAME TO の失敗（#256）の周り: ビューへの DROP COLUMN・RENAME TO、大文字を含む名前の `Table not found <DB>.<表>` の綴り、DB が無いときの RENAME TO、行コメントなど #257 で測っていないコメントのある形、空白 2 つ以上・改行を含む DROP COLUMN の StateChangeReason の位置、`awsdatacatalog.<db>.<t>` の DROP COLUMN の位置を落とす前と後のどちらの文で数えるか。athena-local はビュー・コメントのある形は今までどおり Trino に送り、名前は小文字にし、Missing（DB が無い場合を含む）は Table not found、位置は #244 と同じ畳んだ文（落とした後の文）で数える（2026-09-27）。測るのは #257（コメント入りの形の一部を測った）・#276（`awsdatacatalog.` の位置）
-- [ ] `;` の無い空白だけの文（`   `）、`;` と空白だけの文の `Empty sql statement: <文>` の文（`;` 1 つ以外。` ; `・`;;`）、文の前後から落とす空白の文字の範囲（測ったのは空白・タブ・CR・LF。制御文字や非 ASCII の空白）。athena-local は `;` の無い空白だけの文を受け取ったまま Trino に回し、`Empty sql statement` の文は受け取った文の末尾の空白を落としたもの、落とす空白は空白・タブ・CR・LF にする（#240、2026-09-26）
-- [ ] 複数の文（`Only one sql statement is allowed`）と、`ClientRequestToken`・`OutputLocation` の検証との順番、`ExecutionParameters` 付きのとき、バッククォートの中の `;`、閉じていない引用符・コメントの中の `;`。#228 で測ったのは構文エラー・存在の確認・No location・NV・2 catalogs より先であることと、`'`・`"`・`--`・`/* */` の中の `;` が区切りにならないことだけ。athena-local はトークンと OutputLocation の後・構文チェックの前に、受け取った SQL（パラメータを当てる前）で数え、閉じていない引用符・コメントは末尾までを中身とする（2026-09-26）
 
 ## 済み
 
@@ -138,6 +92,7 @@
 
 本物の Athena でも観測できない・誘発できないと分かった項目。測る対象から外す（#112）。理由が崩れたら（新しいアカウントを用意した、Athena が空の列名を通すようになった、など）上の一覧に戻す。
 
+- Athena JDBC 3.0.0〜3.3.0 が素の protobuf の `.txt.metadata` を解けるか（#111）。3.3.0 以下は `ResultFetcher` に auto が無く、`S3` は `.txt.metadata` を取りに行かず、既定の経路 GetQueryResultsStream は athena-local が持たないので、athena-local 相手には観測できない。実測ではなく GetQueryResultsStream を実装するかの話（2026-09-27）
 - カタログの既定など、`WITH` 句以外からテーブルの形式が決まる場合の CTAS・INSERT の結果ファイル（#26・#35）。Athena のテーブルの形式は文の `WITH` 句（`table_type` など）で決まり、カタログの既定で形式が決まるテーブルを Athena では作れない。athena-local は Trino のカタログの connector から形式を決めるので、[docs/caveats.md](../caveats.md) の「Table format is detected per Trino catalog」にある差分はこの理由で埋まらない
 - `.metadata` の空の列名の扱い（#5）。本物では空の列名の列を作れないので観測できない。athena-local は空の列名でも列の field を出す
 - `AthenaErrorCode` の無い経路のうち `InternalServerException` の本文の形。本物ではサーバ側の障害でしか出ず、クライアントから誘発できない（パース失敗と未対応オペレーションは #84 で実測: `SerializationException`・`UnknownOperationException` はどちらも `AthenaErrorCode` 無し）。athena-local は `AthenaErrorCode` も `ErrorCode` も付けずに返す（[docs/caveats.md](../caveats.md) の「Error body key casing」）
@@ -145,3 +100,61 @@
 - 列の field 2 / 3（SchemaName / TableName）が本物で出るか（#5）。実テーブルの `SELECT` でも出ないこと（`ColumnInfo` も空）は観測済み（[measurements/metadata.md](measurements/metadata.md)）だが、出す条件があるかどうかまでは本物では観測できない（判断: #113、2026-09-24）
 - `ListWorkGroups` の `MaxResults` 未指定時の既定ページサイズ（athena-local は 50）。51 個のワークグループを用意しないと境界が見えず、実アカウントに 51 件のワークグループを作ることになるのでユーザー判断で測らない（#113、2026-09-24）
 - 列の Nullable（field 9）の 1（NOT_NULL）と 2（NULLABLE）（#5）。本物では NOT NULL 列の Iceberg テーブルを DDL で作れない（Hive 風の `TBLPROPERTIES ('table_type'='ICEBERG')` も `WITH (...)` の綴りも `StartQueryExecution` が `MALFORMED_QUERY`）。NULL 可の列も 3（UNKNOWN）で、これまで観測したのは 3 だけ（#146、2026-09-24。[measurements/metadata.md](measurements/metadata.md)）
+
+## 範囲外（測らない）
+
+本物との差はあるが、[decisions.md](decisions.md) の「合わせる範囲」（調べたクライアントが送る文の成功系、失敗の状態とエラーコード、クライアントが読む文言）の外なので測らない項目。文言・位置の一致、クライアントが送らない形（4 部以上の名前、バッククォート、名前の中のコメント、空白だけの文など）、実在しない・連携・S3 Tables の Context の周辺、`ClientRequestToken` の細部が中心。各行の「athena-local は〜」は今の挙動の記録で、[docs/caveats.md](../caveats.md) の "not measured" の裏づけ。利用者の報告があれば上の一覧に戻して測る（2026-09-27、ユーザーの判断。上の一覧から 33 件を移した）。
+
+### 結果ファイル（[measurements/result-files.md](measurements/result-files.md)）
+
+- `SHOW CREATE TABLE`／`SHOW CREATE VIEW` 以外の `SHOW CREATE ...`（`SCHEMA`／`MATERIALIZED VIEW`／`FUNCTION`。Trino にはある）を本物の `StartQueryExecution` が受けるか、受けるなら `.txt` の Content-Type と `.metadata` の形式。athena-local は `.txt` の既定（binary、エンジン ID）に落としている（#151、2026-09-24。`SHOW SESSION`／`STATS` と同じく本物が弾く可能性が高い）
+- 複合型の中の varbinary の `[B@<hex>` の数字が、等しいバイト列で同じになるか、実行ごとに変わるか（#146 は `ARRAY[X'0102', X'03']` の違う 2 要素だけ。athena-local はバイト列の FNV-1a で決定的にしている。#149、2026-09-24）
+
+### 文の種類と構文（[measurements/statements.md](measurements/statements.md)）
+
+- `QueryExecutionContext` の Catalog が S3 Tables（`s3tablescatalog/<bucket>`）のとき、1〜2 部の名前の `DESCRIBE`・`SHOW COLUMNS` を本物がどう扱うか（実在しない表で Entity Not Found か、`Unsupported DDL with 2 catalogs` か）。測ったのは名前の 1 部目に S3 Tables のカタログを書いた形だけ。athena-local は Context から来た別名を種類によらず Trino 側の名前で存在を確かめ、実在しない表なら Entity Not Found にする（#216、2026-09-26）
+- `QueryExecutionContext` の Catalog が S3 Tables 以外の連携カタログのときや、`S3TablesCatalog/<bucket>` のように大文字を含むときの、場所の無い CTAS でない `CREATE TABLE`。#221 で小文字の `s3tablescatalog/<bucket>` なら作られると測った。athena-local は `s3tablescatalog/` で始まるかを大文字小文字を区別せずに見て No location を返さず、それ以外は `AwsDataCatalog` と同じに弾く（2026-09-26）
+- S3 Tables の Context の `Unsupported ddl with 2 catalogs: <文>` で、文の前後のタブ・改行が落ちるか。測ったのは前後の空白だけ（落ちた）。athena-local は空白・タブ・CR・LF を落とす（#224、2026-09-26）
+- Hive の `CREATE TABLE ... LOCATION` で、LAMBDA・FEDERATED 型の連携カタログを 1 部目か Context にした形（#266 は自分のアカウントの Glue を指す GLUE 型のデータカタログで測った）、実在する別カタログの Context で `AwsDataCatalog.<db>.<t>` に作った表がどちらのカタログに入るか（#266 の z3。両者が同じ Glue を指して区別できなかった）。athena-local は Trino にカタログがあれば構文チェックに任せる（#248・#266、2026-09-27）
+- S3 Tables の Context の Hive の `CREATE TABLE`（LOCATION・EXTERNAL の無い形）で、ほかのカタログの 3 部、`compression_level` とほかの失敗する句の組（athena-local は開始時の Compression codec を先にする）、Athena の文書にあるが測っていないキー（`optimize_rewrite_data_file_threshold`・`vacuum_max_metadata_files_to_keep`・`write_data_path_enabled`。athena-local は未知のキーにしない）、文書にも測った一覧にも無いキー（athena-local は未知のキーにする）、上の表に無い Hive の句（`WITH SERDEPROPERTIES`・`ESCAPED BY`・`SORTED BY`・`STORED AS INPUTFORMAT ... OUTPUTFORMAT` など。`read` が読まないので構文チェックに任せる）。句の優先順・列無し・`table_type` の値・小文字の `awsdatacatalog` の 3 部・名前空間が無いときは #270 で測った（2026-09-27）
+- 無引用の 3 部の名前の場所の無い `CREATE TABLE` で、1 部目が Trino にだけあるカタログ（`iceberg` など）や、本物に登録された連携カタログのとき（`DATACATALOG_NOT_FOUND` か No location か、S3 Tables の Context で名前空間を見るか）。測ったのは `awsdatacatalog` の大文字小文字違いと実在しないカタログだけ。athena-local は Trino にあれば実在として No location にし、S3 Tables の Context でも名前空間を見ない（#227、2026-09-26）
+- S3 Tables の Context で Database を省略した 1 部の `CREATE TABLE`・CTAS で、名前空間 `default` が実在するとき（本物は `default` を引いた。測ったアカウントには `default` が無く、CTAS でない形は `Cannot find or access the specified table`、CTAS は `$schema:default` の NOT_FOUND だった）。athena-local は `default` があれば受け取ったまま送る（#273、2026-09-27）
+- S3 Tables の Context の名前空間が無い CTAS（#273）の周り: Context の Catalog に大文字を含むときの内部名の綴り（athena-local は受け取ったまま）、無い表以外の解析エラー（無い列など）と名前空間の順序（athena-local は Trino の順）、ある名前空間をバッククォートで書いた CTAS の開始時の文言（測ったのは無い名前空間の f11 だけ）、パラメータ（ExecutionParameters）付き（2026-09-27）
+- `WITH NO DATA` の CTAS で Glue に無い DB のとき、問い合わせ部分が実行中に失敗する形（`CAST` など）を本物が実行するか。測ったのは失敗しない `WITH NO DATA`（t9。件数 0 の `.metadata`）だけ。athena-local は問い合わせ部分をそのまま実行するので、失敗すれば Trino のエラーで終える（#251、2026-09-27）
+- エンジンで失敗した CTAS の位置の整形（#272）の周り: パラメータ（ExecutionParameters）付きの CTAS の位置、測っていない SELECT の形（JOIN・GROUP BY・ORDER BY・関数・CASE・UNION・LIMIT・サブクエリ・複数の CTE・WHERE の AND/OR・二項演算子の右の字句）の整形、本物が足すプロパティの中身と利用者が同じキーを書いたときの行数、非 ASCII を含む文の桁（文字単位かバイト単位か）、S3 Tables の Context の 1 部の CTAS（名前空間は Context の Database）の位置、`.` で終わるエンジンの文言に接尾辞を付けるときの `.` の重なり。athena-local は測った形だけ位置を直し、ほかは Trino の位置のまま（2026-09-27）
+- Trino で失敗した CTAS でない `CREATE TABLE`（名前空間が無いなど）に本物が結果ファイル（`<id>.txt`）を置くか。測ったのは S3 Tables の Context の `Cannot find or access the specified table` だけ（置かなかった）。athena-local は Trino のエラーで FAILED になった DDL には `FAILED: <理由>` の `.txt` を置く（#227、2026-09-26）
+- CTAS の 4 部以上で引用符付きの部分がある名前（`a.b."c".d AS SELECT ...`）と、大文字を含む無引用の 4 部以上の CTAS の名前の書き方。#221 で無引用・小文字の 4 部の CTAS が `Invalid table name <名前>` になると測った。athena-local は引用符付きの部分があれば実行し、無引用なら DESCRIBE と同じく小文字でつないで弾く（2026-09-26）
+- `SHOW TABLES IN` の 3 部以上で、2 つ目の `.` の直後が `LIKE` やバッククォートの名前の形（`SHOW TABLES IN a.b.like`・``SHOW TABLES IN a.b.`c` ``）。#212 で直後が無引用の名前なら `mismatched input '.'`、引用符付きなら `extraneous input '.'` と測った。athena-local は `"` で始まらない形をすべて `mismatched input '.'` にする（2026-09-25）
+- 既定の Context 以外の LOCATION 付きの Hive の `CREATE TABLE`（#278 の ROUND=21 の外）: 実在しない Context の Catalog での EXTERNAL の 3 部（とくにちょうど小文字の `awsdatacatalog`）、実在する別カタログの Context での table_type が ICEBERG の非 EXTERNAL の 3 部、LAMBDA・FEDERATED 型のデータカタログと Trino にだけあるカタログを 1 部目・Context に書いた形、table_type ICEBERG に STORED AS 以外の Hive の句（ROW FORMAT・CLUSTERED BY など）を組んだ形。athena-local は前の 2 つを弾かずに構文チェックに任せ、Trino にあるカタログは実在の GLUE 型と同じに扱い、ICEBERG の句の組は構文チェックに任せる（2026-09-27）
+
+### GetQueryResults（[measurements/query-results.md](measurements/query-results.md)）
+
+- Hive のテーブルの `DESCRIBE`／`SHOW COLUMNS` の 20 文字の詰めで、非 BMP 文字（絵文字など、UTF-16 で 2 単位）を 1 文字と数えるか。測ったのは BMP の `列名`・`コメント` だけ（文字数で数えた）。athena-local は Unicode のスカラ値の数で数える（#173、2026-09-24）
+
+### ClientRequestToken と保持期限（[measurements/client-request-token.md](measurements/client-request-token.md)）
+
+- トークン対応表と実行情報の本物の正確な保持期間（67 分を超えることまでは実測。#147（2026-09-24）: 完了直後の再送も、完了から約 67 分後の再送も同じ ID で、その時点の `GetQueryExecution` は SUCCEEDED のまま見つかり、`StopQueryExecution` も成功した。既定の 1 時間は athena-local 独自の値で、本物より短い）
+- 期限切れのトークンを再送すると本物で新しい ID になるか、期限切れの ID の `GetQueryExecution` が `QUERY_EXECUTION_NOT_FOUND` か、`StopQueryExecution` が 400 か（#147 は完了から約 67 分後に投げたが期限切れにならず、測れなかった）
+- `GetQueryExecution` が S3 Tables（`s3tablescatalog/<bucket>`）や連携カタログの `Catalog` をどう返すか（`AwsDataCatalog` と実在しない名前は小文字で返った。#157、2026-09-24。アカウントに他のカタログが無く測れていない）
+- SQL の修飾名のカタログ（`"AwsDataCatalog".db.t` など）を本物が大文字小文字を区別せずに解決するか（`QueryExecutionContext` の Catalog／Database は区別しない。#157、2026-09-24）
+- `Catalog` の「省略」と「既定と同じ値（`AwsDataCatalog`）の明示」を本物が別物として扱うか。#146 は値の違い（大文字小文字・実在しない名前）だけを測った。athena-local は `Database` に倣って別物（衝突）にしている（#150、2026-09-24）
+- 出力先を強制しない（`EnforceWorkGroupConfiguration: false`）ワークグループで、`OutputLocation` の「省略」と「既定と同じ値の明示」を本物が別物として扱うか。#146（2026-09-24）は強制するワークグループでしか測れず、そこでは同じ `QueryExecutionId` が返った（`Database` の省略と `default` の明示は衝突）
+- トークンの長さが文字数でもバイト数でも 128 を超えるとき（非 ASCII で 129 文字以上）、本物の文言が枠組みの検証（`Member must have length less than or equal to 128`）と `clientRequestToken exceeds maximum allowed length 128` のどちらか。#147（2026-09-24）は `あ`×50（50 文字・150 バイト）と ASCII 129 文字しか測っていない。athena-local は枠組みの検証（文字数）を先に置く（#153）
+
+### ワークグループ（[measurements/work-groups.md](measurements/work-groups.md)）
+
+- `ListWorkGroups` の順序が名前順であること（3 件だけの根拠のまま。作成・削除を伴うので #113 では測らない）
+
+### エラー応答（[measurements/errors.md](measurements/errors.md)）
+
+- `QUEUED` のクエリへの `GetQueryResults` の文言（`RUNNING` のときの `Query has not yet finished. Current state: RUNNING` だけ実測。athena-local は `Current state: QUEUED` を返す。#102）。#146（2026-09-24）で軽い `SELECT` を 5 本続けて投げたが、キューの待ちが 47〜86 ミリ秒で、直後の `GetQueryExecution` はどれも SUCCEEDED だった（[measurements/query-results.md](measurements/query-results.md)）。捉えるには同時実行の上限まで詰めるなど別の手が要る
+
+### Trino（[measurements/trino.md](measurements/trino.md)）
+
+- DESCRIBE などの修飾の落とし（#242）の周り: `.` の前のコメント（`<db> /* c */ . <t>`）、2 部の別の DB の SHOW COLUMNS・ALTER・DROP（Context の Database が変わるか）、ビューへの 3 部の DESCRIBE（Query と Database）、ビューの SHOW COLUMNS の 3 部で Context と違う DB を書いたときの Database（athena-local は送ったまま）、SHOW TABLES FROM、S3 Tables・連携カタログの Context、Context の Catalog 省略時（DESCRIBE の直後の行コメント・DESC の直後のブロックコメント・ビューへのブロックコメント・小文字の綴りは #244 で測った）。athena-local は Context の Catalog が AwsDataCatalog か省略で無引用・部品の数がちょうどのときだけ落とし、ビューの 3 部の DESCRIBE も SHOW COLUMNS と同じく Query を受け取った文で返し、ParseException は表への `DESCRIBE` の直後のブロックコメントだけ・文言は書いた綴りにする（2026-09-26）
+- CREATE TABLE の 3 部の名前のカタログ部分を Query から落とす（#271）の周り: 大文字の混ざる名前空間を書いたときの Context の Database の綴り（athena-local は文中の綴り。#242 の m12 に揃えた）、1 部目と `.` の間のコメント（`AwsDataCatalog /* c */ . <ns>.<t>`。athena-local は #242 の m10 と同じくコメントを残す）、S3 Tables の Context で名前の部品に引用符を含む形（athena-local は落とさない）（2026-09-27）
+- 無引用の `awsdatacatalog.<db>.<t>` の置換（#246・#260）の周り: 連携カタログの Context での SELECT・INSERT と `AwsDataCatalog` 以外の別名キー（連携カタログの名前）を無引用で書いた形（#260 の o3・o4・o9。連携カタログが無く未測定）、既定の Context で測った 5 種（SELECT・INSERT・CTAS・CREATE VIEW・EXPLAIN）以外の文（DELETE・UPDATE・MERGE・DROP VIEW・SHOW CREATE VIEW・`ALTER TABLE ... RENAME TO` の 2 つ目の名前など）、S3 Tables・実在しないカタログの Context の SELECT・INSERT 以外の文と引用符付きの部品、既定の Context の INSERT の引用符付きの部品、引用符付きの部品が 2 つの形・4 部の列の参照に引用符付きを含む形。athena-local は測った組（`operation/unquoted_alias.rs` の表）だけに `AwsDataCatalog` の別名を当て、ほかは受け取ったまま送る（2026-09-27）。測るのは #279
+- ブロックコメントの ParseException（#244・#257・#276）の周り: #276 で測った新しい位置（SHOW CREATE TABLE の名前の後ろ、MSCK の名前の中、ALTER の名前と DROP COLUMN・RENAME TO・REPLACE COLUMNS の間、REPLACE COLUMNS・CHANGE COLUMN の先頭・TABLE の後、`DESCRIBE FORMATTED /* c */`）のビュー・無い表・Iceberg 表（DROP COLUMN の Iceberg 表だけ測った）、Iceberg 表の `ALTER /* c */ TABLE ... CHANGE COLUMN` の成否（#276 は列が無く `Cannot change missing column`）、`awsdatacatalog.<db>.<t>` の DROP COLUMN・RENAME TO の Iceberg 表、連携カタログの Context（アカウントに連携カタログが無い）、S3 Tables の Context の 3 部の名前の MSCK REPAIR TABLE。athena-local は #257 までの判定のまま（#276 は範囲外として閉じ、実装は取り込まない。2026-09-27）。起票しない
+- コメント無しの ALTER TABLE の DROP COLUMN・RENAME TO の失敗（#256）の周り: ビューへの DROP COLUMN・RENAME TO、大文字を含む名前の `Table not found <DB>.<表>` の綴り、DB が無いときの RENAME TO、行コメントなど #257 で測っていないコメントのある形、空白 2 つ以上・改行を含む DROP COLUMN の StateChangeReason の位置。athena-local はビュー・コメントのある形は今までどおり Trino に送り、名前は小文字にし、Missing（DB が無い場合を含む）は Table not found、位置は #244 と同じ畳んだ文で数える（`awsdatacatalog.` 付きは #276 で測り、受け取った文で数える）（2026-09-27）。測るのは #257（コメント入りの形の一部を測った）
+- `;` の無い空白だけの文（`   `）、`;` と空白だけの文の `Empty sql statement: <文>` の文（`;` 1 つ以外。` ; `・`;;`）、文の前後から落とす空白の文字の範囲（測ったのは空白・タブ・CR・LF。制御文字や非 ASCII の空白）。athena-local は `;` の無い空白だけの文を受け取ったまま Trino に回し、`Empty sql statement` の文は受け取った文の末尾の空白を落としたもの、落とす空白は空白・タブ・CR・LF にする（#240、2026-09-26）
+- 複数の文（`Only one sql statement is allowed`）と、`ClientRequestToken`・`OutputLocation` の検証との順番、`ExecutionParameters` 付きのとき、バッククォートの中の `;`、閉じていない引用符・コメントの中の `;`。#228 で測ったのは構文エラー・存在の確認・No location・NV・2 catalogs より先であることと、`'`・`"`・`--`・`/* */` の中の `;` が区切りにならないことだけ。athena-local はトークンと OutputLocation の後・構文チェックの前に、受け取った SQL（パラメータを当てる前）で数え、閉じていない引用符・コメントは末尾までを中身とする（2026-09-26）

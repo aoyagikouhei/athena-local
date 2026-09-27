@@ -39,9 +39,8 @@
 #        （LOCATION より前の TBLPROPERTIES も測った形にないので None。列位置 27 を確認済み）
 #   L6 既定の Context（Catalog=AwsDataCatalog,Database=default）
 #      CREATE TABLE t229 (n int) LOCATION 's3://b/p/'
-#      → 400、MALFORMED_QUERY／Message ちょうど
-#        "line 1:27: mismatched input 'LOCATION'. Expecting: 'COMMENT', 'WITH', <EOF>"
-#        （S3 Tables でない Context なので hive.rs は素通りし、いつもの Trino の構文チェックの文言のまま）
+#      → 400、MALFORMED_QUERY／Message ちょうど "External keyword required for table type HIVE"
+#        （S3 Tables の文言にはならず、#278 で本物と同じ External の文言になった。実測 r2・r30）
 #   L7 既定の Context
 #      CREATE EXTERNAL TABLE t229 (n int)
 #      → 400、MALFORMED_QUERY／Message が "mismatched input 'EXTERNAL'" を含む
@@ -150,10 +149,10 @@
 #      → 開始時に弾く（400、MALFORMED_QUERY、"Unsupported ddl with 2 catalogs: <文>"。<文> は受け取った文の
 #        前後の空白を落としたもの。ちょうど小文字の 3 部は句によらず 2 catalogs が先で、#270 で Trino の構文
 #        エラーから開始時の 2 catalogs に変わる）
-#   R4（回帰） 既定の Context
+#   R4 既定の Context
 #      CREATE EXTERNAL TABLE hive.default.t266 (n int) LOCATION 's3://b/p/'
-#      → 400、MALFORMED_QUERY（Trino にあるカタログを 1 部目に書いた EXTERNAL は S3 Tables の判定の外。
-#        Trino の構文エラーのまま。#270 でも変わらない）
+#      → 400、MALFORMED_QUERY、"Unsupported ddl with 2 catalogs: <文>"（Trino にあるカタログを 1 部目に書いた
+#        EXTERNAL は S3 Tables の判定の外で、#278 で本物と同じ 2 catalogs になった。実測 r1）
 #   R5（回帰） S3 Tables の Context
 #      CREATE TABLE t270reg1 (n int) PARTITIONED BY (n)（Iceberg の書き方。型の無い列名だけ）
 #      → 400、MALFORMED_QUERY（本物は SUCCEEDED だが、athena-local は Athena と Trino の書き方の違いを
@@ -658,10 +657,10 @@ run_cases() {
     "CREATE TABLE t229 (n int) TBLPROPERTIES ('table_type'='ICEBERG') LOCATION 's3://b/p/'" "$S3_TABLES_CATALOG" "$NS" \
     MALFORMED_QUERY "line 1:27: mismatched input 'TBLPROPERTIES'. Expecting: 'COMMENT', 'WITH', <EOF>"
 
-  # L6: 既定の Context では S3 Tables の文言にならず、いつもの Trino の構文チェックの文言のまま。
-  case_reject "L6" "既定の Context・LOCATION は S3Tables の文言にならない" \
+  # L6: 既定の Context では S3 Tables の文言にならず、本物と同じ External の文言（#278）。
+  case_reject "L6" "既定の Context・LOCATION は External keyword required" \
     "CREATE TABLE t229 (n int) LOCATION 's3://b/p/'" AwsDataCatalog default \
-    MALFORMED_QUERY "line 1:27: mismatched input 'LOCATION'. Expecting: 'COMMENT', 'WITH', <EOF>"
+    MALFORMED_QUERY "External keyword required for table type HIVE"
 
   # L7: 既定の Context・EXTERNAL も S3Tables の文言にならない（Trino の普通の構文エラー、部分一致で確認）。
   case_reject_contains "L7" "既定の Context・EXTERNAL は S3Tables の文言にならない" \
@@ -825,11 +824,12 @@ run_cases() {
     "$r3_sql" "$S3_TABLES_CATALOG" "$NS" \
     MALFORMED_QUERY "Unsupported ddl with 2 catalogs: $r3_sql"
 
-  # R4（回帰）: 既定の Context・Trino にあるカタログを 1 部目に書いた EXTERNAL は S3 Tables の判定の外。
-  # Trino の構文エラーのまま（部分一致で確認。位置情報が先頭に付く。#270 でも変わらない）。
-  case_reject_contains "R4" "既定の Context・Trino にあるカタログの EXTERNAL + LOCATION は構文チェックへ（回帰）" \
-    "CREATE EXTERNAL TABLE hive.default.${T266} (n int) LOCATION 's3://b/p/'" AwsDataCatalog default \
-    MALFORMED_QUERY "mismatched input 'EXTERNAL'"
+  # R4: 既定の Context・Trino にあるカタログを 1 部目に書いた EXTERNAL は S3 Tables の判定の外で、本物と同じ
+  # 2 catalogs（#278）。
+  local r4_sql="CREATE EXTERNAL TABLE hive.default.${T266} (n int) LOCATION 's3://b/p/'"
+  case_reject "R4" "既定の Context・Trino にあるカタログの EXTERNAL + LOCATION は 2 catalogs" \
+    "$r4_sql" AwsDataCatalog default \
+    MALFORMED_QUERY "Unsupported ddl with 2 catalogs: $r4_sql"
 
   # R5（回帰）: Iceberg の書き方の PARTITIONED BY（型の無い列名だけ）は本物は SUCCEEDED だが、athena-local は
   # Athena と Trino の書き方の違いを埋める書き換えをしない方針なので、#270 の後も Trino の構文エラーのまま。

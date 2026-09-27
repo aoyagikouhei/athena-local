@@ -87,13 +87,22 @@ pub(super) async fn location_rejection(
 
 /// `catalog`（書いたとおりの 1 部目）を Trino に問い合わせ、無いと確かめられたときだけ本物の文言で弾く応答。
 async fn catalog_rejection(trino: &Trino, config: &Config, catalog: &str) -> Option<Box<Response>> {
-    let sql = catalog_exists_sql(&trino_catalog(config, catalog).to_lowercase());
-    missing(trino, &sql).await.then(|| {
+    catalog_missing(trino, config, catalog).await.then(|| {
         Box::new(invalid_request_with_code(
             format!("Catalog '{catalog}' does not exist"),
             "DATACATALOG_NOT_FOUND",
         ))
     })
+}
+
+/// `catalog`（無引用の名前か Context の Catalog）が Trino に無いと確かめられたか。`TRINO_CATALOG_MAP` のキーは大文字小文字に
+/// よらず Trino 名に当ててから問い合わせる。
+pub(super) async fn catalog_missing(trino: &Trino, config: &Config, catalog: &str) -> bool {
+    missing(
+        trino,
+        &catalog_exists_sql(&trino_catalog(config, catalog).to_lowercase()),
+    )
+    .await
 }
 
 /// S3 Tables の Context（呼び出し側が確かめる）の CTAS で、無引用の 3 部の名前の 1 部目が `awsdatacatalog`（大文字小文字に

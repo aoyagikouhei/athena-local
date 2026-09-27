@@ -14,6 +14,9 @@ later name the date they were measured on.
 - `DESCRIBE EXTENDED` and `DESCRIBE FORMATTED` (and `DESC`), with or without a column or a
   `PARTITION (...)` clause, now run like real Athena instead of failing Trino's syntax check
   ([docs](docs/ddl.md#describe-extended-and-describe-formatted)).
+- Outside an S3 Tables context catalog, Hive's `CREATE TABLE ... LOCATION` is rejected at start
+  with real Athena's `External keyword required` or `Unsupported ddl with 2 catalogs`
+  ([docs](docs/caveats.md#plain-create-table)).
 
 - Under an S3 Tables context catalog, a CTAS into a missing namespace fails with real
   Athena's `NOT_FOUND` reason and error type

@@ -166,6 +166,51 @@
 - 採用した判断: 測った組（文×位置×Hive 表）だけ本物の文言で失敗させ、ビュー・無い表・ほかの位置は今までどおり送る。pos1 の形だけ Query を受け取ったまま返す。msck1・msck2 は athena-local が MSCK を実行できない（Trino に構文が無い）ので再現しない。`DESCRIBE EXTENDED` の DB の落としは #275、残りの未実測は #276（#257、ユーザーの判断）
 - 備考: pos1 の Query は、コメント無しの `ALTER TABLE awsdatacatalog.<db>.<t>`（#242 m33）で落ちるのと逆になった。一方 DESCRIBE EXTENDED はコメント入りでも DB が落ちた（コメント無しの `DESCRIBE EXTENDED <db>.<t>` の m7 と同じ）
 
+### ブロックコメントの ParseException で #257 が測り残した組（#276）
+- 日付: 2026-09-27 ／ issue: #276 ／ スクリプト: `tools/measure/block-comment-parse-error.sh`（`ROUND=4`・`5`・`6`）／ 生データ: `$HOME/athena-block-comment-parse-error-measurements/run-20260927-032737`（ROUND=4、StartQueryExecution 75 回）・`run-20260927-040340`（ROUND=5、43 回）・`run-20260927-055823`（ROUND=6、9 回）
+- 相手: 本物の Athena（engine version 3、Context は特に書かない限り `Catalog=AwsDataCatalog,Database=<db>`。API が返す Catalog は小文字の `awsdatacatalog`）
+- 投げたもの: #257 と同じ Hive 表 `<H>`（`n int`、`PARTITIONED BY (p string)`）・Iceberg 表 `<I>`（`n int`）・ビュー `<V>` を作り、最後に消した（改名先の候補も消し、残りは無い）。無い表は `<M>`。ROUND=4 は issue 本文の表の全行、ROUND=5 は ROUND=4 の設計の誤りで狙いを測れなかった形（閉じていない引用符を成功する文に載せた、改名先を 3 部にした、`awsdatacatalog.` の前後で位置が変わらない配置）の測り直しと S3 Tables の Context、ROUND=6 は S3 Tables の Context の MSCK の範囲。実装側で全項目を生データと突き合わせた（位置 12 件は受け取った文字列で検算）
+- 返ったもの（位置 `L:C` は 0 始まりの列。1/1003 の失敗は ErrorMessage が StateChangeReason と同じ）:
+
+  | 文 | Hive 表 | ビュー・無い表 | Iceberg 表 |
+  |---|---|---|---|
+  | `SHOW CREATE TABLE <db>./* c */<t>` | FAILED 1/1003、`cannot recognize input near '<db>' '.' '/' in table name`（#257 と同じ） | Hive 表と同じ | SUCCEEDED |
+  | `MSCK REPAIR TABLE <db>.<t> /* c */` | FAILED 1/1003、`missing EOF at '/' near '<t>'` | Hive 表と同じ | FAILED 2/1200 `Query type not supported by Athena Iceberg at this time` |
+  | `DESCRIBE EXTENDED /* c */ <db>.<t>` | FAILED 1/1003、`... in specifying describe table types` | Hive 表と同じ。Query は DB が落ちる | FAILED 2/1100 `EXTENDED keyword is not supported for Iceberg tables.` |
+  | `ALTER TABLE <db>.<t> /* c */ ADD COLUMNS (...)` | FAILED 1/1003、`... in alter table statement` | Hive 表と同じ | SUCCEEDED（本体 0 バイト・`.metadata` 無し） |
+  | `ALTER /* c */ TABLE <db>.<t> REPLACE COLUMNS (...)` | FAILED 2/1006、StateChangeReason `line 1:0 cannot recognize input near 'ALTER' '/' '*' in alter statement`、ErrorMessage `Query type not supported by DDL engine.` | Hive 表と同じ | FAILED 2/1200 `Query type not supported by Athena Iceberg at this time` |
+  | `ALTER /* c */ TABLE <db>.<t> CHANGE COLUMN ...` | REPLACE COLUMNS と同じ | Hive 表と同じ | FAILED 2/1100 `Cannot change missing column`（構文は通った。直前の REPLACE COLUMNS が失敗して列が無かった） |
+
+  | 文（Hive 表） | 本物 |
+  |---|---|
+  | `SHOW CREATE TABLE <db>.<H> /* c */` | FAILED 1/1003、`missing EOF at '/' near '<H>'` |
+  | `MSCK REPAIR TABLE awsdatacatalog./* c */<db>.<H>` | FAILED 1/1003、`line 1:18 cannot recognize input near '/' '*' 'c' in table name`。Query は `MSCK REPAIR TABLE /* c */<db>.<H>`（`awsdatacatalog.` が落ち、位置も落とした文で数える） |
+  | `MSCK REPAIR TABLE <db>./* c */<H>` | FAILED 1/1003、`cannot recognize input near '<db>' '.' '/' in table name` |
+  | `DESCRIBE FORMATTED /* c */ <db>.<H>` | FAILED 1/1003、`line 1:19 missing EOF at '/' near 'FORMATTED'`。Query は DB が落ちる |
+  | `ALTER TABLE <db>.<H> /* c */ DROP COLUMN n` | FAILED 2/1006、StateChangeReason `... in alter table statement`、ErrorMessage `mismatched input 'COLUMN' expecting 'PARTITION'`（位置は COLUMN の 0 始まり + 1） |
+  | `ALTER TABLE <db>.<H> /* c */ RENAME TO ...`・`... REPLACE COLUMNS`、`/* c */ ALTER TABLE ... REPLACE COLUMNS`・`CHANGE COLUMN`、`ALTER TABLE /* c */ ... REPLACE COLUMNS`・`CHANGE COLUMN` | FAILED 2/1006、StateChangeReason は `/` の位置の ParseException（先頭 `line 1:0 ... near '/' '*' 'c'`、TABLE の後 `line 1:12 ... in table name`、名前の後ろ `... in alter table statement`）、ErrorMessage `Query type not supported by DDL engine.` |
+  | Iceberg 表の `ALTER TABLE <db>.<I> /* c */ DROP COLUMN n` | SUCCEEDED |
+  | 先頭・名前の直前のコメント `/* >= */`・`/* <> */`・`/* == */`（`/* <= */`・`/* != */` の対照も） | 3 語目は 2 文字のまま（`near '/' '*' '>='` など） |
+  | 閉じていない引用符 `/* 'a */ ...` の後ろに別の `'` がある（後ろのコメントの中も含む） | 3 語目は `'a` から次の `'` までの文字列（`''a */ ALTER TABLE ... COMMENT ''`）。後ろに `'` が無ければ `'a'` |
+
+  | `awsdatacatalog.` 付き（H・V・無い表） | 位置を数える文 | 本物 | Query |
+  |---|---|---|---|
+  | ADD COLUMNS（先頭・TABLE の後・名前の後ろのコメント） | `awsdatacatalog.` を落とした文 | FAILED 1/1003 の ParseException | 落ちる |
+  | SHOW CREATE TABLE・MSCK REPAIR TABLE（名前の後ろのコメント） | 落とした文 | FAILED 1/1003、`missing EOF at '/' near '<t>'` | 落ちる |
+  | DESCRIBE（名前の後ろのコメント） | DB まで落とした文（`DESCRIBE <H> /* c */` の 34） | FAILED 1/1003、`missing EOF at '/' near '<H>'` | DB と `awsdatacatalog.` が落ちる |
+  | DROP COLUMN・RENAME TO（改名先は 2 部。コメントは先頭・TABLE の後・名前の後ろ・無し） | **受け取った文** | FAILED 2/1006、ErrorMessage `line 1:<T>: no viable alternative at input '<文頭から表名の直前まで>'`（`<T>` は表名の 1 文字目の 0 始まり。+1 しない）。コメントが名前の後ろか無ければ StateChangeReason は `line 1:39 cannot recognize input near '.' '<t>' '<次の語>' in alter table statement` | **受け取ったまま** |
+  | コメント無しの ADD COLUMNS | — | SUCCEEDED | 落ちる |
+  | 改名先も 3 部の `RENAME TO awsdatacatalog.<db>.<new>` | 受け取った文 | **開始時**に MALFORMED_QUERY `line 1:<N>: mismatched input '.' expecting <EOF>`（`<N>` は改名先の 2 つ目の `.` の 1 始まりの列） | — |
+
+  | S3 Tables の Context（`Catalog=s3tablescatalog/<bucket>,Database=<ns>`） | 本物 |
+  |---|---|
+  | `DESCRIBE /* c */ <t>`・`DESCRIBE <t>` | SUCCEEDED UTILITY/DESCRIBE_TABLE |
+  | `MSCK REPAIR TABLE <t>`・`<ns>.<t>`、コメントを先頭・MSCK の後・REPAIR の後・TABLE の後・名前の後ろに置いた形、無い表 | **開始時**に InvalidRequestException `Unsupported DDL query for S3 table buckets`（MALFORMED_QUERY）。コメント・部の数・表の有無によらない |
+
+- 測れなかったもの: 連携カタログの Context（アカウントに連携カタログが無い）。群 B の新しい位置のビュー・無い表・Iceberg 表（DROP COLUMN の Iceberg だけ測った）、`awsdatacatalog.` 付きの DROP COLUMN・RENAME TO の Iceberg 表、S3 Tables の Context の 3 部の名前の MSCK
+- 採用した判断: #276 は合わせる範囲（[decisions.md](../decisions.md) の「合わせる範囲」）の外として閉じ、この実測に基づく実装（新しい位置の失敗、S3 Tables の Context の MSCK を開始時に弾く）は取り込まない。測った事実だけをここに残す（2026-09-27、ユーザーの判断）。コメント無しの DESCRIBE EXTENDED・FORMATTED の実行は #275
+- 備考: #257 の pos1（ALTER の直後のコメント・DROP COLUMN・Hive 表）で見つけた「Query は受け取ったまま」は、DROP COLUMN・RENAME TO ではコメントの有無・位置・ビューか無い表かによらない規則だった（#256 のコメント無しの DROP COLUMN もこの形）。#257 の「ビュー・無い表は測っていない」形は、どれも Hive 表と同じだった
+
 ## 本物だけが実行時に弾く形（`/* c */ SHOW CREATE TABLE`）
 
 ### 範囲外の発見（同じラウンド）
@@ -969,6 +1014,34 @@ Content-Type と `.metadata` を含む置き場所は本項が主で、[result-f
 - 手元の Trino（compose の iceberg カタログ、2026-09-27）: 書き込む先の名前空間が無い CTAS は位置無しの `Schema <ns> not found`（エラー名 `NOT_FOUND`。`system.runtime.queries` の `error_code`）、問い合わせの表の名前空間が無ければ解析の `line 1:53: Schema '<ns>' does not exist`、`CAST('x' AS integer)` より名前空間が先で、本物の f6・f7 と同じ順
 - 採用した判断: 実行時の Trino の `NOT_FOUND: Schema <ns> not found` だけを本物の文言に直す（アカウント ID は `000000000000`、カタログは Context の Catalog を受け取ったまま）。順序は Trino に任せる。Database を省略した Context は名前空間 `default` を問い合わせ、無いときだけ CTAS は NOT_FOUND、CTAS でない形は `Cannot find or access the specified table` で Trino に送らずに終える
 - 備考: f7 の表名の内部名と f11 の開始時の文言は合わせていない（範囲外として起票）
+
+
+### 既定の Context などの LOCATION 付きの Hive の CREATE TABLE（2 catalogs・External keyword required。#278）
+- 日付: 2026-09-27（UTC 05:05）／ issue: #278 ／ スクリプト: `tools/measure/unquoted-ddl.sh`（`ROUND=21`）／ 生データ: `$HOME/athena-unquoted-ddl-measurements/run-20260927-050540`
+- 相手: 本物の Athena。StartQueryExecution 60 回、51 項目すべて測れた。`<G>` は `CREATE_GLUE_CATALOG=1` で一時的に作った GLUE 型のデータカタログ（名前は小文字。測り終えて消した）。受理された 7 件はその場で消した
+- 投げたもの: r1〜r51。`<DEF>` は `Catalog=AwsDataCatalog,Database=<DB>`、`<GCTX>` は `Catalog=<G>,Database=<DB>`。「2 catalogs」は開始時の `Unsupported ddl with 2 catalogs: <文>`、「External」は開始時の `External keyword required for table type HIVE`（どちらも InvalidRequestException・MALFORMED_QUERY）
+- 返ったもの:
+
+  | 文（Context は断りが無ければ `<DEF>`） | 本物 |
+  |---|---|
+  | `CREATE EXTERNAL TABLE <G>.<DB>.<t> (n int) LOCATION '..'`（r1）と、IF NOT EXISTS・COMMENT・PARTITIONED BY・ROW FORMAT SERDE・STORED AS・TBLPROPERTIES・全部（r3〜r9）、`<G>` の大文字（r13）、全部小文字の文（r14）、名前の前・途中のブロックコメント（r16・r18）、無い DB（r20）、列の並び無し（r22） | 2 catalogs。`<文>` は送った文のまま |
+  | 前後に空白・タブ・改行、末尾に `;`（r15） | 2 catalogs。`<文>` は前後の空白・タブ・改行と末尾の `;` が落ちる |
+  | 先頭の行コメント `-- c\n`（r17） | 2 catalogs。`<文>` に `-- c\n` が残る |
+  | 引用符付きの `"<G>"`・`"<DB>"`・`"<t>"`（r10〜r12）、`(n int NOT NULL)`（r19）、`<DEF>` で `"<S3 Tables のカタログ>".<ns>.<t>` の EXTERNAL（r50） | `line 1:8: mismatched input 'EXTERNAL'. Expecting: 'MATERIALIZED', 'MULTI', 'OR', 'PROTECTED', 'ROLE', 'SCHEMA', 'TABLE', 'VIEW'` |
+  | 2 部 `<G>.<t>` の EXTERNAL + LOCATION（r21） | 開始して FAILED、`FAILED: SemanticException [Error 10072]: Database does not exist: <G>`、2/1301 `Database <G> not found.` |
+  | LOCATION の無い `CREATE EXTERNAL TABLE <G>.<DB>.<t> (n int)`（+ STORED AS。r23・r24）、非 EXTERNAL の `CREATE TABLE <G>.<DB>.<t> (n int)`（+ table_type ICEBERG。r25・r26） | `No location was specified for table. An S3 location must be specified` |
+  | r1 の形を Context の Catalog 省略（`Database=<DB>` だけ）で（r27） | SUCCEEDED、DDL / CREATE_TABLE。返った Context の Catalog は `<G>`、Query は `CREATE EXTERNAL TABLE <DB>.<t> ...` |
+  | `CREATE TABLE AwsDataCatalog.<DB>.<t> (n int) LOCATION '..'` を `<DEF>`・Catalog 省略で（r2・r28） | External |
+  | `<GCTX>` で `CREATE EXTERNAL TABLE awsdatacatalog.<DB>.<t> ... LOCATION`（r29） | 2 catalogs |
+  | 非 EXTERNAL + LOCATION の 1 部・2 部・IF NOT EXISTS・COMMENT・PARTITIONED BY・ROW FORMAT SERDE・CLUSTERED BY・TBLPROPERTIES ('a278'='b')・小文字・末尾 `;`・`'table_type'='HIVE'`（r30〜r37・r39・r40・r46） | External |
+  | 非 EXTERNAL の `(n int NOT NULL) LOCATION`（r38）、`<DEF>` で `"<S3 Tables のカタログ>".<ns>.<t>` の非 EXTERNAL（r51） | `line 1:<C>: mismatched input 'LOCATION'. Expecting: 'COMMENT', 'WITH', <EOF>` |
+  | 非 EXTERNAL + LOCATION + `'table_type'='ICEBERG'`・`'iceberg'`・`'table_type' = 'ICEBERG'`・`'TABLE_TYPE'='ICEBERG'`・2 つ目のキー（r41〜r45）、`AwsDataCatalog.<DB>.<t>` で（r49） | SUCCEEDED |
+  | 同上 + `STORED AS PARQUET`（r47） | 開始して FAILED `Iceberg create table statement does not allow STORED AS/BY` |
+  | 非 EXTERNAL の `<G>.<DB>.<t>` + LOCATION + table_type ICEBERG（r48） | 2 catalogs |
+
+- 過去の測定（#266 の ROUND=13・14）: `<DEF>` で `{AwsDataCatalog.<db>, <db>, awsdatacatalog.<db>}.<t>` の EXTERNAL + LOCATION は SUCCEEDED（z0・z0b・z0c）、`<GCTX>` で `<G>.<db>.<t>`・`AwsDataCatalog.<db>.<t>`・`<t>` の EXTERNAL + LOCATION は SUCCEEDED（z2〜z4）、`CREATE TABLE {AwsDataCatalog, <G>}.<db>.<t> ... LOCATION` は `<DEF>` でも `<GCTX>` でも External（xc・x1・x4・z5）
+- 手元の Trino 482（2026-09-27）: r38 の形は本物と同じ文言（位置は名前の長さの差だけ）。r10・r19 の形の Expecting は `'BRANCH', 'CATALOG', 'FUNCTION', 'MATERIALIZED', 'OR', 'ROLE', 'SCHEMA', 'TABLE', 'VIEW'` で本物と違う
+- 採用した判断: S3 Tables でない Context で、`hive.rs` の `read` が読める LOCATION 付きの文を構文チェックの前に弾く。EXTERNAL も table_type ICEBERG も無ければ Context によらず External、3 部の名前は Context が `AwsDataCatalog` なら 1 部目が `awsdatacatalog` の類でないとき（実在しないカタログは先に DATACATALOG_NOT_FOUND）、Context がほかの実在するカタログなら EXTERNAL の 1 部目がちょうど小文字の `awsdatacatalog` のとき 2 catalogs。本物が成功した形（手元の Trino では実行できない）、r21・r47 の開始後の失敗、LOCATION の無い EXTERNAL は扱わない
 
 ### DESCRIBE EXTENDED・DESCRIBE FORMATTED の結果の形・Query・失敗と、列・PARTITION 指定（#275）
 - 日付: 2026-09-27（UTC 03:41・03:57）／ issue: #275 ／ スクリプト: `tools/measure/describe-extended.sh`（`ROUND=1`・`ROUND=2`）／ 生データ: `$HOME/athena-describe-extended-measurements/run-20260927-034102`・`run-20260927-035658`
