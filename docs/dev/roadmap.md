@@ -2,7 +2,7 @@
 
 本物の Athena と比べて足りない機能を、2026-09-15 から 09-16 にかけての調査結果から整理したもの。優先度の高い順に並べる。着手するときは issue を立て、終わったら利用者向けの docs（対応オペレーションは [api.md](../api.md)、Athena との差分は [caveats.md](../caveats.md)）と CHANGELOG の `[Unreleased]` を更新して、この一覧から消す。
 
-実装の前には、CLAUDE.md の約束どおり本物の Athena で応答を実測し、[measurements/](measurements/README.md) に記録する。測っていない挙動は [unmeasured.md](unmeasured.md) に、決着した設計判断は [decisions.md](decisions.md) に置く。
+実装の前には、CLAUDE.md の約束どおり本物の Athena で応答を実測し、[measurements/](measurements/README.md) に記録する。測っていない挙動は [unmeasured.md](unmeasured.md) に、決着した設計判断は [decisions.md](decisions.md) に置く。先行実測（実装より前に実測だけを回すもの）の対象は「1.」の未実装機能で、unmeasured.md の行は対象にしない（decisions.md の「合わせる範囲」）。
 
 ## 調べ方と確度
 
@@ -82,6 +82,18 @@
 ### ドキュメント
 
 - [ ] この節の差分のうち [docs/caveats.md](../caveats.md) に書いていないものを書く
+
+## 3. 合わせない差（範囲外）
+
+合わせるのは [decisions.md](decisions.md) の「合わせる範囲」の 3 つ（調べたクライアントが送る文の成功系、失敗の状態とエラーコード、クライアントが読む文言）だけ。次は本物との差として測ったか見つけたが範囲の外なので、[caveats.md](../caveats.md) に書いて issue は閉じた（ラベル `out-of-scope`、2026-09-27）。利用者の報告があれば拾い直す。
+
+- ブロックコメントの ParseException で #257 が測り残した組（#276。実測は済んでいて measurements に記録。実装は取り込まない）
+- 無引用の `awsdatacatalog.` の置換で測っていない Context・文・名前の形（#279）
+- `COLUMN_NOT_FOUND` の文言の接尾辞 `or requester is not authorized to access requested resources`（#283）
+- S3 Tables の Context のバッククォートの名前の CTAS を開始時に弾くこと（#293）
+- S3 Tables の Context の CTAS の `TABLE_NOT_FOUND` の表名の内部名（#294）
+- 既定の Context の Hive の `CREATE TABLE` の残り（2 部の別カタログの EXTERNAL、ICEBERG と `STORED AS`、LOCATION の無い EXTERNAL の 3 部）（#301）
+- `DESCRIBE EXTENDED`・`FORMATTED` と列・PARTITION 指定の DESCRIBE で測っていない組（#303）
 
 ## 4. 当面やらないもの
 

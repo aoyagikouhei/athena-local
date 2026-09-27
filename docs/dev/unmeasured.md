@@ -1,6 +1,6 @@
 # 未実測の一覧
 
-各 issue の実装で「本物の Athena で測っていない」まま残した挙動。次に本物の Athena を叩ける機会に、まとめて測る。測ったら [measurements/](measurements/README.md) に書いてここから消す（「済み」の節へ移す）。[docs/caveats.md](../caveats.md) の「not measured」も直す。本物の Athena でも観測できない・誘発できないと分かったものは、測る対象から外して末尾の「測れないもの」へ理由つきで移す（[docs/caveats.md](../caveats.md) は「cannot be measured」の趣旨に直す）。出典は issue #<番号> のノート（git の履歴に残る）。
+各 issue の実装で「本物の Athena で測っていない」まま残した挙動。次に本物の Athena を叩ける機会に、まとめて測る。測ったら [measurements/](measurements/README.md) に書いてここから消す（「済み」の節へ移す）。[docs/caveats.md](../caveats.md) の「not measured」も直す。本物の Athena でも観測できない・誘発できないと分かったものは、測る対象から外して末尾の「測れないもの」へ理由つきで移す（[docs/caveats.md](../caveats.md) は「cannot be measured」の趣旨に直す）。出典は issue #<番号> のノート（git の履歴に残る）。この一覧の行は起票の理由にしない。issue にするのは [decisions.md](decisions.md) の「合わせる範囲」に入るか利用者の報告があるときだけで、それまではここに置いたままにする。
 
 話題の分け方は [measurements/](measurements/README.md) のファイルと揃えてある。
 
