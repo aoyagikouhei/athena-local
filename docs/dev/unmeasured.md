@@ -10,7 +10,7 @@
 
 ## GetQueryResults（[measurements/query-results.md](measurements/query-results.md)）
 
-- [ ] Iceberg のテーブルの `DESCRIBE` で、`time`・`uuid` が `array`・`map`・`struct` の中にだけある列（`array<uuid>` など）と、`SHOW COLUMNS` を同じ表に投げたとき。#307 で測ったのは最上位の列が `time`／`uuid` の表の `DESCRIBE` だけ（FAILED 2／1100 `Table has unsupported column types`）。athena-local は最上位の列だけを見て失敗にし、入れ子の中と `SHOW COLUMNS` は Trino のまま返す（2026-09-27）
+- [ ] Iceberg のテーブルの `DESCRIBE` で、`time`・`uuid` が `array`・`map`・`struct` の中にだけある列（`array<uuid>` など）と、`SHOW COLUMNS`・`DESCRIBE FORMATTED` を同じ表に投げたとき。#307 で測ったのは最上位の列が `time`／`uuid` の表の `DESCRIBE` だけ（FAILED 2／1100 `Table has unsupported column types`）。athena-local は修飾子の無い `DESCRIBE`・`DESC` で最上位の列だけを見て失敗にし、入れ子の中・`SHOW COLUMNS`・`DESCRIBE FORMATTED` は Trino のまま返す（2026-09-27）
 
 ## `.metadata`（[measurements/metadata.md](measurements/metadata.md)）
 
