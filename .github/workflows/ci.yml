@@ -8,7 +8,38 @@ on:
   workflow_dispatch:
 
 jobs:
+  # その push で変わったファイルが docs/・.claude/・tools/measure/・*.md だけなら、check と e2e を飛ばす（#286）。
+  # paths-ignore は pull_request では PR 全体の差分で判定するので、コードを含む PR にノートだけのコミットを足したときに
+  # 効かない。PR の更新は前の head から、PR を開いたときは base との分岐点から、main への push は前のコミットから比べる。
+  # 手動の起動と、差分が取れないとき（force push で前の head が無いなど）は走らせる。
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          case "$EVENT/$ACTION" in
+            pull_request/synchronize) from=$BEFORE to=$HEAD ;;
+            pull_request/*) from=$(git merge-base "$BASE" "$HEAD" 2>/dev/null) to=$HEAD ;;
+            push/*) from=$BEFORE to=$AFTER ;;
+            *) from= to= ;;
+          esac
+          tools/ci/code-changed.sh "$from" "$to" | tee -a "$GITHUB_OUTPUT"
+
   check:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -33,6 +64,8 @@ jobs:
   #   jdbc-drivers    ドライバの jar を外から取る（全 7 版）
   #   trino-probe     旧版の Trino を版ごとに pull して起動を測る
   e2e:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     env:
       # Docker Hub の匿名 pull の制限（ランナーは IP を共有する）に当たらないよう、docker.yml と同じ secrets でログインする。
