@@ -16,6 +16,7 @@
 ### ListDatabases、ListTableMetadata、GetTableMetadata
 
 - [ ] 実装する
+- 実測：`tools/measure/lib.sh` の `api` 宣言（`athena_call`）で投げる。`api` は #310 で偽の aws にしか通していないので、本物の応答の形と保存物はこの実測で初めて確かめる
 - 使うクライアント
   - PyAthena の SQLAlchemy 方言：スキーマ、テーブル、列の取得に使う（`pyathena/sqlalchemy/base.py:254`、`270-275`、`285-307`、確認済み）。テーブルが無いときはエラーコード `MetadataException` を期待する。テーブルとビューは `TableType` の `EXTERNAL_TABLE` などと `VIRTUAL_VIEW` で見分ける。ビューの定義は `SHOW CREATE VIEW` の SQL で取る（`base.py:342`、確認済み）。
   - Grafana のクエリエディタ（`api.go` のクライアント定義 27-32 行、確認済み）。

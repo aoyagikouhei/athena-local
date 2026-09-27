@@ -74,6 +74,7 @@ run_items
   待ち、消せなかった分は `cleanup-report.txt` に出す。中断したときは trap が台帳の残りに DROP を投げる
 - `skip=<理由>`: 投げずに未測定として残す（作れないと文書で分かっている形など）
 - `ONLY=<id>,<id>` で項目を絞る（`needs` の先は自動では含めないので一緒に指定する）
+- `cleanup_hint "<文>"`（`lib_init` の後）: DROP では消えないもの（Hive の外部表・CTAS の `external_location` の S3 のデータなど）を `summary.txt` の冒頭に「手で消すもの」として出す
 - 出力は `~/athena-<スクリプトの名前>-measurements/run-<日時>/`。`summary.tsv`（機械可読）と、実名を伏せた `summary.txt`
 
 `tools/dev.sh env DRY_RUN=1 bash tools/measure/<名前>.sh` は本物に 1 本も投げない。`lib/dry-run-bin/aws`（偽の aws）を PATH の先頭に置き、
