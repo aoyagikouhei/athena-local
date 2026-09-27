@@ -20,7 +20,7 @@ tools/dev.sh tools/e2e/minio/verify.sh             # 検証の足場（tools/e2e
 
 ルートの `Cargo.toml` は workspace を兼ね、`default-members` に内部 crate（`crates/athena-sql`）も入れているので、上のコマンドは `-p`／`--workspace` なしで crate にも効く（`cargo test` の出力に crate の `unittests` と `Doc-tests` の行が足される）。`--test <名前>` は athena-local の結合テストだけ、`--lib <パス>` は両方の lib で走る（crate 側は filtered out）。`Cargo.lock` はルートの 1 つだけで、crate の版は追わない（[decisions.md](decisions.md) の「SQL の内部 crate（athena-sql）」）。
 
-CI（`.github/workflows/ci.yml`）の `check` ジョブはホストランナーで直に cargo を回す。`e2e` ジョブは toolbox の中で request-errors と paging-validation と quoted-names（#207）と context-catalog（#214）と sdk-retry を流し、MinIO も使う 7 本（create-table-catalog・ctas-catalog・s3-tables-location・block-comment・utility-rows・result-content-type・minio。#265）を流し、`cargo test --locked` を回す（amd64 の toolbox で通すため。#184）（toolbox のイメージは GHA キャッシュ、cargo は `.toolbox/target/release` だけキャッシュ）。最初の `changes` ジョブ（`tools/ci/code-changed.sh`）が、その push で変わったファイルが `docs/`・`.claude/`・`tools/measure/`・`*.md` だけなら `check` と `e2e` を飛ばす（PR の更新は前の head から、PR を開いたときは base との分岐点から、main への push は前のコミットから比べる。手動の起動と差分が取れないときは走らせる。#286）。`paths-ignore` は `pull_request` では PR 全体の差分で判定するので、コードを含む PR に issue ノートだけのコミットを足したときに効かない。
+CI（`.github/workflows/ci.yml`）の `check` ジョブはホストランナーで直に cargo を回す。`e2e` ジョブは matrix で 4 つのジョブに分かれて並列に動く（#288。直列の 1 ジョブでは 389 秒かかっていた）。3 組（`e2e (a)`〜`e2e (c)`）が toolbox の中で足場を 4 本ずつ流し（request-errors・paging-validation・quoted-names（#207）・context-catalog（#214）・sdk-retry と、MinIO も使う 7 本（create-table-catalog・ctas-catalog・s3-tables-location・block-comment・utility-rows・result-content-type・minio。#265）。組の割り当ては足場の所要が均等になるように `ci.yml` に書いてある）、`e2e (cargo-test)` が toolbox の中で `cargo test --locked` を回す（amd64 の toolbox で通すため。#184）。各組は 1 本目でリリースビルドをし、残りは `SKIP_BUILD=1` でそれを使う。toolbox のイメージは GHA キャッシュ、cargo は `.toolbox/cargo/registry` と `.toolbox/target/release` だけキャッシュし、4 つのジョブが同じ key に保存しようとしないよう、取り出し（`actions/cache/restore`）は全ジョブ、保存（`actions/cache/save`）は `e2e (a)` だけにしている。最初の `changes` ジョブ（`tools/ci/code-changed.sh`）が、その push で変わったファイルが `docs/`・`.claude/`・`tools/measure/`・`*.md` だけなら `check` と `e2e` を飛ばす（PR の更新は前の head から、PR を開いたときは base との分岐点から、main への push は前のコミットから比べる。手動の起動と差分が取れないときは走らせる。#286）。`paths-ignore` は `pull_request` では PR 全体の差分で判定するので、コードを含む PR に issue ノートだけのコミットを足したときに効かない。
 
 ## 検証の足場（toolbox）
 
@@ -76,7 +76,7 @@ athena-local 自身は dev の中のプロセスで、足場は `127.0.0.1:<port
 
 ### 確かめた環境
 
-WSL2 の Ubuntu 24.04、ネイティブの Docker Engine、arm64 で、2026-09-25 に次を確かめた（#131。#127・#128 の人間検証の残り）。amd64 では CI の e2e ジョブ（ubuntu-24.04）が toolbox の中で `tools/dev.sh cargo test --locked` を毎回流す（#184）。Docker Desktop と、`~/.aws/credentials` だけでの実測は未確認（#184）。
+WSL2 の Ubuntu 24.04、ネイティブの Docker Engine、arm64 で、2026-09-25 に次を確かめた（#131。#127・#128 の人間検証の残り）。amd64 では CI の `e2e (cargo-test)` ジョブ（ubuntu-24.04）が toolbox の中で `tools/dev.sh cargo test --locked` を毎回流す（#184）。Docker Desktop と、`~/.aws/credentials` だけでの実測は未確認（#184）。
 
 - `tools/dev.sh tools/e2e/minio/verify.sh` の走行中（ケース 1 の実行中）に端末で Ctrl-C を押すと、1 秒で終了コード 130 で抜け、足場の trap が `down -v trino minio minio-init` を流す。`docker ps -a --filter label=com.docker.compose.project=athena-local` は dev も含めて 0 件になる（compose.yml の `init: true` が効いている）。
 - `tools/dev.sh tools/e2e/jdbc-drivers/verify.sh` を既定の全 7 版（3.8.1〜3.0.0）で最後まで流して FAIL 0。
