@@ -3,7 +3,7 @@
 # issue #228 で ROUND=6、issue #240 で ROUND=7、issue #242 で ROUND=8、issue #229 で ROUND=9、
 # issue #248 で ROUND=10、issue #251 で ROUND=11・15、issue #260 で ROUND=12、
 # issue #266 で ROUND=13・14、issue #270 で ROUND=16・20、issue #271 で ROUND=17、
-# issue #272 で ROUND=18、issue #273 で ROUND=19、issue #279 で ROUND=22・23 を追加
+# issue #272 で ROUND=18、issue #273 で ROUND=19、issue #279 で ROUND=22・23、issue #278 で ROUND=21 を追加
 # 本物の Athena が StartQueryExecution の時点で弾く、無引用の DDL 3 種
 # （ALTER TABLE IF EXISTS、ALTER TABLE ... ADD COLUMN（単数）、場所の無い CREATE TABLE）の
 # 弾かれ方の規則（`line L:C` の位置、`no viable alternative at input '...'` の input の範囲、
@@ -344,6 +344,18 @@
 #     成功した INSERT（p2・p4・p27・p28）は、直後に `<label>-count` として
 #     `SELECT count(*) FROM <DB>.<PROBE>_p_real` を投げ、結果を同じ形で取得する（p0・p0b の
 #     直後の件数と比べれば増えたかが分かる）。
+#   - 【issue #278 で追加】ROUND=21 は、既定の Context（Catalog=AwsDataCatalog）の Hive の
+#     `CREATE TABLE ... LOCATION` を athena-local が開始時に弾くための実装（`hive.rs`・
+#     `start_checks.rs`）が読む境界（`Unsupported ddl with 2 catalogs`・`External keyword
+#     required for table type HIVE` のそれぞれの範囲、Iceberg の TBLPROPERTIES の判定）だけを
+#     r 群（r1〜r51）で測る。preflight・DB 確認は共通で走るが、実在する表 `<PROBE>_real` は
+#     作らない。連携カタログ（FEDERATED_CATALOG か CREATE_GLUE_CATALOG=1）が要る項目
+#     （r1・r3〜r22・r23〜r27・r29・r48。x3・z1 と同じ「既定の Context に実在する別カタログを
+#     1 部目にした 3 部の名前」の形）は、無ければ項目ごとに未測定で skip する（連携カタログの
+#     決め方・Glue のデータカタログの作成/削除は ROUND=13・14・17 と共有する
+#     `resolve_federated_catalog`・`run_x_create`・`delete_glue_catalog_if_created` をそのまま
+#     流用し、挙動は変えていない）。S3TABLES_CATALOG・S3TABLES_NS が要る r50・r51（S3 Tables の
+#     カタログを引用符付きの別カタログとして書いた形）は、無ければ未測定で skip する。
 #
 # 使い方:
 #   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db bash tools/measure/unquoted-ddl.sh
@@ -505,6 +517,19 @@
 #   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=22 \
 #     CREATE_GLUE_CATALOG=1 \
 #     S3TABLES_CATALOG=s3tablescatalog/your-bucket S3TABLES_NS=your_ns \
+#   ラウンド 21（issue #278。既定の Context の Hive の CREATE TABLE ... LOCATION を開始時に
+#   弾く実装が読む境界（2 catalogs・External keyword required・Iceberg の TBLPROPERTIES）だけを
+#   測る。S3TABLES_* が無ければ r50・r51 が、連携カタログ（FEDERATED_CATALOG か
+#   CREATE_GLUE_CATALOG=1）が無ければ r1・r3〜r27・r29・r48 が未測定として残る）:
+#   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=21 \
+#     S3TABLES_CATALOG=s3tablescatalog/your-bucket S3TABLES_NS=your_ns \
+#     FEDERATED_CATALOG=your_federated_catalog \
+#     bash tools/measure/unquoted-ddl.sh
+#   ラウンド 21 で、連携カタログの代わりに自分のアカウントの Glue を指すデータカタログを
+#   作って測るとき（ROUND=13・14・17 と同じ IAM 権限が要る）:
+#   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=21 \
+#     S3TABLES_CATALOG=s3tablescatalog/your-bucket S3TABLES_NS=your_ns \
+#     CREATE_GLUE_CATALOG=1 \
 #     bash tools/measure/unquoted-ddl.sh
 #   （資格情報はホストのシェルで AWS_ACCESS_KEY_ID などを export してから。または ~/.aws/credentials）
 #
@@ -562,6 +587,8 @@
 #                    省略した形と残りの形・対照。issue #273）だけ。
 #                    実在する表 `<PROBE>_real` は作らないが、実在する Glue の表
 #                    `<DB>.<PROBE>_src` を S3TABLES_* によらず作り、最後に消す。
+#                    21 は r 群（既定の Context の Hive の CREATE TABLE ... LOCATION を開始時に
+#                    弾く実装が読む境界。issue #278）だけ。実在する表は作らない。
 #   CATALOG          既定 AwsDataCatalog
 #   REGION           既定 ap-northeast-1
 #   OUT_DIR          既定 ${DEV_HOST_HOME:-$HOME}/athena-unquoted-ddl-measurements
@@ -595,6 +622,8 @@
 #                    P 群（issue #279）を測る（S3TABLES_* が無ければ p17・p19・p21・p23・p24 が、
 #                    連携カタログ（FEDERATED_CATALOG か CREATE_GLUE_CATALOG=1）が無ければ
 #                    p1〜p4 が未測定として残る）。
+#                    ROUND=21 は r50・r51（S3 Tables のカタログを引用符付きの
+#                    別カタログとして書いた形）を測る（欠ければこの 2 項目だけ未測定として残る）。
 #   FEDERATED_CATALOG 連携カタログ（S3 Tables 以外）の名前。設定されていれば ROUND=10 の s14
 #                    （TRINO_CATALOG_MAP の別名や Trino にだけあるカタログの 3 部 + LOCATION が
 #                    実在するカタログのとき）と ROUND=12 の o3・o4（連携カタログの Context の
@@ -602,7 +631,9 @@
 #                    ROUND=14 の z1〜z5（同上の補足）、ROUND=17 の q24・q25（Context の DB と
 #                    文の DB が違う形の補足）、ROUND=22 の p1〜p4（issue #279 の連携カタログの
 #                    Context の SELECT・INSERT と、無引用の大文字混じりの別名キー）も測る。
-#                    ROUND=13・14・17・22 だけ、これが無くても
+#                    ROUND=21 の r1・r3〜r27・r29・r48（既定の Context の Hive の CREATE TABLE ... LOCATION を
+#                    開始時に弾く境界。issue #278）も測る。
+#                    ROUND=13・14・17・21・22 だけ、これが無くても
 #                    CREATE_GLUE_CATALOG=1 なら自分のアカウントの Glue を指すデータカタログを
 #                    作って代わりに使う。無ければ該当項目だけ「未測定（FEDERATED_CATALOG
 #                    未設定）」として残す。
@@ -610,11 +641,11 @@
 #   FEDERATED_TABLE  同じく実在する表名。この 2 つと FEDERATED_CATALOG が揃ったときだけ、
 #                    ROUND=12 の o9（AwsDataCatalog 以外の別名キーを無引用の大文字混じりで
 #                    書いた形）を測る。無ければ o9 だけ「未測定」として残す。
-#   CREATE_GLUE_CATALOG ROUND=13・14・17・22 だけで使う。1 のとき、FEDERATED_CATALOG が未設定なら
+#   CREATE_GLUE_CATALOG ROUND=13・14・17・21・22 だけで使う。1 のとき、FEDERATED_CATALOG が未設定なら
 #                    `aws athena create-data-catalog` で自分のアカウントの Glue を指す
 #                    データカタログ（athena_local_probe_266_<乱数>cat）を作り、X 群の x1〜x4
 #                    （ROUND=13）・Z 群の z1〜z5（ROUND=14）・q24・q25（ROUND=17）・
-#                    p1〜p4（ROUND=22）の連携カタログ
+#                    p1〜p4（ROUND=22）・r1・r3〜r27・r29・r48（ROUND=21）の連携カタログ
 #                    代わりに使う（要 athena:CreateDataCatalog・GetDataCatalog・
 #                    DeleteDataCatalog・ListDataCatalogs、sts:GetCallerIdentity）。preflight で
 #                    aws sts get-caller-identity・aws athena list-data-catalogs の疎通を確かめ、
@@ -791,6 +822,19 @@
 #     次の項目の前に必ず名前を戻す。CREATE_GLUE_CATALOG=1 かつ FEDERATED_CATALOG 未設定のときは、
 #     ROUND=13・14・17 と同じ `athena_local_probe_266_<乱数>cat` を 1 つ作り、p 群の後始末が
 #     終わったあとに必ず削除を試みる。
+#   - ROUND=21: 実在する表 `<接頭辞>_real` は作らない。r 群の CREATE TABLE（EXTERNAL を含む）は
+#     すべて `run_create_then_drop_ctx`（連携カタログが要る r1・r3〜r22・r23〜r27・r29・r48 は
+#     共有関数 `run_x_create`）で投げ、受理されたらその場で無引用 + IF EXISTS の DROP TABLE を
+#     投げて消す（結果は確かめる。SUCCEEDED にならなければ trap がもう一度ベストエフォートで
+#     投げる）。消す Context は、既定の Context で作られうる r2・r21・r28・r30〜r49 は既定の
+#     Context、連携カタログ側に作られうる r1・r3〜r22（r21 を除く）・r23〜r27・r48 は連携
+#     カタログの Context（`Catalog=<連携カタログ>,Database=<DB か FDB>`）、r29 は連携カタログを
+#     Catalog にした Context（`Catalog=<連携カタログ>,Database=<DB>`）、S3 Tables のカタログを
+#     引用符付きの別カタログとして書いた r50・r51 は S3 Tables の Context で、それぞれ
+#     DROP TABLE IF EXISTS を投げる。連携カタログの決め方・Glue のデータカタログの作成/削除・
+#     Glue のデータカタログを指すときの既定の Context への DROP のフォールバック
+#     （`resolve_federated_catalog`・`run_x_create`・`delete_glue_catalog_if_created`）は
+#     ROUND=13・14・17 と共有し、挙動は変えていない。
 #
 # 課金について: ALTER TABLE・DROP TABLE・DELETE・UPDATE・MERGE はメタデータだけを見る／書く文
 # （DELETE・UPDATE・MERGE は `WHERE n = 999` などの no-op で行を変えない）で、実データの
@@ -799,13 +843,13 @@
 # ROUND=12 の O_TABLE の準備、ROUND=13 の T・U・V・W・X・Y 群、ROUND=14 の Z 群、ROUND=15 の
 # T 群、ROUND=16 の cl・pr・pn・pa・tp 群、ROUND=17 の準備（<PROBE>_qdup）と q 群、ROUND=18 の
 # 準備（<PROBE>_src）と p・w 群・c1y、ROUND=20 の k・v・c・a・m 群と対照 x0、ROUND=22 の
-# 準備（<PROBE>_p_real・<PROBE>_p_ice）と p19・p20。
+# 準備（<PROBE>_p_real・<PROBE>_p_ice）と p19・p20、ROUND=21 の r 群。
 # いずれも 0〜3 行（t11 だけ 3 行、ほかは 0 行）もスキャンや書き込みは軽微。SHOW CREATE TABLE・
 # ROUND=12 の SELECT・INSERT も 1 行だけ、ROUND=18 の i1・i2（INSERT）は 0〜1 行、ROUND=22 の
 # SELECT・INSERT・count(*) も 1 行だけ。Athena の最小課金 × クエリ数の見込み。
-# ROUND=5・10・11・13・14・15・16・17・18・22 の結果ファイルの読み出し（aws s3 cp）と
+# ROUND=5・10・11・13・14・15・16・17・18・21・22 の結果ファイルの読み出し（aws s3 cp）と
 # ROUND=11・15・18 のオーファンデータ確認（aws s3 ls）は Athena のクエリではなく S3 の
-# GetObject／ListObjects で、課金には乗らない。ROUND=13・14・17・22 の
+# GetObject／ListObjects で、課金には乗らない。ROUND=13・14・17・21・22 の
 # create-data-catalog／get-data-catalog／delete-data-catalog／list-data-catalogs・
 # sts:GetCallerIdentity は Athena のクエリではなく、スキャン課金には乗らない。
 #
@@ -1252,9 +1296,9 @@ set -uo pipefail
 : "${DB:?DB にデータベース名を設定してください}"
 ROUND=${ROUND:-1}
 case "$ROUND" in
-  1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 22 | 23) ;;
+  1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23) ;;
   *)
-    echo "ROUND には 1・2・3・4・5・6・7・8・9・10・11・12・13・14・15・16・17・18・19・20・22・23 のどれかを指定してください（既定 1。21 は他の実測ブランチが使用中）" >&2
+    echo "ROUND には 1・2・3・4・5・6・7・8・9・10・11・12・13・14・15・16・17・18・19・20・21・22・23 のどれかを指定してください（既定 1）" >&2
     exit 1
     ;;
 esac
@@ -4643,6 +4687,181 @@ fetch_failed_attachments $X0_LABEL $K_LABELS $V_LABELS $C_LABELS $A_LABELS $M_LA
 
 fi # ROUND=20
 
+# ROUND=21 だけ、r 群を投げる（issue #278）。
+if [ "$ROUND" = 21 ]; then
+
+DEFAULT_CTX="Catalog=$CATALOG,Database=$DB"
+# LOCATION 付きの項目の置き場（ROUND=13 の probe_location_t と同じ形。空のプレフィックス、
+# 接頭辞を 278 にする）。
+probe_location_r() { printf '%sathena-local-probe-278/%s/' "$OUTPUT" "$(new_name "$1")"; }
+# ROW FORMAT SERDE の対象クラス（issue 本文の指定どおり）。
+SERDE_CLASS='org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe'
+
+if [ -n "$S3TABLES_CATALOG" ] && [ -n "$S3TABLES_NS" ]; then
+  S3T_CTX="Catalog=$S3TABLES_CATALOG,Database=$S3TABLES_NS"
+fi
+
+# 連携カタログを決める（共有関数。ROUND=13・14・17 と同じ）。ラベルの接頭辞は "r"。
+resolve_federated_catalog r
+
+# --- r2（issue の 1: xc の再現。既定の Context、非 EXTERNAL + AwsDataCatalog + LOCATION） ---
+# 常に投げる（<G> は要らない）。
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" r2 \
+  "CREATE TABLE AwsDataCatalog.$DB.$(new_name r2) (n int) LOCATION '$(probe_location_r r2)'" "$(new_name r2)"
+
+# --- r1・r3〜r27・r29・r48（<G> が要る項目。連携カタログが使えるときだけ投げる） ------------
+if [ -n "$FC" ]; then
+  # r1（issue の 1: x3 の再現。既定の Context、EXTERNAL + <G> + LOCATION）。
+  run_x_create "$DEFAULT_CTX" "$FDB" r1 \
+    "CREATE EXTERNAL TABLE $FC.$FDB.$(new_name r1) (n int) LOCATION '$(probe_location_r r1)'" "$(new_name r1)"
+
+  # --- r3〜r22（issue の 2: 2 catalogs の境界。EXTERNAL + <G>.<DB>.<t> + LOCATION、既定の Context） ---
+  run_x_create "$DEFAULT_CTX" "$FDB" r3 \
+    "CREATE EXTERNAL TABLE IF NOT EXISTS $FC.$FDB.$(new_name r3) (n int) LOCATION '$(probe_location_r r3)'" "$(new_name r3)"
+  run_x_create "$DEFAULT_CTX" "$FDB" r4 \
+    "CREATE EXTERNAL TABLE $FC.$FDB.$(new_name r4) (n int) COMMENT 'r comment' LOCATION '$(probe_location_r r4)'" "$(new_name r4)"
+  run_x_create "$DEFAULT_CTX" "$FDB" r5 \
+    "CREATE EXTERNAL TABLE $FC.$FDB.$(new_name r5) (n int) PARTITIONED BY (p int) LOCATION '$(probe_location_r r5)'" "$(new_name r5)"
+  run_x_create "$DEFAULT_CTX" "$FDB" r6 \
+    "CREATE EXTERNAL TABLE $FC.$FDB.$(new_name r6) (n int) ROW FORMAT SERDE '$SERDE_CLASS' LOCATION '$(probe_location_r r6)'" "$(new_name r6)"
+  run_x_create "$DEFAULT_CTX" "$FDB" r7 \
+    "CREATE EXTERNAL TABLE $FC.$FDB.$(new_name r7) (n int) STORED AS PARQUET LOCATION '$(probe_location_r r7)'" "$(new_name r7)"
+  run_x_create "$DEFAULT_CTX" "$FDB" r8 \
+    "CREATE EXTERNAL TABLE $FC.$FDB.$(new_name r8) (n int) LOCATION '$(probe_location_r r8)' TBLPROPERTIES ('a278'='b')" "$(new_name r8)"
+  run_x_create "$DEFAULT_CTX" "$FDB" r9 \
+    "CREATE EXTERNAL TABLE IF NOT EXISTS $FC.$FDB.$(new_name r9) (n int) COMMENT 'r comment' PARTITIONED BY (p int) ROW FORMAT SERDE '$SERDE_CLASS' STORED AS PARQUET LOCATION '$(probe_location_r r9)' TBLPROPERTIES ('a278'='b')" "$(new_name r9)"
+  run_x_create "$DEFAULT_CTX" "$FDB" r10 \
+    "CREATE EXTERNAL TABLE \"$FC\".$FDB.$(new_name r10) (n int) LOCATION '$(probe_location_r r10)'" "$(new_name r10)"
+  run_x_create "$DEFAULT_CTX" "$FDB" r11 \
+    "CREATE EXTERNAL TABLE $FC.\"$FDB\".$(new_name r11) (n int) LOCATION '$(probe_location_r r11)'" "$(new_name r11)"
+  run_x_create "$DEFAULT_CTX" "$FDB" r12 \
+    "CREATE EXTERNAL TABLE $FC.$FDB.\"$(new_name r12)\" (n int) LOCATION '$(probe_location_r r12)'" "$(new_name r12)"
+  run_x_create "$DEFAULT_CTX" "$FDB" r13 \
+    "CREATE EXTERNAL TABLE ${FC^^}.$FDB.$(new_name r13) (n int) LOCATION '$(probe_location_r r13)'" "$(new_name r13)"
+  run_x_create "$DEFAULT_CTX" "$FDB" r14 \
+    "create external table $FC.$FDB.$(new_name r14) (n int) location '$(probe_location_r r14)'" "$(new_name r14)"
+  R15_SQL=$'  \t\n'"CREATE EXTERNAL TABLE $FC.$FDB.$(new_name r15) (n int) LOCATION '$(probe_location_r r15)';"$'\n\t  '
+  run_x_create "$DEFAULT_CTX" "$FDB" r15 "$R15_SQL" "$(new_name r15)"
+  run_x_create "$DEFAULT_CTX" "$FDB" r16 \
+    "CREATE EXTERNAL TABLE /* c */ $FC.$FDB.$(new_name r16) (n int) LOCATION '$(probe_location_r r16)'" "$(new_name r16)"
+  R17_SQL=$'-- c\n'"CREATE EXTERNAL TABLE $FC.$FDB.$(new_name r17) (n int) LOCATION '$(probe_location_r r17)'"
+  run_x_create "$DEFAULT_CTX" "$FDB" r17 "$R17_SQL" "$(new_name r17)"
+  run_x_create "$DEFAULT_CTX" "$FDB" r18 \
+    "CREATE EXTERNAL TABLE $FC /* c */ .$FDB.$(new_name r18) (n int) LOCATION '$(probe_location_r r18)'" "$(new_name r18)"
+  run_x_create "$DEFAULT_CTX" "$FDB" r19 \
+    "CREATE EXTERNAL TABLE $FC.$FDB.$(new_name r19) (n int NOT NULL) LOCATION '$(probe_location_r r19)'" "$(new_name r19)"
+  run_x_create "$DEFAULT_CTX" "nosuchdb278" r20 \
+    "CREATE EXTERNAL TABLE $FC.nosuchdb278.$(new_name r20) (n int) LOCATION '$(probe_location_r r20)'" "$(new_name r20)"
+  # r21（2 部 <G>.<t>。<G> を DB 名と読むか。既定の Context のまま同じ名前で消す）。
+  run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" r21 \
+    "CREATE EXTERNAL TABLE $FC.$(new_name r21) (n int) LOCATION '$(probe_location_r r21)'" "$FC.$(new_name r21)"
+  run_x_create "$DEFAULT_CTX" "$FDB" r22 \
+    "CREATE EXTERNAL TABLE $FC.$FDB.$(new_name r22) LOCATION '$(probe_location_r r22)' TBLPROPERTIES ('a278'='b')" "$(new_name r22)"
+
+  # --- r23〜r26（issue の 3: LOCATION の無い形） ---
+  run_x_create "$DEFAULT_CTX" "$FDB" r23 \
+    "CREATE EXTERNAL TABLE $FC.$FDB.$(new_name r23) (n int)" "$(new_name r23)"
+  run_x_create "$DEFAULT_CTX" "$FDB" r24 \
+    "CREATE EXTERNAL TABLE $FC.$FDB.$(new_name r24) (n int) STORED AS PARQUET" "$(new_name r24)"
+  run_x_create "$DEFAULT_CTX" "$FDB" r25 \
+    "CREATE TABLE $FC.$FDB.$(new_name r25) (n int)" "$(new_name r25)"
+  run_x_create "$DEFAULT_CTX" "$FDB" r26 \
+    "CREATE TABLE $FC.$FDB.$(new_name r26) (n int) TBLPROPERTIES ('table_type'='ICEBERG')" "$(new_name r26)"
+
+  # --- r27（issue の 4: Context の Catalog を省略、x3 の形） ---
+  run_x_create "Database=$DB" "$FDB" r27 \
+    "CREATE EXTERNAL TABLE $FC.$DB.$(new_name r27) (n int) LOCATION '$(probe_location_r r27)'" "$(new_name r27)"
+
+  # --- r29（issue の 5: Context <GCTX>=Catalog=<G>,Database=<DB>、小文字の awsdatacatalog） ---
+  GCTX="Catalog=$FC,Database=$DB"
+  run_x_create "$GCTX" "$DB" r29 \
+    "CREATE EXTERNAL TABLE awsdatacatalog.$DB.$(new_name r29) (n int) LOCATION '$(probe_location_r r29)'" "$(new_name r29)"
+
+  # --- r48（issue の 7: Iceberg の境界、3 部の名前。既定の Context） ---
+  run_x_create "$DEFAULT_CTX" "$FDB" r48 \
+    "CREATE TABLE $FC.$FDB.$(new_name r48) (n int) LOCATION '$(probe_location_r r48)' TBLPROPERTIES ('table_type'='ICEBERG')" "$(new_name r48)"
+else
+  for l in r1 r3 r4 r5 r6 r7 r8 r9 r10 r11 r12 r13 r14 r15 r16 r17 r18 r19 r20 r21 r22 r23 r24 r25 r26 r27 r29 r48; do
+    skip "$l" "$FEDCAT_SKIP_REASON"
+    skip "$l-cleanup" "CREATE TABLE を投げていないため後始末不要"
+  done
+fi
+
+# CREATE_GLUE_CATALOG=1 で作ったデータカタログは、<G> が要る項目の後始末が終わってから
+# 明示的に消す（共有関数。結果を summary に出す。消せなければ trap がもう一度
+# ベストエフォートで消しにいく）。
+delete_glue_catalog_if_created r
+
+# --- r28（issue の 4: Context の Catalog を省略、xc の形。<G> は要らないので常に投げる） ---
+run_create_then_drop_ctx "Database=$DB" "$DEFAULT_CTX" r28 \
+  "CREATE TABLE AwsDataCatalog.$DB.$(new_name r28) (n int) LOCATION '$(probe_location_r r28)'" "$DB.$(new_name r28)"
+
+# --- r30〜r40（issue の 6: External keyword required の境界。既定の Context、常に投げる） ---
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" r30 \
+  "CREATE TABLE $(new_name r30) (n int) LOCATION '$(probe_location_r r30)'" "$(new_name r30)"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" r31 \
+  "CREATE TABLE $DB.$(new_name r31) (n int) LOCATION '$(probe_location_r r31)'" "$DB.$(new_name r31)"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" r32 \
+  "CREATE TABLE IF NOT EXISTS $DB.$(new_name r32) (n int) LOCATION '$(probe_location_r r32)'" "$DB.$(new_name r32)"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" r33 \
+  "CREATE TABLE $DB.$(new_name r33) (n int) COMMENT 'r comment' LOCATION '$(probe_location_r r33)'" "$DB.$(new_name r33)"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" r34 \
+  "CREATE TABLE $DB.$(new_name r34) (n int) PARTITIONED BY (p int) LOCATION '$(probe_location_r r34)'" "$DB.$(new_name r34)"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" r35 \
+  "CREATE TABLE $DB.$(new_name r35) (n int) ROW FORMAT SERDE '$SERDE_CLASS' LOCATION '$(probe_location_r r35)'" "$DB.$(new_name r35)"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" r36 \
+  "CREATE TABLE $DB.$(new_name r36) (n int) CLUSTERED BY (n) INTO 4 BUCKETS LOCATION '$(probe_location_r r36)'" "$DB.$(new_name r36)"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" r37 \
+  "CREATE TABLE $DB.$(new_name r37) (n int) LOCATION '$(probe_location_r r37)' TBLPROPERTIES ('a278'='b')" "$DB.$(new_name r37)"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" r38 \
+  "CREATE TABLE $DB.$(new_name r38) (n int NOT NULL) LOCATION '$(probe_location_r r38)'" "$DB.$(new_name r38)"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" r39 \
+  "create table $DB.$(new_name r39) (n int) location '$(probe_location_r r39)'" "$DB.$(new_name r39)"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" r40 \
+  "CREATE TABLE $DB.$(new_name r40) (n int) LOCATION '$(probe_location_r r40)';" "$DB.$(new_name r40)"
+
+# --- r41〜r47・r49（issue の 7: Iceberg の境界。既定の Context、常に投げる） ---
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" r41 \
+  "CREATE TABLE $DB.$(new_name r41) (n int) LOCATION '$(probe_location_r r41)' TBLPROPERTIES ('table_type'='ICEBERG')" "$DB.$(new_name r41)"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" r42 \
+  "CREATE TABLE $DB.$(new_name r42) (n int) LOCATION '$(probe_location_r r42)' TBLPROPERTIES ('table_type'='iceberg')" "$DB.$(new_name r42)"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" r43 \
+  "CREATE TABLE $DB.$(new_name r43) (n int) LOCATION '$(probe_location_r r43)' TBLPROPERTIES ('table_type' = 'ICEBERG')" "$DB.$(new_name r43)"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" r44 \
+  "CREATE TABLE $DB.$(new_name r44) (n int) LOCATION '$(probe_location_r r44)' TBLPROPERTIES ('TABLE_TYPE'='ICEBERG')" "$DB.$(new_name r44)"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" r45 \
+  "CREATE TABLE $DB.$(new_name r45) (n int) LOCATION '$(probe_location_r r45)' TBLPROPERTIES ('format'='parquet','table_type'='ICEBERG')" "$DB.$(new_name r45)"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" r46 \
+  "CREATE TABLE $DB.$(new_name r46) (n int) LOCATION '$(probe_location_r r46)' TBLPROPERTIES ('table_type'='HIVE')" "$DB.$(new_name r46)"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" r47 \
+  "CREATE TABLE $DB.$(new_name r47) (n int) STORED AS PARQUET LOCATION '$(probe_location_r r47)' TBLPROPERTIES ('table_type'='ICEBERG')" "$DB.$(new_name r47)"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" r49 \
+  "CREATE TABLE AwsDataCatalog.$DB.$(new_name r49) (n int) LOCATION '$(probe_location_r r49)' TBLPROPERTIES ('table_type'='ICEBERG')" "$DB.$(new_name r49)"
+
+# --- r50・r51（issue の 8: S3 Tables のカタログを引用符付きの別カタログとして書いた形） ---
+# S3TABLES_* が揃うときだけ、既定の Context で投げる（S3 Tables の Context で消す）。
+if [ -n "$S3TABLES_CATALOG" ] && [ -n "$S3TABLES_NS" ]; then
+  run_create_then_drop_ctx "$DEFAULT_CTX" "$S3T_CTX" r50 \
+    "CREATE EXTERNAL TABLE \"$S3TABLES_CATALOG\".$S3TABLES_NS.$(new_name r50) (n int) LOCATION '$(probe_location_r r50)'" \
+    "$(new_name r50)"
+  run_create_then_drop_ctx "$DEFAULT_CTX" "$S3T_CTX" r51 \
+    "CREATE TABLE \"$S3TABLES_CATALOG\".$S3TABLES_NS.$(new_name r51) (n int) LOCATION '$(probe_location_r r51)'" \
+    "$(new_name r51)"
+else
+  for l in r50 r51; do
+    skip "$l" "未測定（S3TABLES_* 未設定）"
+    skip "$l-cleanup" "CREATE TABLE を投げていないため後始末不要"
+  done
+fi
+
+R_G_LABELS="r1 r3 r4 r5 r6 r7 r8 r9 r10 r11 r12 r13 r14 r15 r16 r17 r18 r19 r20 r22 r23 r24 r25 r26 r27 r29 r48"
+R21_LABELS="r1 r2 r3 r4 r5 r6 r7 r8 r9 r10 r11 r12 r13 r14 r15 r16 r17 r18 r19 r20 r21 r22 r23 r24 r25 r26 r27 r28 r29 r30 r31 r32 r33 r34 r35 r36 r37 r38 r39 r40 r41 r42 r43 r44 r45 r46 r47 r48 r49 r50 r51"
+
+# --- 付随物の取得（FAILED になった項目だけ） --------------------------------------------
+fetch_failed_attachments $R21_LABELS
+
+fi # ROUND=21
+
 # --- 後始末（実在する表） ----------------------------------------------------------
 
 if [ "$REAL_SETUP_OK" = 1 ]; then
@@ -4770,6 +4989,15 @@ elif [ "$ROUND" = 22 ]; then
     ALL_LABELS="$ALL_LABELS $l-revert"
   done
   ALL_LABELS="$ALL_LABELS p-drop-ice p-drop-ice2 p-drop-real p-drop-view"
+elif [ "$ROUND" = 21 ]; then
+  for l in $R21_LABELS; do
+    ALL_LABELS="$ALL_LABELS $l $l-cleanup"
+  done
+  # <G> が要る項目は、作った Glue のデータカタログを指すときだけ -cleanup2 も投げる
+  # （存在すれば拾う。ROUND=13・14 の x1〜x4・z1・z2・z4・z5 と同じ仕組み）。
+  for l in $R_G_LABELS; do
+    ALL_LABELS="$ALL_LABELS $l-cleanup2"
+  done
 elif [ "$ROUND" = 8 ]; then
   ALL_LABELS="$ALL_LABELS m-setup-t m-setup-v m-setup-db2 m-setup-t2 $M_LABELS"
   ALL_LABELS="$ALL_LABELS m-drop-v36 m-drop-t35 m-drop-v m-drop-t m-drop-t2 m-drop-db2"
@@ -5239,6 +5467,60 @@ write_summary_txt() {
       echo "# 課金: スキャンの無いクエリだけ（CREATE は 0 行、INSERT は 0〜1 行、DROP はメタデータの"
       echo "#   み）。結果ファイルの読み出し・オーファンデータ確認は S3 の GetObject／ListObjects で、"
       echo "#   Athena のクエリ課金には乗らない。"
+    elif [ "$ROUND" = 21 ]; then
+      echo "# issue #278（#208 ラウンド 21）: 既定の Context（Catalog=AwsDataCatalog）の Hive の"
+      echo "#             CREATE TABLE ... LOCATION を athena-local が開始時に弾く実装が読む境界"
+      echo "#             （Unsupported ddl with 2 catalogs・External keyword required for table"
+      echo "#             type HIVE のそれぞれの範囲、Iceberg の TBLPROPERTIES の判定）を実測"
+      echo "# 実行日時: $(date -Iseconds)"
+      if [ -n "$S3TABLES_CATALOG" ] && [ -n "$S3TABLES_NS" ]; then
+        echo "# S3TABLES_*: 設定あり（r50・r51 を測る）"
+      else
+        echo "# S3TABLES_*: 未設定（r50・r51 は未測定）"
+      fi
+      if [ -n "$FEDERATED_CATALOG" ]; then
+        echo "# FEDERATED_CATALOG: 設定あり（r1・r3〜r27・r29・r48 を FEDERATED_CATALOG で測る）"
+      elif [ "${CREATE_GLUE_CATALOG:-}" = 1 ]; then
+        if [ -n "$FC" ]; then
+          echo "# CREATE_GLUE_CATALOG=1: データカタログを作成できた（r1・r3〜r27・r29・r48 を測る）"
+        else
+          echo "# CREATE_GLUE_CATALOG=1: 設定あり（$FEDCAT_SKIP_REASON）"
+        fi
+      else
+        echo "# FEDERATED_CATALOG・CREATE_GLUE_CATALOG: 未設定（r1・r3〜r27・r29・r48 は未測定。"
+        echo "#   r2・r28・r30〜r47・r49 だけ測る）"
+      fi
+      echo "# StartQueryExecution の見込み本数: 23（S3TABLES_* も連携カタログも無し）／"
+      echo "#   25（S3TABLES_* のみ）／51（連携カタログのみ）／53（両方あり）"
+      echo "#   （preflight 2 + 常に投げる r2・r28・r30〜r40・r41〜r47・r49 の 21 +"
+      echo "#   連携カタログが使えるときだけの r1・r3〜r27・r29・r48 の 28 +"
+      echo "#   S3TABLES_* が揃うときだけの r50・r51 の 2）。"
+      echo "#   このスクリプトの実測値: $(wc -l < "$START_CALL_FILE" | tr -d ' ') 回"
+      echo "#   受理された CREATE TABLE ごとに、その場で DROP する後始末が 1 本ずつ増える"
+      echo "#   （最大 +21 非依存の r 群、+28 連携カタログ依存の r 群、+2 S3TABLES_* 依存の"
+      echo "#   r50・r51 ＝ 最大 +51。作った Glue のデータカタログを指す連携カタログ依存の r 群は、"
+      echo "#   DROP が失敗すると既定の Context でももう一度 DROP を試みる。最大 +28、上の内訳には"
+      echo "#   含めない。r21 は既定の Context のまま同じ 2 部の名前で消す）。"
+      echo "# DDL: 実在する表 <PROBE>_real は作らない。r 群の CREATE TABLE（EXTERNAL を含む）は、"
+      echo "#   受理されたらその場で DROP して消す（消す Context は項目ごとに issue 本文の指示"
+      echo "#   どおり）。CREATE_GLUE_CATALOG=1 かつ FEDERATED_CATALOG 未設定のときは、"
+      echo "#   athena_local_probe_266_<乱数>cat（ROUND=13・14・17 と共有する自分のアカウントの"
+      echo "#   Glue を指すデータカタログ）を 1 つ作り、<G> が要る項目の後始末が終わったあとに"
+      echo "#   必ず削除を試みる。"
+      if [ "${CREATE_GLUE_CATALOG:-}" = 1 ] && [ -n "$FEDERATED_CATALOG" ]; then
+        : # FEDERATED_CATALOG が優先されるので、この回は作っていない。
+      elif [ "${CREATE_GLUE_CATALOG:-}" = 1 ]; then
+        case "${GLUE_CATALOG_DELETED:-}" in
+          1) echo "#   このスクリプトの実測: データカタログを作成し、削除できた。" ;;
+          0) echo "#   このスクリプトの実測: データカタログを作成したが、削除できなかった（要手動削除）。" ;;
+          *) echo "#   このスクリプトの実測: データカタログは作成していない（$FEDCAT_SKIP_REASON）。" ;;
+        esac
+      fi
+      echo "# 付随物: FAILED になった項目は、結果ファイル本体と <OutputLocation>.metadata を"
+      echo "#   aws s3 cp で読み出して保存する（<label>.output.txt・<label>.output.metadata）。"
+      echo "# 課金: スキャンの無いクエリだけ（CREATE は 0〜1 行、DROP はメタデータのみ）。結果ファイルの"
+      echo "#   読み出し、create/get/delete/list-data-catalog・sts:GetCallerIdentity は Athena の"
+      echo "#   クエリ課金には乗らない。"
       echo "# 注意: これは実測した本物の Athena の挙動であり、将来の Athena の変更で変わりうる。"
       echo "#   実測値は既定とは限らない。"
     elif [ "$ROUND" = 19 ]; then
@@ -5553,7 +5835,7 @@ PYEOF
     done
     if [ "$ROUND" = 6 ] || [ "$ROUND" = 7 ] || [ "$ROUND" = 8 ] || [ "$ROUND" = 10 ] || [ "$ROUND" = 11 ] \
       || [ "$ROUND" = 12 ] || [ "$ROUND" = 13 ] || [ "$ROUND" = 14 ] || [ "$ROUND" = 15 ] || [ "$ROUND" = 17 ] \
-      || [ "$ROUND" = 18 ] || [ "$ROUND" = 19 ] || [ "$ROUND" = 22 ]; then
+      || [ "$ROUND" = 18 ] || [ "$ROUND" = 19 ] || [ "$ROUND" = 21 ] || [ "$ROUND" = 22 ]; then
       case "$ROUND" in
         6) REPR_LABELS=$K_LABELS ;;
         7) REPR_LABELS=$L_LABELS ;;
@@ -5577,6 +5859,10 @@ PYEOF
         # ROUND=22（issue #279）も Query が書き換わったかが決め手なので、開始できた
         # p 群の全項目を対象にする。
         22) REPR_LABELS=$P_LABELS ;;
+        # ROUND=21（issue #278）はこのラウンドの決め手（Unsupported ddl with 2 catalogs・
+        # External keyword required for table type HIVE の message、<文> に何が残るか）なので、
+        # r 群の全項目を対象にする。
+        21) REPR_LABELS=$R21_LABELS ;;
         *) REPR_LABELS=$R_LABELS ;;
       esac
       echo
@@ -5628,7 +5914,7 @@ PYEOF
         echo
       done
     fi
-    if [ "$ROUND" = 5 ] || [ "$ROUND" = 10 ] || [ "$ROUND" = 11 ] || [ "$ROUND" = 12 ] || [ "$ROUND" = 13 ] || [ "$ROUND" = 14 ] || [ "$ROUND" = 15 ] || [ "$ROUND" = 16 ] || [ "$ROUND" = 17 ] || [ "$ROUND" = 18 ] || [ "$ROUND" = 19 ] || [ "$ROUND" = 20 ] || [ "$ROUND" = 22 ]; then
+    if [ "$ROUND" = 5 ] || [ "$ROUND" = 10 ] || [ "$ROUND" = 11 ] || [ "$ROUND" = 12 ] || [ "$ROUND" = 13 ] || [ "$ROUND" = 14 ] || [ "$ROUND" = 15 ] || [ "$ROUND" = 16 ] || [ "$ROUND" = 17 ] || [ "$ROUND" = 18 ] || [ "$ROUND" = 19 ] || [ "$ROUND" = 20 ] || [ "$ROUND" = 21 ] || [ "$ROUND" = 22 ]; then
       echo
       if [ "$ROUND" = 15 ]; then
         echo "## 付随物（結果ファイル本体・.metadata。FAILED または SUCCEEDED の CTAS だけ。実名は伏せる）"
@@ -5646,6 +5932,7 @@ PYEOF
         18) ATTACH_LABELS="$P_LABELS $W_LABELS c1y $I_LABELS" ;;
         19) ATTACH_LABELS="$D_LABELS $F_LABELS $C_LABELS" ;;
         22) ATTACH_LABELS=$P_LABELS ;;
+        21) ATTACH_LABELS=$R21_LABELS ;;
         16) ATTACH_LABELS="$CL_LABELS $PR_LABELS $PN_LABELS $PA_LABELS $TP_LABELS $SC_LABELS" ;;
         20) ATTACH_LABELS="$X0_LABEL $K_LABELS $V_LABELS $C_LABELS $A_LABELS $M_LABELS $SC_LABELS" ;;
         *) ATTACH_LABELS=$R_LABELS ;;
