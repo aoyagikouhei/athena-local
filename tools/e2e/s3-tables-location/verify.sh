@@ -68,6 +68,57 @@
 #      → 開始でき FAILED、StateChangeReason
 #        "Iceberg create table statement does not allow STORED AS/BY"（実測 s15）
 #
+#   #266 で足したケース（LOCATION の無い EXTERNAL の句・IF NOT EXISTS・バッククォート、LOCATION の無い
+#   STORED AS の 2 部・3 部・IF NOT EXISTS・句・列リスト無し、実在しないカタログの EXTERNAL の 3 部 + LOCATION、
+#   実在しないカタログの IF NOT EXISTS + STORED AS の 3 部 + LOCATION による絞り込みの広がりと、変わらない
+#   4 つの回帰）:
+#   M1 S3 Tables の Context
+#      CREATE EXTERNAL TABLE t266 (n int) COMMENT 'c'
+#      → L2 と同じ文言（COMMENT があっても EXTERNAL の判定は変わらない）
+#   M2 S3 Tables の Context
+#      CREATE EXTERNAL TABLE `t266` (n int)
+#      → L2 と同じ文言（バッククォートの名前でも変わらない）
+#   M3 S3 Tables の Context
+#      CREATE TABLE e2e229ns.t266 (n int) STORED AS PARQUET
+#      → 開始して FAILED、StateChangeReason "Iceberg create table statement does not allow STORED AS/BY"
+#        （L12 と同じ文言。2 部の名前でも変わらない）
+#   M4 S3 Tables の Context
+#      CREATE TABLE IF NOT EXISTS t266 (n int) STORED AS PARQUET
+#      → M3 と同じ（IF NOT EXISTS があっても変わらない）
+#   M5 S3 Tables の Context
+#      CREATE TABLE t266 (n int) COMMENT 'c' STORED AS PARQUET
+#      → M3 と同じ（COMMENT があっても変わらない）
+#   M6 S3 Tables の Context
+#      CREATE TABLE AwsDataCatalog.e2e229ns.t266 (n int) STORED AS PARQUET
+#      → M3 と同じ（大文字混じりの AwsDataCatalog の 3 部でも変わらない）
+#   M7 S3 Tables の Context
+#      CREATE TABLE t266 STORED AS PARQUET
+#      → M3 と同じ（列リストが無くても変わらない）
+#   M8 既定の Context（Catalog=AwsDataCatalog,Database=default）
+#      CREATE EXTERNAL TABLE nosuchcatalog266.default.t266 (n int) LOCATION 's3://b/p/'
+#      → 400、DATACATALOG_NOT_FOUND／"Catalog 'nosuchcatalog266' does not exist"（EXTERNAL があっても L11 と同じ）
+#   M9 S3 Tables の Context
+#      CREATE EXTERNAL TABLE nosuchcatalog266.e2e229ns.t266 (n int) LOCATION 's3://b/p/'
+#      → M8 と同じ（S3 Tables の Context でも同じ）
+#   M10 S3 Tables の Context
+#      CREATE TABLE IF NOT EXISTS nosuchcatalog266.e2e229ns.t266 (n int) STORED AS PARQUET LOCATION 's3://b/p/'
+#      → M8 と同じ（IF NOT EXISTS・STORED AS があっても DATACATALOG_NOT_FOUND が先）
+#   R1（回帰） S3 Tables の Context
+#      CREATE TABLE t266 (n int) ROW FORMAT SERDE 'x' STORED AS TEXTFILE
+#      → 400、MALFORMED_QUERY（ROW FORMAT + STORED AS は #266 の広がりの外。Trino の構文エラーのまま。
+#        文言は変更前のビルドで実測して確認した実際のもの）
+#   R2（回帰） S3 Tables の Context
+#      CREATE TABLE t266 (n int) CLUSTERED BY (n) INTO 4 BUCKETS STORED AS PARQUET
+#      → 400、MALFORMED_QUERY（CLUSTERED BY + STORED AS も #266 の広がりの外。Trino の構文エラーのまま）
+#   R3（回帰） S3 Tables の Context
+#      CREATE TABLE awsdatacatalog.e2e229ns.t266 (n int) STORED AS PARQUET
+#      → 400、MALFORMED_QUERY（ちょうど小文字の awsdatacatalog の 3 部 + STORED AS は #270 の範囲。
+#        Trino の構文エラーのまま）
+#   R4（回帰） 既定の Context
+#      CREATE EXTERNAL TABLE hive.default.t266 (n int) LOCATION 's3://b/p/'
+#      → 400、MALFORMED_QUERY（Trino にあるカタログを 1 部目に書いた EXTERNAL は S3 Tables の判定の外。
+#        Trino の構文エラーのまま）
+#
 # 前提コマンド: tools/dev.sh 経由で動かす（toolbox に全部入っている）
 #
 # 使い方:
@@ -75,7 +126,8 @@
 #
 # 環境変数:
 #   KEEP_UP=1        テスト後に docker compose down -v をせず環境を残す（デバッグ用）
-#   SKIP_BUILD=1     cargo build を省略し、既存の $CARGO_TARGET_DIR（tools/dev.sh では .toolbox/target）の release/athena-local をそのまま使う
+#   SKIP_BUILD=1     cargo build を省略し、$BINARY（無ければ $CARGO_TARGET_DIR の release/athena-local）をそのまま使う
+#   BINARY=<path>    使う athena-local バイナリを差し替える（変更前後の 2 段階の受け入れ用。SKIP_BUILD=1 と組み合わせる）
 #
 # 後始末は本スクリプトの trap が行う: athena-local を止め、docker compose down -v trino minio minio-init する
 # （KEEP_UP=1 でなければ）。ほかの docker コンテナや compose のサービスは止めたり消したりしない。cargo test も
@@ -85,8 +137,8 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# cargo の成果物の置き場。tools/dev.sh は CARGO_TARGET_DIR を .toolbox/target にする
-BINARY="${CARGO_TARGET_DIR:-$REPO_ROOT/target}/release/athena-local"
+# cargo の成果物の置き場。tools/dev.sh は CARGO_TARGET_DIR を .toolbox/target にする。BINARY を明示すればそちらを使う
+BINARY="${BINARY:-${CARGO_TARGET_DIR:-$REPO_ROOT/target}/release/athena-local}"
 COMPOSE=(docker compose -f "$REPO_ROOT/compose.yml")
 SERVICES=(trino minio minio-init)
 
@@ -99,6 +151,9 @@ OUTPUT_LOCATION="s3://${BUCKET}/${PREFIX}/"
 S3_TABLES_CATALOG="s3tablescatalog/e2e229"
 S3_TABLES_CATALOG_MIXED="S3TablesCatalog/e2e229"
 NS="e2e229ns"
+# #266 で足したケースの表名・実在しないカタログ名（L1〜L12 の t229 と区別する）
+T266="t266"
+NOSUCHCATALOG266="nosuchcatalog266"
 
 ATHENA_BIND="127.0.0.1:8129"
 ATHENA_BASE="http://${ATHENA_BIND}"
@@ -246,7 +301,7 @@ build_athena_local() {
 }
 
 start_athena_local() {
-  log "athena-local を起動する（bind=$ATHENA_BIND、TRINO_CATALOG_MAP=${S3_TABLES_CATALOG}=iceberg,AwsDataCatalog=hive、ログ: $ATHENA_LOG）"
+  log "athena-local を起動する（bind=$ATHENA_BIND、binary=$BINARY、TRINO_CATALOG_MAP=${S3_TABLES_CATALOG}=iceberg,AwsDataCatalog=hive、ログ: $ATHENA_LOG）"
   (
     cd "$REPO_ROOT"
     exec env \
@@ -475,6 +530,82 @@ run_cases() {
   case_start_failed "L12" "S3Tables の Context・LOCATION の無い STORED AS" \
     "CREATE TABLE t229 (n int) STORED AS ORC" "$S3_TABLES_CATALOG" "$NS" \
     "Iceberg create table statement does not allow STORED AS/BY"
+
+  # --- #266: LOCATION の無い EXTERNAL・STORED AS の判定の広がり、実在しないカタログの EXTERNAL・
+  #     IF NOT EXISTS + STORED AS の 3 部 + LOCATION、変わらない回帰 ---
+
+  # M1: LOCATION の無い EXTERNAL は COMMENT があっても L2 と同じ文言。
+  case_reject "M1" "S3Tables の Context・LOCATION 無しの EXTERNAL + COMMENT" \
+    "CREATE EXTERNAL TABLE ${T266} (n int) COMMENT 'c'" "$S3_TABLES_CATALOG" "$NS" \
+    MALFORMED_QUERY "External keyword not supported for table type ICEBERG"
+
+  # M2: 同じく、バッククォートの名前でも変わらない。
+  case_reject "M2" "S3Tables の Context・LOCATION 無しの EXTERNAL・バッククォート" \
+    "CREATE EXTERNAL TABLE \`${T266}\` (n int)" "$S3_TABLES_CATALOG" "$NS" \
+    MALFORMED_QUERY "External keyword not supported for table type ICEBERG"
+
+  # M3: LOCATION の無い STORED AS は 2 部の名前でも開始して FAILED。
+  case_start_failed "M3" "S3Tables の Context・LOCATION 無しの STORED AS・2 部の名前" \
+    "CREATE TABLE ${NS}.${T266} (n int) STORED AS PARQUET" "$S3_TABLES_CATALOG" "$NS" \
+    "Iceberg create table statement does not allow STORED AS/BY"
+
+  # M4: 同じく、IF NOT EXISTS があっても変わらない。
+  case_start_failed "M4" "S3Tables の Context・LOCATION 無しの STORED AS・IF NOT EXISTS" \
+    "CREATE TABLE IF NOT EXISTS ${T266} (n int) STORED AS PARQUET" "$S3_TABLES_CATALOG" "$NS" \
+    "Iceberg create table statement does not allow STORED AS/BY"
+
+  # M5: 同じく、COMMENT があっても変わらない。
+  case_start_failed "M5" "S3Tables の Context・LOCATION 無しの STORED AS・COMMENT" \
+    "CREATE TABLE ${T266} (n int) COMMENT 'c' STORED AS PARQUET" "$S3_TABLES_CATALOG" "$NS" \
+    "Iceberg create table statement does not allow STORED AS/BY"
+
+  # M6: 同じく、大文字混じりの AwsDataCatalog の 3 部でも変わらない。
+  case_start_failed "M6" "S3Tables の Context・LOCATION 無しの STORED AS・AwsDataCatalog の 3 部" \
+    "CREATE TABLE AwsDataCatalog.${NS}.${T266} (n int) STORED AS PARQUET" "$S3_TABLES_CATALOG" "$NS" \
+    "Iceberg create table statement does not allow STORED AS/BY"
+
+  # M7: 同じく、列リストが無くても変わらない。
+  case_start_failed "M7" "S3Tables の Context・LOCATION 無しの STORED AS・列リスト無し" \
+    "CREATE TABLE ${T266} STORED AS PARQUET" "$S3_TABLES_CATALOG" "$NS" \
+    "Iceberg create table statement does not allow STORED AS/BY"
+
+  # M8: 実在しないカタログの EXTERNAL の 3 部 + LOCATION は既定の Context でも DATACATALOG_NOT_FOUND。
+  case_reject "M8" "既定の Context・実在しないカタログの EXTERNAL + LOCATION" \
+    "CREATE EXTERNAL TABLE ${NOSUCHCATALOG266}.default.${T266} (n int) LOCATION 's3://b/p/'" AwsDataCatalog default \
+    DATACATALOG_NOT_FOUND "Catalog '${NOSUCHCATALOG266}' does not exist"
+
+  # M9: 同じく、S3 Tables の Context でも同じ。
+  case_reject "M9" "S3Tables の Context・実在しないカタログの EXTERNAL + LOCATION" \
+    "CREATE EXTERNAL TABLE ${NOSUCHCATALOG266}.${NS}.${T266} (n int) LOCATION 's3://b/p/'" "$S3_TABLES_CATALOG" "$NS" \
+    DATACATALOG_NOT_FOUND "Catalog '${NOSUCHCATALOG266}' does not exist"
+
+  # M10: 実在しないカタログの 3 部 + LOCATION は、IF NOT EXISTS・STORED AS があっても DATACATALOG_NOT_FOUND が先。
+  case_reject "M10" "S3Tables の Context・実在しないカタログの IF NOT EXISTS + STORED AS + LOCATION" \
+    "CREATE TABLE IF NOT EXISTS ${NOSUCHCATALOG266}.${NS}.${T266} (n int) STORED AS PARQUET LOCATION 's3://b/p/'" \
+    "$S3_TABLES_CATALOG" "$NS" \
+    DATACATALOG_NOT_FOUND "Catalog '${NOSUCHCATALOG266}' does not exist"
+
+  # R1（回帰）: ROW FORMAT + STORED AS は #266 の広がりの外。Trino の構文エラーのまま
+  # （文言は着手前ビルド f7f2116 で実測して確認した実際のもの）。
+  case_reject "R1" "S3Tables の Context・ROW FORMAT + STORED AS は構文チェックへ（回帰）" \
+    "CREATE TABLE ${T266} (n int) ROW FORMAT SERDE 'x' STORED AS TEXTFILE" "$S3_TABLES_CATALOG" "$NS" \
+    MALFORMED_QUERY "line 1:27: mismatched input 'ROW'. Expecting: 'COMMENT', 'WITH', <EOF>"
+
+  # R2（回帰）: CLUSTERED BY + STORED AS も #266 の広がりの外。Trino の構文エラーのまま。
+  case_reject "R2" "S3Tables の Context・CLUSTERED BY + STORED AS は構文チェックへ（回帰）" \
+    "CREATE TABLE ${T266} (n int) CLUSTERED BY (n) INTO 4 BUCKETS STORED AS PARQUET" "$S3_TABLES_CATALOG" "$NS" \
+    MALFORMED_QUERY "line 1:27: mismatched input 'CLUSTERED'. Expecting: 'COMMENT', 'WITH', <EOF>"
+
+  # R3（回帰）: ちょうど小文字の awsdatacatalog の 3 部 + STORED AS は #270 の範囲。Trino の構文エラーのまま。
+  case_reject "R3" "S3Tables の Context・ちょうど小文字 awsdatacatalog の 3 部 + STORED AS は構文チェックへ（回帰）" \
+    "CREATE TABLE awsdatacatalog.${NS}.${T266} (n int) STORED AS PARQUET" "$S3_TABLES_CATALOG" "$NS" \
+    MALFORMED_QUERY "line 1:51: mismatched input 'STORED'. Expecting: 'COMMENT', 'WITH', <EOF>"
+
+  # R4（回帰）: 既定の Context・Trino にあるカタログを 1 部目に書いた EXTERNAL は S3 Tables の判定の外。
+  # Trino の構文エラーのまま（部分一致で確認。位置情報が先頭に付く）。
+  case_reject_contains "R4" "既定の Context・Trino にあるカタログの EXTERNAL + LOCATION は構文チェックへ（回帰）" \
+    "CREATE EXTERNAL TABLE hive.default.${T266} (n int) LOCATION 's3://b/p/'" AwsDataCatalog default \
+    MALFORMED_QUERY "mismatched input 'EXTERNAL'"
 }
 
 main() {
@@ -518,7 +649,7 @@ main() {
     record "athena-local起動" FAIL "athena-local が起動しなかった"
     return 1
   fi
-  record "athena-local起動" PASS "$ATHENA_BASE で応答（TRINO_CATALOG_MAP=${S3_TABLES_CATALOG}=iceberg,AwsDataCatalog=hive）"
+  record "athena-local起動" PASS "$ATHENA_BASE で応答（TRINO_CATALOG_MAP=${S3_TABLES_CATALOG}=iceberg,AwsDataCatalog=hive、binary=$BINARY）"
 
   run_cases
 }

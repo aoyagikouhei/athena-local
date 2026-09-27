@@ -1,7 +1,8 @@
 //! QueryExecutionContext の Catalog が S3 Tables のとき、本物の Athena が Hive の `CREATE TABLE` として読んでから
 //! 開始時に弾く `LOCATION` と `EXTERNAL`（2026-09-26 実測 n1〜n32。#229。2026-09-27 実測 s1〜s18。#248）。Trino の文法には
 //! どちらも無いので、構文チェックより前に呼ぶ。LOCATION の無い `STORED AS`（開始して FAILED）と、LOCATION 付きの 3 部の
-//! 名前の 1 部目（実在しないカタログは Context によらず DATACATALOG_NOT_FOUND）も同じ読み方で取り出す。
+//! 名前の 1 部目（実在しないカタログは Context によらず DATACATALOG_NOT_FOUND）も同じ読み方で取り出す。句や IF NOT EXISTS・
+//! 列の並びの有無・バッククォートによらないことは 2026-09-27 実測 t・u・v・w 群（#266）で確かめた。
 
 use athena_sql::{Cursor, skip_leading_trivia};
 
@@ -17,24 +18,20 @@ const S3_TABLES_EXTERNAL: &str = "External keyword not supported for table type 
 /// Hive の `CREATE TABLE` として読めた文（`read`）。
 struct Hive<'a> {
     external: bool,
-    if_not_exists: bool,
     /// 名前の部（書いたとおり）。バッククォートの名前は引用符ごとの 1 部。
     parts: Vec<&'a str>,
-    backquoted: bool,
-    columns: bool,
-    /// COMMENT・PARTITIONED BY・CLUSTERED BY・ROW FORMAT のどれかがあった。
-    other_clauses: bool,
+    clustered: bool,
+    row_format: bool,
     stored_as: bool,
     location: bool,
-    tblproperties: bool,
 }
 
 /// 本物が Hive の `CREATE TABLE` として読んでから弾く文なら、その文言を返す（S3 Tables の Context でだけ呼ぶ）。
 ///
 /// 名前は無引用の 1〜3 部（3 部は 1 部目が大文字小文字によらず `awsdatacatalog`。実在しないカタログは
 /// DATACATALOG_NOT_FOUND が先で（`location_catalog`）、ほかのカタログは測っていない）と、1 部のバッククォート（s11）。
-/// LOCATION があれば句によらず Table location（n1〜n5・n20・s1〜s6・s11・s16）。LOCATION が無ければ、列があり句が
-/// STORED AS・TBLPROPERTIES だけの `CREATE EXTERNAL TABLE` が External の文言（n11・n12・s7〜s10）。
+/// LOCATION があれば句によらず Table location（n1〜n5・n20・s1〜s6・s11・s16・u0〜u7）。LOCATION が無ければ
+/// `CREATE EXTERNAL TABLE` が句・IF NOT EXISTS・列の並びの有無によらず External の文言（n11・n12・s7〜s10・v0〜v9）。
 pub(in crate::operation) fn s3_tables_rejection(query: &str) -> Option<&'static str> {
     let hive = read(query)?;
     match hive.parts.as_slice() {
@@ -45,37 +42,38 @@ pub(in crate::operation) fn s3_tables_rejection(query: &str) -> Option<&'static 
     if hive.location {
         return Some(S3_TABLES_LOCATION);
     }
-    (hive.external && hive.columns && !hive.backquoted && !hive.other_clauses)
-        .then_some(S3_TABLES_EXTERNAL)
+    hive.external.then_some(S3_TABLES_EXTERNAL)
 }
 
 /// S3 Tables の Context で、本物が開始してから `Iceberg create table statement does not allow STORED AS/BY` で FAILED に
-/// した形（LOCATION の無い `CREATE TABLE <無引用の 1 部> (列) STORED AS <語>`。2026-09-26 実測 n21・2026-09-27 実測 s15）。
+/// した形（LOCATION の無い `CREATE TABLE <名前> [(列)] ... STORED AS <語>`。2026-09-26 実測 n21・2026-09-27 実測 s15・
+/// w0〜w2・w4〜w6・w8〜w10）。名前は 1・2 部と、1 部目が `awsdatacatalog` の類でちょうど小文字ではない 3 部（w2）。
+/// ちょうど小文字の 3 部は 2 catalogs が先（w3）、ROW FORMAT と組めば ROW FORMAT の文言（w7。どちらも #270）、CLUSTERED BY と
+/// 組む形とほかのカタログの 3 部は測っていないので false。
 pub(in crate::operation) fn s3_tables_stored_as(query: &str) -> bool {
     read(query).is_some_and(|hive| {
-        !hive.external
-            && !hive.if_not_exists
-            && !hive.backquoted
-            && hive.parts.len() == 1
-            && hive.columns
+        let measured_name = match hive.parts.as_slice() {
+            [_] | [_, _] => true,
+            [catalog, _, _] => {
+                catalog.eq_ignore_ascii_case("awsdatacatalog") && *catalog != "awsdatacatalog"
+            }
+            _ => false,
+        };
+        measured_name
+            && !hive.external
             && hive.stored_as
-            && !(hive.other_clauses || hive.location || hive.tblproperties)
+            && !(hive.location || hive.clustered || hive.row_format)
     })
 }
 
-/// LOCATION 付きの Hive の `CREATE TABLE <無引用の 3 部> (列) LOCATION '..'` の 1 部目（書いたとおり）。`awsdatacatalog` の
-/// 類は None。本物は 1 部目のカタログが実在しなければ Context によらず開始時に DATACATALOG_NOT_FOUND で弾いた
-/// （2026-09-26 実測 n6・2026-09-27 実測 s12・s13）。測ったのはこの形だけなので、EXTERNAL・IF NOT EXISTS・ほかの句が
-/// 付く形は None（#248 の計画攻撃）。
+/// LOCATION 付きの Hive の `CREATE [EXTERNAL] TABLE <無引用の 3 部> ... LOCATION '..'` の 1 部目（書いたとおり）。
+/// `awsdatacatalog` の類は None。本物は 1 部目のカタログが実在しなければ Context によらず開始時に DATACATALOG_NOT_FOUND で
+/// 弾いた（2026-09-26 実測 n6・2026-09-27 実測 s12・s13）。EXTERNAL・IF NOT EXISTS・句（1 つ・全部）・列の並びの有無に
+/// よらない（2026-09-27 実測 t0〜t10・t0s〜t9s。#266）。
 pub(in crate::operation) fn location_catalog(query: &str) -> Option<&str> {
     let hive = read(query)?;
-    let measured = !hive.external
-        && !hive.if_not_exists
-        && hive.columns
-        && hive.location
-        && !(hive.other_clauses || hive.stored_as || hive.tblproperties);
     match hive.parts.as_slice() {
-        [catalog, _, _] if measured && !catalog.eq_ignore_ascii_case("awsdatacatalog") => {
+        [catalog, _, _] if hive.location && !catalog.eq_ignore_ascii_case("awsdatacatalog") => {
             Some(catalog)
         }
         _ => None,
@@ -120,8 +118,8 @@ fn read(query: &str) -> Option<Hive<'_>> {
     if columns && !column_list(sql, statement_start, &mut cursor) {
         return None;
     }
-    let comment = clause(&mut cursor, "COMMENT", string_literal)?;
-    let partitioned = clause(&mut cursor, "PARTITIONED", |cursor| {
+    clause(&mut cursor, "COMMENT", string_literal)?;
+    clause(&mut cursor, "PARTITIONED", |cursor| {
         cursor.keyword("BY") && cursor.punct(b'(') && column_list(sql, statement_start, cursor)
     })?;
     let clustered = clause(&mut cursor, "CLUSTERED", |cursor| {
@@ -140,17 +138,14 @@ fn read(query: &str) -> Option<Hive<'_>> {
         cursor.keyword("AS") && cursor.identifier()
     })?;
     let location = clause(&mut cursor, "LOCATION", string_literal)?;
-    let tblproperties = clause(&mut cursor, "TBLPROPERTIES", properties)?;
+    clause(&mut cursor, "TBLPROPERTIES", properties)?;
     cursor.at_end().then_some(Hive {
         external,
-        if_not_exists,
         parts,
-        backquoted,
-        columns,
-        other_clauses: comment || partitioned || clustered || row_format,
+        clustered,
+        row_format,
         stored_as,
         location,
-        tblproperties,
     })
 }
 
