@@ -61,9 +61,14 @@ pub(super) async fn decide(
     // 構文チェックへ進むと必ず構文エラーになる。対象の表の形式やブロックコメントの位置で本物が実際に
     // 何で FAILED にするかが変わるので、構文チェックの前に確かめておく（2026-09-26 実測。#244）。
     // S3 Tables の Context の LOCATION の無い STORED AS は、本物は開始してから FAILED にした（2026-09-27 実測 s15。#248）。
-    let pre_syntax_check_failure = if s3_tables && unquoted_ddl::s3_tables_stored_as(&query) {
+    // ROW FORMAT・CLUSTERED BY・型付きの PARTITIONED BY・未知のキーの TBLPROPERTIES も同じく開始して FAILED にした
+    // （2026-09-26・27 実測。#270）。
+    let s3_tables_failure = s3_tables
+        .then(|| unquoted_ddl::s3_tables_failure(&query))
+        .flatten();
+    let pre_syntax_check_failure = if let Some(failure) = s3_tables_failure {
         Some(ImmediateFailure {
-            failure: Failure::iceberg_stored_as(),
+            failure,
             writes_result_file: false,
             runs_ctas_query: false,
         })

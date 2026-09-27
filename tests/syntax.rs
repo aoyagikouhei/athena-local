@@ -470,6 +470,99 @@ async fn s3_tables_の_context_の_location_の無い_stored_as_は開始して_
     assert!(harness.s3_puts().is_empty(), "{:?}", harness.s3_puts());
 }
 
+/// ROW FORMAT・CLUSTERED BY・型付きの PARTITIONED BY・未知のキーの TBLPROPERTIES・列の並び無しも、本物は開始してから
+/// 句ごとの文言で FAILED にし、結果ファイルを置かなかった（2026-09-26 実測 vc4・z6・z12・z13・z15〜z17、2026-09-27 実測
+/// pn6・pr3。#270）。Trino には無い句なので構文チェックも本体も送らない。`AwsDataCatalog` の 3 部は Query から 1 部目を
+/// 落とす（#271）。
+#[tokio::test]
+async fn s3_tables_の_context_の_location_の無い_hive_の句は句ごとの文言で開始して_failed_にする() {
+    let harness = Harness::builder(select_response())
+        .catalog_map(&[("s3tablescatalog/b", "iceberg")])
+        .results_s3()
+        .start()
+        .await;
+
+    let row_format = (
+        "Iceberg create table statement does not allow ROW FORMAT",
+        1200,
+    );
+    let clustered = (
+        "Iceberg create table statement does not allow CLUSTERED BY",
+        1200,
+    );
+    let partitioned = (
+        "Invalid PARTITIONED BY clause in Iceberg create table statement",
+        1006,
+    );
+    let unknown_key = ("Unsupported table property key: a270", 1200);
+    let no_column = (
+        "At least one column is required for Iceberg create table statement",
+        1006,
+    );
+    let serde = "ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'";
+    for (query, (reason, error_type)) in [
+        (format!("CREATE TABLE t (n int) {serde}"), row_format),
+        (
+            "CREATE TABLE t (n int) ROW FORMAT DELIMITED FIELDS TERMINATED BY ','".to_string(),
+            row_format,
+        ),
+        (format!("CREATE TABLE t {serde}"), row_format),
+        (
+            format!("CREATE TABLE AwsDataCatalog.ns.t (n int) {serde}"),
+            row_format,
+        ),
+        (
+            "CREATE TABLE t (n int) CLUSTERED BY (n) INTO 4 BUCKETS".to_string(),
+            clustered,
+        ),
+        (
+            format!("CREATE TABLE t (n int) CLUSTERED BY (n) INTO 4 BUCKETS {serde}"),
+            clustered,
+        ),
+        (
+            "CREATE TABLE t (n int) PARTITIONED BY (p int)".to_string(),
+            partitioned,
+        ),
+        (
+            "CREATE TABLE t (n int) TBLPROPERTIES ('a270'='b')".to_string(),
+            unknown_key,
+        ),
+        (
+            "CREATE TABLE t TBLPROPERTIES ('a270'='b')".to_string(),
+            no_column,
+        ),
+    ] {
+        let execution = harness
+            .run_query(json!({
+                "QueryString": query,
+                "QueryExecutionContext": { "Catalog": "s3tablescatalog/b", "Database": "ns" },
+                "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+            }))
+            .await;
+        let execution = &execution["QueryExecution"];
+        let status = &execution["Status"];
+        assert_eq!(status["State"], "FAILED", "{query}: {execution}");
+        assert_eq!(status["StateChangeReason"], reason, "{query}");
+        assert_eq!(
+            status["AthenaError"],
+            json!({
+                "ErrorCategory": 2,
+                "ErrorType": error_type,
+                "Retryable": false,
+                "ErrorMessage": reason
+            }),
+            "{query}"
+        );
+        assert_eq!(execution["StatementType"], "DDL");
+        assert_eq!(execution["SubstatementType"], "CREATE_TABLE");
+        assert_eq!(execution["Query"], query.replace("AwsDataCatalog.", ""));
+        assert_eq!(execution["QueryExecutionContext"]["Database"], "ns");
+    }
+    assert!(harness.syntax_checks().is_empty(), "構文チェックを送らない");
+    assert!(harness.trino_requests().is_empty(), "本体を送らない");
+    assert!(harness.s3_puts().is_empty(), "{:?}", harness.s3_puts());
+}
+
 /// Context の Catalog が S3 Tables（`s3tablescatalog/<バケット>`。大文字小文字は区別しない）なら、本物は場所の無い
 /// `CREATE TABLE` を作るので弾かずに実行する。列の `NOT NULL` の NV は同じく弾く（2026-09-26 実測 h1〜h7。#221）。
 #[tokio::test]

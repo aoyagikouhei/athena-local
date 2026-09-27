@@ -117,6 +117,18 @@ fn hive_の構文で読めない形と測っていない形は判定しない() 
     }
 }
 
+/// `s3_tables_failure` の理由と ErrorType。
+fn failure(query: &str) -> Option<(String, i32)> {
+    s3_tables_failure(query).map(|failure| (failure.reason, failure.error_type))
+}
+
+const STORED_AS: &str = "Iceberg create table statement does not allow STORED AS/BY";
+const ROW_FORMAT: &str = "Iceberg create table statement does not allow ROW FORMAT";
+const CLUSTERED_BY: &str = "Iceberg create table statement does not allow CLUSTERED BY";
+const PARTITIONED_BY: &str = "Invalid PARTITIONED BY clause in Iceberg create table statement";
+const NO_COLUMN: &str = "At least one column is required for Iceberg create table statement";
+const SERDE: &str = "ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'";
+
 /// LOCATION の無い `CREATE TABLE <名前> [(列)] STORED AS <語>` は、本物は開始してから FAILED にした（2026-09-26 実測
 /// n21・2026-09-27 実測 s15。#248）。2 部・大文字混じりの `AwsDataCatalog` の 3 部・IF NOT EXISTS・COMMENT・
 /// PARTITIONED BY・TBLPROPERTIES・バッククォート・列の並び無しでも同じ（2026-09-27 実測 w0〜w2・w4〜w6・w8〜w10。#266）。
@@ -135,20 +147,185 @@ fn location_の無い_stored_as_は開始して失敗させる() {
         "CREATE TABLE t (n int) PARTITIONED BY (p string) STORED AS PARQUET",
         "CREATE TABLE t (n int) STORED AS PARQUET TBLPROPERTIES ('a'='b')",
     ] {
-        assert!(s3_tables_stored_as(query), "{query}");
+        assert_eq!(
+            failure(query),
+            Some((STORED_AS.to_string(), 1200)),
+            "{query}"
+        );
     }
-    // ROW FORMAT と組む形は ROW FORMAT の文言（w7。#270）、ちょうど小文字の `awsdatacatalog` の 3 部は 2 catalogs（w3。#270）。
-    // CLUSTERED BY と組む形とほかのカタログの 3 部は測っていない。
+}
+
+/// ROW FORMAT（SERDE・DELIMITED）・CLUSTERED BY・型付きの PARTITIONED BY・未知のキー 1 つの TBLPROPERTIES も、本物は開始して
+/// FAILED にした。名前の形（2 部・`AwsDataCatalog` の 3 部・バッククォート）・IF NOT EXISTS・COMMENT・列の並び無しによらない
+/// （2026-09-26 実測 vc4・z6〜z17、2026-09-27 実測 cl1・pn1〜pn5・pa4。#270）。
+#[test]
+fn location_の無い_hive_の句は句ごとの文言で開始して失敗させる() {
+    let row_format = Some((ROW_FORMAT.to_string(), 1200));
+    let clustered = Some((CLUSTERED_BY.to_string(), 1200));
+    let partitioned = Some((PARTITIONED_BY.to_string(), 1006));
+    let unknown_key = Some(("Unsupported table property key: a270".to_string(), 1200));
+    for (query, expected) in [
+        (format!("CREATE TABLE t (n int) {SERDE}"), &row_format),
+        (
+            "CREATE TABLE t (n int) ROW FORMAT DELIMITED FIELDS TERMINATED BY ','".to_string(),
+            &row_format,
+        ),
+        (
+            format!("CREATE TABLE t (n int) COMMENT 't comment' {SERDE}"),
+            &row_format,
+        ),
+        (format!("CREATE TABLE ns.t (n int) {SERDE}"), &row_format),
+        (
+            format!("CREATE TABLE IF NOT EXISTS t (n int) {SERDE}"),
+            &row_format,
+        ),
+        (
+            format!("CREATE TABLE AwsDataCatalog.ns.t (n int) {SERDE}"),
+            &row_format,
+        ),
+        (format!("CREATE TABLE t {SERDE}"), &row_format),
+        (format!("CREATE TABLE `t` (n int) {SERDE}"), &row_format),
+        (
+            "CREATE TABLE t (n int) CLUSTERED BY (n) INTO 4 BUCKETS".to_string(),
+            &clustered,
+        ),
+        (
+            "CREATE TABLE AwsDataCatalog.ns.t (n int) CLUSTERED BY (n) INTO 4 BUCKETS".to_string(),
+            &clustered,
+        ),
+        (
+            "CREATE TABLE t CLUSTERED BY (n) INTO 4 BUCKETS".to_string(),
+            &clustered,
+        ),
+        (
+            "CREATE TABLE t (n int) PARTITIONED BY (p int)".to_string(),
+            &partitioned,
+        ),
+        (
+            "CREATE TABLE t (n int) PARTITIONED BY (n int)".to_string(),
+            &partitioned,
+        ),
+        (
+            "CREATE TABLE ns.t (n int) PARTITIONED BY (p int)".to_string(),
+            &partitioned,
+        ),
+        (
+            "CREATE TABLE `t` (n int) PARTITIONED BY (p int)".to_string(),
+            &partitioned,
+        ),
+        (
+            "CREATE TABLE t (n int) COMMENT 't comment' PARTITIONED BY (p int)".to_string(),
+            &partitioned,
+        ),
+        (
+            "CREATE TABLE t (n int) TBLPROPERTIES ('a270'='b')".to_string(),
+            &unknown_key,
+        ),
+        (
+            "CREATE TABLE IF NOT EXISTS t (n int) TBLPROPERTIES ('a270'='b')".to_string(),
+            &unknown_key,
+        ),
+        (
+            "CREATE TABLE t (n int) TBLPROPERTIES ('table_type'='ICEBERG', 'a270'='b')".to_string(),
+            &unknown_key,
+        ),
+        (
+            "CREATE TABLE t (n int) TBLPROPERTIES ('a270'='b', 'table_type'='ICEBERG')".to_string(),
+            &unknown_key,
+        ),
+        (
+            "CREATE TABLE t TBLPROPERTIES ('a270'='b')".to_string(),
+            &Some((NO_COLUMN.to_string(), 1006)),
+        ),
+    ] {
+        assert_eq!(&failure(&query), expected, "{query}");
+    }
+}
+
+/// 句が 2 つ以上あれば CLUSTERED BY > ROW FORMAT > STORED AS > 型付きの PARTITIONED BY > 未知のキーの TBLPROPERTIES の順に
+/// 1 つを選ぶ（2026-09-26 実測 w7・w8・z10、2026-09-27 実測 pr1〜pr9。5 句の 10 対すべて。#270）。
+#[test]
+fn 句が複数あれば実測の優先順で_1_つ選ぶ() {
+    for (clauses, expected) in [
+        (
+            format!("CLUSTERED BY (n) INTO 4 BUCKETS {SERDE}"),
+            CLUSTERED_BY,
+        ),
+        (
+            "CLUSTERED BY (n) INTO 4 BUCKETS STORED AS PARQUET".to_string(),
+            CLUSTERED_BY,
+        ),
+        (
+            "PARTITIONED BY (p int) CLUSTERED BY (n) INTO 4 BUCKETS".to_string(),
+            CLUSTERED_BY,
+        ),
+        (
+            "CLUSTERED BY (n) INTO 4 BUCKETS TBLPROPERTIES ('a270'='b')".to_string(),
+            CLUSTERED_BY,
+        ),
+        (format!("PARTITIONED BY (p int) {SERDE}"), ROW_FORMAT),
+        (format!("{SERDE} STORED AS TEXTFILE"), ROW_FORMAT),
+        (format!("{SERDE} TBLPROPERTIES ('a270'='b')"), ROW_FORMAT),
+        (
+            format!("{SERDE} TBLPROPERTIES ('table_type'='ICEBERG')"),
+            ROW_FORMAT,
+        ),
+        (
+            "PARTITIONED BY (p int) STORED AS PARQUET".to_string(),
+            STORED_AS,
+        ),
+        (
+            "STORED AS PARQUET TBLPROPERTIES ('a270'='b')".to_string(),
+            STORED_AS,
+        ),
+        (
+            "PARTITIONED BY (p int) TBLPROPERTIES ('a270'='b')".to_string(),
+            PARTITIONED_BY,
+        ),
+        (
+            format!(
+                "PARTITIONED BY (p int) CLUSTERED BY (n) INTO 4 BUCKETS {SERDE} STORED AS PARQUET TBLPROPERTIES ('a270'='b')"
+            ),
+            CLUSTERED_BY,
+        ),
+    ] {
+        let query = format!("CREATE TABLE t (n int) {clauses}");
+        assert_eq!(
+            failure(&query).map(|(reason, _)| reason).as_deref(),
+            Some(expected),
+            "{query}"
+        );
+    }
+}
+
+/// 失敗させない形。LOCATION・EXTERNAL は開始時の判定（`s3_tables_rejection`）、ちょうど小文字の `awsdatacatalog` の 3 部は
+/// 2 catalogs（w3）、本物が受理した形（Iceberg の書き方の PARTITIONED BY・有効な TBLPROPERTIES・COMMENT だけ。
+/// cl0・vc1・pa1〜pa3・tp1〜tp5）は Trino の構文チェックに任せる。ほかのカタログの 3 部、列の並びの無い型付きの
+/// PARTITIONED BY・句の無い形、未知のキー 2 つ、`'table_type'='HIVE'`（tp6 は開始時に弾く）は測っていない。
+#[test]
+fn 失敗させない形と測っていない形は判定しない() {
     for query in [
         "CREATE TABLE t (n int) STORED AS PARQUET LOCATION 's3://b/p/'",
         "CREATE EXTERNAL TABLE t (n int) STORED AS PARQUET",
-        "CREATE TABLE t (n int) ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe' STORED AS TEXTFILE",
+        "CREATE EXTERNAL TABLE t (n int) ROW FORMAT SERDE 'x'",
         "CREATE TABLE awsdatacatalog.ns.t (n int) STORED AS PARQUET",
-        "CREATE TABLE t (n int) CLUSTERED BY (n) INTO 4 BUCKETS STORED AS PARQUET",
         "CREATE TABLE hive.ns.t (n int) STORED AS PARQUET",
+        "CREATE TABLE hive.ns.t (n int) ROW FORMAT SERDE 'x'",
         "CREATE TABLE t (n int)",
+        "CREATE TABLE t (n int) COMMENT 't comment'",
+        "CREATE TABLE t (n int) PARTITIONED BY (n)",
+        "CREATE TABLE t (n int, s string) PARTITIONED BY (bucket(4, n))",
+        "CREATE TABLE t (n int) TBLPROPERTIES ('table_type'='ICEBERG')",
+        "CREATE TABLE t (n int) TBLPROPERTIES ('TABLE_TYPE'='ICEBERG')",
+        "CREATE TABLE t (n int) TBLPROPERTIES ('format'='parquet')",
+        "CREATE TABLE t (n int) TBLPROPERTIES ('write_compression'='zstd')",
+        "CREATE TABLE t (n int) TBLPROPERTIES ('table_type'='HIVE')",
+        "CREATE TABLE t (n int) TBLPROPERTIES ('a270x'='b', 'a270y'='c')",
+        "CREATE TABLE t PARTITIONED BY (p int)",
+        "CREATE TABLE t",
+        "CREATE TABLE t TBLPROPERTIES ('table_type'='ICEBERG')",
     ] {
-        assert!(!s3_tables_stored_as(query), "{query}");
+        assert_eq!(failure(query), None, "{query}");
     }
 }
 
