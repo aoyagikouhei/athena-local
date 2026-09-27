@@ -125,6 +125,7 @@ NOSUCH_COL="nosuch_col"
 P_S3=$(new_name s3)
 T1=$(new_name t1)
 T3=$(new_name t3)
+T3B=$(new_name t3b)
 T4=$(new_name t4)
 T5=$(new_name t5)
 T6=$(new_name t6)
@@ -615,6 +616,9 @@ run_in_ctx "$DEFAULT_CTX" t2 "SELECT * FROM $DB.$NOSUCH_TABLE"
 if [ "$S3_OK" = 1 ]; then
   run_create_then_drop_ctx "$S3_CTX" "$S3_CTX" t3 \
     "CREATE TABLE $S3TABLES_NS.$T3 AS SELECT * FROM $NOSUCH_TABLE" "$S3TABLES_NS.$T3"
+  # t3b: f7（t1）と同じ 2 部の無い表を、実在する名前空間に書き込む CTAS で（名前空間の有無だけを変えた対）。
+  run_create_then_drop_ctx "$S3_CTX" "$S3_CTX" t3b \
+    "CREATE TABLE $S3TABLES_NS.$T3B AS SELECT * FROM $S3TABLES_NS.$NOSUCH_TABLE" "$S3TABLES_NS.$T3B"
   run_create_then_drop_ctx "$S3_CTX" "$S3_CTX" t4 \
     "CREATE TABLE $S3TABLES_NS.$T4 AS SELECT * FROM \"$S3TABLES_CATALOG\".$S3TABLES_NS.$NOSUCH_TABLE" "$S3TABLES_NS.$T4"
   run_create_then_drop_ctx "$S3_CTX" "$S3_CTX" t5 \
@@ -622,7 +626,7 @@ if [ "$S3_OK" = 1 ]; then
   run_create_then_drop_ctx "$S3_CTX" "$S3_CTX" t6 \
     "CREATE TABLE $S3TABLES_NS.$T6 AS SELECT * FROM ${NOSUCH_TABLE^^}" "$S3TABLES_NS.$T6"
 else
-  for l in t3 t4 t5 t6; do
+  for l in t3 t3b t4 t5 t6; do
     skip "$l" "未測定（S3TABLES_* 未設定または S3 Tables の Context の疎通不可）"
     skip "$l-cleanup" "CREATE TABLE を投げていないため後始末不要"
   done
@@ -634,6 +638,8 @@ if [ "$S3_OK" = 1 ]; then
   run_in_ctx "$S3_CTX" t7 "SELECT * FROM $NOSUCH_TABLE"
   run_in_ctx "$S3_CTX" t8 "SELECT * FROM $S3TABLES_NS.$NOSUCH_TABLE"
   run_in_ctx "$S3_CTX" t9 "SELECT * FROM \"$S3TABLES_CATALOG\".$S3TABLES_NS.$NOSUCH_TABLE"
+  # t17: 名前空間ごと無い SELECT（手元の Trino 482 は TABLE_NOT_FOUND ではなく `Schema '<ns>' does not exist`）。
+  run_in_ctx "$S3_CTX" t17 "SELECT * FROM $NOPE_NS.$NOSUCH_TABLE"
   if [ "$P3_OK" = 1 ]; then
     run_in_ctx "$S3_CTX" t10 "INSERT INTO $P_S3 SELECT * FROM $S3TABLES_NS.$NOSUCH_TABLE"
   else
@@ -647,7 +653,7 @@ if [ "$S3_OK" = 1 ]; then
     skip t13 "<P>_s3 が作れなかったため未測定"
   fi
 else
-  for l in t7 t8 t9 t10 t11 t12 t13; do
+  for l in t7 t8 t9 t17 t10 t11 t12 t13; do
     skip "$l" "未測定（S3TABLES_* 未設定または S3 Tables の Context の疎通不可）"
   done
 fi
@@ -699,11 +705,11 @@ write_summary_txt() {
     echo "#   の形。#273 の f7 で見た）が、CTAS 以外の文・名前の書き方・既定の Context からの参照でも"
     echo "#   同じ形か、無い列と無い名前空間のどちらが先に判定されるかを実測"
     echo "# 実行日時: $(date -Iseconds)"
-    echo "# StartQueryExecution の見込み本数（S3TABLES_* あり）: 21〜28"
+    echo "# StartQueryExecution の見込み本数（S3TABLES_* あり）: 23〜31"
     echo "#   （preflight 2（既定の Context の SELECT 1、S3 Tables の Context の SELECT 1）+"
-    echo "#   準備 2（<P>_s3 の CREATE・INSERT）+ 主要項目 16（t1〜t16）+ 後始末 1（<P>_s3 の DROP）。"
-    echo "#   t1・t3〜t6・t14・t15（CREATE TABLE、7 項目）が想定に反して受理されたら、その場で"
-    echo "#   消す後始末が最大 7 本増える）。S3TABLES_* が無いか S3 Tables の Context の疎通が"
+    echo "#   準備 2（<P>_s3 の CREATE・INSERT）+ 主要項目 18（t1〜t17・t3b）+ 後始末 1（<P>_s3 の DROP）。"
+    echo "#   t1・t3〜t6・t3b・t14・t15（CREATE TABLE、8 項目）が想定に反して受理されたら、その場で"
+    echo "#   消す後始末が最大 8 本増える）。S3TABLES_* が無いか S3 Tables の Context の疎通が"
     echo "#   通らなければ、preflight 1（既定の Context の SELECT 1）+ t2 の 1 本の 2 回だけ。"
     echo "#   このほかに Athena のクエリでない ListDatabases を preflight で 1 回、HeadObject"
     echo "#   （結果ファイル本体・.metadata の有無の確認）を開始できた項目ごとに最大 2 回呼ぶ"
