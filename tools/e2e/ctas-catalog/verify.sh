@@ -58,6 +58,67 @@
 #      CREATE TABLE awsdatacatalog.e2e232db.t232c9 AS SELECT 1 AS n（hive にある DB）
 #      → SUCCEEDED、hive.e2e232db.t232c9 ができる
 #
+# #272 の変更: エンジン（Trino）で失敗した CTAS・INSERT の理由（StateChangeReason・AthenaError.ErrorMessage）の
+# 末尾に、本物と同じ接尾辞を Context・名前の形によらず付ける（src/failure.rs の with_ctas_suffix・
+# with_insert_suffix）:
+#   - CTAS: ` You may need to manually clean the data at location '<OutputLocation>tables/<id>' before
+#     retrying. Athena will not delete data in your account.`
+#   - INSERT: ` If a data manifest file was generated at '<OutputLocation><id>-manifest.csv', you may need to
+#     manually clean the data from locations specified in the manifest. Athena will not delete data in your
+#     account.`
+# 加えて、既定の Context（Catalog 省略か AwsDataCatalog）の CTAS で名前が 1〜2 部か 1 部目が `awsdatacatalog`
+# の類の 3 部（#251 で問い合わせ部分だけを Trino に送る、無い DB への CTAS の経路も含む）、S3 Tables の
+# Context で 1 部目が `awsdatacatalog` の類の 3 部（同じ仕組み）のときだけ、Trino が返す `line N:M` を
+# 本物が SQL を整形し直した文の位置に直す。ほかの形（S3 Tables の Context の名前空間への 2 部の名前、
+# JOIN などを含む問い合わせ、INSERT）は接尾辞だけ付き、位置は送った文のまま（実測・規則は
+# .claude/issue-notes/272.md、docs/dev/decisions.md）。
+# エンジンの失敗は、#251 の「DB が無い」短絡（C2 など）と違い、結果ファイル本体も `.metadata` も置かれない
+# （results.rs の ResultLocation::failed が `<id>.txt` の文にしか Some を返さないのと同じで、CTAS・INSERT は
+# 失敗時に何も置かない）。
+#
+# 追加のセットアップ（C11 以降で使う）: hive.e2e232db に表 t232src (n int, s varchar) を 1 行（1, 'x'）
+# 入りで用意する。
+#
+# ケース表（続き。TRINO_CATALOG_MAP・TRINO_CATALOG は上と同じ）:
+#   C10 既定の Context（Catalog 省略）・hive にある DB
+#      CREATE TABLE awsdatacatalog.e2e232db.t232c10 AS SELECT * FROM e2e232db.t232c10src（無い表、SELECT * の 1 項目）
+#      → FAILED、TABLE_NOT_FOUND（ErrorType 1301）、StateChangeReason が
+#        `TABLE_NOT_FOUND: line 6:3: Table 'hive.e2e232db.t232c10src' does not exist. You may need to
+#        manually clean the data at location '<OutputLocation>tables/<id>' before retrying. Athena will not
+#        delete data in your account.` と一致（本物が整形し直した位置 line 6:3。#272）、結果ファイル本体・
+#        .metadata とも無し
+#   C11 同じ Context
+#      CREATE TABLE awsdatacatalog.e2e232db.t232c11 AS SELECT nosuch272 FROM e2e232db.t232src（無い列、1 項目）
+#      → FAILED、COLUMN_NOT_FOUND（ErrorType 1006）、位置 line 4:13 + 接尾辞
+#   C12 同じ Context
+#      CREATE TABLE awsdatacatalog.e2e232db.t232c12 AS SELECT n, s, nosuch272 FROM e2e232db.t232src（無い列、3 項目）
+#      → FAILED、COLUMN_NOT_FOUND、位置 line 7:3 + 接尾辞（項目が複数だと改行して数える）
+#   C13 同じ Context
+#      CREATE TABLE awsdatacatalog.e2e232db.t232c13 WITH (format = 'PARQUET') AS SELECT * FROM
+#      e2e232db.t232c13src（無い表、CTAS の WITH 句 1 つ）
+#      → FAILED、TABLE_NOT_FOUND、位置 line 7:3（WITH のプロパティ 1 つで整形後の行が 1 つ増える）+ 接尾辞
+#   C14 同じ Context
+#      CREATE TABLE awsdatacatalog.e2e232db.t232c14 AS SELECT 1 + 'a' AS n（型の不一致）
+#      → FAILED、TYPE_MISMATCH（ErrorType 1002）、位置 line 4:16 + 接尾辞
+#   C15 同じ Context
+#      CREATE TABLE awsdatacatalog.E2e232Missing.t232c15 AS SELECT * FROM e2e232db.t232c15src（無い DB・
+#      無い表。#251 の問い合わせ部分だけを Trino に送る経路）
+#      → FAILED、C10 と同じ TABLE_NOT_FOUND・位置 line 6:3 + 接尾辞（DB が無い短絡の「Database ... not
+#        found」ではなく、問い合わせ自体の失敗が理由になる）、結果ファイル本体・.metadata とも無し
+#   C16 S3 Tables の Context（Catalog=s3tablescatalog/e2e232,Database=e2e232ns）
+#      CREATE TABLE e2e232ns.t232c16 AS SELECT * FROM t232c16src（2 部の CTAS・無い表）
+#      → FAILED、TABLE_NOT_FOUND + 接尾辞だが、位置は送った文のまま（既定の Context の 1〜3 部の名前の形の
+#        外なので直さない）
+#   C17 既定の Context（Catalog 省略）
+#      INSERT INTO awsdatacatalog.e2e232db.t232src SELECT nosuch272, 'y' FROM awsdatacatalog.e2e232db.t232src
+#      （無い列）
+#      → FAILED、COLUMN_NOT_FOUND + INSERT の接尾辞（manifest）。位置は送った文のまま（INSERT は整形し
+#        直さない）
+#   C18（回帰） 同じ Context
+#      CREATE TABLE awsdatacatalog.e2e232db.t232c18 AS SELECT a.n FROM e2e232db.t232src a JOIN
+#      e2e232db.t232c18joinsrc b ON a.n = b.n（JOIN・無い表）
+#      → FAILED、TABLE_NOT_FOUND + 接尾辞だが、位置は送った文のまま（JOIN は整形器の対象の外）
+#
 # #251 の変更を入れる前にこの足場を流すと（2026-09-27 に確認、PASS=9 FAIL=5）:
 #   - FAIL（新しい挙動をまだ実装していないため）: C2（理由の DB 名が大文字混じりのまま・`.metadata` が無い）、
 #     C4（IF NOT EXISTS のガードで ctas() 自体が発火せず、Trino の生の `CATALOG_NOT_FOUND` になる）、
@@ -103,7 +164,8 @@ OUTPUT_LOCATION="s3://${BUCKET}/${PREFIX}/"
 S3_TABLES_CATALOG="s3tablescatalog/e2e232"
 CONTEXT_NS="e2e232ns"       # S3 Tables の Context の Database（iceberg に作る名前空間。C1・C2・C3 で共通）
 HIVE_DB="e2e232db"          # hive（Glue 役）に事前に作る DB（C1 の 2 部目）
-HIVE_DB_MISSING="E2e232Missing" # hive に作らない DB（C2・C4・C6・C8 の 2 部目。大文字混じりのまま送り、理由文言は小文字で確かめる。#251）
+HIVE_DB_MISSING="E2e232Missing" # hive に作らない DB（C2・C4・C6・C8・C15 の 2 部目。大文字混じりのまま送り、理由文言は小文字で確かめる。#251）
+HIVE_SRC_TABLE="t232src"    # hive.${HIVE_DB} に事前に作る表（n int, s varchar、1 行。C11・C12・C17・C18 で使う。#272）
 
 ATHENA_BIND="127.0.0.1:8140"
 ATHENA_BASE="http://${ATHENA_BIND}"
@@ -517,6 +579,133 @@ case_fail_at_runtime() {
   fi
 }
 
+# #272: `line N:M` の期待位置を、pos_spec から求める。`fixed:<line>:<col>` は本物が SQL を整形し直した
+# あとの位置（実測済みの定数）をそのまま使う。`auto:<検索語>` は送った文のまま（位置を直さない形）で、
+# $sql の中でその検索語が最初に現れるバイト位置（1 始まり）を桁、行は 1 に固定して使う（この足場の
+# 位置を確かめるケースはすべて 1 行で送るので十分）。
+resolve_pos() {
+  local sql="$1" spec="$2"
+  case "$spec" in
+    fixed:*)
+      echo "${spec#fixed:}"
+      ;;
+    auto:*)
+      local term="${spec#auto:}" col
+      col=$(awk -v s="$sql" -v t="$term" 'BEGIN{print index(s,t)}')
+      echo "1:${col}"
+      ;;
+    *)
+      echo "0:0"
+      ;;
+  esac
+}
+
+# C10〜C16・C18（#272）: CTAS がエンジン（Trino）で失敗したときの判定。StateChangeReason が
+# 「本物のエラー本文（body_template の `<POS>` を resolve_pos で解決した `line:col` に差し替えたもの）+ 接尾辞」
+# と一致し、ErrorCategory・ErrorType・Retryable・Query・SubstatementType に加え、結果ファイル本体・.metadata の
+# どちらも無い（普通のエンジンの失敗は成功時と違って何も置かない。results.rs の ResultLocation::failed）ことを
+# 確かめる。
+case_fail_ctas_engine() {
+  local no="$1" name="$2" sql="$3" catalog="$4" database="$5" pos_spec="$6" body_template="$7" expect_type="$8"
+  if ! run_and_wait "$sql" "$catalog" "$database"; then
+    record "$no $name" FAIL "開始できなかった: $(echo "$LAST_START" | tr -d '\n' | cut -c1-200)"
+    return
+  fi
+  local state reason category type_ retryable query substmt ok=1 detail=""
+  state=$(echo "$LAST_RESP" | jq -r '.QueryExecution.Status.State // empty')
+  reason=$(echo "$LAST_RESP" | jq -r '.QueryExecution.Status.StateChangeReason // empty')
+  category=$(echo "$LAST_RESP" | jq -r '.QueryExecution.Status.AthenaError.ErrorCategory // empty')
+  type_=$(echo "$LAST_RESP" | jq -r '.QueryExecution.Status.AthenaError.ErrorType // empty')
+  retryable=$(echo "$LAST_RESP" | jq -r \
+    'if .QueryExecution.Status.AthenaError.Retryable == null then "" else (.QueryExecution.Status.AthenaError.Retryable | tostring) end')
+  query=$(echo "$LAST_RESP" | jq -r '.QueryExecution.Query // empty')
+  substmt=$(echo "$LAST_RESP" | jq -r '.QueryExecution.SubstatementType // empty')
+
+  local pos body_message suffix expect_reason
+  pos=$(resolve_pos "$sql" "$pos_spec")
+  body_message="${body_template/<POS>/$pos}"
+  suffix="You may need to manually clean the data at location '${OUTPUT_LOCATION}tables/${LAST_ID}' before retrying. Athena will not delete data in your account."
+  expect_reason="${body_message}. ${suffix}"
+
+  [ "$state" = "FAILED" ] || { ok=0; detail="$detail State=${state:-無し}(期待 FAILED)"; }
+  [ "$reason" = "$expect_reason" ] || { ok=0; detail="$detail StateChangeReason=\"$reason\"(期待 \"$expect_reason\")"; }
+  [ "$category" = "2" ] || { ok=0; detail="$detail ErrorCategory=${category:-無し}(期待 2)"; }
+  [ "$type_" = "$expect_type" ] || { ok=0; detail="$detail ErrorType=${type_:-無し}(期待 $expect_type)"; }
+  [ "$retryable" = "false" ] || { ok=0; detail="$detail Retryable=${retryable:-無し}(期待 false)"; }
+  [ "$query" = "$sql" ] || { ok=0; detail="$detail Query=\"$query\"(期待 受け取ったまま)"; }
+  [ "$substmt" = "CREATE_TABLE_AS_SELECT" ] || { ok=0; detail="$detail SubstatementType=${substmt:-無し}(期待 CREATE_TABLE_AS_SELECT)"; }
+
+  local body_key="${PREFIX}/tables/${LAST_ID}" body_stat meta_stat
+  body_stat=$(mc_stat "$body_key")
+  if mc_exists "$body_stat"; then
+    ok=0
+    detail="$detail 結果ファイル本体がある(期待は無し): $body_key"
+  fi
+  meta_stat=$(mc_stat "${body_key}.metadata")
+  if mc_exists "$meta_stat"; then
+    ok=0
+    detail="$detail .metadata がある(期待は無し。普通のエンジンの失敗は何も置かない): ${body_key}.metadata"
+  fi
+
+  if [ "$ok" = "1" ]; then
+    record "$no $name" PASS "State=$state StateChangeReason 一致 ErrorCategory=$category ErrorType=$type_ Retryable=$retryable Query 一致 SubstatementType=$substmt 結果ファイル無し [id=$LAST_ID]"
+  else
+    record "$no $name" FAIL "${detail# } [id=$LAST_ID]"
+  fi
+}
+
+# C17（#272）: INSERT がエンジン（Trino）で失敗したときの判定。case_fail_ctas_engine と同じ考え方だが、
+# 接尾辞が INSERT の manifest の文言、結果ファイルのキーが `<id>`（`tables/` の下ではない）、
+# StatementType が DML（SubstatementType は無い）になる。
+case_fail_insert_engine() {
+  local no="$1" name="$2" sql="$3" catalog="$4" database="$5" pos_spec="$6" body_template="$7" expect_type="$8"
+  if ! run_and_wait "$sql" "$catalog" "$database"; then
+    record "$no $name" FAIL "開始できなかった: $(echo "$LAST_START" | tr -d '\n' | cut -c1-200)"
+    return
+  fi
+  local state reason category type_ retryable query stmt ok=1 detail=""
+  state=$(echo "$LAST_RESP" | jq -r '.QueryExecution.Status.State // empty')
+  reason=$(echo "$LAST_RESP" | jq -r '.QueryExecution.Status.StateChangeReason // empty')
+  category=$(echo "$LAST_RESP" | jq -r '.QueryExecution.Status.AthenaError.ErrorCategory // empty')
+  type_=$(echo "$LAST_RESP" | jq -r '.QueryExecution.Status.AthenaError.ErrorType // empty')
+  retryable=$(echo "$LAST_RESP" | jq -r \
+    'if .QueryExecution.Status.AthenaError.Retryable == null then "" else (.QueryExecution.Status.AthenaError.Retryable | tostring) end')
+  query=$(echo "$LAST_RESP" | jq -r '.QueryExecution.Query // empty')
+  stmt=$(echo "$LAST_RESP" | jq -r '.QueryExecution.StatementType // empty')
+
+  local pos body_message suffix expect_reason
+  pos=$(resolve_pos "$sql" "$pos_spec")
+  body_message="${body_template/<POS>/$pos}"
+  suffix="If a data manifest file was generated at '${OUTPUT_LOCATION}${LAST_ID}-manifest.csv', you may need to manually clean the data from locations specified in the manifest. Athena will not delete data in your account."
+  expect_reason="${body_message}. ${suffix}"
+
+  [ "$state" = "FAILED" ] || { ok=0; detail="$detail State=${state:-無し}(期待 FAILED)"; }
+  [ "$reason" = "$expect_reason" ] || { ok=0; detail="$detail StateChangeReason=\"$reason\"(期待 \"$expect_reason\")"; }
+  [ "$category" = "2" ] || { ok=0; detail="$detail ErrorCategory=${category:-無し}(期待 2)"; }
+  [ "$type_" = "$expect_type" ] || { ok=0; detail="$detail ErrorType=${type_:-無し}(期待 $expect_type)"; }
+  [ "$retryable" = "false" ] || { ok=0; detail="$detail Retryable=${retryable:-無し}(期待 false)"; }
+  [ "$query" = "$sql" ] || { ok=0; detail="$detail Query=\"$query\"(期待 受け取ったまま)"; }
+  [ "$stmt" = "DML" ] || { ok=0; detail="$detail StatementType=${stmt:-無し}(期待 DML)"; }
+
+  local body_key="${PREFIX}/${LAST_ID}" body_stat meta_stat
+  body_stat=$(mc_stat "$body_key")
+  if mc_exists "$body_stat"; then
+    ok=0
+    detail="$detail 結果ファイルがある(期待は無し): $body_key"
+  fi
+  meta_stat=$(mc_stat "${body_key}.metadata")
+  if mc_exists "$meta_stat"; then
+    ok=0
+    detail="$detail .metadata がある(期待は無し): ${body_key}.metadata"
+  fi
+
+  if [ "$ok" = "1" ]; then
+    record "$no $name" PASS "State=$state StateChangeReason 一致 ErrorCategory=$category ErrorType=$type_ Retryable=$retryable Query 一致 StatementType=$stmt 結果ファイル無し [id=$LAST_ID]"
+  else
+    record "$no $name" FAIL "${detail# } [id=$LAST_ID]"
+  fi
+}
+
 # --- ケース ---
 
 run_cases() {
@@ -581,6 +770,76 @@ run_cases() {
     "CREATE_TABLE_AS_SELECT" \
     hive "$HIVE_DB" t232c9 \
     "" "" ""
+
+  # C10（#272）: 既定の Context（Catalog 省略）・hive にある DB。CTAS のエンジンの失敗（無い表、SELECT * の
+  # 1 項目）。本物が整形し直した位置 line 6:3 + CTAS の接尾辞。
+  case_fail_ctas_engine "C10" "既定Context(Catalog省略)・CTASのエンジン失敗(無い表・SELECT *)" \
+    "CREATE TABLE awsdatacatalog.${HIVE_DB}.t232c10 AS SELECT * FROM ${HIVE_DB}.t232c10src" "" default \
+    "fixed:6:3" \
+    "TABLE_NOT_FOUND: line <POS>: Table 'hive.${HIVE_DB}.t232c10src' does not exist" \
+    1301
+
+  # C11（#272）: 同じ Context。無い列（1 項目）。位置 line 4:13 + 接尾辞。
+  case_fail_ctas_engine "C11" "既定Context(Catalog省略)・CTASのエンジン失敗(無い列・1項目)" \
+    "CREATE TABLE awsdatacatalog.${HIVE_DB}.t232c11 AS SELECT nosuch272 FROM ${HIVE_DB}.${HIVE_SRC_TABLE}" "" default \
+    "fixed:4:13" \
+    "COLUMN_NOT_FOUND: line <POS>: Column 'nosuch272' cannot be resolved" \
+    1006
+
+  # C12（#272）: 同じ Context。無い列（3 項目。改行して数える）。位置 line 7:3 + 接尾辞。
+  case_fail_ctas_engine "C12" "既定Context(Catalog省略)・CTASのエンジン失敗(無い列・3項目)" \
+    "CREATE TABLE awsdatacatalog.${HIVE_DB}.t232c12 AS SELECT n, s, nosuch272 FROM ${HIVE_DB}.${HIVE_SRC_TABLE}" "" default \
+    "fixed:7:3" \
+    "COLUMN_NOT_FOUND: line <POS>: Column 'nosuch272' cannot be resolved" \
+    1006
+
+  # C13（#272）: 同じ Context。CTAS の WITH 句 1 つ・無い表。WITH のプロパティで整形後の行が 1 つ増え、
+  # 位置は line 7:3 + 接尾辞。
+  case_fail_ctas_engine "C13" "既定Context(Catalog省略)・CTASのエンジン失敗(WITH句・無い表)" \
+    "CREATE TABLE awsdatacatalog.${HIVE_DB}.t232c13 WITH (format = 'PARQUET') AS SELECT * FROM ${HIVE_DB}.t232c13src" "" default \
+    "fixed:7:3" \
+    "TABLE_NOT_FOUND: line <POS>: Table 'hive.${HIVE_DB}.t232c13src' does not exist" \
+    1301
+
+  # C14（#272）: 同じ Context。型の不一致（1 + 'a'）。位置 line 4:16 + 接尾辞。
+  case_fail_ctas_engine "C14" "既定Context(Catalog省略)・CTASのエンジン失敗(型の不一致)" \
+    "CREATE TABLE awsdatacatalog.${HIVE_DB}.t232c14 AS SELECT 1 + 'a' AS n" "" default \
+    "fixed:4:16" \
+    "TYPE_MISMATCH: line <POS>: Cannot apply operator: integer + varchar(1)" \
+    1002
+
+  # C15（#272）: 同じ Context。無い DB・無い表（#251 の問い合わせ部分だけを Trino に送る経路）。C10 と同じ
+  # TABLE_NOT_FOUND・位置 line 6:3 + 接尾辞になる（「Database ... not found」ではなく問い合わせ自体の失敗が
+  # 理由になる）。
+  case_fail_ctas_engine "C15" "既定Context(Catalog省略)・無いDB・問い合わせも失敗" \
+    "CREATE TABLE awsdatacatalog.${HIVE_DB_MISSING}.t232c15 AS SELECT * FROM ${HIVE_DB}.t232c15src" "" default \
+    "fixed:6:3" \
+    "TABLE_NOT_FOUND: line <POS>: Table 'hive.${HIVE_DB}.t232c15src' does not exist" \
+    1301
+
+  # C16（#272）: S3 Tables の Context・2 部の CTAS（名前空間を明示）・無い表。接尾辞は付くが、既定の
+  # Context の 1〜3 部の名前の形の外なので位置は送った文のまま。
+  case_fail_ctas_engine "C16" "S3Tablesの Context・2部のCTAS・無い表(位置は送った文のまま)" \
+    "CREATE TABLE ${CONTEXT_NS}.t232c16 AS SELECT * FROM t232c16src" "$S3_TABLES_CATALOG" "$CONTEXT_NS" \
+    "auto:t232c16src" \
+    "TABLE_NOT_FOUND: line <POS>: Table 'iceberg.${CONTEXT_NS}.t232c16src' does not exist" \
+    1301
+
+  # C17（#272）: 既定の Context。INSERT が無い列で失敗。接尾辞は INSERT の manifest の文言、位置は送った
+  # 文のまま（INSERT は整形し直さない）。
+  case_fail_insert_engine "C17" "既定Context(Catalog省略)・INSERTのエンジン失敗(無い列)" \
+    "INSERT INTO awsdatacatalog.${HIVE_DB}.${HIVE_SRC_TABLE} SELECT nosuch272, 'y' FROM awsdatacatalog.${HIVE_DB}.${HIVE_SRC_TABLE}" "" default \
+    "auto:nosuch272" \
+    "COLUMN_NOT_FOUND: line <POS>: Column 'nosuch272' cannot be resolved" \
+    1006
+
+  # C18（#272。回帰）: 同じ Context。JOIN で無い表を読む CTAS。接尾辞は付くが、JOIN は整形器の対象の外
+  # なので位置は送った文のまま。
+  case_fail_ctas_engine "C18" "既定Context(Catalog省略)・CTASのエンジン失敗(JOIN・位置は送った文のまま)" \
+    "CREATE TABLE awsdatacatalog.${HIVE_DB}.t232c18 AS SELECT a.n FROM ${HIVE_DB}.${HIVE_SRC_TABLE} a JOIN ${HIVE_DB}.t232c18joinsrc b ON a.n = b.n" "" default \
+    "auto:${HIVE_DB}.t232c18joinsrc" \
+    "TABLE_NOT_FOUND: line <POS>: Table 'hive.${HIVE_DB}.t232c18joinsrc' does not exist" \
+    1301
 }
 
 main() {
@@ -629,7 +888,12 @@ main() {
     record "セットアップ(iceberg 名前空間)" FAIL "iceberg.${CONTEXT_NS} の作成に失敗した"
     return 1
   fi
-  record "セットアップ(DB・名前空間)" PASS "hive.${HIVE_DB}・iceberg.${CONTEXT_NS} 作成済み（${HIVE_DB_MISSING} は未作成のまま）"
+  # #272: C11・C12・C17・C18 が読む表（n int, s varchar、1 行）。
+  if ! trino_exec "CREATE TABLE hive.${HIVE_DB}.${HIVE_SRC_TABLE} AS SELECT 1 AS n, 'x' AS s" hive default; then
+    record "セットアップ(表)" FAIL "hive.${HIVE_DB}.${HIVE_SRC_TABLE} の作成に失敗した"
+    return 1
+  fi
+  record "セットアップ(DB・名前空間・表)" PASS "hive.${HIVE_DB}・iceberg.${CONTEXT_NS}・hive.${HIVE_DB}.${HIVE_SRC_TABLE} 作成済み（${HIVE_DB_MISSING} は未作成のまま）"
 
   if ! start_athena_local; then
     record "athena-local起動" FAIL "athena-local が起動しなかった"

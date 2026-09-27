@@ -2,7 +2,7 @@
 # issue #208 で作成。issue #221 で ROUND=3、issue #224 で ROUND=4、issue #227 で ROUND=5、
 # issue #228 で ROUND=6、issue #240 で ROUND=7、issue #242 で ROUND=8、issue #229 で ROUND=9、
 # issue #248 で ROUND=10、issue #251 で ROUND=11・15、issue #260 で ROUND=12、
-# issue #266 で ROUND=13・14、issue #270 で ROUND=16、issue #271 で ROUND=17 を追加
+# issue #266 で ROUND=13・14、issue #270 で ROUND=16、issue #271 で ROUND=17、issue #272 で ROUND=18 を追加
 # 本物の Athena が StartQueryExecution の時点で弾く、無引用の DDL 3 種
 # （ALTER TABLE IF EXISTS、ALTER TABLE ... ADD COLUMN（単数）、場所の無い CREATE TABLE）の
 # 弾かれ方の規則（`line L:C` の位置、`no viable alternative at input '...'` の input の範囲、
@@ -245,6 +245,32 @@
 #     `<GCTX>`（Database=`<DB>`）のまま `<DB2>` 側の表を消す。後始末の順序は
 #     表（各項目の `-cleanup`）→ `<DB2>` の DROP DATABASE → `<PROBE>_qdup` の DROP TABLE →
 #     （連携カタログを作っていれば）データカタログの削除。
+#   - 【issue #272 で追加】ROUND=18 は、#251 の 2 ラウンド目の実測（ROUND=15、生データ
+#     `run-20260926-231125` の t1〜t5）で見つかった、エンジン（Trino）で失敗した CTAS の理由に
+#     本物が付ける接尾辞（` You may need to manually clean the data at location
+#     '<OutputLocation>tables/<id>' before retrying. Athena will not delete data in your account.`）と、
+#     解析のエラーの位置が受け取った文の位置ではない（`line 6:3` のように、本物が CTAS を組み直して
+#     実行しているとみられる）という 2 つの差の周辺だけを測る p・w 群と、対照の c1y、INSERT の位置を
+#     見る i 群を測る（issue #272 のコメントの `WITH NO DATA` も w 群に含める）。preflight・DB 確認は
+#     共通で走るが、実在する表 `<PROBE>_real` は作らない。すべて既定の Context
+#     （`Catalog=AwsDataCatalog,Database=<DB>`）だけに投げる（S3 Tables・連携カタログは使わない）。
+#     準備で実在する表 `<PROBE>_src`（CTAS、`SELECT 1 AS n, 'x' AS s`）を作り、最後に消す（作れなければ、
+#     これを使う項目 p2・p2y・p3・p3y・p4・p4y・w3・w3y・c1y・i1・i2 だけ未測定にする）。無い表の名前は
+#     `<PROBE>_nosrc`（固定）、無い DB の名前は `<PROBE>_nodb<N>`（項目ごとに別名。組み直しの規則が
+#     DB の有無で変わるかを見るため、無い DB を 1 部目にした X 群と、実在する DB を使う Y 群
+#     （ラベルの末尾に y）の両方に投げる）。p 群（p1〜p12、p13y〜p15y）は SELECT の失敗の位置
+#     （無い表・無い列・複数行・空白・括弧・WITH 句・CTAS の WITH 句・IF NOT EXISTS・先頭のコメント・
+#     型の不一致）と名前の部数（p13y・p14y）・WITH DATA（p15y）を測り、w 群（w1〜w3。X・Y とも）は
+#     issue のコメントの `WITH NO DATA` が問い合わせの失敗を実行するかを測る。c1y は失敗しない対照
+#     （SUCCEEDED の見込み → 消す）、i 群（i1・i2）は INSERT で同じ失敗が同じ位置になるかを見る
+#     （表そのものは作らず `<PROBE>_src` に使い回す）。開始できた全項目は、返った Query（repr）・
+#     StatementType/SubstatementType・StateChangeReason の全文を summary に出す（一部の項目に
+#     絞らない）。FAILED になった CTAS（p・w 群・c1y）は、結果ファイル本体・.metadata の
+#     取得（fetch_failed_attachments）に加えて、理由に書かれた location のオーファンデータ確認
+#     （check_ctas_orphan_data、ROUND=11 と共有）も行う。加えて summary の末尾に「位置の表」を出し、
+#     `line L:C` を含む項目ごとに、本物が返した位置と、送った文（マスク前の実文で数える）でエラーの
+#     対象の語（無い表名・列名・リテラルなど）が始まる 1 始まりの行・桁を並べる（組み直しの規則を
+#     読むため）。
 #
 # 使い方:
 #   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db bash tools/measure/unquoted-ddl.sh
@@ -382,6 +408,11 @@
 #     S3TABLES_CATALOG=s3tablescatalog/your-bucket S3TABLES_NS=your_ns \
 #     CREATE_GLUE_CATALOG=1 \
 #     bash tools/measure/unquoted-ddl.sh
+#   ラウンド 18（issue #272。エンジンで失敗した CTAS の理由に本物が付ける接尾辞と、解析のエラーの
+#   位置が受け取った文の位置と違う規則（組み直し）の周辺、INSERT の位置、WITH NO DATA の失敗だけを
+#   測る。S3 Tables・連携カタログは使わない）:
+#   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=18 \
+#     bash tools/measure/unquoted-ddl.sh
 #   （資格情報はホストのシェルで AWS_ACCESS_KEY_ID などを export してから。または ~/.aws/credentials）
 #
 # 必要な環境変数:
@@ -428,6 +459,10 @@
 #                    GetQueryExecution の Query から 1 部目のカタログを落とす周辺。issue #271）
 #                    だけ。実在する表 `<PROBE>_real` は作らないが、同名の表がある形（q14）用に
 #                    `<PROBE>_qdup` を、別の DB として `<PROBE>_db2` を作り、最後に消す。
+#                    18 は p・w 群と c1y・i 群（エンジンで失敗した CTAS の理由の接尾辞と、解析の
+#                    エラー位置の組み直しの規則、INSERT の位置、WITH NO DATA の失敗。issue #272）
+#                    だけ。実在する表 `<PROBE>_real` は作らないが、SELECT の失敗の対象にする実在する
+#                    表 `<PROBE>_src` を作り、最後に消す（S3TABLES_*・FEDERATED_CATALOG は使わない）。
 #   CATALOG          既定 AwsDataCatalog
 #   REGION           既定 ap-northeast-1
 #   OUT_DIR          既定 ${DEV_HOST_HOME:-$HOME}/athena-unquoted-ddl-measurements
@@ -637,10 +672,11 @@
 # スキャンは無い。CREATE TABLE（実在する表の準備・C3・C20・C21・C22・C23、E・F 群、
 # ROUND=3 の H・Q・P 群、ROUND=5 の J 群、ROUND=9 の N 群、ROUND=10 の S 群、ROUND=11 の R 群、
 # ROUND=12 の O_TABLE の準備、ROUND=13 の T・U・V・W・X・Y 群、ROUND=14 の Z 群、ROUND=15 の
-# T 群、ROUND=16 の cl・pr・pn・pa・tp 群、ROUND=17 の準備（<PROBE>_qdup）と q 群。いずれも
-# 0〜3 行（t11 だけ 3 行、ほかは 0 行）もスキャンや書き込みは軽微。SHOW CREATE TABLE・ROUND=12 の
-# SELECT・INSERT も 1 行だけ。Athena の最小課金 × クエリ数の見込み。ROUND=5・10・11・13・14・15・16・17
-# の結果ファイルの読み出し（aws s3 cp）と ROUND=11・15 のオーファンデータ確認（aws s3 ls）は
+# T 群、ROUND=16 の cl・pr・pn・pa・tp 群、ROUND=17 の準備（<PROBE>_qdup）と q 群、ROUND=18 の
+# 準備（<PROBE>_src）と p・w 群・c1y。いずれも 0〜3 行（t11 だけ 3 行、ほかは 0 行）もスキャンや
+# 書き込みは軽微。SHOW CREATE TABLE・ROUND=12 の SELECT・INSERT も 1 行だけ、ROUND=18 の i1・i2
+# （INSERT）は 0〜1 行。Athena の最小課金 × クエリ数の見込み。ROUND=5・10・11・13・14・15・16・17・18
+# の結果ファイルの読み出し（aws s3 cp）と ROUND=11・15・18 のオーファンデータ確認（aws s3 ls）は
 # Athena のクエリではなく S3 の GetObject／ListObjects で、課金には乗らない。ROUND=13・14・17 の
 # create-data-catalog／get-data-catalog／delete-data-catalog／list-data-catalogs・
 # sts:GetCallerIdentity は Athena のクエリではなく、スキャン課金には乗らない。
@@ -981,6 +1017,30 @@
 #   （aws s3 cp、それぞれ 1 回）を追加で呼ぶ（最大で q 群の項目数 × 2 回）。Athena の
 #   API ではないので上の StartQueryExecution・GetQueryExecution の回数には含めない。
 #
+# == ROUND=18（p・w 群と c1y・i 群のみ。issue #272。preflight・DB 確認は共通） ==
+#
+#   [StartQueryExecution]
+#   preflight（SELECT 1 + SHOW TABLES）2
+#   + 実在する表 <PROBE>_src の準備 1
+#   + 常に投げる p1・p1y・p5・p5y・p6・p6y・p7・p7y・p8・p8y・p9・p9y・p10・p10y・p11・p11y・p12・p12y・
+#     p13y・p14y・p15y の 21 + w1・w1y・w2・w2y の 4（合計 25。<PROBE>_src の有無によらず投げる）
+#   + <PROBE>_src が作れたときだけの後始末 1 と、p2・p2y・p3・p3y・p4・p4y・w3・w3y の 8（create のみ。
+#     想定どおり FAILED になる見込み）+ c1y の 1（SUCCEEDED の見込み。create + cleanup で 2）+
+#     i1・i2 の 2
+#   = 28（<PROBE>_src が作れなかったとき）／41（作れたとき）。このスクリプトの実測値は
+#   $START_CALL_FILE の行数（summary.txt に出る）。受理された CREATE TABLE ごとに、その場で DROP
+#   する後始末が 1 本ずつ増える（p・w 群の 33 項目は最大 +33。想定どおりならすべて FAILED なので
+#   増えない）。
+#
+#   [GetQueryExecution]
+#   開始できた項目だけ終端状態までポーリングし、終端後にもう 1 回まとめて取得する。
+#
+#   [その他]
+#   FAILED になった CTAS（p・w 群・c1y）ごとに、結果ファイル本体と `<OutputLocation>.metadata` の
+#   取得（aws s3 cp、それぞれ 1 回）と、理由に書かれた location のオーファンデータ確認（aws s3 ls
+#   --recursive、1 回。ROUND=11 と共有する check_ctas_orphan_data）を追加で呼ぶ（最大で p・w 群・
+#   c1y の項目数 × 3 回。i1・i2 が FAILED になったときは結果ファイル本体と .metadata の取得だけ）。
+#   Athena の API ではないので上の StartQueryExecution・GetQueryExecution の回数には含めない。
 # 実行ごとに $OUT_DIR/run-<日時>/ を作り、その中だけに書く。前の回の結果と混ざらない。
 #
 # 項目ごとに次を保存する（取れたものだけ）。
@@ -1006,9 +1066,9 @@ set -uo pipefail
 : "${DB:?DB にデータベース名を設定してください}"
 ROUND=${ROUND:-1}
 case "$ROUND" in
-  1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17) ;;
+  1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18) ;;
   *)
-    echo "ROUND には 1・2・3・4・5・6・7・8・9・10・11・12・13・14・15・16・17 のどれかを指定してください（既定 1）" >&2
+    echo "ROUND には 1・2・3・4・5・6・7・8・9・10・11・12・13・14・15・16・17・18 のどれかを指定してください（既定 1）" >&2
     exit 1
     ;;
 esac
@@ -1145,6 +1205,10 @@ cleanup() {
   # ROUND=17（issue #271）の q17 が受理して作った DB <PROBE>_q17db が残っていれば消す。
   if [ "${Q17_DB_OK:-0}" = 1 ] && ! grep -qs "^State: SUCCEEDED" "$RUN_DIR/q17-cleanup.reason.txt"; then
     cleanup_drop "DROP DATABASE IF EXISTS ${PROBE_PREFIX}_q17db CASCADE"
+  fi
+  # ROUND=18（issue #272）で作った実在する表 <PROBE>_src が残っていれば消す。
+  if [ "${SRC_OK:-0}" = 1 ] && ! grep -qs "^State: SUCCEEDED" "$RUN_DIR/p-drop-src.reason.txt"; then
+    cleanup_drop "DROP TABLE IF EXISTS ${PROBE_PREFIX}_src"
   fi
 }
 trap cleanup EXIT
@@ -1538,6 +1602,56 @@ PYEOF
   else
     rm -f "$RUN_DIR/$label.orphan-data.err"
   fi
+}
+
+# StateChangeReason 全文（<label>.reason.txt）から最初の `line L:C` を抜き出す（ROUND=18、
+# issue #272。本物が CTAS/INSERT を組み直して実行するときのエラー位置を読むため）。タブ区切りで
+# "L\tC" を返す（読めない・見つからなければ "-\t-"）。
+reason_line_col() {
+  local f="$RUN_DIR/$1.reason.txt"
+  if [ ! -s "$f" ]; then
+    printf -- '-\t-'
+    return
+  fi
+  python3 -c '
+import re, sys
+try:
+    text = open(sys.argv[1], "r", encoding="utf-8", errors="replace").read()
+except OSError:
+    text = ""
+m = re.search(r"line (\d+):(\d+)", text)
+if m:
+    print("%s\t%s" % (m.group(1), m.group(2)))
+else:
+    print("-\t-")
+' "$f"
+}
+
+# <label>.sql（run が保存した、マスク前の実際の文。末尾に足された改行だけ取り除く）の中で
+# needle が最初に始まる 1 始まりの行・桁をタブ区切りで返す（ROUND=18、issue #272。無い表名・
+# 列名・型不一致のリテラルなど、エラーの対象の語の実際の位置を、本物が返した line L:C と
+# 突き合わせて組み直しの規則を読むため）。見つからない・読めなければ "-\t-"。
+sql_position_of() {
+  local label=$1 needle=$2
+  python3 - "$RUN_DIR/$label.sql" "$needle" <<'PYEOF'
+import sys
+try:
+    sql = open(sys.argv[1], "rb").read().decode("utf-8", "replace")
+except OSError:
+    print("-\t-")
+    sys.exit(0)
+if sql.endswith("\n"):
+    sql = sql[:-1]
+needle = sys.argv[2]
+idx = sql.find(needle)
+if idx == -1:
+    print("-\t-")
+else:
+    prefix = sql[:idx]
+    line = prefix.count("\n") + 1
+    col = idx - prefix.rfind("\n")
+    print("%d\t%d" % (line, col))
+PYEOF
 }
 
 # Athena のクエリではない AWS CLI 呼び出し（ROUND=13、issue #266 の create/delete-data-catalog・
@@ -3529,6 +3643,261 @@ fetch_failed_attachments $Q_LABELS
 
 fi # ROUND=17
 
+# ROUND=18 だけ、p・w 群と c1y・i 群を投げる（issue #272。エンジン（Trino）で失敗した CTAS の
+# 理由に本物が付ける接尾辞と、解析のエラーの位置が受け取った文の位置と違う規則（本物が組み直して
+# 実行しているとみられる）の周辺、INSERT の位置、WITH NO DATA の失敗を測る）。
+if [ "$ROUND" = 18 ]; then
+
+DEFAULT_CTX="Catalog=$CATALOG,Database=$DB"
+# 無い表の名前（固定。ラウンド全体で共有する）。
+NOSRC="$(new_name nosrc)"
+# 無い DB の名前を項目ごとに別名で払い出す（組み直しの規則が DB の有無で変わるかを見るため）。
+# コマンド置換 $(...) はサブシェルなので、カウンタは NODB_NAME への代入で受け取る（呼び出し元は
+# `new_nodb; X_NODB="$NODB_NAME"` の形で使う。サブシェル越しだとインクリメントが親に伝わらない）。
+NODB_SEQ=0
+new_nodb() { NODB_SEQ=$((NODB_SEQ + 1)); NODB_NAME="${PROBE_PREFIX}_nodb${NODB_SEQ}"; }
+# line L:C を含む項目ごとに、送った文の中でエラーの対象の語が始まる位置を求めるための、
+# 項目ラベル → 対象の語（マスク前の実文字列）。summary の「位置の表」で使う。
+declare -A POS_TARGET=()
+
+# --- 準備: 実在する表 <PROBE>_src（作れなければ、これを使う項目だけ未測定にする） -----------------
+SRC="$(new_name src)"
+SRC_OK=0
+if run_in_ctx "$DEFAULT_CTX" p-setup-src "CREATE TABLE $DB.$SRC AS SELECT 1 AS n, 'x' AS s"; then
+  SRC_OK=1
+else
+  echo "== p-setup-src: 実在する表 <PROBE>_src を作れませんでした。使う項目は未測定にします。"
+fi
+
+# --- p1/p1y: t1（#251 ROUND=15）の再現・対照（無い表） --------------------------------------
+new_nodb; P1_NODB="$NODB_NAME"
+POS_TARGET[p1]="$DB.$NOSRC"
+run_create_then_drop_ctx "$DEFAULT_CTX" "Catalog=$CATALOG,Database=$P1_NODB" p1 \
+  "CREATE TABLE awsdatacatalog.$P1_NODB.$(new_name p1) AS SELECT * FROM $DB.$NOSRC" "$(new_name p1)"
+POS_TARGET[p1y]="$DB.$NOSRC"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" p1y \
+  "CREATE TABLE $DB.$(new_name p1y) AS SELECT * FROM $DB.$NOSRC" "$DB.$(new_name p1y)"
+
+# --- p2/p2y: 列が無い（位置は SELECT の直後）。<PROBE>_src が要る ---------------------------
+if [ "$SRC_OK" = 1 ]; then
+  new_nodb; P2_NODB="$NODB_NAME"
+  POS_TARGET[p2]="nosuch272"
+  run_create_then_drop_ctx "$DEFAULT_CTX" "Catalog=$CATALOG,Database=$P2_NODB" p2 \
+    "CREATE TABLE awsdatacatalog.$P2_NODB.$(new_name p2) AS SELECT nosuch272 FROM $DB.$SRC" "$(new_name p2)"
+  POS_TARGET[p2y]="nosuch272"
+  run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" p2y \
+    "CREATE TABLE $DB.$(new_name p2y) AS SELECT nosuch272 FROM $DB.$SRC" "$DB.$(new_name p2y)"
+else
+  for l in p2 p2y; do
+    skip "$l" "実在する表 <PROBE>_src を作れなかったため"
+    skip "$l-cleanup" "CREATE TABLE を投げていないため後始末不要"
+  done
+fi
+
+# --- p3/p3y: 列が無い（同じ行のもっと右）。<PROBE>_src が要る -------------------------------
+if [ "$SRC_OK" = 1 ]; then
+  new_nodb; P3_NODB="$NODB_NAME"
+  POS_TARGET[p3]="nosuch272"
+  run_create_then_drop_ctx "$DEFAULT_CTX" "Catalog=$CATALOG,Database=$P3_NODB" p3 \
+    "CREATE TABLE awsdatacatalog.$P3_NODB.$(new_name p3) AS SELECT n, s, nosuch272 FROM $DB.$SRC" "$(new_name p3)"
+  POS_TARGET[p3y]="nosuch272"
+  run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" p3y \
+    "CREATE TABLE $DB.$(new_name p3y) AS SELECT n, s, nosuch272 FROM $DB.$SRC" "$DB.$(new_name p3y)"
+else
+  for l in p3 p3y; do
+    skip "$l" "実在する表 <PROBE>_src を作れなかったため"
+    skip "$l-cleanup" "CREATE TABLE を投げていないため後始末不要"
+  done
+fi
+
+# --- p4/p4y: 複数行（本物の改行 LF）。WHERE の列が無い。<PROBE>_src が要る -------------------
+if [ "$SRC_OK" = 1 ]; then
+  new_nodb; P4_NODB="$NODB_NAME"
+  POS_TARGET[p4]="nosuch272"
+  run_create_then_drop_ctx "$DEFAULT_CTX" "Catalog=$CATALOG,Database=$P4_NODB" p4 \
+    "CREATE TABLE awsdatacatalog.$P4_NODB.$(new_name p4) AS
+SELECT n
+FROM $DB.$SRC
+WHERE nosuch272 = 1" "$(new_name p4)"
+  POS_TARGET[p4y]="nosuch272"
+  run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" p4y \
+    "CREATE TABLE $DB.$(new_name p4y) AS
+SELECT n
+FROM $DB.$SRC
+WHERE nosuch272 = 1" "$DB.$(new_name p4y)"
+else
+  for l in p4 p4y; do
+    skip "$l" "実在する表 <PROBE>_src を作れなかったため"
+    skip "$l-cleanup" "CREATE TABLE を投げていないため後始末不要"
+  done
+fi
+
+# --- p5/p5y: AS の後の空白 4 つ（無い表） ---------------------------------------------------
+new_nodb; P5_NODB="$NODB_NAME"
+POS_TARGET[p5]="$DB.$NOSRC"
+run_create_then_drop_ctx "$DEFAULT_CTX" "Catalog=$CATALOG,Database=$P5_NODB" p5 \
+  "CREATE TABLE awsdatacatalog.$P5_NODB.$(new_name p5) AS    SELECT * FROM $DB.$NOSRC" "$(new_name p5)"
+POS_TARGET[p5y]="$DB.$NOSRC"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" p5y \
+  "CREATE TABLE $DB.$(new_name p5y) AS    SELECT * FROM $DB.$NOSRC" "$DB.$(new_name p5y)"
+
+# --- p6/p6y: 括弧（無い表） ------------------------------------------------------------------
+new_nodb; P6_NODB="$NODB_NAME"
+POS_TARGET[p6]="$DB.$NOSRC"
+run_create_then_drop_ctx "$DEFAULT_CTX" "Catalog=$CATALOG,Database=$P6_NODB" p6 \
+  "CREATE TABLE awsdatacatalog.$P6_NODB.$(new_name p6) AS (SELECT * FROM $DB.$NOSRC)" "$(new_name p6)"
+POS_TARGET[p6y]="$DB.$NOSRC"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" p6y \
+  "CREATE TABLE $DB.$(new_name p6y) AS (SELECT * FROM $DB.$NOSRC)" "$DB.$(new_name p6y)"
+
+# --- p7/p7y: WITH 句（無い表） ---------------------------------------------------------------
+new_nodb; P7_NODB="$NODB_NAME"
+POS_TARGET[p7]="$DB.$NOSRC"
+run_create_then_drop_ctx "$DEFAULT_CTX" "Catalog=$CATALOG,Database=$P7_NODB" p7 \
+  "CREATE TABLE awsdatacatalog.$P7_NODB.$(new_name p7) AS WITH c AS (SELECT * FROM $DB.$NOSRC) SELECT * FROM c" "$(new_name p7)"
+POS_TARGET[p7y]="$DB.$NOSRC"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" p7y \
+  "CREATE TABLE $DB.$(new_name p7y) AS WITH c AS (SELECT * FROM $DB.$NOSRC) SELECT * FROM c" "$DB.$(new_name p7y)"
+
+# --- p8/p8y: CTAS の WITH (format='PARQUET')（無い表） ---------------------------------------
+new_nodb; P8_NODB="$NODB_NAME"
+POS_TARGET[p8]="$DB.$NOSRC"
+run_create_then_drop_ctx "$DEFAULT_CTX" "Catalog=$CATALOG,Database=$P8_NODB" p8 \
+  "CREATE TABLE awsdatacatalog.$P8_NODB.$(new_name p8) WITH (format = 'PARQUET') AS SELECT * FROM $DB.$NOSRC" "$(new_name p8)"
+POS_TARGET[p8y]="$DB.$NOSRC"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" p8y \
+  "CREATE TABLE $DB.$(new_name p8y) WITH (format = 'PARQUET') AS SELECT * FROM $DB.$NOSRC" "$DB.$(new_name p8y)"
+
+# --- p9/p9y: CTAS の WITH (format=..., write_compression=...)（無い表） ----------------------
+new_nodb; P9_NODB="$NODB_NAME"
+POS_TARGET[p9]="$DB.$NOSRC"
+run_create_then_drop_ctx "$DEFAULT_CTX" "Catalog=$CATALOG,Database=$P9_NODB" p9 \
+  "CREATE TABLE awsdatacatalog.$P9_NODB.$(new_name p9) WITH (format = 'PARQUET', write_compression = 'SNAPPY') AS SELECT * FROM $DB.$NOSRC" "$(new_name p9)"
+POS_TARGET[p9y]="$DB.$NOSRC"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" p9y \
+  "CREATE TABLE $DB.$(new_name p9y) WITH (format = 'PARQUET', write_compression = 'SNAPPY') AS SELECT * FROM $DB.$NOSRC" "$DB.$(new_name p9y)"
+
+# --- p10/p10y: IF NOT EXISTS（無い表） --------------------------------------------------------
+new_nodb; P10_NODB="$NODB_NAME"
+POS_TARGET[p10]="$DB.$NOSRC"
+run_create_then_drop_ctx "$DEFAULT_CTX" "Catalog=$CATALOG,Database=$P10_NODB" p10 \
+  "CREATE TABLE IF NOT EXISTS awsdatacatalog.$P10_NODB.$(new_name p10) AS SELECT * FROM $DB.$NOSRC" "$(new_name p10)"
+POS_TARGET[p10y]="$DB.$NOSRC"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" p10y \
+  "CREATE TABLE IF NOT EXISTS $DB.$(new_name p10y) AS SELECT * FROM $DB.$NOSRC" "$DB.$(new_name p10y)"
+
+# --- p11/p11y: 先頭のコメント（無い表） -------------------------------------------------------
+new_nodb; P11_NODB="$NODB_NAME"
+POS_TARGET[p11]="$DB.$NOSRC"
+run_create_then_drop_ctx "$DEFAULT_CTX" "Catalog=$CATALOG,Database=$P11_NODB" p11 \
+  "/* c */ CREATE TABLE awsdatacatalog.$P11_NODB.$(new_name p11) AS SELECT * FROM $DB.$NOSRC" "$(new_name p11)"
+POS_TARGET[p11y]="$DB.$NOSRC"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" p11y \
+  "/* c */ CREATE TABLE $DB.$(new_name p11y) AS SELECT * FROM $DB.$NOSRC" "$DB.$(new_name p11y)"
+
+# --- p12/p12y: 型の不一致（1 + 'a'） ----------------------------------------------------------
+new_nodb; P12_NODB="$NODB_NAME"
+POS_TARGET[p12]="'a'"
+run_create_then_drop_ctx "$DEFAULT_CTX" "Catalog=$CATALOG,Database=$P12_NODB" p12 \
+  "CREATE TABLE awsdatacatalog.$P12_NODB.$(new_name p12) AS SELECT 1 + 'a' AS n" "$(new_name p12)"
+POS_TARGET[p12y]="'a'"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" p12y \
+  "CREATE TABLE $DB.$(new_name p12y) AS SELECT 1 + 'a' AS n" "$DB.$(new_name p12y)"
+
+# --- p13y: 1 部の名前（ある DB） --------------------------------------------------------------
+POS_TARGET[p13y]="$DB.$NOSRC"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" p13y \
+  "CREATE TABLE $(new_name p13y) AS SELECT * FROM $DB.$NOSRC" "$DB.$(new_name p13y)"
+
+# --- p14y: 2 部の名前 --------------------------------------------------------------------------
+POS_TARGET[p14y]="$DB.$NOSRC"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" p14y \
+  "CREATE TABLE $DB.$(new_name p14y) AS SELECT * FROM $DB.$NOSRC" "$DB.$(new_name p14y)"
+
+# --- p15y: WITH DATA（明示的な既定。無い表） --------------------------------------------------
+POS_TARGET[p15y]="$DB.$NOSRC"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" p15y \
+  "CREATE TABLE $DB.$(new_name p15y) AS SELECT * FROM $DB.$NOSRC WITH DATA" "$DB.$(new_name p15y)"
+
+# --- w1/w1y: WITH NO DATA、CAST の失敗（issue のコメント） ------------------------------------
+new_nodb; W1_NODB="$NODB_NAME"
+POS_TARGET[w1]="'x'"
+run_create_then_drop_ctx "$DEFAULT_CTX" "Catalog=$CATALOG,Database=$W1_NODB" w1 \
+  "CREATE TABLE awsdatacatalog.$W1_NODB.$(new_name w1) AS SELECT CAST('x' AS integer) AS n WITH NO DATA" "$(new_name w1)"
+POS_TARGET[w1y]="'x'"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" w1y \
+  "CREATE TABLE $DB.$(new_name w1y) AS SELECT CAST('x' AS integer) AS n WITH NO DATA" "$DB.$(new_name w1y)"
+
+# --- w2/w2y: WITH NO DATA、無い表 --------------------------------------------------------------
+new_nodb; W2_NODB="$NODB_NAME"
+POS_TARGET[w2]="$DB.$NOSRC"
+run_create_then_drop_ctx "$DEFAULT_CTX" "Catalog=$CATALOG,Database=$W2_NODB" w2 \
+  "CREATE TABLE awsdatacatalog.$W2_NODB.$(new_name w2) AS SELECT * FROM $DB.$NOSRC WITH NO DATA" "$(new_name w2)"
+POS_TARGET[w2y]="$DB.$NOSRC"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" w2y \
+  "CREATE TABLE $DB.$(new_name w2y) AS SELECT * FROM $DB.$NOSRC WITH NO DATA" "$DB.$(new_name w2y)"
+
+# --- w3/w3y: WITH NO DATA、無い列。<PROBE>_src が要る -------------------------------------------
+if [ "$SRC_OK" = 1 ]; then
+  new_nodb; W3_NODB="$NODB_NAME"
+  POS_TARGET[w3]="nosuch272"
+  run_create_then_drop_ctx "$DEFAULT_CTX" "Catalog=$CATALOG,Database=$W3_NODB" w3 \
+    "CREATE TABLE awsdatacatalog.$W3_NODB.$(new_name w3) AS SELECT nosuch272 FROM $DB.$SRC WITH NO DATA" "$(new_name w3)"
+  POS_TARGET[w3y]="nosuch272"
+  run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" w3y \
+    "CREATE TABLE $DB.$(new_name w3y) AS SELECT nosuch272 FROM $DB.$SRC WITH NO DATA" "$DB.$(new_name w3y)"
+else
+  for l in w3 w3y; do
+    skip "$l" "実在する表 <PROBE>_src を作れなかったため"
+    skip "$l-cleanup" "CREATE TABLE を投げていないため後始末不要"
+  done
+fi
+
+# --- c1y: 対照（失敗しない見込み）。<PROBE>_src が要る -----------------------------------------
+if [ "$SRC_OK" = 1 ]; then
+  run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" c1y \
+    "CREATE TABLE $DB.$(new_name c1y) AS SELECT n FROM $DB.$SRC" "$DB.$(new_name c1y)"
+else
+  skip c1y "実在する表 <PROBE>_src を作れなかったため"
+  skip c1y-cleanup "CREATE TABLE を投げていないため後始末不要"
+fi
+
+# --- i1/i2: INSERT の位置（別の文の種類で位置がずれるかの確認）。<PROBE>_src が要る -------------
+if [ "$SRC_OK" = 1 ]; then
+  POS_TARGET[i1]="nosuch272"
+  run_in_ctx "$DEFAULT_CTX" i1 "INSERT INTO $DB.$SRC SELECT nosuch272, 'y' FROM $DB.$SRC"
+  POS_TARGET[i2]="$DB.$NOSRC"
+  run_in_ctx "$DEFAULT_CTX" i2 "INSERT INTO $DB.$SRC SELECT * FROM $DB.$NOSRC"
+else
+  skip i1 "実在する表 <PROBE>_src を作れなかったため"
+  skip i2 "実在する表 <PROBE>_src を作れなかったため"
+fi
+
+P_LABELS="p1 p1y p2 p2y p3 p3y p4 p4y p5 p5y p6 p6y p7 p7y p8 p8y p9 p9y p10 p10y p11 p11y p12 p12y p13y p14y p15y"
+W_LABELS="w1 w1y w2 w2y w3 w3y"
+I_LABELS="i1 i2"
+
+# --- 付随物の取得（FAILED になった項目だけ。結果ファイル本体・.metadata） -----------------------
+fetch_failed_attachments $P_LABELS $W_LABELS c1y $I_LABELS
+# --- CTAS が FAILED になった項目のオーファンデータ確認（ROUND=11 と共有。INSERT の i1・i2 は対象外） ---
+for l in $P_LABELS $W_LABELS c1y; do
+  is_failed "$l" && check_ctas_orphan_data "$l"
+done
+
+# --- 後始末（実在する表 <PROBE>_src） -----------------------------------------------------------
+if [ "$SRC_OK" = 1 ]; then
+  run_in_ctx "$DEFAULT_CTX" p-drop-src "DROP TABLE IF EXISTS $DB.$SRC"
+  if succeeded p-drop-src; then
+    SRC_OK=0
+  else
+    echo "== 実在する表 <PROBE>_src を消せませんでした。手で DROP TABLE IF EXISTS してください。"
+  fi
+else
+  skip p-drop-src "実在する表を作れなかったため後始末不要"
+fi
+
+fi # ROUND=18
+
 # --- 後始末（実在する表） ----------------------------------------------------------
 
 if [ "$REAL_SETUP_OK" = 1 ]; then
@@ -3616,6 +3985,12 @@ elif [ "$ROUND" = 17 ]; then
     ALL_LABELS="$ALL_LABELS $l $l-cleanup $l-cleanup2"
   done
   ALL_LABELS="$ALL_LABELS q-drop-db2 q-drop-qdup"
+elif [ "$ROUND" = 18 ]; then
+  ALL_LABELS="$ALL_LABELS p-setup-src"
+  for l in $P_LABELS $W_LABELS; do
+    ALL_LABELS="$ALL_LABELS $l $l-cleanup"
+  done
+  ALL_LABELS="$ALL_LABELS c1y c1y-cleanup $I_LABELS p-drop-src"
 elif [ "$ROUND" = 8 ]; then
   ALL_LABELS="$ALL_LABELS m-setup-t m-setup-v m-setup-db2 m-setup-t2 $M_LABELS"
   ALL_LABELS="$ALL_LABELS m-drop-v36 m-drop-t35 m-drop-v m-drop-t m-drop-t2 m-drop-db2"
@@ -4055,6 +4430,38 @@ write_summary_txt() {
       echo "#   sts:GetCallerIdentity は Athena のクエリ課金には乗らない。"
       echo "# 注意: これは実測した本物の Athena の挙動であり、将来の Athena の変更で変わりうる。"
       echo "#   実測値は既定とは限らない。"
+    elif [ "$ROUND" = 18 ]; then
+      echo "# issue #272（#208 ラウンド 18）: エンジン（Trino）で失敗した CTAS の理由に本物が付ける"
+      echo "#             接尾辞（location の手動クリーンアップの注意）と、解析のエラーの位置が"
+      echo "#             受け取った文の位置と違う規則（本物が CTAS/INSERT を組み直して実行している"
+      echo "#             とみられる）の周辺、WITH NO DATA の失敗（issue のコメント）を実測"
+      echo "# 実行日時: $(date -Iseconds)"
+      if [ "$SRC_OK" = 1 ] || grep -qs "^State: SUCCEEDED" "$RUN_DIR/p-drop-src.reason.txt" 2>/dev/null; then
+        echo "# 実在する表 <PROBE>_src: 作れた（p2・p2y・p3・p3y・p4・p4y・w3・w3y・c1y・i1・i2 を測る）"
+      else
+        echo "# 実在する表 <PROBE>_src: 作れなかった（p2・p2y・p3・p3y・p4・p4y・w3・w3y・c1y・i1・i2 は未測定）"
+      fi
+      echo "# StartQueryExecution の見込み本数: 28（<PROBE>_src が作れなかったとき）／"
+      echo "#   41（作れたとき）（preflight 2 + <PROBE>_src の準備 1・後始末 1 + 常に投げる p・w 群 25 +"
+      echo "#   <PROBE>_src が要る p・w 群 8（create のみ）+ c1y 1（create + cleanup で 2）+ i1・i2 2）"
+      echo "#   このスクリプトの実測値: $(wc -l < "$START_CALL_FILE" | tr -d ' ') 回"
+      echo "#   受理された CREATE TABLE ごとに、その場で DROP する後始末が 1 本ずつ増える（p・w 群の"
+      echo "#   33 項目は最大 +33。想定どおりならすべて FAILED なので増えない）。"
+      echo "# DDL: 実在する表 <PROBE>_real は作らない。準備で実在する表 <PROBE>_src（CTAS、"
+      echo "#   SELECT 1 AS n, 'x' AS s）を作り、最後に消す。p・w 群・c1y の CREATE TABLE はすべて"
+      echo "#   既定の Context だけに投げ、受理されたらその場で DROP して消す（無い DB を 1 部目に"
+      echo "#   した X 群は Catalog=AwsDataCatalog,Database=<PROBE>_nodbN の Context で消す）。"
+      echo "#   i1・i2（INSERT）は表を作らず <PROBE>_src に投げるだけ。"
+      echo "# 付随物: FAILED になった CTAS（p・w 群・c1y）と i1・i2 は、結果ファイル本体と"
+      echo "#   <OutputLocation>.metadata を aws s3 cp で読み出して保存する（<label>.output.txt・"
+      echo "#   <label>.output.metadata）。FAILED になった CTAS はさらに、理由に書かれた location の"
+      echo "#   オーファンデータ確認（aws s3 ls --recursive、ROUND=11 と共有する"
+      echo "#   check_ctas_orphan_data）も行う。"
+      echo "# 課金: スキャンの無いクエリだけ（CREATE は 0 行、INSERT は 0〜1 行、DROP はメタデータの"
+      echo "#   み）。結果ファイルの読み出し・オーファンデータ確認は S3 の GetObject／ListObjects で、"
+      echo "#   Athena のクエリ課金には乗らない。"
+      echo "# 注意: これは実測した本物の Athena の挙動であり、将来の Athena の変更で変わりうる。"
+      echo "#   実測値は既定とは限らない。"
     elif [ "$ROUND" = 8 ]; then
       echo "# issue #242（#208 ラウンド 8）: DESCRIBE・DESC の GetQueryExecution の Query から修飾が落ちる範囲と"
       echo "#             QueryExecutionContext.Database の書き換え、ほかの文で awsdatacatalog. のカタログ部分が"
@@ -4235,7 +4642,7 @@ PYEOF
       fi
     done
     if [ "$ROUND" = 6 ] || [ "$ROUND" = 7 ] || [ "$ROUND" = 8 ] || [ "$ROUND" = 10 ] || [ "$ROUND" = 11 ] \
-      || [ "$ROUND" = 12 ] || [ "$ROUND" = 13 ] || [ "$ROUND" = 14 ] || [ "$ROUND" = 15 ] || [ "$ROUND" = 17 ]; then
+      || [ "$ROUND" = 12 ] || [ "$ROUND" = 13 ] || [ "$ROUND" = 14 ] || [ "$ROUND" = 15 ] || [ "$ROUND" = 17 ] || [ "$ROUND" = 18 ]; then
       case "$ROUND" in
         6) REPR_LABELS=$K_LABELS ;;
         7) REPR_LABELS=$L_LABELS ;;
@@ -4252,6 +4659,8 @@ PYEOF
         # ROUND=17（issue #271）はこのラウンドの決め手（返った Query・QueryExecutionContext・
         # 状態・StatementType/SubstatementType・理由）なので、開始できた q 群の全項目を対象にする。
         17) REPR_LABELS=$Q_LABELS ;;
+        # ROUND=18（issue #272）も同じく一部の項目に絞らない（開始できた p・w 群・c1y・i 群の全項目）。
+        18) REPR_LABELS="$P_LABELS $W_LABELS c1y $I_LABELS" ;;
         *) REPR_LABELS=$R_LABELS ;;
       esac
       echo
@@ -4303,7 +4712,7 @@ PYEOF
         echo
       done
     fi
-    if [ "$ROUND" = 5 ] || [ "$ROUND" = 10 ] || [ "$ROUND" = 11 ] || [ "$ROUND" = 12 ] || [ "$ROUND" = 13 ] || [ "$ROUND" = 14 ] || [ "$ROUND" = 15 ] || [ "$ROUND" = 16 ] || [ "$ROUND" = 17 ]; then
+    if [ "$ROUND" = 5 ] || [ "$ROUND" = 10 ] || [ "$ROUND" = 11 ] || [ "$ROUND" = 12 ] || [ "$ROUND" = 13 ] || [ "$ROUND" = 14 ] || [ "$ROUND" = 15 ] || [ "$ROUND" = 16 ] || [ "$ROUND" = 17 ] || [ "$ROUND" = 18 ]; then
       echo
       if [ "$ROUND" = 15 ]; then
         echo "## 付随物（結果ファイル本体・.metadata。FAILED または SUCCEEDED の CTAS だけ。実名は伏せる）"
@@ -4318,6 +4727,7 @@ PYEOF
         14) ATTACH_LABELS=$Z_LABELS ;;
         15) ATTACH_LABELS=$T_LABELS ;;
         17) ATTACH_LABELS=$Q_LABELS ;;
+        18) ATTACH_LABELS="$P_LABELS $W_LABELS c1y $I_LABELS" ;;
         16) ATTACH_LABELS="$CL_LABELS $PR_LABELS $PN_LABELS $PA_LABELS $TP_LABELS $SC_LABELS" ;;
         *) ATTACH_LABELS=$R_LABELS ;;
       esac
@@ -4377,6 +4787,39 @@ PYEOF
           echo "(オブジェクトなし)"
         fi
         echo
+      done
+    fi
+    if [ "$ROUND" = 18 ]; then
+      echo
+      echo "## CTAS が失敗した項目のオーファンデータ確認（aws s3 ls --recursive。実名は伏せる）"
+      for label in $P_LABELS $W_LABELS c1y; do
+        f="$RUN_DIR/$label.orphan-data.txt"
+        [ -f "$f" ] || continue
+        echo "### $label"
+        if [ -s "$f" ]; then
+          echo "$(hide "$(cat "$f")")"
+        else
+          echo "(オブジェクトなし)"
+        fi
+        echo
+      done
+      echo
+      echo "## 位置の表（本物が返した line L:C と、送った文でエラーの対象の語が始まる行・桁。実名は伏せる）"
+      echo "#   L:C は StateChangeReason・AthenaError に書かれた位置（そのまま）。line/col は対象の語"
+      echo "#   （無い表名・列名・型不一致のリテラルなど）が、送った文（マスク前の実文で数える）の中で"
+      echo "#   1 始まりで始まる行・桁。組み直しの規則（本物が CTAS/INSERT をどう組み替えているか）を"
+      echo "#   読むための表。"
+      for label in $P_LABELS $W_LABELS c1y $I_LABELS; do
+        [ -s "$RUN_DIR/$label.reason.txt" ] || continue
+        IFS=$'\t' read -r rl rc < <(reason_line_col "$label")
+        [ "$rl" = "-" ] && continue
+        needle="${POS_TARGET[$label]:-}"
+        if [ -n "$needle" ]; then
+          IFS=$'\t' read -r tl tc < <(sql_position_of "$label" "$needle")
+        else
+          tl="-"; tc="-"
+        fi
+        echo "- $label: line $rl:$rc → 対象の語（$(sanitize "$(hide "$needle")")）は line $tl:$tc"
       done
     fi
   } > "$txt"
