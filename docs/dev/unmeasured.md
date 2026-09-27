@@ -10,10 +10,7 @@
 
 ## GetQueryResults（[measurements/query-results.md](measurements/query-results.md)）
 
-- [ ] Iceberg のテーブルの `DESCRIBE` で、フィールドが 2 つ以上の `struct` の区切り。測ったのは 1 フィールドの `struct<a: int>` だけ。athena-local は `map<string, int>` に倣って `, ` でつなぐ（#173、2026-09-24）
-- [ ] Iceberg のパーティション変換のうち、`identity`／`bucket`／`truncate`／`year`／`month`／`day`／`hour` 以外（`void` など）の `# Partition spec:` の下の行。athena-local は行を出さない（#173、2026-09-24）
-- [ ] `SHOW SCHEMAS LIKE`／`SHOW DATABASES LIKE` のパターンの意味。実在するデータベース名の先頭 3 文字に `*` を付けても `%` を付けても 0 行だった（#173、2026-09-24）。athena-local は Trino の `LIKE` のまま
-- [ ] Hive・Iceberg の `DESCRIBE` で測っていない型（`timestamp with time zone`、`time`、`interval`、`json`、`uuid` など）の綴り。athena-local は Trino の綴りのまま（#173、2026-09-24）
+- [ ] Iceberg のテーブルの `DESCRIBE` で、`time`・`uuid` が `array`・`map`・`struct` の中にだけある列（`array<uuid>` など）と、`SHOW COLUMNS` を同じ表に投げたとき。#307 で測ったのは最上位の列が `time`／`uuid` の表の `DESCRIBE` だけ（FAILED 2／1100 `Table has unsupported column types`）。athena-local は最上位の列だけを見て失敗にし、入れ子の中と `SHOW COLUMNS` は Trino のまま返す（2026-09-27）
 
 ## `.metadata`（[measurements/metadata.md](measurements/metadata.md)）
 
@@ -87,6 +84,8 @@
 - Hive のテーブルへの `DESC t`（#160）→ #173（2026-09-24。`DESCRIBE t` と同じ。同じ項目）
 - 本物の Athena + PyAthena の `PandasCursor` で Iceberg の `DROP TABLE` を読むと `EmptyDataError` になるか（#111 の人間検証）→ #119（2026-09-25。本物でも `OperationalError: No columns to parse from file`。素の `Cursor` と Hive の `DROP TABLE` は例外なし。[measurements/clients.md](measurements/clients.md)）
 - `SHOW CREATE TABLE"t"`（`TABLE` と引用符付きの名前の間に空白が無い形）を本物が受けるか、受けるなら分類と Content-Type（#151）→ #200（2026-09-25。本物は空白の有無によらず `StartQueryExecution` の時点で `InvalidRequestException` にする（実行は作られない）。athena-local は Trino が受けるので実行し、空白ありの形と同じ `UTILITY`／`SHOW_CREATE_TABLE`／application を返す。同じラウンドで、キーワードの直後に空白の無い他の形（`SELECT(1)` など）も空白ありの形と同じに分類することを確かめた。[measurements/statements.md](measurements/statements.md) の「キーワードの直後に空白が無い形」）
+- Hive・Iceberg の `DESCRIBE` で測っていなかった型の綴りと、Iceberg の 2 フィールド以上の `struct` の区切り（#173）→ #307（2026-09-27。`char`・`varchar`・`decimal`・`binary`・`array<struct<…>>`・`map<string,array<int>>` と 2 フィールドの `struct` は athena-local の綴りと同じ。DDL に書けない 5 型は Hive では CTAS も失敗し、Iceberg は time・timestamp with time zone・uuid だけ作れて、timestamp with time zone は `timestamp`、time・uuid の表は `DESCRIBE` が FAILED 2／1100。[measurements/query-results.md](measurements/query-results.md)）
+- `SHOW SCHEMAS LIKE`／`SHOW DATABASES LIKE` のパターンの意味（#173）→ #307（2026-09-27。Java の正規表現で名前全体と照合し、大文字小文字を区別し、`*` だけは全部。先頭の `*` は FAILED 2／1006。調べたクライアントは `LIKE` を送らないので合わせず、athena-local は Trino の `LIKE` のまま。[measurements/query-results.md](measurements/query-results.md)）
 
 ## 測れないもの
 
@@ -100,6 +99,7 @@
 - 列の field 2 / 3（SchemaName / TableName）が本物で出るか（#5）。実テーブルの `SELECT` でも出ないこと（`ColumnInfo` も空）は観測済み（[measurements/metadata.md](measurements/metadata.md)）だが、出す条件があるかどうかまでは本物では観測できない（判断: #113、2026-09-24）
 - `ListWorkGroups` の `MaxResults` 未指定時の既定ページサイズ（athena-local は 50）。51 個のワークグループを用意しないと境界が見えず、実アカウントに 51 件のワークグループを作ることになるのでユーザー判断で測らない（#113、2026-09-24）
 - 列の Nullable（field 9）の 1（NOT_NULL）と 2（NULLABLE）（#5）。本物では NOT NULL 列の Iceberg テーブルを DDL で作れない（Hive 風の `TBLPROPERTIES ('table_type'='ICEBERG')` も `WITH (...)` の綴りも `StartQueryExecution` が `MALFORMED_QUERY`）。NULL 可の列も 3（UNKNOWN）で、これまで観測したのは 3 だけ（#146、2026-09-24。[measurements/metadata.md](measurements/metadata.md)）
+- Iceberg のパーティション変換のうち `identity`／`bucket`／`truncate`／`year`／`month`／`day`／`hour` 以外（`void` など）の `# Partition spec:` の下の行（#173）。Athena の文書（querying-iceberg-creating-tables）の変換の表はこの 7 種だけで Athena の DDL では作れず、7 種は #173 で全部測った（#307、2026-09-27）。athena-local は行を出さない
 
 ## 範囲外（測らない）
 

@@ -83,6 +83,24 @@
   - **SHOW TABLES**（d4）: `FROM <DB>`（14 行）、`IN <DB> LIKE '…*'`（1 行）、`IN <DB> '….*'`（1 行）、`IN <DB> '<名前>'`（1 行）はどれも `tab_name`（string、0、false）で、行は素の名前（詰め無し）
 - 備考: 採用（2026-09-24、統括役とユーザーの判断 D1〜D3・D10・D11）: 詰め方・見出し行群・型の綴り・パーティション行・ビューの 2 列と `DESC_VIEW`・`DESC` をそのまま再現する。`SHOW SCHEMAS LIKE` の `*`／`%` が 0 行になった理由（パターンの意味）は分からず、未実測に残す。Iceberg の `struct` の複数フィールドの区切り、その他の変換、非 BMP 文字の幅も [../unmeasured.md](../unmeasured.md) に残す。#146 r2 のコメント `a\tb` → `a` は、詰めた後に先頭のタブまでを取ったものと読める（d1 の `abc` + 空白 17 個と両立する）
 
+### DESCRIBE の測っていなかった型と SHOW SCHEMAS LIKE のパターン（#307）
+- 日付: 2026-09-27（19:28〜19:33 JST） ／ issue: #307 ／ スクリプト: `tools/measure/describe-types.sh`（`tools/measure/lib.sh` の項目の宣言） ／ 生データ: `~/athena-describe-types-measurements/run-20260927-102840/`。要約は `summary.txt`
+- 相手: 本物の Athena（engine version 3）。StartQueryExecution 33 回（後始末の DROP 5 本を含む。DROP はすべて SUCCEEDED）。Context はすべて `Catalog=awsdatacatalog`（DESCRIBE・CTAS は Database も付けた）
+- 投げたもの（表はすべて `athena_local_probe_307_*` の使い捨て）:
+  - Hive 外部表 `(c_char char(10), c_varchar varchar(10), c_dec decimal(10,2), c_bin binary, c_arr_st array<struct<a:int,b:string>>, c_st2 struct<a:int,b:string>, c_map_arr map<string,array<int>>)` と、Iceberg 表 `(c_dec decimal(10,2), c_bin binary, c_st2 struct<a:int,b:string>, c_arr_st array<struct<a:int,b:string>>)`（`TBLPROPERTIES ('table_type'='ICEBERG')`）を作って `DESCRIBE`
+  - DDL に書けない 5 型（Athena の文書で DDL は Not available）を型ごとに CTAS で。Hive は `WITH (external_location = ...)`、Iceberg は `WITH (table_type = 'ICEBERG', is_external = false, location = ...)`、どちらも `AS SELECT <リテラル> AS c`（`TIME '01:02:03'`、`TIMESTAMP '2026-01-01 00:00:00 UTC'`、`INTERVAL '1' DAY`、`JSON '{"a":1}'`、`UUID '…'`）。作れたものに `DESCRIBE`
+  - `SHOW SCHEMAS` を素と `LIKE` の 7 通り（完全一致、全部大文字、`<先頭 3 文字>*`、`<先頭 3 文字>%`、`<先頭 3 文字>` + 残りの文字数の `_`、`*` だけ、`*<2 文字目以降>`）で、`SHOW DATABASES` を完全一致と `<先頭 3 文字>*` で
+  - パーティション変換の void などは投げていない（Athena の文書の変換の表は `identity` を含む 7 種だけで、#173 で全部測った）
+- 返ったもの:
+  - **Hive の DESCRIBE**: 7 行、application、`.metadata` 152 バイト。型は `char(10)`、`varchar(10)`、`decimal(10,2)`、`binary`、`array<struct<a:int,b:string>>`、`struct<a:int,b:string>`、`map<string,array<int>>`（入れ子も空白無しの `,`・`:`）
+  - **Iceberg の DESCRIBE**: 9 行、binary、UpdateCount 0、`.metadata` 568 バイト。型は `decimal(10, 2)`、`binary`、`struct<a: int, b: string>`、`array<struct<a: int, b: string>>`（2 フィールドの `struct` も `, ` でつなぐ）
+  - **Hive の CTAS**: 5 型すべて FAILED（ErrorCategory 2、ErrorType 1200）。理由は `NOT_SUPPORTED: Unsupported Hive type: <型>`（`time(0)`、`timestamp(0) with time zone`、`interval day to second`、`json`、`uuid`）。interval 以外は `. You may need to manually clean the data at location '<OUTPUT>tables/<uuid>' before retrying. Athena will not delete data in your account.` が続く
+  - **Iceberg の CTAS**: time・timestamp with time zone・uuid は SUCCEEDED（UpdateCount 1、ColumnInfo `rows`／bigint、`.metadata` 81 バイト）。interval・json は FAILED 2／1200 の `NOT_SUPPORTED: Type not supported for Iceberg: <型>`（Hive と同じ接尾辞付き）
+  - **CTAS で作った Iceberg の表の DESCRIBE**: timestamp with time zone の列は SUCCEEDED・6 行で、型は **`timestamp`**（Trino は `timestamp(6) with time zone`）。time・uuid の列の表は **FAILED**（ErrorCategory 2、ErrorType 1100、StateChangeReason と ErrorMessage はどちらも `Table has unsupported column types`、SubstatementType `DESCRIBE_TABLE`）で、結果ファイル本体も `.metadata` も無い（HEAD 404）
+  - **SHOW SCHEMAS／SHOW DATABASES の LIKE**: どれも SubstatementType `SHOW_DATABASES`。成功したものは binary、UpdateCount 0、`.metadata` あり。素は 5 行、完全一致 1 行、大文字 0 行、`<先頭 3 文字>*` 0 行、`%` 0 行、`_` 0 行、`*` だけ 5 行（素と同じ）。`SHOW DATABASES` の完全一致は 1 行、`*` は 0 行で `SHOW SCHEMAS` と同じ。`*<2 文字目以降>` は FAILED（ErrorCategory 2、ErrorType 1006）で、`<id>.txt`（application、322 バイト、`FAILED: ` + 理由）を置き `.metadata` は無しで、理由は `FAILED: Execution Error, return code 1 from org.apache.hadoop.hive.ql.exec.DDLTask. MetaException(message:Unable to get databases: java.util.regex.PatternSyntaxException: Dangling meta character '*' near index 0` に続けてパターンと `^` の行
+- 手元の Trino 482（compose の hive・iceberg カタログ）に同じ形を投げた結果（2026-09-27）: CTAS の成否は 10 本とも本物と同じ（Hive は 5 型とも `Unsupported Hive type`、Iceberg は interval・json だけ `Type not supported for Iceberg`）。Trino の DESCRIBE は Iceberg の time を `time(6)`、timestamp with time zone を `timestamp(6) with time zone`、uuid を `uuid` と返し、失敗しない。`SHOW SCHEMAS FROM hive LIKE` は Trino の `LIKE` で、`%` と `_` が当たり、`*` と大文字は 0 行
+- 備考: 採用（2026-09-27、ユーザーの判断）: Iceberg の timestamp with time zone の綴りを `timestamp` にし、time・uuid の列を持つ Iceberg の表への `DESCRIBE` を FAILED 2／1100 にする（結果ファイルは置かない）。`SHOW SCHEMAS LIKE` のパターンは、本物が Java の正規表現で名前全体と照合し（`PatternSyntaxException` と、`<先頭 3 文字>*` が 0 行になったことから）、大文字小文字を区別し、`*` だけを全部として扱うと読めるが、調べたクライアントは `LIKE` を付けて送らないので合わせる範囲の外として `docs/caveats.md` に書くだけにした（`.*` を含むパターンは投げていない）。#173 で「`*`／`%` が 0 行になった理由は分からない」とした件はこれで説明がつく
+
 ## ページングと MaxResults／NextToken の検証
 
 ### GetQueryResults のページング引数の検証（順序と文言）

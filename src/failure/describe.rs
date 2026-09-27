@@ -78,6 +78,12 @@ impl Failure {
         )
     }
 
+    /// 最上位に time・uuid の列がある Iceberg 表への `DESCRIBE`（dci_time・dci_uuid。2026-09-27 実測。#307）。
+    /// 本体も `.metadata` も置かない。
+    pub fn describe_iceberg_unsupported_column_types() -> Self {
+        Self::describe("Table has unsupported column types".to_string(), USER, 1100)
+    }
+
     fn describe(reason: String, category: i32, error_type: i32) -> Self {
         Self {
             reason,

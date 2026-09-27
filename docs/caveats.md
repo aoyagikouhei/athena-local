@@ -793,13 +793,18 @@ it as without the comment. `MSCK REPAIR TABLE` on an Iceberg table, with or with
   [Supported API](api.md#supported-api) and [Result files](result-files.md)),
   but athena-local builds them from Trino's results, so:
   - Only the type spellings measured on Athena are translated. Any other type
-    keeps Trino's spelling, for example `timestamp(3) with time zone` or
-    `interval day to second` (not measured).
-  - On an Iceberg table, a `struct` with more than one field is written with
-    `, ` between the fields, following Iceberg's `map<string, int>`; only a
-    single-field `struct<a: int>` was measured.
+    keeps Trino's spelling. Athena cannot create a Hive column of `time`,
+    `timestamp with time zone`, `interval`, `json` or `uuid`, nor an Iceberg
+    column of `interval` or `json` (the CTAS fails with `NOT_SUPPORTED`, as it
+    does on Trino), so those spellings only appear for tables made outside
+    Athena.
+  - `DESCRIBE` on an Iceberg table with a top-level `time` or `uuid` column
+    fails like Athena. When those types appear only inside an `array`, `map`
+    or `struct`, `DESCRIBE` still returns Trino's spelling, and `SHOW COLUMNS`
+    on such a table still succeeds (not measured).
   - A partition transform other than `identity`, `bucket`, `truncate`,
     `year`, `month`, `day` and `hour` gets no row under `# Partition spec:`.
+    Athena's DDL offers no other transform, so this cannot be measured.
   - On a view, `SubstatementType` becomes `DESC_VIEW` only when the query
     completes (see [Supported API](api.md#supported-api)).
   - `DESCRIBE EXTENDED` and `DESCRIBE FORMATTED` leave out the detail rows
@@ -809,10 +814,12 @@ it as without the comment. `MSCK REPAIR TABLE` on an Iceberg table, with or with
     a view, a `PARTITION (...)` with more than one key, a backquoted name)
     still fail Trino's syntax check (see
     [DDL](ddl.md#describe-extended-and-describe-formatted)).
-  - `SHOW SCHEMAS LIKE '<pattern>'` returns Trino's matches; how Athena reads
-    the pattern was not measured (on Athena, `LIKE '<prefix>*'` and
-    `LIKE '<prefix>%'` with the prefix of an existing database both gave no
-    rows, for `SHOW DATABASES` as well).
+  - `SHOW SCHEMAS LIKE '<pattern>'` uses Trino's `LIKE`, where `%` and `_`
+    are wildcards. Athena reads the pattern as a case-sensitive Java regular
+    expression that must match the whole name, except that `*` alone lists
+    every database: on Athena `LIKE '<prefix>%'`, `LIKE '<prefix>*'` and an
+    upper-cased name return no rows, and a pattern starting with `*` fails
+    with `PatternSyntaxException` (the same holds for `SHOW DATABASES`).
   The Athena-only `SHOW` statements Trino rejects are covered below.
 - **`SHOW` metadata is not the opaque form Athena writes.** For `SHOW TABLES`,
   `SHOW DATABASES`, `SHOW COLUMNS`, `SHOW PARTITIONS`, `SHOW TBLPROPERTIES`,

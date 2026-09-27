@@ -11,6 +11,9 @@ later name the date they were measured on.
 
 ### Changed
 
+- `DESCRIBE` on an Iceberg table now spells a `timestamp with time zone` column as `timestamp`,
+  and fails like real Athena when the table has a `time` or `uuid` column (measured 2026-09-27;
+  [docs](docs/caveats.md#result-files-and-metadata)).
 - `DESCRIBE EXTENDED` and `DESCRIBE FORMATTED` (and `DESC`), with or without a column or a
   `PARTITION (...)` clause, now run like real Athena instead of failing Trino's syntax check
   ([docs](docs/ddl.md#describe-extended-and-describe-formatted)).
