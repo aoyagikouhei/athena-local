@@ -107,10 +107,21 @@ async fn location_付きの実在しないカタログの_3_部は構文チェ�
             &catalog_exists_sql("hive248"),
             catalog_exists_response(None),
         )
+        .route(
+            &catalog_exists_sql("nosuchcatalog266"),
+            catalog_exists_response(None),
+        )
         .start()
         .await;
 
     for (query, catalog, written) in [
+        // EXTERNAL・IF NOT EXISTS・句が付いても同じ（2026-09-27 実測 t0〜t10・t0s〜t9s。#266）
+        (
+            "CREATE EXTERNAL TABLE IF NOT EXISTS NoSuchCatalog266.db.t (n int) COMMENT 'c' \
+             STORED AS PARQUET LOCATION 's3://b/p/' TBLPROPERTIES ('a'='b')",
+            Some("s3tablescatalog/b"),
+            "NoSuchCatalog266",
+        ),
         (
             "CREATE TABLE nosuchcatalog248.db.t (n int) LOCATION 's3://b/p/'",
             None,
@@ -136,6 +147,7 @@ async fn location_付きの実在しないカタログの_3_部は構文チェ�
     assert_eq!(
         harness.trino_sqls(),
         [
+            catalog_exists_sql("nosuchcatalog266"),
             catalog_exists_sql("nosuchcatalog248"),
             catalog_exists_sql("hive248")
         ]

@@ -377,6 +377,15 @@ async fn s3_tables_の_context_では_hive_の_location_と_external_を構文�
             EXTERNAL,
             "External keyword not supported for table type ICEBERG",
         ),
+        // 句・バッククォートが付いても同じ（2026-09-27 実測 v1・v9。#266）
+        (
+            "CREATE EXTERNAL TABLE t (n int) COMMENT 'x' ROW FORMAT DELIMITED FIELDS TERMINATED BY ','",
+            "External keyword not supported for table type ICEBERG",
+        ),
+        (
+            "CREATE EXTERNAL TABLE `t` (n int)",
+            "External keyword not supported for table type ICEBERG",
+        ),
     ] {
         let (code, error) = harness
             .call(
@@ -424,6 +433,11 @@ async fn s3_tables_の_context_の_location_の無い_stored_as_は開始して_
     for query in [
         "CREATE TABLE t (n int) STORED AS PARQUET",
         "CREATE TABLE t (n int) STORED AS ORC",
+        // 2 部・`AwsDataCatalog` の 3 部・IF NOT EXISTS・句・列の並び無しでも同じ（2026-09-27 実測 w1・w2・w4・w5・w10。#266）
+        "CREATE TABLE ns.t (n int) STORED AS PARQUET",
+        "CREATE TABLE AwsDataCatalog.ns.t (n int) STORED AS PARQUET",
+        "CREATE TABLE IF NOT EXISTS t (n int) COMMENT 'x' STORED AS PARQUET",
+        "CREATE TABLE t STORED AS PARQUET",
     ] {
         let execution = harness
             .run_query(json!({
