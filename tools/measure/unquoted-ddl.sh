@@ -2,7 +2,8 @@
 # issue #208 で作成。issue #221 で ROUND=3、issue #224 で ROUND=4、issue #227 で ROUND=5、
 # issue #228 で ROUND=6、issue #240 で ROUND=7、issue #242 で ROUND=8、issue #229 で ROUND=9、
 # issue #248 で ROUND=10、issue #251 で ROUND=11・15、issue #260 で ROUND=12、
-# issue #266 で ROUND=13・14、issue #270 で ROUND=16・20、issue #271 で ROUND=17、issue #272 で ROUND=18 を追加
+# issue #266 で ROUND=13・14、issue #270 で ROUND=16・20、issue #271 で ROUND=17、
+# issue #272 で ROUND=18、issue #273 で ROUND=19 を追加
 # 本物の Athena が StartQueryExecution の時点で弾く、無引用の DDL 3 種
 # （ALTER TABLE IF EXISTS、ALTER TABLE ... ADD COLUMN（単数）、場所の無い CREATE TABLE）の
 # 弾かれ方の規則（`line L:C` の位置、`no viable alternative at input '...'` の input の範囲、
@@ -288,6 +289,33 @@
 #     `line L:C` を含む項目ごとに、本物が返した位置と、送った文（マスク前の実文で数える）でエラーの
 #     対象の語（無い表名・列名・リテラルなど）が始まる 1 始まりの行・桁を並べる（組み直しの規則を
 #     読むため）。
+#   - 【issue #273 で追加】ROUND=19 は、S3 Tables の Context で名前空間が無い CTAS が開始して
+#     FAILED になる（`NOT_FOUND: Schema <S3 Tables のカタログの内部名>$schema:<名前空間> not found.` +
+#     `You may need to manually clean the data at location '...' before retrying.`。#251 の
+#     ラウンド 15 の t16・t17 で見つけた事実の周辺）のうち、Database を省略した Context（`<S3NODB>`
+#     ＝ `Catalog=<S3TABLES_CATALOG>` だけ）の形（d 群）と、名前空間が無い CTAS の残りの形
+#     （f 群）、対照（c 群）だけを測る。preflight・DB 確認は共通で走るが、実在する表
+#     `<PROBE>_real` は作らない。代わりに、実在する Glue の表 `<DB>.<PROBE>_src`
+#     （`CREATE TABLE <DB>.<PROBE>_src AS SELECT 1 AS n`）を S3TABLES_* の有無によらず作り、
+#     最後に消す（f7・f10 の対照・問い合わせ元。作れなければ f7・f10 だけ未測定にする）。
+#     S3TABLES_* が無ければ d・f・c 群は全項目「未測定（S3TABLES_* 未設定）」になる（準備の
+#     `<PROBE>_src` 以外ほぼ何も測れない旨を summary の冒頭と実行開始時の標準出力の両方に
+#     目立つように出す）。d1〜d4（`<S3NODB>` で作る。d1 は非 CTAS、d2 は 1 部の CTAS、d3 は
+#     ある名前空間の 2 部、d4 は無い名前空間の 2 部）は、受理されたら後始末を `<S3NODB>` で
+#     まず試み、失敗すれば `<S3>`（`Catalog=<S3TABLES_CATALOG>,Database=<S3TABLES_NS>`）でも
+#     う一度 `DROP TABLE IF EXISTS` を試みる（`run_create_then_drop_nodb`。どちらも消せなければ
+#     `PENDING_DROPS_CTX` に残り、summary 冒頭の「手で消してください」に載る）。d0 は
+#     `<S3NODB>` の `SELECT 1`（対照）。f1〜f12（t16・t17 の再現、IF NOT EXISTS、名前空間の
+#     綴りを大文字にした形、`WITH NO DATA`、問い合わせの失敗・無い表との順序、`WITH (format=...)`、
+#     Glue にはあるが S3 Tables には無い名前、問い合わせ自体は通る形、バッククォート・二重引用符）
+#     と c1・c2（t18 の再現・SUCCEEDED の見込み、#251 で分かっている非 CTAS の
+#     `Cannot find or access the specified table`）は、受理されうるものも含めてすべて
+#     `run_create_then_drop_ctx` で投げ、受理されたら作った Context と同じ Context で消す。
+#     FAILED になった CTAS の項目（d2〜d4、f1〜f12、c1）は、`fetch_failed_attachments` で
+#     結果ファイル本体と `.metadata` を、`check_ctas_orphan_data`（ROUND=11）で理由に書かれた
+#     location のオーファンデータの有無も確かめる。開始できた全項目は、状態・
+#     StatementType/SubstatementType・ErrorCategory/ErrorType・StateChangeReason の全文・
+#     返った `QueryExecutionContext`・`Query`（repr）を summary に出す（ROUND=17 と同じ考え方）。
 #
 # 使い方:
 #   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db bash tools/measure/unquoted-ddl.sh
@@ -430,6 +458,12 @@
 #   測る。S3 Tables・連携カタログは使わない）:
 #   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=18 \
 #     bash tools/measure/unquoted-ddl.sh
+#   ラウンド 19（issue #273。S3 Tables の Context で名前空間が無い CTAS の、Database を省略した
+#   形（d 群）と残りの形（f 群）・対照（c 群）だけを測る。S3TABLES_* が無ければ全項目が
+#   未測定として残る。準備の実在する表 <PROBE>_src は S3TABLES_* によらず作って消す）:
+#   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=19 \
+#     S3TABLES_CATALOG=s3tablescatalog/your-bucket S3TABLES_NS=your_ns \
+#     bash tools/measure/unquoted-ddl.sh
 #   ラウンド 20（issue #270 の 2 ラウンド目。ROUND=16 の続きで、TBLPROPERTIES のキーの範囲・
 #   table_type の値と組・列リスト無しの形・ちょうど小文字の awsdatacatalog の 3 部・名前空間が
 #   無いときとの優先順だけを測る。S3TABLES_* が無ければ全項目が未測定として残る）:
@@ -488,6 +522,10 @@
 #                    エラー位置の組み直しの規則、INSERT の位置、WITH NO DATA の失敗。issue #272）
 #                    だけ。実在する表 `<PROBE>_real` は作らないが、SELECT の失敗の対象にする実在する
 #                    表 `<PROBE>_src` を作り、最後に消す（S3TABLES_*・FEDERATED_CATALOG は使わない）。
+#                    19 は d・f・c 群（S3 Tables の Context で名前空間が無い CTAS の、Database を
+#                    省略した形と残りの形・対照。issue #273）だけ。
+#                    実在する表 `<PROBE>_real` は作らないが、実在する Glue の表
+#                    `<DB>.<PROBE>_src` を S3TABLES_* によらず作り、最後に消す。
 #   CATALOG          既定 AwsDataCatalog
 #   REGION           既定 ap-northeast-1
 #   OUT_DIR          既定 ${DEV_HOST_HOME:-$HOME}/athena-unquoted-ddl-measurements
@@ -513,7 +551,10 @@
 #                    （合計 31）を測る（欠ければ全項目が未測定として残る。GLUE のデータカタログ
 #                    （CREATE_GLUE_CATALOG）はこのラウンドでは使わない）。ROUND=17 は q22・q23
 #                    （S3 Tables の Context の CREATE TABLE）を測る（欠ければこの 2 項目だけ
-#                    未測定として残る）。ROUND=20 は k・v・c・a・m 群と対照 x0 の全項目
+#                    未測定として残る）。ROUND=19 は d・f・c 群の全項目（合計 19）を測る
+#                    （欠ければ全項目が未測定として残り、準備の `<PROBE>_src` 以外ほぼ何も
+#                    測れない。GLUE のデータカタログ（CREATE_GLUE_CATALOG）・FEDERATED_CATALOG は
+#                    このラウンドでは使わない）。ROUND=20 は k・v・c・a・m 群と対照 x0 の全項目
 #                    （合計 32）を測る（欠ければ全項目が未測定として残る）。
 #   FEDERATED_CATALOG 連携カタログ（S3 Tables 以外）の名前。設定されていれば ROUND=10 の s14
 #                    （TRINO_CATALOG_MAP の別名や Trino にだけあるカタログの 3 部 + LOCATION が
@@ -1074,6 +1115,27 @@
 #   --recursive、1 回。ROUND=11 と共有する check_ctas_orphan_data）を追加で呼ぶ（最大で p・w 群・
 #   c1y の項目数 × 3 回。i1・i2 が FAILED になったときは結果ファイル本体と .metadata の取得だけ）。
 #   Athena の API ではないので上の StartQueryExecution・GetQueryExecution の回数には含めない。
+#
+# == ROUND=19（d・f・c 群のみ。issue #273。preflight・DB 確認は共通） ==
+#
+#   [StartQueryExecution]
+#   preflight（SELECT 1 + SHOW TABLES）2 + 準備（<PROBE>_src の作成・削除）2
+#   + S3TABLES_* が揃うときだけ、常に投げる d0〜d4 の 5・f1〜f12 の 12・c1・c2 の 2（計 19）
+#   = 23（S3TABLES_* あり）／4（無し）。d3・c1 は既存の名前空間を指すため受理される見込みで、
+#   その場で DROP する後始末が 1 本ずつ増える（+2。d1・d2・d4 が想定に反して受理されれば
+#   同様に +1、その DROP が <S3NODB> で失敗すれば <S3> でのもう一度の DROP でさらに +1）。
+#   このスクリプトの実測値は $START_CALL_FILE の行数（summary.txt に出る）。
+#
+#   [GetQueryExecution]
+#   開始できた項目だけ終端状態までポーリングし、終端後にもう 1 回まとめて取得する。
+#
+#   [その他]
+#   FAILED になった CTAS の項目（d2〜d4・f1〜f12・c1）ごとに、結果ファイル本体と
+#   `<OutputLocation>.metadata` の取得（aws s3 cp、それぞれ 1 回）と、理由に書かれた
+#   location のオーファンデータの確認（aws s3 ls --recursive、1 回）を追加で呼ぶ
+#   （最大でその項目数 × 3 回）。Athena の API ではないので上の StartQueryExecution・
+#   GetQueryExecution の回数には含めない。
+#
 # 実行ごとに $OUT_DIR/run-<日時>/ を作り、その中だけに書く。前の回の結果と混ざらない。
 #
 # 項目ごとに次を保存する（取れたものだけ）。
@@ -1099,9 +1161,9 @@ set -uo pipefail
 : "${DB:?DB にデータベース名を設定してください}"
 ROUND=${ROUND:-1}
 case "$ROUND" in
-  1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 20) ;;
+  1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20) ;;
   *)
-    echo "ROUND には 1・2・3・4・5・6・7・8・9・10・11・12・13・14・15・16・17・18・20 のどれかを指定してください（既定 1）" >&2
+    echo "ROUND には 1・2・3・4・5・6・7・8・9・10・11・12・13・14・15・16・17・18・19・20 のどれかを指定してください（既定 1）" >&2
     exit 1
     ;;
 esac
@@ -1239,8 +1301,11 @@ cleanup() {
   if [ "${Q17_DB_OK:-0}" = 1 ] && ! grep -qs "^State: SUCCEEDED" "$RUN_DIR/q17-cleanup.reason.txt"; then
     cleanup_drop "DROP DATABASE IF EXISTS ${PROBE_PREFIX}_q17db CASCADE"
   fi
-  # ROUND=18（issue #272）で作った実在する表 <PROBE>_src が残っていれば消す。
-  if [ "${SRC_OK:-0}" = 1 ] && ! grep -qs "^State: SUCCEEDED" "$RUN_DIR/p-drop-src.reason.txt"; then
+  # ROUND=18（issue #272）・ROUND=19（issue #273）で作った実在する表 <PROBE>_src が残っていれば消す
+  # （本編の後始末のラベルは ROUND=18 が p-drop-src、ROUND=19 が v-cleanup-src）。
+  local src_drop_label=p-drop-src
+  [ "$ROUND" = 19 ] && src_drop_label=v-cleanup-src
+  if [ "${SRC_OK:-0}" = 1 ] && ! grep -qs "^State: SUCCEEDED" "$RUN_DIR/$src_drop_label.reason.txt"; then
     cleanup_drop "DROP TABLE IF EXISTS ${PROBE_PREFIX}_src"
   fi
 }
@@ -1269,6 +1334,7 @@ $FEDERATED_DB	<FEDERATED_DB>
 $FEDERATED_TABLE	<FEDERATED_TABLE>
 ${DB^^}	<DB_UPPER>
 $GLUE_CATALOG_CREATED_NAME	<GLUE_PROBE_CATALOG>
+${NOPE_NS_UPPER:-}	<NOPE_NS_UPPER>
 EOF
 }
 
@@ -3931,6 +3997,151 @@ fi
 
 fi # ROUND=18
 
+# ROUND=19 だけ、d・f・c 群を投げる（issue #273）。preflight・DB 確認は共通で走るが、
+# 実在する表 <PROBE>_real は作らない。
+if [ "$ROUND" = 19 ]; then
+
+if [ -z "$S3TABLES_CATALOG" ] || [ -z "$S3TABLES_NS" ]; then
+  echo
+  echo "########################################################################"
+  echo "# ROUND=19（issue #273）は S3TABLES_CATALOG・S3TABLES_NS が無いと、"
+  echo "# 準備（実在する表 <DB>.<PROBE>_src の作成/削除）以外ほぼ何も測れません。"
+  echo "# d・f・c 群はすべて「未測定（S3TABLES_* 未設定）」になります。"
+  echo "########################################################################"
+  echo
+fi
+
+DEFAULT_CTX="Catalog=$CATALOG,Database=$DB"
+# S3 Tables に無い名前空間（乱数入りの接頭辞なので実在しない見込み）。
+NOPE_NS="$(new_name nope_ns)"
+# f4: 先頭の athena を大文字にした綴り（NOPE_NS は "<PROBE_PREFIX>_nope_ns" で、PROBE_PREFIX は
+# 常に "athena_local_probe_208_<乱数>" なので、先頭の "athena" だけ大文字にする。issue の
+# コメントの例と同じ形。理由に書かれる名前空間が書いたとおりか小文字かを見る）。
+NOPE_NS_UPPER="ATHENA${NOPE_NS:6}"
+
+# --- 準備: 実在する Glue の表 <DB>.<PROBE>_src（S3TABLES_* によらず作る。作れなければ
+# f10 だけ未測定にする） ---------------------------------------------------------------
+SRC_TABLE="$(new_name src)"
+SRC_OK=0
+if run_in_ctx "$DEFAULT_CTX" v-setup-src "CREATE TABLE $DB.$SRC_TABLE AS SELECT 1 AS n"; then
+  SRC_OK=1
+else
+  echo "== v-setup-src: 実在する表 <DB>.<PROBE>_src を作れませんでした。f10 は未測定にします。"
+fi
+
+if [ -n "$S3TABLES_CATALOG" ] && [ -n "$S3TABLES_NS" ]; then
+  S3_CTX="Catalog=$S3TABLES_CATALOG,Database=$S3TABLES_NS"
+  S3NOPE_CTX="Catalog=$S3TABLES_CATALOG,Database=$NOPE_NS"
+  S3NODB_CTX="Catalog=$S3TABLES_CATALOG"
+  # バッククォート 1 文字（f11。二重引用符と違い、これをそのまま埋め込むと bash のコマンド
+  # 置換になってしまうので変数にする。ROUND=10 の s11 と同じ考え方）。
+  BT='`'
+
+  # --- <S3NODB> で作った表の後始末（issue 本文どおり、まず同じ <S3NODB> で、失敗すれば
+  # <S3> でもう一度 DROP TABLE IF EXISTS を試みる。どちらも消せなければ PENDING_DROPS_CTX に
+  # 残り、summary 冒頭の「手で消してください」＝要手動削除に載る） -----------------------
+  run_create_then_drop_nodb() {
+    local label=$1 sql=$2 name=$3
+    local key="$S3NODB_CTX|$name"
+    if run_in_ctx "$S3NODB_CTX" "$label" "$sql"; then
+      PENDING_DROPS_CTX[$key]=1
+      run_in_ctx "$S3NODB_CTX" "$label-cleanup" "DROP TABLE IF EXISTS $name"
+      if succeeded "$label-cleanup"; then
+        unset 'PENDING_DROPS_CTX[$key]'
+      else
+        run_in_ctx "$S3_CTX" "$label-cleanup2" "DROP TABLE IF EXISTS $name"
+        if succeeded "$label-cleanup2"; then
+          unset 'PENDING_DROPS_CTX[$key]'
+        fi
+      fi
+    else
+      skip "$label-cleanup" "CREATE TABLE が失敗したため後始末不要"
+    fi
+  }
+
+  # --- D 群: Database を省略した Context（<S3NODB>） -----------------------------------
+  run_in_ctx "$S3NODB_CTX" d0 "SELECT 1"
+  run_create_then_drop_nodb d1 "CREATE TABLE $(new_name d1) (n int)" "$(new_name d1)"
+  run_create_then_drop_nodb d2 "CREATE TABLE $(new_name d2) AS SELECT 1 AS n" "$(new_name d2)"
+  run_create_then_drop_nodb d3 "CREATE TABLE $S3TABLES_NS.$(new_name d3) AS SELECT 1 AS n" "$S3TABLES_NS.$(new_name d3)"
+  run_create_then_drop_nodb d4 "CREATE TABLE $NOPE_NS.$(new_name d4) AS SELECT 1 AS n" "$NOPE_NS.$(new_name d4)"
+  D_LABELS="d0 d1 d2 d3 d4"
+
+  # --- F 群: 名前空間が無い CTAS の残りの形 ---------------------------------------------
+  run_create_then_drop_ctx "$S3NOPE_CTX" "$S3NOPE_CTX" f1 \
+    "CREATE TABLE $(new_name f1) AS SELECT 1 AS n" "$(new_name f1)"
+  run_create_then_drop_ctx "$S3_CTX" "$S3_CTX" f2 \
+    "CREATE TABLE $NOPE_NS.$(new_name f2) AS SELECT 1 AS n" "$NOPE_NS.$(new_name f2)"
+  run_create_then_drop_ctx "$S3_CTX" "$S3_CTX" f3 \
+    "CREATE TABLE IF NOT EXISTS $NOPE_NS.$(new_name f3) AS SELECT 1 AS n" "$NOPE_NS.$(new_name f3)"
+  run_create_then_drop_ctx "$S3_CTX" "$S3_CTX" f4 \
+    "CREATE TABLE $NOPE_NS_UPPER.$(new_name f4) AS SELECT 1 AS n" "$NOPE_NS_UPPER.$(new_name f4)"
+  run_create_then_drop_ctx "$S3_CTX" "$S3_CTX" f5 \
+    "CREATE TABLE $NOPE_NS.$(new_name f5) AS SELECT 1 AS n WITH NO DATA" "$NOPE_NS.$(new_name f5)"
+  run_create_then_drop_ctx "$S3_CTX" "$S3_CTX" f6 \
+    "CREATE TABLE $NOPE_NS.$(new_name f6) AS SELECT CAST('x' AS integer) AS n" "$NOPE_NS.$(new_name f6)"
+  run_create_then_drop_ctx "$S3_CTX" "$S3_CTX" f7 \
+    "CREATE TABLE $NOPE_NS.$(new_name f7) AS SELECT * FROM $S3TABLES_NS.$(new_name nosrc)" "$NOPE_NS.$(new_name f7)"
+  run_create_then_drop_ctx "$S3_CTX" "$S3_CTX" f8 \
+    "CREATE TABLE $NOPE_NS.$(new_name f8) WITH (format = 'PARQUET') AS SELECT 1 AS n" "$NOPE_NS.$(new_name f8)"
+  run_create_then_drop_ctx "$S3_CTX" "$S3_CTX" f9 \
+    "CREATE TABLE $DB.$(new_name f9) AS SELECT 1 AS n" "$DB.$(new_name f9)"
+  if [ "$SRC_OK" = 1 ]; then
+    run_create_then_drop_ctx "$S3NOPE_CTX" "$S3NOPE_CTX" f10 \
+      "CREATE TABLE $(new_name f10) AS SELECT n FROM awsdatacatalog.$DB.$SRC_TABLE" "$(new_name f10)"
+  else
+    skip f10 "実在する表を作れなかったため"
+    skip f10-cleanup "CREATE TABLE を投げていないため後始末不要"
+  fi
+  run_create_then_drop_ctx "$S3_CTX" "$S3_CTX" f11 \
+    "CREATE TABLE ${BT}$NOPE_NS${BT}.$(new_name f11) AS SELECT 1 AS n" "${BT}$NOPE_NS${BT}.$(new_name f11)"
+  run_create_then_drop_ctx "$S3_CTX" "$S3_CTX" f12 \
+    "CREATE TABLE \"$NOPE_NS\".$(new_name f12) AS SELECT 1 AS n" "\"$NOPE_NS\".$(new_name f12)"
+  F_LABELS="f1 f2 f3 f4 f5 f6 f7 f8 f9 f10 f11 f12"
+
+  # --- C 群: 対照 -----------------------------------------------------------------------
+  # c1: t18 の再現（SUCCEEDED の見込み → 消す）。c2: #251 で分かっている非 CTAS の形
+  # （Cannot find or access the specified table）。
+  run_create_then_drop_ctx "$S3_CTX" "$S3_CTX" c1 \
+    "CREATE TABLE $S3TABLES_NS.$(new_name c1) AS SELECT 1 AS n" "$S3TABLES_NS.$(new_name c1)"
+  run_create_then_drop_ctx "$S3_CTX" "$S3_CTX" c2 \
+    "CREATE TABLE $NOPE_NS.$(new_name c2) (n int)" "$NOPE_NS.$(new_name c2)"
+  C_LABELS="c1 c2"
+else
+  skip d0 "未測定（S3TABLES_* 未設定）"
+  for l in d1 d2 d3 d4; do
+    skip "$l" "未測定（S3TABLES_* 未設定）"
+    skip "$l-cleanup" "CREATE TABLE を投げていないため後始末不要"
+  done
+  for l in f1 f2 f3 f4 f5 f6 f7 f8 f9 f10 f11 f12 c1 c2; do
+    skip "$l" "未測定（S3TABLES_* 未設定）"
+    skip "$l-cleanup" "CREATE TABLE を投げていないため後始末不要"
+  done
+  D_LABELS="d0 d1 d2 d3 d4"
+  F_LABELS="f1 f2 f3 f4 f5 f6 f7 f8 f9 f10 f11 f12"
+  C_LABELS="c1 c2"
+fi
+
+# --- 後始末: 実在する Glue の表 <DB>.<PROBE>_src --------------------------------------
+if [ "$SRC_OK" = 1 ]; then
+  run_in_ctx "$DEFAULT_CTX" v-cleanup-src "DROP TABLE IF EXISTS $DB.$SRC_TABLE"
+  if succeeded v-cleanup-src; then
+    SRC_OK=0
+  else
+    echo "== 実在する表 <DB>.<PROBE>_src を消せませんでした。手で DROP TABLE IF EXISTS してください。"
+  fi
+else
+  skip v-cleanup-src "実在する表を作れなかったため後始末不要"
+fi
+
+# --- 付随物の取得（FAILED になった CTAS の項目だけ、オーファンデータも確認） ----------------
+fetch_failed_attachments $D_LABELS $F_LABELS $C_LABELS
+for l in d2 d3 d4 f1 f2 f3 f4 f5 f6 f7 f8 f9 f10 f11 f12 c1; do
+  is_failed "$l" && check_ctas_orphan_data "$l"
+done
+
+fi # ROUND=19
+
 # ROUND=20 だけ、k・v・c・a・m 群と対照 x0 を投げる（issue #270 の 2 ラウンド目。ROUND=16 の続きで、
 # TBLPROPERTIES のキーの範囲・table_type の値と組・列リスト無しの形・ちょうど小文字の
 # awsdatacatalog の 3 部・名前空間が無いときとの優先順を測る。ROUND=18 は #272、19 は
@@ -4150,6 +4361,15 @@ elif [ "$ROUND" = 18 ]; then
     ALL_LABELS="$ALL_LABELS $l $l-cleanup"
   done
   ALL_LABELS="$ALL_LABELS c1y c1y-cleanup $I_LABELS p-drop-src"
+elif [ "$ROUND" = 19 ]; then
+  ALL_LABELS="$ALL_LABELS v-setup-src d0"
+  for l in d1 d2 d3 d4; do
+    ALL_LABELS="$ALL_LABELS $l $l-cleanup $l-cleanup2"
+  done
+  for l in $F_LABELS $C_LABELS; do
+    ALL_LABELS="$ALL_LABELS $l $l-cleanup"
+  done
+  ALL_LABELS="$ALL_LABELS v-cleanup-src"
 elif [ "$ROUND" = 8 ]; then
   ALL_LABELS="$ALL_LABELS m-setup-t m-setup-v m-setup-db2 m-setup-t2 $M_LABELS"
   ALL_LABELS="$ALL_LABELS m-drop-v36 m-drop-t35 m-drop-v m-drop-t m-drop-t2 m-drop-db2"
@@ -4621,6 +4841,44 @@ write_summary_txt() {
       echo "#   Athena のクエリ課金には乗らない。"
       echo "# 注意: これは実測した本物の Athena の挙動であり、将来の Athena の変更で変わりうる。"
       echo "#   実測値は既定とは限らない。"
+    elif [ "$ROUND" = 19 ]; then
+      echo "# issue #273（#208 ラウンド 19）: S3 Tables の Context の 1 部・2 部の CTAS で"
+      echo "#             名前空間が無いとき、本物が開始して FAILED になる（NOT_FOUND: Schema"
+      echo "#             <内部名>\$schema:<名前空間> not found. + location の手動削除の注意。"
+      echo "#             #251 のラウンド 15 の t16・t17 で見つけた事実）の、Database を省略した"
+      echo "#             Context（<S3NODB>）の形（d 群）と、名前空間が無い CTAS の残りの形"
+      echo "#             （f 群）・対照（c 群）を実測"
+      echo "# 実行日時: $(date -Iseconds)"
+      if [ -n "$S3TABLES_CATALOG" ] && [ -n "$S3TABLES_NS" ]; then
+        echo "# S3TABLES_*: 設定あり（d・f・c 群を測る）"
+      else
+        echo "# S3TABLES_*: 未設定（d・f・c 群はすべて未測定。準備の <PROBE>_src 以外"
+        echo "#   ほぼ何も測れない）"
+      fi
+      if [ "$SRC_OK" = 1 ] || grep -qs "^State: SUCCEEDED" "$RUN_DIR/v-cleanup-src.reason.txt" 2>/dev/null; then
+        echo "# 実在する表 <DB>.<PROBE>_src: 作れた（S3TABLES_* も揃えば f10 を測る）"
+      else
+        echo "# 実在する表 <DB>.<PROBE>_src: 作れなかった（f10 は未測定）"
+      fi
+      echo "# StartQueryExecution の見込み本数: 23（S3TABLES_* あり）／4（無し）"
+      echo "#   （preflight 2 + 準備（<PROBE>_src の作成・削除）2 + S3TABLES_* が揃うときだけの"
+      echo "#   d0〜d4 の 5・f1〜f12 の 12・c1・c2 の 2 = 計 19）。"
+      echo "#   このスクリプトの実測値: $(wc -l < "$START_CALL_FILE" | tr -d ' ') 回"
+      echo "#   受理された CREATE TABLE ごとに、その場で DROP する後始末が 1 本ずつ増える"
+      echo "#   （最大 +5。d3・c1 は既存の名前空間を指すため受理される見込み。d1・d2・d4 が"
+      echo "#   想定に反して受理され、その DROP が <S3NODB> で失敗すれば <S3> でのもう一度の"
+      echo "#   DROP でさらに増える）。"
+      echo "# DDL: 実在する表 <PROBE>_real は作らない。準備で実在する Glue の表 <DB>.<PROBE>_src を"
+      echo "#   1 つ作り（S3TABLES_* によらず）、最後に消す。d・f・c 群の CREATE TABLE は、受理"
+      echo "#   されたらその場で DROP して消す（<S3NODB> で作った d1〜d4 は、まず同じ <S3NODB> で、"
+      echo "#   失敗すれば <S3>（Catalog=<S3TABLES_CATALOG>,Database=<S3TABLES_NS>）でもう一度"
+      echo "#   DROP TABLE IF EXISTS を試みる。それ以外は作った Context と同じ Context で消す）。"
+      echo "# 付随物: FAILED になった CTAS の項目（d2〜d4・f1〜f12・c1）は、結果ファイル本体と"
+      echo "#   <OutputLocation>.metadata を aws s3 cp で読み出して保存し（<label>.output.txt・"
+      echo "#   <label>.output.metadata）、理由に書かれた location を aws s3 ls --recursive で"
+      echo "#   確かめ、データが実際に書かれているかも見る（<label>.orphan-data.txt）。"
+      echo "# 課金: スキャンの無いクエリだけ（CREATE は 0〜1 行、DROP はメタデータのみ）。結果ファイルの"
+      echo "#   読み出し・オーファンデータの確認は Athena のクエリ課金には乗らない。"
     elif [ "$ROUND" = 20 ]; then
       echo "# issue #270 の 2 ラウンド目（#208 ラウンド 20）: ROUND=16 で測った族（S3 Tables の Context で"
       echo "#             LOCATION の無い非 EXTERNAL の CREATE TABLE が開始してから FAILED になる句）の続き"
@@ -4832,7 +5090,7 @@ PYEOF
       fi
     done
     if [ "$ROUND" = 6 ] || [ "$ROUND" = 7 ] || [ "$ROUND" = 8 ] || [ "$ROUND" = 10 ] || [ "$ROUND" = 11 ] \
-      || [ "$ROUND" = 12 ] || [ "$ROUND" = 13 ] || [ "$ROUND" = 14 ] || [ "$ROUND" = 15 ] || [ "$ROUND" = 17 ] || [ "$ROUND" = 18 ]; then
+      || [ "$ROUND" = 12 ] || [ "$ROUND" = 13 ] || [ "$ROUND" = 14 ] || [ "$ROUND" = 15 ] || [ "$ROUND" = 17 ] || [ "$ROUND" = 18 ] || [ "$ROUND" = 19 ]; then
       case "$ROUND" in
         6) REPR_LABELS=$K_LABELS ;;
         7) REPR_LABELS=$L_LABELS ;;
@@ -4851,6 +5109,8 @@ PYEOF
         17) REPR_LABELS=$Q_LABELS ;;
         # ROUND=18（issue #272）も同じく一部の項目に絞らない（開始できた p・w 群・c1y・i 群の全項目）。
         18) REPR_LABELS="$P_LABELS $W_LABELS c1y $I_LABELS" ;;
+        # ROUND=19（issue #273）も開始できた d・f・c 群の全項目を対象にする（要件どおり）。
+        19) REPR_LABELS="$D_LABELS $F_LABELS $C_LABELS" ;;
         *) REPR_LABELS=$R_LABELS ;;
       esac
       echo
@@ -4902,7 +5162,7 @@ PYEOF
         echo
       done
     fi
-    if [ "$ROUND" = 5 ] || [ "$ROUND" = 10 ] || [ "$ROUND" = 11 ] || [ "$ROUND" = 12 ] || [ "$ROUND" = 13 ] || [ "$ROUND" = 14 ] || [ "$ROUND" = 15 ] || [ "$ROUND" = 16 ] || [ "$ROUND" = 17 ] || [ "$ROUND" = 18 ] || [ "$ROUND" = 20 ]; then
+    if [ "$ROUND" = 5 ] || [ "$ROUND" = 10 ] || [ "$ROUND" = 11 ] || [ "$ROUND" = 12 ] || [ "$ROUND" = 13 ] || [ "$ROUND" = 14 ] || [ "$ROUND" = 15 ] || [ "$ROUND" = 16 ] || [ "$ROUND" = 17 ] || [ "$ROUND" = 18 ] || [ "$ROUND" = 19 ] || [ "$ROUND" = 20 ]; then
       echo
       if [ "$ROUND" = 15 ]; then
         echo "## 付随物（結果ファイル本体・.metadata。FAILED または SUCCEEDED の CTAS だけ。実名は伏せる）"
@@ -4918,6 +5178,7 @@ PYEOF
         15) ATTACH_LABELS=$T_LABELS ;;
         17) ATTACH_LABELS=$Q_LABELS ;;
         18) ATTACH_LABELS="$P_LABELS $W_LABELS c1y $I_LABELS" ;;
+        19) ATTACH_LABELS="$D_LABELS $F_LABELS $C_LABELS" ;;
         16) ATTACH_LABELS="$CL_LABELS $PR_LABELS $PN_LABELS $PA_LABELS $TP_LABELS $SC_LABELS" ;;
         20) ATTACH_LABELS="$X0_LABEL $K_LABELS $V_LABELS $C_LABELS $A_LABELS $M_LABELS $SC_LABELS" ;;
         *) ATTACH_LABELS=$R_LABELS ;;
@@ -4984,10 +5245,16 @@ PYEOF
         echo
       done
     fi
-    if [ "$ROUND" = 18 ]; then
+    if [ "$ROUND" = 18 ] || [ "$ROUND" = 19 ]; then
       echo
-      echo "## CTAS が失敗した項目のオーファンデータ確認（aws s3 ls --recursive。実名は伏せる）"
-      for label in $P_LABELS $W_LABELS c1y; do
+      if [ "$ROUND" = 18 ]; then
+        echo "## CTAS が失敗した項目のオーファンデータ確認（aws s3 ls --recursive。実名は伏せる）"
+        orphan_labels="$P_LABELS $W_LABELS c1y"
+      else
+        echo "## 名前空間が無くて失敗した CTAS のオーファンデータ確認（aws s3 ls --recursive。実名は伏せる）"
+        orphan_labels="d2 d3 d4 f1 f2 f3 f4 f5 f6 f7 f8 f9 f10 f11 f12 c1"
+      fi
+      for label in $orphan_labels; do
         f="$RUN_DIR/$label.orphan-data.txt"
         [ -f "$f" ] || continue
         echo "### $label"
@@ -4998,24 +5265,26 @@ PYEOF
         fi
         echo
       done
-      echo
-      echo "## 位置の表（本物が返した line L:C と、送った文でエラーの対象の語が始まる行・桁。実名は伏せる）"
-      echo "#   L:C は StateChangeReason・AthenaError に書かれた位置（そのまま）。line/col は対象の語"
-      echo "#   （無い表名・列名・型不一致のリテラルなど）が、送った文（マスク前の実文で数える）の中で"
-      echo "#   1 始まりで始まる行・桁。組み直しの規則（本物が CTAS/INSERT をどう組み替えているか）を"
-      echo "#   読むための表。"
-      for label in $P_LABELS $W_LABELS c1y $I_LABELS; do
-        [ -s "$RUN_DIR/$label.reason.txt" ] || continue
-        IFS=$'\t' read -r rl rc < <(reason_line_col "$label")
-        [ "$rl" = "-" ] && continue
-        needle="${POS_TARGET[$label]:-}"
-        if [ -n "$needle" ]; then
-          IFS=$'\t' read -r tl tc < <(sql_position_of "$label" "$needle")
-        else
-          tl="-"; tc="-"
-        fi
-        echo "- $label: line $rl:$rc → 対象の語（$(sanitize "$(hide "$needle")")）は line $tl:$tc"
-      done
+      if [ "$ROUND" = 18 ]; then
+        echo
+        echo "## 位置の表（本物が返した line L:C と、送った文でエラーの対象の語が始まる行・桁。実名は伏せる）"
+        echo "#   L:C は StateChangeReason・AthenaError に書かれた位置（そのまま）。line/col は対象の語"
+        echo "#   （無い表名・列名・型不一致のリテラルなど）が、送った文（マスク前の実文で数える）の中で"
+        echo "#   1 始まりで始まる行・桁。組み直しの規則（本物が CTAS/INSERT をどう組み替えているか）を"
+        echo "#   読むための表。"
+        for label in $P_LABELS $W_LABELS c1y $I_LABELS; do
+          [ -s "$RUN_DIR/$label.reason.txt" ] || continue
+          IFS=$'\t' read -r rl rc < <(reason_line_col "$label")
+          [ "$rl" = "-" ] && continue
+          needle="${POS_TARGET[$label]:-}"
+          if [ -n "$needle" ]; then
+            IFS=$'\t' read -r tl tc < <(sql_position_of "$label" "$needle")
+          else
+            tl="-"; tc="-"
+          fi
+          echo "- $label: line $rl:$rc → 対象の語（$(sanitize "$(hide "$needle")")）は line $tl:$tc"
+        done
+      fi
     fi
   } > "$txt"
   echo "$txt"
