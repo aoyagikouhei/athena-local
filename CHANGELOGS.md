@@ -11,6 +11,10 @@ later name the date they were measured on.
 
 ### Changed
 
+- Outside an S3 Tables context catalog, Hive's `CREATE TABLE ... LOCATION` is rejected at start
+  with real Athena's `External keyword required` or `Unsupported ddl with 2 catalogs`
+  ([docs](docs/caveats.md#plain-create-table)).
+
 - Under an S3 Tables context catalog, a CTAS into a missing namespace fails with real
   Athena's `NOT_FOUND` reason and error type
   ([docs](docs/caveats.md#parameters-and-catalog-aliases)).

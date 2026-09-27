@@ -492,8 +492,8 @@ it as without the comment. `MSCK REPAIR TABLE` on an Iceberg table, with or with
   2026-09-27). When `default` exists the one-part name is sent as written;
   what real Athena does then has not been measured.
 - **With an S3 Tables context catalog, Hive's `LOCATION` and `EXTERNAL` are
-  rejected with real Athena's messages.** Trino's grammar has neither, so under
-  any other context catalog such a statement gets Trino's syntax error. When
+  rejected with real Athena's messages.** Trino's grammar has neither; under
+  any other context catalog, see the next entries. When
   `QueryExecutionContext.Catalog` is `s3tablescatalog/<bucket>`, real Athena
   reads the statement as Hive DDL first, and athena-local does the same for the
   forms that were measured, before the syntax check
@@ -572,11 +572,42 @@ it as without the comment. `MSCK REPAIR TABLE` on an Iceberg table, with or with
   ([#248](https://github.com/aoyagikouhei/athena-local/issues/248),
   [#266](https://github.com/aoyagikouhei/athena-local/issues/266), measured
   2026-09-27). With a catalog Trino does have (including a
-  `TRINO_CATALOG_MAP` alias), the statement still gets Trino's syntax error;
-  under the default context catalog real Athena answers `Unsupported ddl with
-  2 catalogs` with `EXTERNAL` and `External keyword required for table type
-  HIVE` without it
-  ([#278](https://github.com/aoyagikouhei/athena-local/issues/278)).
+  `TRINO_CATALOG_MAP` alias), the next entry applies.
+- **Outside an S3 Tables context catalog, Hive's `LOCATION` is rejected with
+  real Athena's messages.** Real Athena reads `CREATE [EXTERNAL] TABLE ...
+  LOCATION '<path>'` as Hive DDL first, and athena-local does the same, before
+  the syntax check, for an unquoted one- to three-part name with the clauses
+  read in the first table of the S3 Tables entry above (same clauses and
+  order), answering `InvalidRequestException` /
+  `MALFORMED_QUERY` with nothing sent to Trino
+  ([#278](https://github.com/aoyagikouhei/athena-local/issues/278), measured
+  2026-09-27):
+
+  | Form | Message |
+  | --- | --- |
+  | no `EXTERNAL`, unless `TBLPROPERTIES` has `'table_type'='ICEBERG'` (key and value in any case), under any context catalog or none | `External keyword required for table type HIVE` |
+  | `EXTERNAL`, or `'table_type'='ICEBERG'` without it, on `<catalog>.<database>.<table>` whose first part is not `awsdatacatalog` (in any case), with the context catalog `AwsDataCatalog` (in any case) | `Unsupported ddl with 2 catalogs: <the statement>` |
+  | `EXTERNAL` on `awsdatacatalog.<database>.<table>` (all lower case), with another context catalog that is a `TRINO_CATALOG_MAP` key or that Trino has | `Unsupported ddl with 2 catalogs: <the statement>` |
+
+  `<the statement>` is the statement without surrounding whitespace and the
+  trailing `;`, comments kept. A first part Trino has no such catalog for is
+  rejected with `DATACATALOG_NOT_FOUND` first (the entry above); when Trino
+  cannot be asked, the catalog is taken as existing. Everything else still
+  gets Trino's syntax error: the statements real Athena accepts (`EXTERNAL`
+  on a one- or two-part name or on `AwsDataCatalog` / `awsdatacatalog` under
+  the default context catalog, `EXTERNAL` on another catalog with no
+  `Catalog` in the context, `'table_type'='ICEBERG'` without `EXTERNAL`),
+  which athena-local cannot run on Trino, and the statements real Athena also
+  answers with Trino's syntax error (a double-quoted name, `NOT NULL`), where
+  the `Expecting:` list after `mismatched input 'EXTERNAL'` differs from real
+  Athena's. A name in backquotes or with four parts or more was not measured
+  here and is left to the syntax check. Not handled either: `EXTERNAL` on `<catalog>.<table>`, which real
+  Athena starts and fails because it reads the catalog as a database, and
+  `'table_type'='ICEBERG'` with `STORED AS`, which real Athena starts and
+  fails with `Iceberg create table statement does not allow STORED AS/BY`.
+  Under a context catalog that does not exist, or with the Iceberg
+  `table_type` under a context catalog other than `AwsDataCatalog`, real
+  Athena was not measured and athena-local does not reject.
 - **A three-part name whose catalog does not exist is rejected with
   `DATACATALOG_NOT_FOUND`.** For an unquoted three-part name that would
   otherwise answer `No location`, under any context catalog, real Athena

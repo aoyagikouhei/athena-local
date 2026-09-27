@@ -154,9 +154,10 @@ async fn location_付きの実在しないカタログの_3_部は構文チェ�
     );
 }
 
-/// カタログがある（Trino にだけあるカタログは本物で未測定）なら、今までどおり構文チェックに任せる。
+/// カタログがあれば DATACATALOG_NOT_FOUND にせず、EXTERNAL の無い形は本物と同じ External で弾く（2026-09-27 実測 x1・r28。
+/// #278。Trino にだけあるカタログは本物で未測定）。
 #[tokio::test]
-async fn location_付きの_trino_にあるカタログの_3_部は構文チェックに任せる() {
+async fn location_付きの_trino_にあるカタログの_3_部は_datacatalog_not_found_にしない() {
     const QUERY: &str = "CREATE TABLE iceberg.db.t (n int) LOCATION 's3://b/p/'";
     let harness = Harness::builder(select_response())
         .route(
@@ -166,8 +167,14 @@ async fn location_付きの_trino_にあるカタログの_3_部は構文チェ�
         .start()
         .await;
 
-    start(&harness, QUERY, None).await;
-    assert_eq!(harness.syntax_checks(), [QUERY]);
+    let (code, error) = start(&harness, QUERY, None).await;
+    assert_eq!(code, 400, "{error}");
+    assert_eq!(error["AthenaErrorCode"], "MALFORMED_QUERY");
+    assert_eq!(
+        error["Message"],
+        "External keyword required for table type HIVE"
+    );
+    assert_eq!(harness.trino_sqls(), [catalog_exists_sql("iceberg")]);
 }
 
 #[tokio::test]

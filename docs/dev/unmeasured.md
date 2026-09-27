@@ -26,6 +26,7 @@
 - [ ] Trino で失敗した CTAS でない `CREATE TABLE`（名前空間が無いなど）に本物が結果ファイル（`<id>.txt`）を置くか。測ったのは S3 Tables の Context の `Cannot find or access the specified table` だけ（置かなかった）。athena-local は Trino のエラーで FAILED になった DDL には `FAILED: <理由>` の `.txt` を置く（#227、2026-09-26）
 - [ ] CTAS の 4 部以上で引用符付きの部分がある名前（`a.b."c".d AS SELECT ...`）と、大文字を含む無引用の 4 部以上の CTAS の名前の書き方。#221 で無引用・小文字の 4 部の CTAS が `Invalid table name <名前>` になると測った。athena-local は引用符付きの部分があれば実行し、無引用なら DESCRIBE と同じく小文字でつないで弾く（2026-09-26）
 - [ ] `SHOW TABLES IN` の 3 部以上で、2 つ目の `.` の直後が `LIKE` やバッククォートの名前の形（`SHOW TABLES IN a.b.like`・``SHOW TABLES IN a.b.`c` ``）。#212 で直後が無引用の名前なら `mismatched input '.'`、引用符付きなら `extraneous input '.'` と測った。athena-local は `"` で始まらない形をすべて `mismatched input '.'` にする（2026-09-25）
+- [ ] 既定の Context 以外の LOCATION 付きの Hive の `CREATE TABLE`（#278 の ROUND=21 の外）: 実在しない Context の Catalog での EXTERNAL の 3 部（とくにちょうど小文字の `awsdatacatalog`）、実在する別カタログの Context での table_type が ICEBERG の非 EXTERNAL の 3 部、LAMBDA・FEDERATED 型のデータカタログと Trino にだけあるカタログを 1 部目・Context に書いた形、table_type ICEBERG に STORED AS 以外の Hive の句（ROW FORMAT・CLUSTERED BY など）を組んだ形。athena-local は前の 2 つを弾かずに構文チェックに任せ、Trino にあるカタログは実在の GLUE 型と同じに扱い、ICEBERG の句の組は構文チェックに任せる（2026-09-27）
 
 ## GetQueryResults（[measurements/query-results.md](measurements/query-results.md)）
 
