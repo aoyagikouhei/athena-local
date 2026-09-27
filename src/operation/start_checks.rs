@@ -165,7 +165,9 @@ pub(super) async fn decide(
                     runs_ctas_query: false,
                 });
             }
-            // 本物は 1 部目を無視して名前空間に作り、Query は受け取ったまま返した（2026-09-26 実測 j1・j4。#237）。
+            // 本物は 1 部目を無視して名前空間に作った（2026-09-26 実測 j1・j4。#237）。GetQueryExecution に返す値は
+            // 最後の `drop_create_table_catalog` が決める（本物の Query は 1 部目が落ちていた。#271）。ここで入れる受け取った
+            // 文は、そこが落とさない引用符付きの部品を含む名前（未実測）のときだけ残る。
             create_table_catalog::Outcome::Rewrite(rewritten) => {
                 reported = Some(Reported {
                     query: query.clone(),
@@ -299,6 +301,16 @@ pub(super) async fn decide(
             failure,
             writes_result_file: true,
             runs_ctas_query: false,
+        });
+    }
+
+    // 本物は CTAS でない CREATE TABLE の 3 部の名前の 1 部目を、成功でも失敗でも Query から落とし、Context の Database を
+    // 修飾の名前にした（2026-09-27 実測 ROUND=17 と過去の生データ。#271）。開始する経路（名前空間があって送る・無くて
+    // FAILED）ごとに書かずここで覆う。実行する文と Database は変えない。
+    if let Some(rewritten) = reported_query::drop_create_table_catalog(&query) {
+        reported = Some(Reported {
+            query: rewritten.query,
+            database: Some(rewritten.database),
         });
     }
 

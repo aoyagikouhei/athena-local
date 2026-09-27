@@ -462,6 +462,8 @@ async fn s3_tables_の_context_の_location_の無い_stored_as_は開始して_
         );
         assert_eq!(execution["StatementType"], "DDL");
         assert_eq!(execution["SubstatementType"], "CREATE_TABLE");
+        // `AwsDataCatalog` の 3 部は、本物は Query から 1 部目を落とした（2026-09-26 実測 w2 の生データ。#271）。
+        assert_eq!(execution["Query"], query.replace("AwsDataCatalog.", ""));
     }
     assert!(harness.syntax_checks().is_empty(), "構文チェックを送らない");
     assert!(harness.trino_requests().is_empty(), "本体を送らない");

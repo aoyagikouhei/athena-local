@@ -860,3 +860,33 @@ Content-Type と `.metadata` を含む置き場所は本項が主で、[result-f
 
 - 採用した判断: `hive.rs` の 3 つの判定から #248 で測った形だけに絞った条件を外した（LOCATION の無い EXTERNAL の句・IF NOT EXISTS・列の並び・バッククォート、LOCATION の無い STORED AS の 2 部・`AwsDataCatalog` の 3 部・IF NOT EXISTS・COMMENT・PARTITIONED BY・TBLPROPERTIES・バッククォート・列の並び無し、`location_catalog` の EXTERNAL・IF NOT EXISTS・句）。STORED AS は ROW FORMAT（w7）・CLUSTERED BY（未測定）と組む形と、ちょうど小文字の `awsdatacatalog` の 3 部（w3）を外した。S3 Tables の Context の ROW FORMAT などと w3・w7 は #270、既定の Context の Hive の DDL（x3・z1 の 2 catalogs、xc・x1・x4・z5 の External keyword required）は #278、`CREATE EXTERNAL TABLE` の Query から 1 部目のカタログが落ちること（z0 系）は #271（decisions.md の #266 の項）
 - 備考: ノートの表と生データ（`<label>.start.err`・`<label>.execution.json`・`<label>.reason.txt`・`summary.txt`）を全項目で突き合わせ、食い違いは無かった。LAMBDA・FEDERATED 型の連携カタログと z3 の表の置き場は未測定（unmeasured.md）
+
+### CREATE TABLE と Hive の DDL の 3 部の名前で、カタログ部分が Query から落ちる範囲と Context の Database（#271）
+- 日付: 2026-09-27（UTC 2026-09-26 23:35）／ issue: #271 ／ スクリプト: `tools/measure/unquoted-ddl.sh`（`ROUND=17`、`CREATE_GLUE_CATALOG=1`）／ 生データ: `$HOME/athena-unquoted-ddl-measurements/run-20260926-233518`（過去の生データの読み直しは下の表の後ろ）
+- 相手: 本物の Athena（Context は書いたもの以外 `Catalog=AwsDataCatalog,Database=<DB>`。`<GLUE>` は自分のアカウントの Glue を指す GLUE 型のデータカタログで、一時的に作って最後に消した）
+- 投げたもの: 項目 q0〜q25（S3 Tables の Context の q22・q23 は S3TABLES_* を渡さず未測定）と準備・後始末。StartQueryExecution は 55 回。準備の DB `<db2>`・表 `<qdup>` も後始末もすべて SUCCEEDED
+- 返ったもの（Query と Context は `execution.json` で読んだ。返った Context の Catalog は、既定・Catalog 省略・Database 無しのどれでも `awsdatacatalog`）:
+
+  | 文 | 状態 | 返った Query | 返った Context の Database |
+  |---|---|---|---|
+  | `CREATE EXTERNAL TABLE awsdatacatalog.<DB>.<t> (n int) LOCATION '..'`（q0） | SUCCEEDED | `CREATE EXTERNAL TABLE <DB>.<t> ...` | `<DB>` |
+  | `awsdatacatalog.<db2>.<t>`（q1）・`AwsDataCatalog.<db2>.<t>`（q2） | SUCCEEDED | `... <db2>.<t> ...` | `<db2>`（送った Context は `<DB>`） |
+  | `<db2>.<t>`（q3。2 部の対照） | SUCCEEDED | 送ったまま | `<DB>`（2 部では変わらない） |
+  | Context が `Catalog=AwsDataCatalog` だけ（q4）・`Database=<DB>` だけ（q5）で `awsdatacatalog.<DB>.<t>`、`Database=<DB>` だけで `awsdatacatalog.<db2>.<t>`（q5b） | SUCCEEDED | 1 部目が落ちる | `<DB>`・`<DB>`・`<db2>` |
+  | `IF NOT EXISTS`（q6）、PARTITIONED BY・ROW FORMAT DELIMITED・STORED AS・TBLPROPERTIES 付き（q7）、`CREATE EXTERNAL TABLE /* c */ awsdatacatalog...`（q9）、小文字の文（q10）、`AWSDATACATALOG.`（q11） | SUCCEEDED | 1 部目と直後の `.` だけ落ちる（句・コメント・ほかの綴りはそのまま） | `<DB>` |
+  | `awsdatacatalog . <DB> . <t>`（q8） | SUCCEEDED | `<DB> . <t>`（カタログと直後の ` . ` が落ちる。#242 の m38 と同じ） | `<DB>` |
+  | 前後の空白と `;`（q11b） | SUCCEEDED | 前後の空白と `;` も落ちる（#240） | `<DB>` |
+  | `CREATE TABLE awsdatacatalog.<DB>.<t> (n int) LOCATION '..' TBLPROPERTIES ('table_type'='ICEBERG')`（q12）・その 2 部（q12b） | SUCCEEDED | q12 は落ちる、q12b は送ったまま | `<DB>` |
+  | `CREATE EXTERNAL TABLE awsdatacatalog.nosuchdb271.<t> ...`（q13）・その 2 部（q13b） | FAILED（2/1301、`Database nosuchdb271 not found.`） | q13 は落ちる、q13b は送ったまま | q13 は `nosuchdb271`、q13b は `<DB>` |
+  | 同名の表がある `CREATE EXTERNAL TABLE awsdatacatalog.<DB>.<qdup> ...`（q14） | FAILED（2/1006、`Table <qdup> already exists.`） | 落ちる | `<DB>` |
+  | `SHOW PARTITIONS awsdatacatalog.<DB>.<qdup>`（q16。UTILITY / SHOW_PARTITIONS） | SUCCEEDED | `SHOW PARTITIONS <DB>.<qdup>` | `<DB>` |
+  | `CREATE DATABASE awsdatacatalog.<q17db>`（q17）・`DROP DATABASE IF EXISTS awsdatacatalog.<無い DB>`（q20） | SUCCEEDED | 落ちる | `<DB>`（変わらない） |
+  | `ALTER DATABASE awsdatacatalog.<db2> SET DBPROPERTIES (..)`（q18）・その 1 部（q18b） | SUCCEEDED | q18 は落ちる、q18b は送ったまま | q18 は `<db2>`、q18b は `<DB>` |
+  | `DESCRIBE DATABASE [awsdatacatalog.]<db2>`（q19・q19b） | 開始時に `Queries of this type are not supported`（MALFORMED_QUERY） | — | — |
+  | `ALTER TABLE awsdatacatalog.<DB>.<qdup> ADD IF NOT EXISTS PARTITION (p=1)`（q21） | SUCCEEDED | 落ちる | `<DB>` |
+  | Context `Catalog=<GLUE>,Database=<DB>` で `CREATE EXTERNAL TABLE <GLUE>.<db2>.<t> ...`（q24）・`AwsDataCatalog.<db2>.<t> ...`（q25） | SUCCEEDED | 落ちる | `<db2>`（Catalog は `<GLUE>` のまま） |
+
+- 過去の生データの読み直し（S3 Tables の Context `Catalog=s3tablescatalog/<bucket>,Database=<ns>` の CTAS でない `CREATE TABLE AwsDataCatalog.<ns2>.<t> (n int)`）: #224 の i4、#227 の j1〜j4・j9、#251 の r3、#266 の w2（STORED AS PARQUET 付き）・z12（ROW FORMAT SERDE 付き）の 8 件とも、SUCCEEDED（j1・j4・r3）でも FAILED でも、IF NOT EXISTS・`AWSDATACATALOG` によらず Query から 1 部目と `.` が落ちていた。文の名前空間が Context の Database と違う i4・j2・j3・j9 は、返った Context の Database が文の名前空間になった。#237 は j1・j4 を「Query は受け取ったまま」と読み違えていた（j1・j4 は名前空間が Context の Database と同じで、Database の変化も見えない形）
+- CTAS・CREATE VIEW は、#242 の m35・m36 と #251 の r4〜r8c・t1〜t15 ほか 20 件以上で、成功・失敗によらず Query が送ったまま
+- 採用した判断: athena-local で開始できるのは、S3 Tables の Context の CTAS でない `CREATE TABLE <awsdatacatalog の類>.<ns>.<t>`（1 部目が小文字ちょうどの `awsdatacatalog` なら 2 catalogs で開始時に弾く）だけ。この形の GetQueryExecution の Query から 1 部目と直後の `.`・空白を落とし（コメントは残す）、Context の Database を文の名前空間（文中の綴り）にする。成功（1 部目を空白にして Trino に送る）でも、名前空間が無い FAILED・`STORED AS` の FAILED（#266 で 3 部も開始するようになった。w2）でも同じ。実行する文と実行の Database は変えない。`CREATE EXTERNAL TABLE`・`LOCATION`・`SHOW PARTITIONS`・`CREATE / ALTER / DROP DATABASE`・`ADD PARTITION` は Trino の文法に無く開始時の構文チェックで弾くので、Query の組み直しは要らない
+- 備考: 大文字の混ざる名前空間を書いたときに Context の Database が文中の綴りか小文字かと、1 部目と `.` の間のコメントの扱いは未実測（`docs/dev/unmeasured.md`）

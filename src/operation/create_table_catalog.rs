@@ -3,7 +3,8 @@
 //! （`Catalog '<書いたとおり>' does not exist`）で弾いた。NV はそれより先（2026-09-26 実測 i3・j5〜j7・j10・j14）。
 //! S3 Tables の Context で 1 部目が小文字ちょうどでない `awsdatacatalog`（`AwsDataCatalog` など）なら、1 部目を無視して
 //! 2 部目を S3 Tables の名前空間として作り、名前空間が無ければ開始して FAILED にした（j1〜j4・j9）。
-//! 名前空間があれば、1 部目を空白にした文を Trino に送る（j1・j4。#237）。
+//! 名前空間があれば、1 部目を空白にした文を Trino に送る（j1・j4。#237）。GetQueryExecution の Query と Database は
+//! どちらの場合も `reported_query::drop_create_table_catalog` が 1 部目を落とした形にする（#271）。
 //! S3 Tables の Context の無引用の 2 部の名前も、1 部目の名前空間が無ければ同じ FAILED にした（i2・j12。#231）。
 //! 1 部の名前も、Context の Database の名前空間が無ければ同じ FAILED にした（r1。#251）。
 //! S3 Tables の Context の CTAS は逆に、1 部目が `awsdatacatalog` の類なら 2 部目を Glue の DB として引いた（i12・j13。#232）。

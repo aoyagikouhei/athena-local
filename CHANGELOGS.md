@@ -11,6 +11,9 @@ later name the date they were measured on.
 
 ### Changed
 
+- Under an S3 Tables context catalog, `CREATE TABLE AwsDataCatalog.<namespace>.<table>`
+  reports `Query` without the catalog and the namespace as the context
+  `Database`, like real Athena ([docs](docs/caveats.md#plain-create-table)).
 - A block comment right after the `.` of the name in `SHOW CREATE TABLE`, after
   the name in `MSCK REPAIR TABLE`, before `ADD COLUMNS`, after
   `DESCRIBE EXTENDED`, or after `ALTER` in `REPLACE COLUMNS` / `CHANGE COLUMN`
