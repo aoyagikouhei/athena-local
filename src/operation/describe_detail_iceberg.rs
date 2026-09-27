@@ -2,8 +2,7 @@
 //! 既存の `utility_rows::describe_iceberg_rows` の行の後ろに、`Name:`・`Location:`・
 //! `# Table properties:`・`# Iceberg storage table properties:` を足す（2026-09-27 実測 f_i）。
 //! 取れない値（`location`・`format`・`write.format.default`）の行は省く（D1・D7）。
-//! `background_execution::run` から配線する（#275 フェーズ 3）。列指定（p5）はフェーズ 4 で配線するまで
-//! 呼ばれない。
+//! `describe_run::run` から配線する（#275 フェーズ 3・4）。
 
 use serde_json::Value;
 
@@ -43,8 +42,7 @@ pub(super) fn formatted(
 }
 
 /// Iceberg の列指定（p5）。詰めない。型は `type_spelling::iceberg`、コメントはそのまま
-/// （2026-09-27 実測 p5）。フェーズ 4 で配線する。
-#[allow(dead_code)]
+/// （2026-09-27 実測 p5）
 pub(super) fn column(row: &[Value]) -> Vec<String> {
     vec![format!(
         "{}\t{}\t{}",

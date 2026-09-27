@@ -522,3 +522,423 @@ async fn context_の_catalog_が_awsdatacatalog_でも省略でもなければ�
     assert_eq!(code, 200);
     assert_eq!(harness.syntax_checks(), ["DESCRIBE EXTENDED db.h"]);
 }
+
+// ==== フェーズ 4: 列指定・PARTITION 指定（#275） ====
+
+/// 本物の p1（2026-09-27 実測）。列指定 EXTENDED は 1 行、コメント欄は `from deserializer`。
+#[tokio::test]
+async fn extended_は_hive_の列指定で成功し_from_deserializer_を返す() {
+    let probe = probe_sql("default_catalog", "db", "h");
+    let rows = describe_rows(&[["n", "integer", "", ""], ["s", "varchar", "", "note"]]);
+    let harness = Harness::builder(rows.clone())
+        .route(&probe, probe_response("hive"))
+        .route("DESCRIBE h", rows)
+        .results_s3()
+        .start()
+        .await;
+
+    let execution = harness
+        .run_query(json!({
+            "QueryString": "DESCRIBE EXTENDED db.h n",
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+        }))
+        .await;
+    assert_eq!(execution["QueryExecution"]["Status"]["State"], "SUCCEEDED");
+    assert_eq!(
+        execution["QueryExecution"]["Query"],
+        "DESCRIBE EXTENDED h n"
+    );
+    // 開始時に列を確かめる DESCRIBE と、実行時の DESCRIBE で 2 回送る。
+    assert_eq!(
+        harness.trino_sqls(),
+        [
+            probe.clone(),
+            "DESCRIBE h".to_string(),
+            probe,
+            "DESCRIBE h".to_string()
+        ]
+    );
+
+    let (values, _) = values_and_results(&harness, &execution).await;
+    assert_eq!(
+        values,
+        ["n                   \tint                 \tfrom deserializer   "]
+    );
+}
+
+/// 本物の p2（2026-09-27 実測）。列指定 FORMATTED の ColumnInfo は 11 列。
+#[tokio::test]
+async fn formatted_は_hive_の列指定で成功し_11_列の_columninfo_を返す() {
+    let probe = probe_sql("default_catalog", "db", "h");
+    let rows = describe_rows(&[["n", "integer", "", ""]]);
+    let harness = Harness::builder(rows.clone())
+        .route(&probe, probe_response("hive"))
+        .route("DESCRIBE h", rows)
+        .results_s3()
+        .start()
+        .await;
+
+    let execution = harness
+        .run_query(json!({
+            "QueryString": "DESCRIBE FORMATTED db.h n",
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+        }))
+        .await;
+    assert_eq!(execution["QueryExecution"]["Status"]["State"], "SUCCEEDED");
+
+    let (values, results) = values_and_results(&harness, &execution).await;
+    let columns = results["ResultSet"]["ResultSetMetadata"]["ColumnInfo"]
+        .as_array()
+        .unwrap();
+    assert_eq!(columns.len(), 11, "{results}");
+    for column in columns {
+        assert_eq!(column["Type"], "string");
+    }
+    assert_eq!(values.len(), 3, "{values:?}");
+
+    let id = execution_id(&execution);
+    let puts = harness.s3_puts();
+    assert_eq!(puts.len(), 2, "{puts:?}");
+    assert_eq!(puts[1].key, format!("athena/{id}.txt.metadata"));
+}
+
+/// 本物の p5（2026-09-27 実測）。修飾子無しの Iceberg への列指定は成功する。
+#[tokio::test]
+async fn describe_は_iceberg_の列指定で成功し_binary_で_update_count_が_0() {
+    let probe = probe_sql("default_catalog", "db", "i");
+    let rows = describe_rows(&[["n", "integer", "", ""]]);
+    let harness = Harness::builder(rows.clone())
+        .route(&probe, probe_response("iceberg"))
+        .route("DESCRIBE i", rows)
+        .results_s3()
+        .start()
+        .await;
+
+    let execution = harness
+        .run_query(json!({
+            "QueryString": "DESCRIBE db.i n",
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+        }))
+        .await;
+    assert_eq!(execution["QueryExecution"]["Status"]["State"], "SUCCEEDED");
+    let (values, results) = values_and_results(&harness, &execution).await;
+    assert_eq!(values, ["n\tint\t"]);
+    assert_eq!(results["UpdateCount"], 0);
+    let puts = harness.s3_puts();
+    assert_eq!(puts[0].content_type.as_deref(), Some("binary/octet-stream"));
+}
+
+/// パーティション付き Hive 表の `"<t>$partitions"` の確認 SQL。
+fn partitions_sql(catalog: &str, schema: &str, table: &str, key: &str, value: &str) -> String {
+    format!(
+        "SELECT 1 FROM \"{catalog}\".\"{schema}\".\"{table}$partitions\" WHERE \"{key}\" = '{value}'"
+    )
+}
+
+/// 本物の p3（2026-09-27 実測）。PARTITION 指定 EXTENDED は `$partitions` で存在を確かめて実行する。
+#[tokio::test]
+async fn extended_は_hive_の_partition_指定で存在を確かめて成功する() {
+    let probe = probe_sql("default_catalog", "db", "hp");
+    let rows = describe_rows(&[
+        ["n", "integer", "", ""],
+        ["p", "varchar(1)", "partition key", ""],
+    ]);
+    let partitions = partitions_sql("default_catalog", "db", "hp", "p", "x");
+    let harness = Harness::builder(rows.clone())
+        .route(&probe, probe_response("hive"))
+        .route("DESCRIBE hp", rows)
+        .route(
+            &partitions,
+            json!({ "columns": [{ "name": "_col0", "type": "integer" }], "data": [[1]] }),
+        )
+        .results_s3()
+        .start()
+        .await;
+
+    let execution = harness
+        .run_query(json!({
+            "QueryString": "DESCRIBE EXTENDED db.hp PARTITION (p='x')",
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+        }))
+        .await;
+    assert_eq!(execution["QueryExecution"]["Status"]["State"], "SUCCEEDED");
+    assert_eq!(
+        execution["QueryExecution"]["Query"],
+        "DESCRIBE EXTENDED hp PARTITION (p='x')"
+    );
+    assert!(
+        harness.trino_sqls().contains(&partitions),
+        "{:?}",
+        harness.trino_sqls()
+    );
+
+    let (values, _) = values_and_results(&harness, &execution).await;
+    assert!(
+        values
+            .last()
+            .unwrap()
+            .starts_with("Detailed Partition Information\t"),
+        "{values:?}"
+    );
+}
+
+/// 本物の p4（2026-09-27 実測）。PARTITION 指定 FORMATTED も同じく確かめて実行する。
+#[tokio::test]
+async fn formatted_は_hive_の_partition_指定で存在を確かめて成功する() {
+    let probe = probe_sql("default_catalog", "db", "hp");
+    let rows = describe_rows(&[
+        ["n", "integer", "", ""],
+        ["p", "varchar(1)", "partition key", ""],
+    ]);
+    let partitions = partitions_sql("default_catalog", "db", "hp", "p", "x");
+    let harness = Harness::builder(rows.clone())
+        .route(&probe, probe_response("hive"))
+        .route("DESCRIBE hp", rows)
+        .route(
+            &partitions,
+            json!({ "columns": [{ "name": "_col0", "type": "integer" }], "data": [[1]] }),
+        )
+        .results_s3()
+        .start()
+        .await;
+
+    let execution = harness
+        .run_query(json!({
+            "QueryString": "DESCRIBE FORMATTED db.hp PARTITION (p='x')",
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+        }))
+        .await;
+    assert_eq!(execution["QueryExecution"]["Status"]["State"], "SUCCEEDED");
+    let (values, _) = values_and_results(&harness, &execution).await;
+    assert!(
+        values
+            .iter()
+            .any(|line| line.starts_with("Partition Value:")),
+        "{values:?}"
+    );
+}
+
+/// 本物の z4（2026-09-27 実測）。無い列は 1/1003、`.txt` あり・`.metadata` 無し。
+#[tokio::test]
+async fn extended_は無い列を開始時に_failed_にする() {
+    let probe = probe_sql("default_catalog", "db", "h");
+    let rows = describe_rows(&[["n", "integer", "", ""], ["s", "varchar", "", ""]]);
+    let harness = Harness::builder(rows.clone())
+        .route(&probe, probe_response("hive"))
+        .route("DESCRIBE h", rows)
+        .results_s3()
+        .start()
+        .await;
+
+    let execution = harness
+        .run_query(json!({
+            "QueryString": "DESCRIBE EXTENDED db.h nocol",
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+        }))
+        .await;
+    assert_eq!(execution["QueryExecution"]["Status"]["State"], "FAILED");
+    assert_eq!(
+        execution["QueryExecution"]["Status"]["StateChangeReason"],
+        "FAILED: Execution Error, return code 1 from org.apache.hadoop.hive.ql.exec.DDLTask. cannot find field nocol from [0:n, 1:s]"
+    );
+    let error = &execution["QueryExecution"]["Status"]["AthenaError"];
+    assert_eq!(error["ErrorCategory"], 1);
+    assert_eq!(error["ErrorType"], 1003);
+
+    let id = execution_id(&execution);
+    let puts = harness.s3_puts();
+    assert_eq!(puts.len(), 1, "{puts:?} (.metadata は無い)");
+    assert_eq!(puts[0].key, format!("athena/{id}.txt"));
+}
+
+/// 本物の z5（2026-09-27 実測）。無いパーティション値は 2/1006。
+#[tokio::test]
+async fn extended_は無いパーティション値を開始時に_failed_にする() {
+    let probe = probe_sql("default_catalog", "db", "hp");
+    let rows = describe_rows(&[
+        ["n", "integer", "", ""],
+        ["p", "varchar(1)", "partition key", ""],
+    ]);
+    let partitions = partitions_sql("default_catalog", "db", "hp", "p", "nope");
+    let harness = Harness::builder(rows.clone())
+        .route(&probe, probe_response("hive"))
+        .route("DESCRIBE hp", rows)
+        .route(
+            &partitions,
+            json!({ "columns": [{ "name": "_col0", "type": "integer" }], "data": [] }),
+        )
+        .results_s3()
+        .start()
+        .await;
+
+    let execution = harness
+        .run_query(json!({
+            "QueryString": "DESCRIBE EXTENDED db.hp PARTITION (p='nope')",
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+        }))
+        .await;
+    assert_eq!(execution["QueryExecution"]["Status"]["State"], "FAILED");
+    assert_eq!(
+        execution["QueryExecution"]["Status"]["StateChangeReason"],
+        "FAILED: SemanticException [Error 10006]: Partition not found {p=nope}"
+    );
+    let error = &execution["QueryExecution"]["Status"]["AthenaError"];
+    assert_eq!(error["ErrorCategory"], 2);
+    assert_eq!(error["ErrorType"], 1006);
+}
+
+/// 本物の p6（2026-09-27 実測）。Iceberg への EXTENDED 列指定は 2/1100、ファイル無し。
+#[tokio::test]
+async fn extended_は_iceberg_の列指定を開始時に_failed_にし何も置かない() {
+    let probe = probe_sql("default_catalog", "db", "i");
+    let harness = Harness::builder(json!({ "columns": [], "data": [] }))
+        .route(&probe, probe_response("iceberg"))
+        .results_s3()
+        .start()
+        .await;
+
+    let execution = harness
+        .run_query(json!({
+            "QueryString": "DESCRIBE EXTENDED db.i n",
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+        }))
+        .await;
+    assert_eq!(execution["QueryExecution"]["Status"]["State"], "FAILED");
+    let error = &execution["QueryExecution"]["Status"]["AthenaError"];
+    assert_eq!(error["ErrorCategory"], 2);
+    assert_eq!(error["ErrorType"], 1100);
+    assert_eq!(harness.trino_sqls(), [probe]);
+    assert!(harness.s3_puts().is_empty());
+}
+
+/// 本物の p7（2026-09-27 実測）。Iceberg への FORMATTED 列指定は 2/1100。
+#[tokio::test]
+async fn formatted_は_iceberg_の列指定を開始時に_failed_にする() {
+    let probe = probe_sql("default_catalog", "db", "i");
+    let harness = Harness::builder(json!({ "columns": [], "data": [] }))
+        .route(&probe, probe_response("iceberg"))
+        .results_s3()
+        .start()
+        .await;
+
+    let execution = harness
+        .run_query(json!({
+            "QueryString": "DESCRIBE FORMATTED db.i n",
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+        }))
+        .await;
+    assert_eq!(execution["QueryExecution"]["Status"]["State"], "FAILED");
+    assert_eq!(
+        execution["QueryExecution"]["Status"]["StateChangeReason"],
+        "FORMATTED keyword is not supported for Iceberg table columns."
+    );
+    assert!(harness.s3_puts().is_empty());
+}
+
+/// 本物の p8（2026-09-27 実測）。Iceberg への PARTITION 指定は 2/1100。
+#[tokio::test]
+async fn describe_は_iceberg_の_partition_指定を開始時に_failed_にする() {
+    let probe = probe_sql("default_catalog", "db", "i");
+    let harness = Harness::builder(json!({ "columns": [], "data": [] }))
+        .route(&probe, probe_response("iceberg"))
+        .results_s3()
+        .start()
+        .await;
+
+    let execution = harness
+        .run_query(json!({
+            "QueryString": "DESCRIBE db.i PARTITION (p='x')",
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+        }))
+        .await;
+    assert_eq!(execution["QueryExecution"]["Status"]["State"], "FAILED");
+    assert_eq!(
+        execution["QueryExecution"]["Status"]["StateChangeReason"],
+        "PARTITION keyword is not supported for Iceberg tables."
+    );
+    assert!(harness.s3_puts().is_empty());
+}
+
+/// パーティション付き Hive 表への列指定は今どおり（測っていない。構文チェックへ進む）。
+#[tokio::test]
+async fn extended_はパーティション付き_hive_への列指定は今どおり構文チェックへ進む() {
+    let probe = probe_sql("default_catalog", "db", "hp");
+    let rows = describe_rows(&[
+        ["n", "integer", "", ""],
+        ["p", "varchar(1)", "partition key", ""],
+    ]);
+    let harness = Harness::builder(rows.clone())
+        .route(&probe, probe_response("hive"))
+        .route("DESCRIBE hp", rows)
+        .start()
+        .await;
+
+    let (code, _) = harness
+        .call(
+            "StartQueryExecution",
+            json!({ "QueryString": "DESCRIBE EXTENDED db.hp n" }),
+        )
+        .await;
+    assert_eq!(code, 200);
+    assert_eq!(harness.syntax_checks(), ["DESCRIBE EXTENDED db.hp n"]);
+}
+
+/// ビューへの列指定は今どおり（測っていない。構文チェックへ進む）。
+#[tokio::test]
+async fn extended_はビューへの列指定は今どおり構文チェックへ進む() {
+    let probe = probe_sql("default_catalog", "db", "v");
+    let harness = Harness::builder(json!({ "columns": [], "data": [] }))
+        .route(&probe, view_probe_response("hive"))
+        .start()
+        .await;
+
+    let (code, _) = harness
+        .call(
+            "StartQueryExecution",
+            json!({ "QueryString": "DESCRIBE EXTENDED db.v n" }),
+        )
+        .await;
+    assert_eq!(code, 200);
+    assert_eq!(harness.syntax_checks(), ["DESCRIBE EXTENDED db.v n"]);
+}
+
+/// キーが 2 つの PARTITION 指定は今どおり（測っていない。構文チェックへ進む）。
+#[tokio::test]
+async fn extended_はキーが_2_つの_partition_指定は今どおり構文チェックへ進む() {
+    let probe = probe_sql("default_catalog", "db", "hp");
+    let harness = Harness::builder(json!({ "columns": [], "data": [] }))
+        .route(&probe, probe_response("hive"))
+        .start()
+        .await;
+
+    let (code, _) = harness
+        .call(
+            "StartQueryExecution",
+            json!({ "QueryString": "DESCRIBE EXTENDED db.hp PARTITION (p='x', q='y')" }),
+        )
+        .await;
+    assert_eq!(code, 200);
+    assert_eq!(
+        harness.syntax_checks(),
+        ["DESCRIBE EXTENDED db.hp PARTITION (p='x', q='y')"]
+    );
+}
+
+/// 修飾子無しの Hive への列指定は今どおり（測っていない。Query だけ測定の m8。構文チェックへ進む）。
+#[tokio::test]
+async fn describe_は修飾子無しの_hive_への列指定は今どおり構文チェックへ進む() {
+    let probe = probe_sql("default_catalog", "db", "h");
+    let harness = Harness::builder(json!({ "columns": [], "data": [] }))
+        .route(&probe, probe_response("hive"))
+        .start()
+        .await;
+
+    let (code, _) = harness
+        .call(
+            "StartQueryExecution",
+            json!({ "QueryString": "DESCRIBE db.h n" }),
+        )
+        .await;
+    assert_eq!(code, 200);
+    assert_eq!(harness.syntax_checks(), ["DESCRIBE db.h n"]);
+}

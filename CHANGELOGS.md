@@ -11,6 +11,10 @@ later name the date they were measured on.
 
 ### Changed
 
+- `DESCRIBE EXTENDED` and `DESCRIBE FORMATTED` (and `DESC`), with or without a column or a
+  `PARTITION (...)` clause, now run like real Athena instead of failing Trino's syntax check
+  ([docs](docs/ddl.md#describe-extended-and-describe-formatted)).
+
 - Under an S3 Tables context catalog, a CTAS into a missing namespace fails with real
   Athena's `NOT_FOUND` reason and error type
   ([docs](docs/caveats.md#parameters-and-catalog-aliases)).

@@ -23,8 +23,7 @@ impl Failure {
     }
 
     /// 無い列（z4）。`columns` は表の列の並び（本物は `[0:n, 1:s]` と 0 から番号を付けた）。本物だけ
-    /// ErrorCategory が 1（SYSTEM）・ErrorType が 1003 だった。フェーズ 4（#275）で配線する。
-    #[allow(dead_code)]
+    /// ErrorCategory が 1（SYSTEM）・ErrorType が 1003 だった。
     pub fn describe_column_not_found(column: &str, columns: &[String]) -> Self {
         let listed = columns
             .iter()
@@ -41,8 +40,7 @@ impl Failure {
         )
     }
 
-    /// 無いパーティション（z5。測ったのはキーが 1 つの形だけ）。フェーズ 4（#275）で配線する。
-    #[allow(dead_code)]
+    /// 無いパーティション（z5。測ったのはキーが 1 つの形だけ）。
     pub fn describe_partition_not_found(key: &str, value: &str) -> Self {
         Self::describe(
             format!(
@@ -62,8 +60,7 @@ impl Failure {
         )
     }
 
-    /// Iceberg 表の列への `DESCRIBE FORMATTED`（p7）。フェーズ 4（#275）で配線する。
-    #[allow(dead_code)]
+    /// Iceberg 表の列への `DESCRIBE FORMATTED`（p7）。
     pub fn describe_iceberg_formatted_column() -> Self {
         Self::describe(
             "FORMATTED keyword is not supported for Iceberg table columns.".to_string(),
@@ -72,8 +69,7 @@ impl Failure {
         )
     }
 
-    /// Iceberg 表への PARTITION 指定の `DESCRIBE`（p8）。フェーズ 4（#275）で配線する。
-    #[allow(dead_code)]
+    /// Iceberg 表への PARTITION 指定の `DESCRIBE`（p8）。
     pub fn describe_iceberg_partition() -> Self {
         Self::describe(
             "PARTITION keyword is not supported for Iceberg tables.".to_string(),

@@ -755,6 +755,13 @@ it as without the comment. `MSCK REPAIR TABLE` on an Iceberg table, with or with
     `year`, `month`, `day` and `hour` gets no row under `# Partition spec:`.
   - On a view, `SubstatementType` becomes `DESC_VIEW` only when the query
     completes (see [Supported API](api.md#supported-api)).
+  - `DESCRIBE EXTENDED` and `DESCRIBE FORMATTED` leave out the detail rows
+    Trino cannot supply (owner, create time, SerDe and format classes, a Hive
+    table's location, table parameters, a view's original text), and forms
+    that were not measured on Athena (a column on a partitioned Hive table or
+    a view, a `PARTITION (...)` with more than one key, a backquoted name)
+    still fail Trino's syntax check (see
+    [DDL](ddl.md#describe-extended-and-describe-formatted)).
   - `SHOW SCHEMAS LIKE '<pattern>'` returns Trino's matches; how Athena reads
     the pattern was not measured (on Athena, `LIKE '<prefix>*'` and
     `LIKE '<prefix>%'` with the prefix of an existing database both gave no
