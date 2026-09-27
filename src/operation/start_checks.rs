@@ -205,20 +205,33 @@ pub(super) async fn decide(
         .await
         {
             Some(failure) => Some(failure),
-            None => {
-                create_table_catalog::one_part_failure(
-                    &app.trino,
-                    &app.config,
-                    &query,
-                    catalog.unwrap_or_default(),
-                    database.as_deref(),
-                )
-                .await
-            }
+            None => match create_table_catalog::one_part_failure(
+                &app.trino,
+                &app.config,
+                &query,
+                catalog.unwrap_or_default(),
+                database.as_deref(),
+            )
+            .await
+            {
+                Some(failure) => Some(failure),
+                None => {
+                    create_table_catalog::default_namespace_ctas_failure(
+                        &app.trino,
+                        &app.config,
+                        &query,
+                        catalog.unwrap_or_default(),
+                        database.as_deref(),
+                        result_location.map(ResultLocation::uri).as_deref(),
+                    )
+                    .await
+                }
+            },
         }
     {
         // S3 Tables の Context の無引用の 2 部の名前は、本物は名前空間が無ければ 3 部と同じく開始して FAILED にした
         // （2026-09-26 実測 i2・j12。#231）。1 部の名前は Context の Database の名前空間で同じ（2026-09-27 実測 r1。#251）。
+        // Database を省略した 1 部の CTAS は名前空間 `default` で同じく FAILED（2026-09-27 実測 d2。#273）。
         immediate_failure = Some(ImmediateFailure {
             failure,
             writes_result_file: false,

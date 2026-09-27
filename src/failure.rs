@@ -87,6 +87,23 @@ impl Failure {
         .with_ctas_suffix(location)
     }
 
+    /// S3 Tables の Context の CTAS で、書き込む先の名前空間が無いときに本物が返した文言（2026-09-27 実測 d2・d4・f1〜f5・
+    /// f8〜f10・f12。#273）。本物の内部名 `catalog:<アカウント ID>:<Catalog>$schema:<名前空間>` のアカウント ID は
+    /// athena-local に無いので `000000000000` にする。`catalog` は Context の Catalog（受け取ったまま。本物は小文字の
+    /// Catalog でしか測っていない）、`namespace` は小文字の名前空間（本物は書いたとおりでなく小文字で返した。f4）。
+    pub fn s3_tables_schema_not_found(catalog: &str, namespace: &str, location: &str) -> Self {
+        Self {
+            reason: format!(
+                "NOT_FOUND: Schema catalog:000000000000:{catalog}$schema:{namespace} not found."
+            ),
+            error_message: None,
+            category: USER,
+            error_type: 1300,
+            retryable: false,
+        }
+        .with_ctas_suffix(location)
+    }
+
     /// エンジンで失敗した CTAS の理由の後ろに本物が付けた文（2026-09-27 実測 p・w・t・f 群。#272）。`location` は結果の
     /// 置き場所（`<OutputLocation>tables/<id>`）。
     pub fn with_ctas_suffix(self, location: &str) -> Self {

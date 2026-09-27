@@ -544,39 +544,54 @@ async fn s3_tables_の_context_で_1_部の名前は_context_の_database_の名
     assert!(harness.s3_puts().is_empty(), "{:?}", harness.s3_puts());
 }
 
-/// 1 部の名前で Context の Database が無いときは名前空間が決まらないので、問い合わせずに送る。
+/// 1 部の名前で Context の Database が無いときは、本物は名前空間 `default` を引き、無ければ同じ FAILED にした
+/// （2026-09-27 実測 d1。#273）。`default` があるとき（本物は測っていない）は今までどおり送る。
 #[tokio::test]
-async fn s3_tables_の_context_で_1_部の名前は_database_が無ければ問い合わせずに送る() {
-    let harness = Harness::builder(select_response())
-        .catalog_map(&[("s3tablescatalog/b", "iceberg")])
-        .route(
-            &schema_probe_sql("iceberg", "missing"),
+async fn s3_tables_の_context_で_1_部の名前は_database_が無ければ_default_の名前空間で確かめる() {
+    let probe = schema_probe_sql("iceberg", "default");
+    for (probe_response, state) in [
+        (
             trino_error(
                 "SCHEMA_NOT_FOUND",
-                "line 1:1: Schema 'missing' does not exist",
+                "line 1:1: Schema 'default' does not exist",
             ),
-        )
-        .results_s3()
-        .start()
-        .await;
+            "FAILED",
+        ),
+        (show_tables_response(), "SUCCEEDED"),
+    ] {
+        let harness = Harness::builder(select_response())
+            .catalog_map(&[("s3tablescatalog/b", "iceberg")])
+            .route(&probe, probe_response)
+            .results_s3()
+            .start()
+            .await;
 
-    for (query, context) in [(
-        "CREATE TABLE t (n int)",
-        json!({ "Catalog": "s3tablescatalog/b" }),
-    )] {
+        let query = "CREATE TABLE t (n int)";
         let execution = harness
             .run_query(json!({
                 "QueryString": query,
-                "QueryExecutionContext": context,
+                "QueryExecutionContext": { "Catalog": "s3tablescatalog/b" },
                 "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
             }))
             .await;
-        assert_eq!(
-            execution["QueryExecution"]["Status"]["State"], "SUCCEEDED",
-            "{query}: {execution}"
-        );
+        let status = &execution["QueryExecution"]["Status"];
+        assert_eq!(status["State"], state, "{execution}");
+        if state == "FAILED" {
+            assert_eq!(
+                status["StateChangeReason"],
+                "Cannot find or access the specified table"
+            );
+            assert_eq!(status["AthenaError"]["ErrorType"], 1100);
+            assert_eq!(
+                harness.trino_sqls(),
+                std::slice::from_ref(&probe),
+                "本体は送らない"
+            );
+            assert!(harness.s3_puts().is_empty(), "{:?}", harness.s3_puts());
+        } else {
+            assert_eq!(harness.trino_sqls(), [probe.clone(), query.to_string()]);
+        }
     }
-    assert_eq!(harness.trino_sqls(), ["CREATE TABLE t (n int)"]);
 }
 
 /// S3 Tables の Context の CTAS で 1 部目が `awsdatacatalog` の類なら、本物は 2 部目を Glue（AwsDataCatalog）の DB として
@@ -1124,6 +1139,218 @@ async fn 既定の_context_の_ctas_は_db_があれば別名置換だけで送�
             aliased.to_string(),
             schema_probe_sql("hive", "db"),
             aliased.to_string(),
+        ]
+    );
+}
+
+/// S3 Tables の Context の CTAS で書き込む先の名前空間が無いとき、本物は開始して FAILED にし、理由は S3 Tables の
+/// カタログの内部名（`catalog:<アカウント ID>:<Catalog>$schema:<小文字の名前空間>`）の `NOT_FOUND` に接尾辞を付けた
+/// ものだった（2 / 1300。本体も `.metadata` も置かない。2026-09-27 実測 f1〜f5・f8〜f10・f12。#273）。Trino は
+/// 書き込む先の名前空間が無い CTAS を `NOT_FOUND: Schema <名前空間> not found`（位置無し。compose の Trino で確かめた
+/// エラー名）で落とすので、athena-local はこれだけを
+/// 本物の文言に直す。アカウント ID は持っていないので `000000000000` にする。
+#[tokio::test]
+async fn s3_tables_の_context_の_ctas_で書き込む先の名前空間が無ければ本物の_not_found_にする() {
+    for (query, database) in [
+        ("CREATE TABLE t AS SELECT 1 AS n", "Missing"),
+        (
+            "CREATE TABLE IF NOT EXISTS Missing.t AS SELECT 1 AS n WITH NO DATA",
+            "ns",
+        ),
+    ] {
+        let harness = Harness::builder(select_response())
+            .catalog_map(&[("s3tablescatalog/b", "iceberg")])
+            .route(query, trino_error("NOT_FOUND", "Schema missing not found"))
+            .results_s3()
+            .start()
+            .await;
+
+        let execution = harness
+            .run_query(json!({
+                "QueryString": query,
+                "QueryExecutionContext": { "Catalog": "s3tablescatalog/b", "Database": database },
+                "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+            }))
+            .await;
+        let execution = &execution["QueryExecution"];
+        let id = execution["QueryExecutionId"].as_str().unwrap();
+        let reason = format!(
+            "NOT_FOUND: Schema catalog:000000000000:s3tablescatalog/b$schema:missing not found. You may need to \
+             manually clean the data at location 's3://results-bucket/athena/tables/{id}' before retrying. Athena \
+             will not delete data in your account."
+        );
+        let status = &execution["Status"];
+        assert_eq!(status["State"], "FAILED", "{query}: {execution}");
+        assert_eq!(status["StateChangeReason"], reason, "{query}");
+        assert_eq!(
+            status["AthenaError"],
+            json!({
+                "ErrorCategory": 2,
+                "ErrorType": 1300,
+                "Retryable": false,
+                "ErrorMessage": reason
+            }),
+            "{query}"
+        );
+        assert_eq!(execution["Query"], query);
+        assert_eq!(execution["SubstatementType"], "CREATE_TABLE_AS_SELECT");
+        assert!(harness.s3_puts().is_empty(), "{:?}", harness.s3_puts());
+    }
+}
+
+/// 問い合わせの表の名前空間が無いとき（Trino の解析の文言。位置付き）と、S3 Tables でない Context の CTAS は、今までどおり
+/// Trino の文言に接尾辞を付ける（本物の f7 は問い合わせの表の解析が先で `TABLE_NOT_FOUND`。理由の表名の内部名は
+/// 合わせない）。
+#[tokio::test]
+async fn 書き込む先でない名前空間と_s3_tables_でない_context_の_schema_not_found_は_trino_の文言のまま()
+ {
+    for (name, message, catalog, error_type) in [
+        (
+            "SCHEMA_NOT_FOUND",
+            "line 1:40: Schema 'missing' does not exist",
+            "s3tablescatalog/b",
+            1301,
+        ),
+        (
+            "NOT_FOUND",
+            "Schema missing not found",
+            "AwsDataCatalog",
+            1000,
+        ),
+    ] {
+        let query = "CREATE TABLE t AS SELECT * FROM missing.src";
+        let harness = Harness::builder(select_response())
+            .catalog_map(&[("s3tablescatalog/b", "iceberg")])
+            .route(query, trino_error(name, message))
+            .results_s3()
+            .start()
+            .await;
+
+        let execution = harness
+            .run_query(json!({
+                "QueryString": query,
+                "QueryExecutionContext": { "Catalog": catalog, "Database": "ns" },
+                "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+            }))
+            .await;
+        let execution = &execution["QueryExecution"];
+        let id = execution["QueryExecutionId"].as_str().unwrap();
+        let status = &execution["Status"];
+        assert_eq!(status["State"], "FAILED", "{catalog}: {execution}");
+        assert_eq!(
+            status["StateChangeReason"],
+            format!(
+                "{name}: {message}. You may need to manually clean the data at location \
+                 's3://results-bucket/athena/tables/{id}' before retrying. Athena will not delete data in your \
+                 account."
+            ),
+            "{catalog}"
+        );
+        assert_eq!(status["AthenaError"]["ErrorType"], error_type, "{catalog}");
+    }
+}
+
+/// S3 Tables の Context で Database を省略した 1 部の CTAS は、本物は名前空間 `default` を引き、無ければ同じ `NOT_FOUND`
+/// で FAILED にした（本体も `.metadata` も置かない。2026-09-27 実測 d2）。athena-local は `default` を問い合わせ、無いと
+/// 確かめられたときだけ Trino に本体を送らずに終える。
+#[tokio::test]
+async fn s3_tables_の_context_で_database_を省略した_1_部の_ctas_は_default_が無ければ_not_found_にする()
+ {
+    let probe = schema_probe_sql("iceberg", "default");
+    let harness = Harness::builder(select_response())
+        .catalog_map(&[("s3tablescatalog/b", "iceberg")])
+        .route(
+            &probe,
+            trino_error(
+                "SCHEMA_NOT_FOUND",
+                "line 1:1: Schema 'default' does not exist",
+            ),
+        )
+        .results_s3()
+        .start()
+        .await;
+
+    for query in [
+        "CREATE TABLE t AS SELECT 1 AS n",
+        "CREATE TABLE IF NOT EXISTS t AS SELECT 1 AS n",
+    ] {
+        let execution = harness
+            .run_query(json!({
+                "QueryString": query,
+                "QueryExecutionContext": { "Catalog": "s3tablescatalog/b" },
+                "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+            }))
+            .await;
+        let execution = &execution["QueryExecution"];
+        let id = execution["QueryExecutionId"].as_str().unwrap();
+        let status = &execution["Status"];
+        assert_eq!(status["State"], "FAILED", "{query}: {execution}");
+        assert_eq!(
+            status["StateChangeReason"],
+            format!(
+                "NOT_FOUND: Schema catalog:000000000000:s3tablescatalog/b$schema:default not found. You may need \
+                 to manually clean the data at location 's3://results-bucket/athena/tables/{id}' before retrying. \
+                 Athena will not delete data in your account."
+            ),
+            "{query}"
+        );
+        assert_eq!(status["AthenaError"]["ErrorType"], 1300);
+        assert_eq!(execution["SubstatementType"], "CREATE_TABLE_AS_SELECT");
+        assert_eq!(
+            execution["QueryExecutionContext"],
+            json!({ "Catalog": "s3tablescatalog/b" })
+        );
+    }
+    assert_eq!(harness.trino_sqls(), vec![probe; 2], "本体は送らない");
+    assert!(harness.s3_puts().is_empty(), "{:?}", harness.s3_puts());
+}
+
+/// `default` がある（本物は測っていない）ときと、2 部の名前・Database のある Context の CTAS は今までどおり送る。
+#[tokio::test]
+async fn s3_tables_の_context_で_default_がある_ctas_と名前空間が決まる_ctas_は今までどおり送る() {
+    let harness = Harness::builder(select_response())
+        .catalog_map(&[("s3tablescatalog/b", "iceberg")])
+        .route(
+            &schema_probe_sql("iceberg", "default"),
+            show_tables_response(),
+        )
+        .results_s3()
+        .start()
+        .await;
+
+    for (query, context) in [
+        (
+            "CREATE TABLE t AS SELECT 1 AS n",
+            json!({ "Catalog": "s3tablescatalog/b" }),
+        ),
+        (
+            "CREATE TABLE ns.t2 AS SELECT 1 AS n",
+            json!({ "Catalog": "s3tablescatalog/b" }),
+        ),
+        (
+            "CREATE TABLE t3 AS SELECT 1 AS n",
+            json!({ "Catalog": "s3tablescatalog/b", "Database": "ns" }),
+        ),
+    ] {
+        let execution = harness
+            .run_query(json!({
+                "QueryString": query,
+                "QueryExecutionContext": context,
+                "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+            }))
+            .await;
+        assert_eq!(
+            execution["QueryExecution"]["Status"]["State"], "SUCCEEDED",
+            "{query}: {execution}"
+        );
+    }
+    assert_eq!(
+        harness.trino_sqls(),
+        [
+            schema_probe_sql("iceberg", "default"),
+            "CREATE TABLE t AS SELECT 1 AS n".to_string(),
+            "CREATE TABLE ns.t2 AS SELECT 1 AS n".to_string(),
+            "CREATE TABLE t3 AS SELECT 1 AS n".to_string(),
         ]
     );
 }

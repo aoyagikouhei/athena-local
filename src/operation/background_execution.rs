@@ -94,7 +94,23 @@ fn engine_failure(execution: &Execution, error: &QueryError) -> Failure {
                 .first()
                 .is_some_and(|word| word == "CREATE") =>
         {
-            failure.with_ctas_suffix(&location.uri())
+            // S3 Tables の Context で書き込む先の名前空間が無いと、Trino（Iceberg）は位置の無い `NOT_FOUND: Schema <名前空間>
+            // not found` で落とす（問い合わせの表の名前空間は解析の `SCHEMA_NOT_FOUND: line ..: Schema '<名前空間>' does not
+            // exist`）。本物も同じ順で、文言は内部名の NOT_FOUND だった（2026-09-27 実測 f1〜f10。#273）。
+            let s3_tables = execution
+                .catalog
+                .as_deref()
+                .filter(|catalog| catalog.to_ascii_lowercase().starts_with("s3tablescatalog/"));
+            let namespace = error
+                .message
+                .strip_prefix("Schema ")
+                .and_then(|rest| rest.strip_suffix(" not found"));
+            match (s3_tables, namespace) {
+                (Some(catalog), Some(namespace)) if error.name.as_deref() == Some("NOT_FOUND") => {
+                    Failure::s3_tables_schema_not_found(catalog, namespace, &location.uri())
+                }
+                _ => failure.with_ctas_suffix(&location.uri()),
+            }
         }
         ResultFile::Manifest => {
             failure.with_insert_suffix(&format!("{}-manifest.csv", location.uri()))
