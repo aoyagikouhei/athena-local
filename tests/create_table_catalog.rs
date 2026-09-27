@@ -804,9 +804,16 @@ async fn db_が無い_ctas_の問い合わせ部分が失敗すればそのエ�
         .await;
     let status = &execution["QueryExecution"]["Status"];
     assert_eq!(status["State"], "FAILED", "{execution}");
+    // エンジンの失敗には本物と同じ置き場所の接尾辞が付く（2026-09-27 実測 t2。#272）。
+    let id = execution["QueryExecution"]["QueryExecutionId"]
+        .as_str()
+        .unwrap();
     assert_eq!(
         status["StateChangeReason"],
-        "INVALID_CAST_ARGUMENT: Cannot cast 'x' to INT"
+        format!(
+            "INVALID_CAST_ARGUMENT: Cannot cast 'x' to INT. You may need to manually clean the data at location \
+             's3://results-bucket/athena/tables/{id}' before retrying. Athena will not delete data in your account."
+        )
     );
     assert_ne!(status["AthenaError"]["ErrorType"], 1301);
     assert_eq!(harness.trino_sqls(), [probe, part.to_string()]);

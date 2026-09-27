@@ -4,6 +4,7 @@ use crate::catalog::alias_qualified_names;
 use crate::config::Config;
 use crate::failure::Failure;
 use crate::handler::App;
+use crate::results::ResultFile;
 use crate::statement;
 use crate::store::Execution;
 use crate::trino::{Outcome, QueryError, Trino};
@@ -40,7 +41,7 @@ pub(super) fn spawn_query(app: App, id: String) {
                     Ok(None) => {}
                     Err(error) => {
                         app.store
-                            .finish(&id, Err(Failure::from_query_error(&error)));
+                            .finish(&id, Err(engine_failure(&execution, &error)));
                         return;
                     }
                 }
@@ -63,7 +64,7 @@ pub(super) fn spawn_query(app: App, id: String) {
                     .map(|outcome| (outcome, update_count, substatement_type))
             }
             Err(error) => {
-                let failure = Failure::from_query_error(&error);
+                let failure = engine_failure(&execution, &error);
                 // FAILED にする前に置く（クライアントは FAILED を見た直後に S3 を読みに行く）。
                 result_output::write_failure(&app, &execution, &failure).await;
                 Err(failure)
@@ -72,6 +73,33 @@ pub(super) fn spawn_query(app: App, id: String) {
         // 途中で止められていれば CANCELLED が先に書かれているので、finish は何もしない。
         app.store.finish(&id, outcome);
     });
+}
+
+/// Trino のエラーを FAILED の理由にする。エンジンで失敗した CTAS・INSERT には、本物と同じく結果の置き場所を示す文を
+/// 後ろに付ける（2026-09-27 実測。#272）。Trino に届かなかった失敗（エラー名が無い）とほかの文には付けない。
+/// CTAS は置き場所が `tables/<id>` の文のうち先頭が CREATE のもの（OPTIMIZE も `tables/<id>` だが測っていない）。
+fn engine_failure(execution: &Execution, error: &QueryError) -> Failure {
+    let failure = Failure::from_query_error(error);
+    let Some(location) = execution
+        .result_location
+        .as_ref()
+        .filter(|_| error.name.is_some())
+    else {
+        return failure;
+    };
+    match location.file {
+        ResultFile::Table
+            if athena_sql::words(&execution.query)
+                .first()
+                .is_some_and(|word| word == "CREATE") =>
+        {
+            failure.with_ctas_suffix(&location.uri())
+        }
+        ResultFile::Manifest => {
+            failure.with_insert_suffix(&format!("{}-manifest.csv", location.uri()))
+        }
+        _ => failure,
+    }
 }
 
 /// CTAS の問い合わせ部分（`ctas_query::query_part`）を、本体と同じ Context・別名置換・パラメータで Trino に投げ、

@@ -78,15 +78,42 @@ impl Failure {
     /// （`<OutputLocation>tables/<id>`）。
     pub fn database_not_found(database: &str, location: &str) -> Self {
         Self {
-            reason: format!(
-                "Database {database} not found. Please check your query. You may need to manually clean the data \
-                 at location '{location}' before retrying. Athena will not delete data in your account."
-            ),
+            reason: format!("Database {database} not found. Please check your query"),
             error_message: None,
             category: USER,
             error_type: 1301,
             retryable: false,
         }
+        .with_ctas_suffix(location)
+    }
+
+    /// エンジンで失敗した CTAS の理由の後ろに本物が付けた文（2026-09-27 実測 p・w・t・f 群。#272）。`location` は結果の
+    /// 置き場所（`<OutputLocation>tables/<id>`）。
+    pub fn with_ctas_suffix(self, location: &str) -> Self {
+        self.with_sentence(&format!(
+            "You may need to manually clean the data at location '{location}' before retrying. \
+             Athena will not delete data in your account."
+        ))
+    }
+
+    /// エンジンで失敗した INSERT の理由の後ろに本物が付けた文（2026-09-25 実測 #217、2026-09-27 実測 i1・i2。#272）。
+    /// `manifest` は `<OutputLocation><id>-manifest.csv`。
+    pub fn with_insert_suffix(self, manifest: &str) -> Self {
+        self.with_sentence(&format!(
+            "If a data manifest file was generated at '{manifest}', you may need to manually clean the data \
+             from locations specified in the manifest. Athena will not delete data in your account."
+        ))
+    }
+
+    /// 本物の理由は `<エンジンの文言>. <文>` の形で、エンジンの文言が `.` で終わらなければ `.` を足していた（Trino の文言は
+    /// `.` で終わらない。`.` で終わる文言は測っていないので重ねない）。
+    fn with_sentence(mut self, sentence: &str) -> Self {
+        if !self.reason.ends_with('.') {
+            self.reason.push('.');
+        }
+        self.reason.push(' ');
+        self.reason.push_str(sentence);
+        self
     }
 
     /// MSCK REPAIR TABLE の対象が Iceberg 表のときに本物が返した固定の文言（ブロックコメントの有無・位置に
@@ -258,5 +285,58 @@ mod tests {
             (SYSTEM, 401, true)
         );
         assert_eq!(write.reason, "書けませんでした");
+    }
+
+    fn engine_failure(message: &str) -> Failure {
+        Failure::from_query_error(&QueryError {
+            name: Some("TABLE_NOT_FOUND".to_string()),
+            message: message.to_string(),
+            error_type: Some("USER_ERROR".to_string()),
+        })
+    }
+
+    #[test]
+    fn ctas_の接尾辞は文言の末尾に句点を足してから付ける() {
+        let failure = engine_failure("line 6:3: Table 't' does not exist")
+            .with_ctas_suffix("s3://b/p/tables/id");
+        assert_eq!(
+            failure.reason,
+            "TABLE_NOT_FOUND: line 6:3: Table 't' does not exist. You may need to manually clean the data \
+             at location 's3://b/p/tables/id' before retrying. Athena will not delete data in your account."
+        );
+        assert_eq!(failure.error_message, None);
+        assert_eq!((failure.category, failure.error_type), (USER, 1301));
+    }
+
+    #[test]
+    fn insert_の接尾辞は_manifest_の場所を付ける() {
+        let failure = engine_failure("line 1:65: Column 'x' cannot be resolved")
+            .with_insert_suffix("s3://b/p/id-manifest.csv");
+        assert_eq!(
+            failure.reason,
+            "TABLE_NOT_FOUND: line 1:65: Column 'x' cannot be resolved. If a data manifest file was generated \
+             at 's3://b/p/id-manifest.csv', you may need to manually clean the data from locations specified \
+             in the manifest. Athena will not delete data in your account."
+        );
+    }
+
+    #[test]
+    fn 文言が句点で終わっていれば句点を重ねない() {
+        let failure = engine_failure("done.").with_ctas_suffix("s3://b/tables/id");
+        assert!(
+            failure
+                .reason
+                .starts_with("TABLE_NOT_FOUND: done. You may need"),
+            "{}",
+            failure.reason
+        );
+        let missing = Failure::database_not_found("db", "s3://b/tables/id");
+        assert!(
+            missing
+                .reason
+                .starts_with("Database db not found. Please check your query. You may need"),
+            "{}",
+            missing.reason
+        );
     }
 }
