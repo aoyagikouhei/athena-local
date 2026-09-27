@@ -89,6 +89,12 @@ printf '%s' "$nasty_sql" > "$OUT_DIR/.nasty-expected"
 assert "ケース5: <id>.sql がバイト一致で残る" cmp -s "$OUT_DIR/.nasty-expected" "$RUN_DIR/nasty1.sql"
 assert "ケース5: summary.tsv が1行だけ増える" [ "$((after_lines - before_lines))" -eq 1 ]
 
+# 先頭が "--" のコメントの SQL も、偽 aws が Query を落とさず先頭語で DML と読む（値が "--" で始まる引数）
+lead_sql=$'-- leading comment\nSELECT 1'
+run_query lead1 db "$lead_sql"
+assert "ケース5: 先頭コメントの SQL が Query に残る" [ "$(cat "$RUN_DIR/lead1.query.txt")" = "$lead_sql" ]
+assert "ケース5: 先頭コメントの SELECT は DML" [ "$(col "$SUMMARY" lead1 4)" = DML ]
+
 # --- ケース6: マスク（add_hide_pair・長い方が先に置換される） ---------------------
 # 短い方を先に登録する（登録順のままだと短い方が先に潰され、長い方の一部
 # （"2345"）が残ってしまう。長さ降順のソートが効いているかをこの順序で確かめる）。
@@ -168,6 +174,163 @@ calls_log_start_lines=$(grep -c '^athena start-query-execution$' "$RUN_DIR/.dry-
 assert "ケース8: START_CALL_FILE と calls.log の start-query-execution の行数が一致" \
   [ "$start_call_lines" -eq "$calls_log_start_lines" ]
 assert "ケース8: calls.log が空でない" [ -s "$RUN_DIR/.dry-run/calls.log" ]
+
+# ============================================================================
+# フェーズ2（items.sh・cleanup.sh・preflight.sh・summary.sh）のケース。
+# それぞれ独立した OUT_DIR・lib_init で流したいので、サブシェルの中で完結させ、
+# 見たい値（RUN_DIR や DB）だけをマーカーファイル経由で親へ持ち帰る（親の
+# FAILURES/CHECKS を直接いじれるのは親のプロセスだけなので、assert は必ず親で呼ぶ）。
+# ============================================================================
+
+# サブシェルの中で lib_init まで済ませ、（渡されれば）宣言・run_items のコード片を
+# eval してから、$RUN_DIR・$DB をマーカーファイルに書いて返す。eval にしているのは、
+# 別プロセス（bash -c）にすると item/run_items が定義されていないため
+# （シェル関数は export -f しない限り子プロセスへ渡らない）。
+# 使う環境変数は呼び出し側が export 済みという前提（DB・ONLY・DRY_RUN_* など）。
+_p2_run_dir_of() {
+  local marker=$1 issue=$2 prefix=$3 code=${4:-}
+  (
+    export OUT_DIR="$(mktemp -d)"
+    # shellcheck source=tools/measure/lib.sh
+    . "$LIB_DIR/lib.sh" > /dev/null
+    lib_init "$issue" "$prefix" > /dev/null
+    [ -n "$code" ] && eval "$code"
+    {
+      echo "RUN_DIR=$RUN_DIR"
+      echo "DB=$DB"
+    } > "$marker"
+  ) > "$marker.out" 2> "$marker.err"
+}
+
+# マーカーファイルから RUN_DIR / DB を読む。
+_p2_field() {
+  sed -n "s/^$2=//p" "$1" 2> /dev/null | head -1
+}
+
+# --- ケース12: needs の先が FAILED なら skip -------------------------------------
+marker=$(mktemp)
+DB=fixed_db_a DRY_RUN_FAIL=mk_a _p2_run_dir_of "$marker" 310 athena_local_probe_310a \
+  'item mk_a ctx=db "SELECT 1"; item use_a ctx=db needs=mk_a "SELECT 1"; run_items > /dev/null'
+dir12=$(_p2_field "$marker" RUN_DIR)
+assert "ケース12: needs の先が FAILED の項目が用意できる" [ -n "$dir12" ]
+assert "ケース12: needs の先が FAILED なら use_a は skip" [ "$(col "$dir12/summary.tsv" use_a 2)" = skip ]
+note12=$(col "$dir12/summary.tsv" use_a 15)
+assert "ケース12: 理由に needs mk_a が FAILED が残る" contains "$note12" "needs mk_a が FAILED"
+
+# --- ケース13: creates → 使う2項目 → 最後の利用者の直後に DROP が1回 -------------
+marker=$(mktemp)
+DB=fixed_db_b _p2_run_dir_of "$marker" 310 athena_local_probe_310b \
+  'item mk_b creates=TABLE:probe_b ctx=db "CREATE EXTERNAL TABLE dummy (n int)"
+item use_b1 ctx=db needs=mk_b "SELECT 1"
+item use_b2 ctx=db needs=mk_b "SELECT 1"
+run_items > /dev/null'
+dir13=$(_p2_field "$marker" RUN_DIR)
+assert "ケース13: creates の項目が用意できる" [ -n "$dir13" ]
+assert "ケース13: DROP は1回だけ（drops.tsv が1行）" \
+  [ "$(wc -l < "$dir13/drops.tsv" | tr -d ' ')" -eq 1 ]
+pos_use_b2=$(grep -n '^use_b2$' "$dir13/.start-calls" | head -1 | cut -d: -f1)
+pos_drop_b=$(grep -n '^drop-probe_b$' "$dir13/.start-calls" | head -1 | cut -d: -f1)
+assert "ケース13: DROP の StartQueryExecution が記録される" [ -n "$pos_drop_b" ]
+assert "ケース13: use_b2 の StartQueryExecution が記録される" [ -n "$pos_use_b2" ]
+assert "ケース13: DROP は最後の利用者（use_b2）より後" [ "${pos_drop_b:-0}" -gt "${pos_use_b2:-0}" ]
+assert "ケース13: finish_cleanup 後に created.tsv が空" [ ! -s "$dir13/created.tsv" ]
+
+# --- ケース14: 作る項目が FAILED なら DROP を投げない ----------------------------
+marker=$(mktemp)
+DB=fixed_db_c DRY_RUN_FAIL=mk_c _p2_run_dir_of "$marker" 310 athena_local_probe_310c \
+  'item mk_c creates=TABLE:probe_c ctx=db "SELECT 1"; run_items > /dev/null'
+dir14=$(_p2_field "$marker" RUN_DIR)
+assert "ケース14: FAILED の creates が用意できる" [ -n "$dir14" ]
+assert "ケース14: drops.tsv が無い（DROP を投げない）" [ ! -s "$dir14/drops.tsv" ]
+assert "ケース14: created.tsv にも残らない（SUCCEEDED でないので記録自体しない）" [ ! -s "$dir14/created.tsv" ]
+
+# --- ケース15: skip= の項目 -------------------------------------------------------
+marker=$(mktemp)
+DB=fixed_db_d _p2_run_dir_of "$marker" 310 athena_local_probe_310d \
+  'item skipped1 skip="Athena の文書に無い" ctx=db "SELECT 1"; run_items > /dev/null'
+dir15=$(_p2_field "$marker" RUN_DIR)
+assert "ケース15: skip= の項目が用意できる" [ -n "$dir15" ]
+assert "ケース15: kind=skip" [ "$(col "$dir15/summary.tsv" skipped1 2)" = skip ]
+assert "ケース15: 理由がそのまま残る" contains "$(col "$dir15/summary.tsv" skipped1 15)" "Athena の文書に無い"
+assert "ケース15: 投げていない（<id>.sql が無い）" [ ! -e "$dir15/skipped1.sql" ]
+
+# --- ケース16: ONLY で1件だけ（needs の先を含めないと skip） --------------------
+marker=$(mktemp)
+DB=fixed_db_e ONLY=only_b _p2_run_dir_of "$marker" 310 athena_local_probe_310e \
+  'item only_a ctx=db "SELECT 1"; item only_b ctx=db needs=only_a "SELECT 1"; run_items > /dev/null'
+dir16=$(_p2_field "$marker" RUN_DIR)
+assert "ケース16: ONLY で絞った実行が用意できる" [ -n "$dir16" ]
+assert "ケース16: ONLY に無い only_a は投げない" [ ! -e "$dir16/only_a.sql" ]
+assert "ケース16: only_a は summary.tsv に出ない" [ -z "$(col "$dir16/summary.tsv" only_a 2)" ]
+assert "ケース16: needs の先を自動で含めないので only_b は skip" [ "$(col "$dir16/summary.tsv" only_b 2)" = skip ]
+assert "ケース16: 理由に未実行が残る" contains "$(col "$dir16/summary.tsv" only_b 15)" "needs only_a が"
+
+# --- ケース17: 知らない key は宣言の時点で exit 2（サブシェルで） ----------------
+marker=$(mktemp)
+(
+  # shellcheck source=tools/measure/lib.sh
+  . "$LIB_DIR/lib.sh" > /dev/null
+  item bad1 badkey=1 "SELECT 1"
+) > "$marker.out" 2> "$marker.err"
+rc17=$?
+assert "ケース17: 知らない key は exit 2" [ "$rc17" -eq 2 ]
+assert "ケース17: エラーに key 名が残る" contains "$(cat "$marker.err")" "badkey"
+
+# --- ケース18: preflight の DB の自動選択（DB を空にすると dry_run_db が選ばれる）---
+marker=$(mktemp)
+DB="" _p2_run_dir_of "$marker" 310 athena_local_probe_310f
+dir18=$(_p2_field "$marker" RUN_DIR)
+selected_db=$(_p2_field "$marker" DB)
+assert "ケース18: DB 未指定の実行が用意できる" [ -n "$dir18" ]
+assert "ケース18: SHOW DATABASES の1件目（dry_run_db）が選ばれる" [ "$selected_db" = dry_run_db ]
+assert "ケース18: preflight-databases が投げられる" [ -s "$dir18/preflight-databases.sql" ]
+assert "ケース18: preflight-list-tables が投げられる" [ -s "$dir18/preflight-list-tables.sql" ]
+
+# --- ケース19: SHOW TABLES に PREFIX を含む表があれば止まる（衝突検知） ---------
+marker=$(mktemp)
+(
+  export OUT_DIR="$(mktemp -d)"
+  export DB=""
+  export DRY_RUN_SHOW_TABLES="athena_local_probe_310h_leftover"
+  # shellcheck source=tools/measure/lib.sh
+  . "$LIB_DIR/lib.sh" > /dev/null
+  lib_init 310 athena_local_probe_310h
+  echo "SHOULD_NOT_REACH" > "$marker.reached"
+) > "$marker.out" 2> "$marker.err"
+rc19=$?
+assert "ケース19: PREFIX の衝突で exit 1" [ "$rc19" -eq 1 ]
+assert "ケース19: 止まったメッセージが出る" contains "$(cat "$marker.err")" "何も作らずに止まります"
+assert "ケース19: 衝突後は先へ進まない" [ ! -e "$marker.reached" ]
+
+# --- ケース20: summary.txt（ケース13の RUN_DIR を使う） --------------------------
+summary_txt13="$dir13/summary.txt"
+assert "ケース20: summary.txt が作られる" [ -s "$summary_txt13" ]
+header_calls13=$(grep -oE '含めない）: [0-9]+' "$summary_txt13" | grep -oE '[0-9]+' | head -1)
+start_call_lines13=$(wc -l < "$dir13/.start-calls" | tr -d ' ')
+calls_log_lines13=$(grep -c '^athena start-query-execution$' "$dir13/.dry-run/calls.log")
+assert "ケース20: summary.txt 冒頭に回数の行がある" [ -n "$header_calls13" ]
+assert "ケース20: summary.txt 冒頭の回数 = START_CALL_FILE の行数" \
+  [ "${header_calls13:-0}" -eq "$start_call_lines13" ]
+assert "ケース20: summary.txt 冒頭の回数 = calls.log の start-query-execution の行数" \
+  [ "${header_calls13:-0}" -eq "$calls_log_lines13" ]
+assert "ケース20: DDL の内訳に作った表と DROP の対が出る" \
+  contains "$(cat "$summary_txt13")" "probe_b (TABLE): DROP -> SUCCEEDED"
+assert "ケース20: DB 名（add_hide_pair した値）が summary.txt に出ない" \
+  not_contains "$(cat "$summary_txt13")" "fixed_db_b"
+assert "ケース20: 工場出荷時の既定とは限らない注意書きが出る" \
+  contains "$(cat "$summary_txt13")" "工場出荷時の既定とは限らない"
+
+# --- ケース21: DROP 自体が FAILED なら created.tsv から消さない（forget しない）---
+# finish_cleanup が poll_until_terminal で終端まで待たずに SUCCEEDED を決め打ちすると
+# 見分けが付かなくなるケース（壊す候補 (c) が壊すのはここ）。
+marker=$(mktemp)
+DB=fixed_db_g DRY_RUN_FAIL=drop-probe_g _p2_run_dir_of "$marker" 310 athena_local_probe_310g \
+  'item mk_g creates=TABLE:probe_g ctx=db "CREATE EXTERNAL TABLE dummy (n int)"; run_items > /dev/null'
+dir21=$(_p2_field "$marker" RUN_DIR)
+assert "ケース21: DROP が FAILED になる項目が用意できる" [ -n "$dir21" ]
+assert "ケース21: drop-log.tsv に FAILED が残る" contains "$(cat "$dir21/drop-log.tsv" 2> /dev/null)" "FAILED"
+assert "ケース21: DROP が FAILED なら created.tsv から消さない" \
+  grep -qxF "$(printf 'TABLE\tprobe_g')" "$dir21/created.tsv"
 
 if [ "$FAILURES" -eq 0 ]; then
   echo "selftest: ok ($CHECKS checks)"

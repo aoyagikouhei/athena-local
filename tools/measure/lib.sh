@@ -13,9 +13,11 @@
 # lib の全経路を通す（本物には1本も投げない）。tools/measure/lib/selftest.sh がこの
 # モードだけで動く。
 #
-# フェーズ 1（#310 issue ノートの P-8）の範囲: 実行の芯（mask・aws・execution・run）と
-# DRY_RUN の切り替えだけ。preflight（実行系の確認・DB の自動選択）と、項目の宣言
-# （item/api/run_items）・後始末の台帳・summary.txt はフェーズ 2 で足す。
+# 実行の芯（mask・aws・execution・run）と DRY_RUN の切り替えに加えて、preflight（実行系の
+# 確認・DB の自動選択・PREFIX の衝突確認）、項目の宣言（item/api/run_items）、後始末の台帳
+# （cleanup）、summary.txt（summary）も揃っている（#310 issue ノートの P-8 フェーズ 1・2）。
+# ラウンドのスクリプト（フェーズ 3）は lib_init のあとに item/api を宣言し、最後に
+# run_items を1回呼ぶだけでよい。
 set -uo pipefail
 
 LIB_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -44,15 +46,20 @@ unset _lib_round_name
 . "$LIB_ROOT/lib/execution.sh"
 # shellcheck source=tools/measure/lib/run.sh
 . "$LIB_ROOT/lib/run.sh"
+# shellcheck source=tools/measure/lib/items.sh
+. "$LIB_ROOT/lib/items.sh"
+# shellcheck source=tools/measure/lib/cleanup.sh
+. "$LIB_ROOT/lib/cleanup.sh"
+# shellcheck source=tools/measure/lib/preflight.sh
+. "$LIB_ROOT/lib/preflight.sh"
+# shellcheck source=tools/measure/lib/summary.sh
+. "$LIB_ROOT/lib/summary.sh"
 
-# 異常終了時の保険。今は生ログの中間ファイルを消すだけ。フェーズ 2 で cleanup.sh が
-# この関数を上書きし、フィクスチャの台帳（created.tsv）を読んでの DROP を足す。
-lib_cleanup_trap() {
-  rm -f "${RUN_DIR:-}"/.tmp-* 2>/dev/null || true
-}
+# 異常終了時の保険。cleanup.sh の lib_cleanup_trap（created.tsv を読んでの DROP IF EXISTS）が
+# これを上書きする（source の順序で後勝ち）。
 
 # 実行の芯を組み立てる。<issue> は issue 番号、<PREFIX> はフィクスチャの名前の接頭辞
-# （フェーズ 2 の items.sh・cleanup.sh が使う。このフェーズでは変数に控えるだけ）。
+# （items.sh の record_created・cleanup.sh の DROP、preflight.sh の衝突確認が使う）。
 lib_init() {
   ISSUE=$1
   PREFIX=$2
@@ -97,8 +104,8 @@ lib_init() {
 
   trap 'lib_cleanup_trap' EXIT
 
-  # preflight（実行系の確認・DB の自動選択）はフェーズ 2 で足す。定義されていれば
-  # 呼ぶだけの口をここに置く。
+  # preflight.sh の lib_preflight（実行系の確認・DB の自動選択・PREFIX の衝突確認）を、
+  # 宣言（item/api）より前に呼ぶ（宣言の SQL が $DB・$OUTPUT を展開するため）。
   if declare -f lib_preflight > /dev/null 2>&1; then
     lib_preflight
   fi

@@ -20,6 +20,13 @@ $RUN_DIR/.dry-run/calls.log に1行積む（lib/aws.sh の START_CALL_FILE と�
                                  start-query-execution の再試行にも retry_aws 経由の呼び出し
                                  （fetch・head_object・capture_results・athena_call）にも効く）を
                                  「Could not connect to the endpoint URL」で exit 255
+
+フェーズ2（#310）で足したもの:
+  SHOW TABLES の get-query-results は既定で PREFIX を含まない 1 行（probe_unrelated_table）を
+  返す。DRY_RUN_SHOW_TABLES=<名前> を立てるとその名前を返す（preflight.sh の PREFIX 衝突確認を
+  selftest で注入するための、フェーズ2で足した唯一の新しい環境変数）。
+  DROP で始まる文（DDL の後始末）の get-query-results は本物の DDL と同じく空の結果
+  （列も行も無し）を返す。
 """
 import json
 import os
@@ -116,14 +123,33 @@ def parse_shorthand_context(s):
     return out
 
 
+def strip_leading_comments(sql):
+    """先頭の空白と -- コメント・/* */ コメントを読み飛ばす（先頭語で文の種類を決めるため）。"""
+    s = sql
+    while True:
+        s = s.lstrip()
+        if s.startswith("--"):
+            nl = s.find("\n")
+            s = "" if nl < 0 else s[nl + 1:]
+        elif s.startswith("/*"):
+            end = s.find("*/")
+            s = "" if end < 0 else s[end + 2:]
+        else:
+            return s
+
+
 def statement_type_of(sql):
-    words = sql.strip().split()
+    words = strip_leading_comments(sql).split()
     first = words[0].upper() if words else ""
     if first in ("CREATE", "DROP", "ALTER"):
         return "DDL"
     if first in ("SELECT", "INSERT", "UPDATE", "DELETE", "MERGE", "WITH"):
         return "DML"
     return "UTILITY"
+
+
+# lib が付ける値の無いオプション（aws CLI の真偽のフラグ）。
+BOOL_FLAGS = {"--no-paginate", "--debug", "--no-cli-pager"}
 
 
 def parse_args(argv):
@@ -134,7 +160,9 @@ def parse_args(argv):
     while i < len(argv):
         a = argv[i]
         if a.startswith("--"):
-            if i + 1 < len(argv) and not argv[i + 1].startswith("--"):
+            # 値を取るオプションは、次の要素が "--" で始まっても値として取る（先頭が "-- コメント" の
+            # SQL など）。値を取らないのは下の BOOL_FLAGS だけ。
+            if a not in BOOL_FLAGS and i + 1 < len(argv):
                 opts[a] = argv[i + 1]
                 i += 2
             else:
@@ -228,10 +256,17 @@ def cmd_get_query_results(opts):
     item_id = qid[len("qexec-"):] if qid.startswith("qexec-") else qid
     record = load_exec(item_id) or {}
     sql = record.get("query", "")
-    upper = sql.strip().upper()
+    upper = strip_leading_comments(sql).upper()
     if upper.startswith("SHOW DATABASES") or upper.startswith("SHOW SCHEMAS"):
         columns = [{"Name": "database_name", "Type": "varchar"}]
         rows = [{"Data": [{"VarCharValue": "dry_run_db"}]}]
+    elif upper.startswith("SHOW TABLES"):
+        columns = [{"Name": "tab_name", "Type": "varchar"}]
+        table_name = os.environ.get("DRY_RUN_SHOW_TABLES", "probe_unrelated_table")
+        rows = [{"Data": [{"VarCharValue": table_name}]}]
+    elif upper.startswith("DROP "):
+        columns = []
+        rows = []
     else:
         columns = [{"Name": "col", "Type": "varchar"}]
         rows = [{"Data": [{"VarCharValue": "dry-run-value"}]}]
@@ -266,9 +301,13 @@ def cmd_s3_cp(positional):
             break
     record = load_exec(item_id) or {}
     sql = record.get("query", "")
-    upper = sql.strip().upper()
+    upper = strip_leading_comments(sql).upper()
     if upper.startswith("SHOW DATABASES") or upper.startswith("SHOW SCHEMAS"):
         sys.stdout.write('"database_name"\n"dry_run_db"\n')
+    elif upper.startswith("SHOW TABLES"):
+        sys.stdout.write(os.environ.get("DRY_RUN_SHOW_TABLES", "probe_unrelated_table") + "\n")
+    elif upper.startswith("DROP "):
+        pass
     else:
         sys.stdout.write('"col"\n"dry-run-value"\n')
     return 0
@@ -296,7 +335,7 @@ def cmd_sts_get_caller_identity():
     body = {
         "UserId": "AIDADRYRUN000000000000",
         "Account": "000000000000",
-        "Arn": "arn:aws:iam::000000000000:user/dry-run",
+        "Arn": "arn:aws:iam::000000000000:user/dry-run-caller",
     }
     sys.stdout.write(json.dumps(body) + "\n")
     return 0
