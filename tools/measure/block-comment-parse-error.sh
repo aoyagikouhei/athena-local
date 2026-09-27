@@ -281,7 +281,7 @@
 #   g3h/g3i/g3v/g3m    ALTER TABLE <DB>.<H|I|V|M> /* c */ ADD COLUMNS (cNN int)   句の中
 #   r1h/r1v/r1m/r1i    ALTER /* c */ TABLE <DB>.<H|V|M|I> REPLACE COLUMNS (n int, s string)
 #   r3h/r3v/r3m        ALTER /* c */ TABLE <DB>.<H|V|M> CHANGE COLUMN n n2 int
-#   r3i                ALTER /* c */ TABLE <DB>.<I> CHANGE COLUMN s s2 int   （r1i が作った s。pn4i と競合しないため）
+#   r3i                ALTER /* c */ TABLE <DB>.<I> CHANGE COLUMN s s2 string  （r1i が作った s。pn4i と競合しないため）
 #
 # 群 B（表 2 行目。ほかの位置。最小限 H で 1 本ずつ、DROP COLUMN の間だけ I も添える）:
 #   pn1   SHOW CREATE TABLE <DB>.<H> /* c */                  名前の後ろ
@@ -1365,6 +1365,14 @@ fi # ROUND=3
 
 if [ "$ROUND" = 4 ]; then
 
+# --- 群 E（issue #276 表 5 行目・#256）: コメント無しの awsdatacatalog. 付き DROP COLUMN。
+# ErrorMessage の位置を、落とす前・後どちらの文で数えるか（pos1 と同じ観点だがコメント無し）。
+# H の列 n と元の名前が要るので、H を変えうる項目（CHANGE COLUMN・RENAME TO）より前、
+# ROUND=4 の最初に置く（Hive 表の DROP COLUMN は #256 で FAILED と測っていて H を変えない）。
+
+run_req nc_drop_awsdc "ALTER TABLE awsdatacatalog.$DB.$H DROP COLUMN n" H
+
+
 # --- 群 A（issue #276 表 1 行目）: #257 で新しく失敗させた 6 つの形を H（対照。ROUND=3 の
 # g1・g2・g3・de1・r1・r3 と同じ文言）・I・V・M の 4 種で測る。並び: 読み取り専用
 # （g1・g2・de1）→ 加法（g3）→ 破壊的（r1・r3）。I は列を触るので r1i・r3i・後述の pn4i を
@@ -1402,8 +1410,9 @@ run_req r1i  "ALTER /* c */ TABLE $DB.$I REPLACE COLUMNS (n int, s string)" I
 run_req r3h  "ALTER /* c */ TABLE $DB.$H CHANGE COLUMN n n2 int" H
 run_req r3v  "ALTER /* c */ TABLE $DB.$V CHANGE COLUMN n n2 int" V
 run     r3m  "ALTER /* c */ TABLE $DB.$MISSING CHANGE COLUMN n n2 int"
-# r3i だけ列 s を使う（r1i が作った s。pn4i の DROP COLUMN n と競合しないため）。
-run_req r3i  "ALTER /* c */ TABLE $DB.$I CHANGE COLUMN s s2 int" I
+# r3i だけ列 s を使う（r1i が作った s。pn4i の DROP COLUMN n と競合しないため）。型は変えない
+# （構文が通ったときに型の変更のエラーと混ざらないように）。
+run_req r3i  "ALTER /* c */ TABLE $DB.$I CHANGE COLUMN s s2 string" I
 
 # --- 群 B（issue #276 表 2 行目）: ほかの位置。最小限 H で 1 本ずつ、ALTER の名前と
 # DROP COLUMN の間だけ I も添える（#244・#257 で表の種類によって割れる族のため）。
@@ -1501,11 +1510,6 @@ rename_h4 ar_h2 "ALTER TABLE /* c */ awsdatacatalog.$DB.$H_CURRENT4 RENAME TO aw
 
 rename_v4 ar_v0 "/* c */ ALTER TABLE awsdatacatalog.$DB.$V_CURRENT4 RENAME TO awsdatacatalog.$DB.$V_AR0REN" "$V_AR0REN"
 rename_v4 ar_v2 "ALTER TABLE /* c */ awsdatacatalog.$DB.$V_CURRENT4 RENAME TO awsdatacatalog.$DB.$V_AR2REN" "$V_AR2REN"
-
-# --- 群 E（issue #276 表 5 行目・#256）: コメント無しの awsdatacatalog. 付き DROP COLUMN。
-# ErrorMessage の位置を、落とす前・後どちらの文で数えるか（pos1 と同じ観点だがコメント無し）。
-
-run_req nc_drop_awsdc "ALTER TABLE awsdatacatalog.$DB.$H DROP COLUMN n" H
 
 # --- 群 F（issue #276 表 6 行目）: 連携カタログ・S3 Tables を Context の Catalog に直接
 # 指定したときの判定（fc1・s3t1/s3t2 は 3 部の引用付き名前だったのに対し、ここは Context
@@ -1620,7 +1624,8 @@ elif [ "$ROUND" = 3 ]; then
 else
   # issue #276（ROUND=4）。群 A（新しく失敗させた形の H/I/V/M）→ 群 B（ほかの位置）→
   # 群 C（字句）→ 群 D（awsdatacatalog + ADD COLUMNS・RENAME TO）→ 群 E（#256 の
-  # コメント無し DROP COLUMN）→ 群 F（連携カタログ・S3 Tables の Context）の順（実行順と同じ）。
+  # コメント無し DROP COLUMN）→ 群 F（連携カタログ・S3 Tables の Context）の順（群 E だけは H を
+  # 変えうる項目より前に置くため実行では最初。ほかは実行順と同じ）。
   GROUP_A_LABELS="g1h g1i g1v g1m g2h g2i g2v g2m de1h de1i de1v de1m g3h g3i g3v g3m"
   GROUP_A_LABELS="$GROUP_A_LABELS r1h r1v r1m r1i r3h r3v r3m r3i"
   GROUP_B_LABELS="pn1 pn2 pn3 de2 pn4 pn6 pn7 pn8 pn9 pn10 pn4i"
