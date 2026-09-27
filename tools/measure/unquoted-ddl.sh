@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # issue #208 で作成。issue #221 で ROUND=3、issue #224 で ROUND=4、issue #227 で ROUND=5、
 # issue #228 で ROUND=6、issue #240 で ROUND=7、issue #242 で ROUND=8、issue #229 で ROUND=9、
-# issue #248 で ROUND=10、issue #251 で ROUND=11・15、issue #260 で ROUND=12 を追加
+# issue #248 で ROUND=10、issue #251 で ROUND=11・15、issue #260 で ROUND=12、
+# issue #266 で ROUND=13・14 を追加
 # 本物の Athena が StartQueryExecution の時点で弾く、無引用の DDL 3 種
 # （ALTER TABLE IF EXISTS、ALTER TABLE ... ADD COLUMN（単数）、場所の無い CREATE TABLE）の
 # 弾かれ方の規則（`line L:C` の位置、`no viable alternative at input '...'` の input の範囲、
@@ -127,6 +128,54 @@
 #     INSERT は未測定なので測る）。preflight・DB 確認は共通で走るが、O 群だけ実在する表
 #     `<PROBE>_o` を 1 つ作り、全項目で使い回して最後に消す（M 群と同じ作り）。S3TABLES_* が
 #     無ければ o0・o1・o2 が、FEDERATED_CATALOG が無ければ o3・o4・o9 が「未測定」として残る。
+#   - 【issue #266 で追加】ROUND=13 は、#248 の実装（`src/operation/unquoted_ddl/create_table/hive.rs`
+#     の `s3_tables_rejection`・`s3_tables_stored_as`・`location_catalog`）が「測った形だけ」に
+#     絞った条件の外側（実在しないカタログの 3 部 + LOCATION に句が付く形、S3 Tables の Context の
+#     LOCATION 付きの句の組み合わせ、LOCATION の無い CREATE EXTERNAL TABLE に句が付く形、
+#     LOCATION の無い STORED AS の 2〜3 部の名前・IF NOT EXISTS・ほかの句、Trino にだけある
+#     カタログ名・実在する連携カタログの 3 部 + LOCATION）を測る T・U・V・W・X・Y 群だけを測る。
+#     preflight・DB 確認は共通で走るが、実在する表は作らない（ROUND=3〜7・9〜12 と同じ）。
+#     T 群（実在しないカタログ nosuchcatalog266 の 3 部 + LOCATION に句が付く形。t0〜t10 は
+#     既定の Context、S3TABLES_* が揃えば t0s・t1s・t2s・t7s・t9s も S3 Tables の Context で
+#     測る）と Y 群（Trino にだけあるカタログ名 hive・iceberg・system・tpch・memory、y1〜y5）は
+#     常に既定の Context で投げる。U 群（u0〜u7）・V 群（v0〜v9・vc1・vc4）・W 群（w0〜w10）は
+#     S3TABLES_* が揃うときだけ S3 Tables の Context で投げる。LOCATION の組み立ては
+#     probe_location_t（probe_location_s と同じ形。空のプレフィックス、接頭辞を 266 にする）。
+#     受理されたら同じ仕組み（run_create_then_drop_ctx）で消す（消す Context は項目ごとに
+#     issue 本文の指示どおり。既定・S3 Tables のどちらで作られても対応する Context で消す）。
+#     X 群（実在する連携カタログの 3 部 + LOCATION）は、xc（既定の Context の対照）だけは常に
+#     投げ、x1〜x4（連携カタログの 3 部）は連携カタログが要る。連携カタログは
+#     FEDERATED_CATALOG が設定されていればそれを使い、無くて CREATE_GLUE_CATALOG=1 のときだけ
+#     aws athena create-data-catalog で自分のアカウントの Glue を指すデータカタログ
+#     （athena_local_probe_266_<乱数>cat）を作って使う（aws sts get-caller-identity・
+#     aws athena list-data-catalogs の疎通が通るときだけ。失敗すれば X 群だけ未測定にする）。
+#     作ったデータカタログは、x1〜x4 の後始末が終わってから明示的に delete-data-catalog で
+#     消し、結果を summary に出す（消せなければ summary の冒頭に「要手動削除」と出し、trap でも
+#     ベストエフォートでもう一度消しにいく）。create/delete-data-catalog には
+#     start_query_retry と同じ考え方の再試行（名前解決・接続の失敗だけ、aws_call_retry）を掛ける。
+#     x1〜x4 のうち、連携カタログが作った Glue のデータカタログのときは、後始末の DROP が
+#     失敗したら既定の Context でも同じ DROP をもう一度投げる（同じ Glue を指すため）。
+#     どちらも無ければ X 群は x1〜x4 を未測定として残す（xc だけ測る）。
+#   - 【issue #266 の補足で追加】ROUND=14 は、ROUND=13 の実測（2026-09-26、生データ
+#     `run-20260926-221348`）で見つかった「未測定のまま残るもの」（x3 の対照。既定の Context の
+#     `CREATE EXTERNAL TABLE AwsDataCatalog.<db>.<t> (n int) LOCATION '..'` が xc の EXTERNAL 無し
+#     の対照と対にならなかった）と「範囲外の発見」（S3 Tables の Context で LOCATION の無い
+#     非 EXTERNAL の ROW FORMAT が開始して FAILED になる族）を測る Z 群だけを測る。preflight・
+#     DB 確認は共通で走るが、実在する表は作らない。LOCATION の組み立ては ROUND=13 と同じ
+#     probe_location_t（接頭辞は 266 のまま。プレフィックスは変えていない）。連携カタログを
+#     決める・作る・削除するロジック（resolve_federated_catalog・delete_glue_catalog_if_created）と、
+#     受理されたら連携カタログの Context で消し、失敗したら既定の Context でも試みる後始末
+#     （run_x_create）は、共有の関数として ROUND=13 の X 群とそのまま同じものを使う（ROUND=13
+#     の挙動・出力は変えていない。ROUND=13 側は inline だった処理をこの共有関数の呼び出しに
+#     置き換えただけ）。z0・z0b・z0c（既定の Context。x3 の対照。EXTERNAL 付きの 1〜3 部の名前）は
+#     常に投げる。z1〜z5（連携カタログの 3 部・1 部の名前。既定の Context と、連携カタログを
+#     Catalog にした Context <GCTX>=`Catalog=<連携カタログ>,Database=<DB>`）は連携カタログが
+#     使えるときだけ（z3 は <GCTX> で作って既定の Context で消す。それ以外は run_x_create で
+#     連携カタログの Context に作って消し、Glue のデータカタログなら既定の Context にも
+#     フォールバックする）。z6〜z17（S3 Tables の Context の、LOCATION の無い非 EXTERNAL の
+#     ROW FORMAT の族と、ほかの単独の Hive の句）は S3TABLES_* が揃うときだけ。開始できた
+#     z0・z0b・z0c・z1〜z5 は、ROUND=13 の X 群と同じく QueryExecutionContext・
+#     StatementType/SubstatementType の詳細も summary に出す。
 #   - 【issue #251 で追加（2 ラウンド目）】ROUND=15 は、CTAS の SELECT 部分が解析／実行の
 #     どちらで失敗するか（issue #251 のコメントの項目 1〜3）と、Catalog 省略・プロパティ付き・
 #     `WITH NO DATA`・複数行／0 行・括弧／`WITH` 句・ExecutionParameters（項目 4〜10）、
@@ -141,8 +190,7 @@
 #     なった項目は結果ファイル本体・`.metadata` を取得し、CTAS（t1〜t18）は理由に書かれた
 #     location のオーファンデータ確認（`check_ctas_orphan_data`）も行う。SUCCEEDED の CTAS
 #     （t1〜t18）は `.metadata` も取得する（t19 は CTAS でないので、どちらも r1 と同じ
-#     本体・`.metadata` の有無だけを見る）。ROUND=12 は issue #260 が使う。ROUND=13・14 は
-#     他ブランチ（#266）が使うため、この変更では飛番のまま足さない。
+#     本体・`.metadata` の有無だけを見る）。
 #
 # 使い方:
 #   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db bash tools/measure/unquoted-ddl.sh
@@ -221,6 +269,38 @@
 #     FEDERATED_CATALOG=your_federated_catalog FEDERATED_DB=your_federated_db \
 #     FEDERATED_TABLE=your_federated_table \
 #     bash tools/measure/unquoted-ddl.sh
+#   ラウンド 13（issue #266。#248 が「測った形だけ」に絞った条件の外側（実在しないカタログの
+#   3 部 + LOCATION に句が付く形、S3 Tables の Context の LOCATION 付きの句の組み合わせ、
+#   LOCATION の無い CREATE EXTERNAL TABLE に句が付く形、LOCATION の無い STORED AS の
+#   2〜3 部の名前・IF NOT EXISTS・ほかの句、Trino にだけあるカタログ名・実在する連携カタログの
+#   3 部 + LOCATION）だけを測る。S3TABLES_* が無ければ U・V・W 群と T 群の *s 項目は未測定として
+#   残す。連携カタログが無ければ（FEDERATED_CATALOG も CREATE_GLUE_CATALOG=1 も無ければ）
+#   X 群は xc だけ測り x1〜x4 は未測定として残す）:
+#   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=13 \
+#     S3TABLES_CATALOG=s3tablescatalog/your-bucket S3TABLES_NS=your_ns \
+#     FEDERATED_CATALOG=your_federated_catalog \
+#     bash tools/measure/unquoted-ddl.sh
+#   ラウンド 13 で、連携カタログの代わりに自分のアカウントの Glue を指すデータカタログを
+#   作って測るとき（athena:CreateDataCatalog・GetDataCatalog・DeleteDataCatalog・
+#   ListDataCatalogs と sts:GetCallerIdentity が要る）:
+#   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=13 \
+#     S3TABLES_CATALOG=s3tablescatalog/your-bucket S3TABLES_NS=your_ns \
+#     CREATE_GLUE_CATALOG=1 \
+#     bash tools/measure/unquoted-ddl.sh
+#   ラウンド 14（issue #266 の補足。ROUND=13 で見つかった未測定（x3 の対照）と範囲外の発見
+#   （S3 Tables の Context の LOCATION の無い非 EXTERNAL の ROW FORMAT の族）だけを測る。
+#   S3TABLES_* が無ければ Z 群の z6〜z17 は未測定として残す。連携カタログが無ければ
+#   z1〜z5 は未測定として残す（z0・z0b・z0c だけ測る）:
+#   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=14 \
+#     S3TABLES_CATALOG=s3tablescatalog/your-bucket S3TABLES_NS=your_ns \
+#     FEDERATED_CATALOG=your_federated_catalog \
+#     bash tools/measure/unquoted-ddl.sh
+#   ラウンド 14 で、連携カタログの代わりに自分のアカウントの Glue を指すデータカタログを
+#   作って測るとき（ROUND=13 と同じ IAM 権限が要る）:
+#   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=14 \
+#     S3TABLES_CATALOG=s3tablescatalog/your-bucket S3TABLES_NS=your_ns \
+#     CREATE_GLUE_CATALOG=1 \
+#     bash tools/measure/unquoted-ddl.sh
 #   ラウンド 15（issue #251 の 2 ラウンド目。CTAS の SELECT が解析／実行のどちらで失敗するか、
 #   Catalog 省略・プロパティ付き・WITH NO DATA・複数行／0 行・括弧／WITH 句・
 #   ExecutionParameters、S3 Tables の Context の名前空間まわりだけを測る。S3TABLES_* が
@@ -260,6 +340,10 @@
 #                    CTAS の残り。issue #251）だけ。実在する表は作らない。
 #                    12 は O 群（無引用の awsdatacatalog. の置換で測っていない周辺。issue #260）
 #                    だけ。実在する表 `<PROBE>_o` を 1 つ作り、全項目で使い回して最後に消す。
+#                    13 は T・U・V・W・X・Y 群（#248 が「測った形だけ」に絞った条件の外側。
+#                    issue #266）だけ。実在する表は作らない。
+#                    14 は Z 群（ROUND=13 の未測定・範囲外の発見の補足。issue #266）だけ。
+#                    実在する表は作らない。
 #                    15 は T 群（CTAS の SELECT が解析／実行のどちらで失敗するか、Catalog 省略・
 #                    プロパティ付き・WITH NO DATA・複数行／0 行・括弧／WITH 句・
 #                    ExecutionParameters、S3 Tables の Context の名前空間まわり。issue #251 の
@@ -280,16 +364,34 @@
 #                    t3・t4・t16〜t19 を測る。1 つでも欠けていれば「未測定（S3TABLES_* 未設定）」
 #                    として summary に残す（ROUND=5 は j14〜j16、ROUND=9 は n31、ROUND=10 は s12、
 #                    ROUND=11 は r8a〜r8c、ROUND=15 は t1・t2・t5〜t15 だけ測る）。
-#                    ROUND=2 では使わない。
+#                    ROUND=13 は U 群（u0〜u7）・V 群（v0〜v9・vc1・vc4）・W 群（w0〜w10）と、
+#                    T 群のうち S3 Tables の Context で測る t0s・t1s・t2s・t7s・t9s、X 群の x2 を測る
+#                    （欠ければこれらだけ未測定として残す。T 群の t0〜t10・Y 群・X 群の xc は
+#                    ROUND=2 と同じく使わない）。ROUND=14 は Z 群の z6〜z17（S3 Tables の Context の
+#                    非 EXTERNAL の ROW FORMAT の族とほかの句）を測る（欠ければ未測定として残す。
+#                    z0・z0b・z0c・z1〜z5 は使わない）。
 #   FEDERATED_CATALOG 連携カタログ（S3 Tables 以外）の名前。設定されていれば ROUND=10 の s14
 #                    （TRINO_CATALOG_MAP の別名や Trino にだけあるカタログの 3 部 + LOCATION が
 #                    実在するカタログのとき）と ROUND=12 の o3・o4（連携カタログの Context の
-#                    SELECT・INSERT）も測る。無ければ該当項目だけ「未測定（FEDERATED_CATALOG
+#                    SELECT・INSERT）、ROUND=13 の x1〜x4（連携カタログの 3 部 + LOCATION）、
+#                    ROUND=14 の z1〜z5（同上の補足）も測る。ROUND=13・14 だけ、これが無くても
+#                    CREATE_GLUE_CATALOG=1 なら自分のアカウントの Glue を指すデータカタログを
+#                    作って代わりに使う。無ければ該当項目だけ「未測定（FEDERATED_CATALOG
 #                    未設定）」として残す。
 #   FEDERATED_DB     連携カタログの中の、実在するデータベース名。
 #   FEDERATED_TABLE  同じく実在する表名。この 2 つと FEDERATED_CATALOG が揃ったときだけ、
 #                    ROUND=12 の o9（AwsDataCatalog 以外の別名キーを無引用の大文字混じりで
 #                    書いた形）を測る。無ければ o9 だけ「未測定」として残す。
+#   CREATE_GLUE_CATALOG ROUND=13・14 だけで使う。1 のとき、FEDERATED_CATALOG が未設定なら
+#                    `aws athena create-data-catalog` で自分のアカウントの Glue を指す
+#                    データカタログ（athena_local_probe_266_<乱数>cat）を作り、X 群の x1〜x4
+#                    （ROUND=13）・Z 群の z1〜z5（ROUND=14）の連携カタログ代わりに使う（要
+#                    athena:CreateDataCatalog・GetDataCatalog・DeleteDataCatalog・
+#                    ListDataCatalogs、sts:GetCallerIdentity）。preflight で
+#                    aws sts get-caller-identity・aws athena list-data-catalogs の疎通を確かめ、
+#                    通らなければ該当群の連携カタログの項目だけ未測定にする（全体は止めない）。
+#                    作ったデータカタログは後始末のあとに必ず削除を試み、消せなければ summary の
+#                    冒頭に「要手動削除」と出す。FEDERATED_CATALOG が設定されていれば無視する。
 #
 # ** このスクリプトが本物に対して行う破壊的な操作 **
 #   - 実在する表 <db>.athena_local_probe_208_<乱数>_real を 1 つ CTAS で作り、
@@ -390,6 +492,29 @@
 #     保険をかける）。o5（実在しないカタログの Context）・o2・o4（S3 Tables・連携カタログの
 #     Context）の INSERT は同じ表に 1 行足すだけで、表そのものは作り直さない。CREATE TABLE は
 #     投げない（新しい表を作らない）。
+#   - ROUND=13: 実在する表 `<接頭辞>_real` は作らない。T・U・V・W・X・Y 群の CREATE TABLE
+#     （EXTERNAL を含む）はすべて run_create_then_drop_ctx で投げ、受理されたらその場で
+#     無引用 + IF EXISTS の DROP TABLE を投げて消す（結果は確かめ、SUCCEEDED にならなければ
+#     trap がもう一度ベストエフォートで投げる）。消す Context は、既定の Context で作られうる
+#     項目（T・Y 群の全部、U 群の u7、W 群の w3）は既定の Context、S3 Tables の Context で
+#     作られうる項目（U・V・W 群の残り）は S3 Tables の Context、X 群（x1〜x4）は連携カタログの
+#     Context で、それぞれ DROP TABLE IF EXISTS を投げる。加えて、CREATE_GLUE_CATALOG=1 で
+#     作った Glue のデータカタログを x1〜x4 が指すときは、その DROP が失敗したら既定の
+#     Context でも同じ DROP をもう一度投げる（同じ Glue を指すため）。CREATE_GLUE_CATALOG=1 かつ
+#     FEDERATED_CATALOG 未設定のときは、`aws athena create-data-catalog` で
+#     `athena_local_probe_266_<乱数>cat`（自分のアカウントの Glue を指す GLUE 型のデータ
+#     カタログ）を 1 つ作り、x1〜x4 の後始末が終わったあとに `aws athena delete-data-catalog` で
+#     必ず消す（消せなければ summary の冒頭に「要手動削除」と出し、trap でも保険をかける）。
+#   - ROUND=14: 実在する表 `<接頭辞>_real` は作らない。Z 群の CREATE TABLE（EXTERNAL を含む）は
+#     すべて run_create_then_drop_ctx（z1・z2・z4・z5 は共有関数 run_x_create、z3 は直接）で投げ、
+#     受理されたらその場で無引用 + IF EXISTS の DROP TABLE を投げて消す（結果は確かめ、
+#     SUCCEEDED にならなければ trap がもう一度ベストエフォートで投げる）。消す Context は、
+#     既定の Context で作られうる z0・z0b・z0c・z3 は既定の Context、z1・z2・z4・z5 は連携
+#     カタログの Context（`Catalog=<連携カタログ>,Database=<DB>`）、S3 Tables の Context で
+#     作られうる z6〜z17 は S3 Tables の Context で、それぞれ DROP TABLE IF EXISTS を投げる。
+#     連携カタログの決め方・Glue のデータカタログの作成/削除（ROUND=13 の X 群と共有する
+#     resolve_federated_catalog・delete_glue_catalog_if_created）と、Glue のデータカタログを
+#     指すときの既定の Context への DROP のフォールバック（run_x_create）は ROUND=13 と同じ。
 #   - ROUND=15: 実在する表 <接頭辞>_real は作らない。T 群（t1〜t19。t19 だけ CTAS でない
 #     plain CREATE TABLE）はすべて run_create_then_drop_ctx で投げ（t15 だけ
 #     ExecutionParameters を CREATE の 1 回にしか掛けられないため手組みで同じ形の後始末を
@@ -408,10 +533,13 @@
 # 課金について: ALTER TABLE・DROP TABLE はメタデータだけを見る／書く文で、実データの
 # スキャンは無い。CREATE TABLE（実在する表の準備・C3・C20・C21・C22・C23、E・F 群、
 # ROUND=3 の H・Q・P 群、ROUND=5 の J 群、ROUND=9 の N 群、ROUND=10 の S 群、ROUND=11 の R 群、
-# ROUND=12 の O_TABLE の準備、ROUND=15 の T 群。いずれも 0〜3 行、t11 だけ 3 行）もスキャンや
-# 書き込みは軽微。ROUND=12 の SELECT・INSERT も 1 行だけ。Athena の最小課金 × クエリ数の見込み。
-# ROUND=5・10・11・15 の結果ファイルの読み出し（aws s3 cp）と ROUND=11・15 のオーファンデータ
-# 確認（aws s3 ls）は Athena のクエリではなく S3 の GetObject／ListObjects で、課金には乗らない。
+# ROUND=12 の O_TABLE の準備、ROUND=13 の T・U・V・W・X・Y 群、ROUND=14 の Z 群、ROUND=15 の
+# T 群。いずれも 0〜3 行、t11 だけ 3 行）もスキャンや書き込みは軽微。ROUND=12 の SELECT・INSERT
+# も 1 行だけ。Athena の最小課金 × クエリ数の見込み。ROUND=5・10・11・13・14・15 の結果ファイル
+# の読み出し（aws s3 cp）と ROUND=11・15 のオーファンデータ確認（aws s3 ls）は Athena の
+# クエリではなく S3 の GetObject／ListObjects で、課金には乗らない。ROUND=13・14 の
+# create-data-catalog／get-data-catalog／delete-data-catalog／list-data-catalogs・
+# sts:GetCallerIdentity は Athena のクエリではなく、スキャン課金には乗らない。
 #
 # 本物への呼び出し回数の見込み（内訳。実際の回数は下で更新される。GetQueryExecution は
 # poll_until_terminal のポーリング + 終端後の 1 回で、開始できた項目の数 × 数回のオーダー。
@@ -608,6 +736,69 @@
 #   （aws s3 cp、それぞれ 1 回）を追加で呼ぶ（最大で O 群の項目数 × 2 回）。Athena の
 #   API ではないので上の StartQueryExecution・GetQueryExecution の回数には含めない。
 #
+# == ROUND=13（T・U・V・W・X・Y 群のみ。issue #266。preflight・DB 確認は共通） ==
+#
+#   [StartQueryExecution]
+#   preflight（SELECT 1 + SHOW TABLES）2
+#   + 常に投げる T 群 t0〜t10 の 11 + Y 群 y1〜y5 の 5 + X 群 xc の 1
+#   + S3TABLES_* が揃うときだけの T 群 t0s・t1s・t2s・t7s・t9s の 5、U 群 u0〜u7 の 8、
+#     V 群 v0〜v9・vc1・vc4 の 12、W 群 w0〜w10 の 11（計 36）
+#   + 連携カタログ（FEDERATED_CATALOG か、CREATE_GLUE_CATALOG=1 で作れた Glue のデータ
+#     カタログ）が使えるときだけの x1・x3・x4 の 3、そのうち S3TABLES_* も揃えば x2 の 1（計 4）
+#   = 19（S3TABLES_* も連携カタログも無し）／55（S3TABLES_* のみ）／22（連携カタログのみ）／
+#   59（両方あり）。このスクリプトの実測値は $START_CALL_FILE の行数（summary.txt に出る）。
+#   受理された CREATE TABLE ごとに、その場で DROP する後始末が 1 本ずつ増える
+#   （最大 +16 T 群、+5 Y 群、+8 U 群、+12 V 群、+11 W 群、+4 X 群 = 最大 +56）。
+#   CREATE_GLUE_CATALOG=1 で作った Glue のデータカタログを指す x1〜x4 は、後始末の DROP が
+#   失敗すると既定の Context でももう一度 DROP を試みる（最大 +4。上の内訳には含めない）。
+#
+#   [GetQueryExecution]
+#   開始できた項目だけ終端状態までポーリングし、終端後にもう 1 回まとめて取得する。
+#
+#   [Athena データカタログ管理 API]
+#   CREATE_GLUE_CATALOG=1 かつ FEDERATED_CATALOG 未設定のときだけ呼ぶ。preflight で
+#   sts:GetCallerIdentity・athena:ListDataCatalogs を 1 回ずつ、作成できれば
+#   athena:CreateDataCatalog・GetDataCatalog を 1 回ずつ、x1〜x4 の後始末のあとに
+#   athena:DeleteDataCatalog を 1 回（消せなければ trap でもう一度ベストエフォートで）。
+#   create-data-catalog・delete-data-catalog は名前解決・接続の失敗だけ再試行する
+#   （aws_call_retry。試行回数を記録する）。Athena のクエリではないので上の
+#   StartQueryExecution・GetQueryExecution の回数には含めない。
+#
+#   [その他]
+#   FAILED になった項目ごとに、結果ファイル本体と `<OutputLocation>.metadata` の取得
+#   （aws s3 cp、それぞれ 1 回）を追加で呼ぶ（最大で T・U・V・W・X・Y 群の項目数 × 2 回）。
+#   Athena の API ではないので上の StartQueryExecution・GetQueryExecution の回数には含めない。
+#
+# == ROUND=14（Z 群のみ。issue #266 の補足。preflight・DB 確認は共通） ==
+#
+#   [StartQueryExecution]
+#   preflight（SELECT 1 + SHOW TABLES）2
+#   + 常に投げる z0・z0b・z0c の 3
+#   + 連携カタログ（FEDERATED_CATALOG か、CREATE_GLUE_CATALOG=1 で作れた Glue のデータ
+#     カタログ）が使えるときだけの z1〜z5 の 5
+#   + S3TABLES_* が揃うときだけの z6〜z17 の 12
+#   = 5（S3TABLES_* も連携カタログも無し）／17（S3TABLES_* のみ）／10（連携カタログのみ）／
+#   22（両方あり）。このスクリプトの実測値は $START_CALL_FILE の行数（summary.txt に出る）。
+#   受理された CREATE TABLE ごとに、その場で DROP する後始末が 1 本ずつ増える
+#   （最大 +3 z0 系、+5 z1〜z5、+12 z6〜z17 ＝ 最大 +20）。CREATE_GLUE_CATALOG=1 で作った
+#   Glue のデータカタログを指す z1・z2・z4・z5 は、後始末の DROP が失敗すると既定の Context でも
+#   もう一度 DROP を試みる（最大 +4。上の内訳には含めない。z3 は最初から既定の Context で
+#   消すのでフォールバックは無い）。
+#
+#   [GetQueryExecution]
+#   開始できた項目だけ終端状態までポーリングし、終端後にもう 1 回まとめて取得する。
+#
+#   [Athena データカタログ管理 API]
+#   ROUND=13 と同じ（CREATE_GLUE_CATALOG=1 かつ FEDERATED_CATALOG 未設定のときだけ、
+#   sts:GetCallerIdentity・athena:ListDataCatalogs・athena:CreateDataCatalog・GetDataCatalog・
+#   DeleteDataCatalog を呼ぶ。ラベルの接頭辞が "z-" になるだけ）。Athena のクエリではないので
+#   上の StartQueryExecution・GetQueryExecution の回数には含めない。
+#
+#   [その他]
+#   FAILED になった項目ごとに、結果ファイル本体と `<OutputLocation>.metadata` の取得
+#   （aws s3 cp、それぞれ 1 回）を追加で呼ぶ（最大で Z 群の項目数 × 2 回）。Athena の
+#   API ではないので上の StartQueryExecution・GetQueryExecution の回数には含めない。
+#
 # == ROUND=15（T 群のみ。issue #251 の 2 ラウンド目。preflight・DB 確認は共通、実在する表は作らない） ==
 #
 #   [StartQueryExecution]
@@ -656,9 +847,9 @@ set -uo pipefail
 : "${DB:?DB にデータベース名を設定してください}"
 ROUND=${ROUND:-1}
 case "$ROUND" in
-  1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 15) ;;
+  1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15) ;;
   *)
-    echo "ROUND には 1・2・3・4・5・6・7・8・9・10・11・12・15 のどれかを指定してください（既定 1）" >&2
+    echo "ROUND には 1・2・3・4・5・6・7・8・9・10・11・12・13・14・15 のどれかを指定してください（既定 1）" >&2
     exit 1
     ;;
 esac
@@ -672,11 +863,21 @@ RETRY_DELAY=${RETRY_DELAY:-5}
 S3TABLES_CATALOG=${S3TABLES_CATALOG:-}
 S3TABLES_NS=${S3TABLES_NS:-}
 # 連携カタログ（S3 Tables 以外）の名前。ROUND=10 の s14（issue #248）と ROUND=12 の
-# o3・o4・o9（issue #260）が使う。
+# o3・o4・o9（issue #260）、ROUND=13 の x1〜x4（issue #266）が使う。
 FEDERATED_CATALOG=${FEDERATED_CATALOG:-}
 # 連携カタログの中の実在する DB・表名。ROUND=12 の o9 だけが使う。
 FEDERATED_DB=${FEDERATED_DB:-}
 FEDERATED_TABLE=${FEDERATED_TABLE:-}
+# ROUND=13・14 だけで使う。1 のとき、FEDERATED_CATALOG が未設定なら自分のアカウントの Glue を
+# 指すデータカタログを作って X 群・Z 群の連携カタログ代わりに使う（issue #266）。
+CREATE_GLUE_CATALOG=${CREATE_GLUE_CATALOG:-}
+# CREATE_GLUE_CATALOG=1 で作れたデータカタログの名前。空なら「作っていない」か「もう消した」。
+# trap の cleanup が、消し残しがあればベストエフォートで削除する対象を判定する
+# （明示的な削除に成功したら空に戻す）。
+GLUE_CATALOG_NAME=""
+# 上と違い、一度作れたら削除できたあとも空にしない（hide_pairs で伏せるためだけの変数。
+# summary は削除の結果によらず実名を出さない）。
+GLUE_CATALOG_CREATED_NAME=""
 # S3TABLES_CATALOG が s3tablescatalog/<バケット> の形なら、そのバケット名（伏せ字用）。
 S3TABLES_BUCKET=""
 case "$S3TABLES_CATALOG" in
@@ -764,6 +965,12 @@ cleanup() {
       *) cleanup_drop_in_ctx "${key%|*}" "DROP TABLE IF EXISTS ${key##*|}" ;;
     esac
   done
+  # ROUND=13（issue #266）で CREATE_GLUE_CATALOG=1 により作ったデータカタログが、本編の
+  # 明示的な削除で消せていなければ、X 群の表を消したこの後にベストエフォートでもう一度
+  # 消しにいく（結果は確かめない。名前解決・接続以外の失敗は本編の summary が既に報告済み）。
+  if [ -n "$GLUE_CATALOG_NAME" ]; then
+    aws athena delete-data-catalog --region "$REGION" --name "$GLUE_CATALOG_NAME" >/dev/null 2>&1 || true
+  fi
   # ROUND=8 で作った別の DB が残っていれば、中の表ごと消す（#242）。
   if [ "${M_DB2_OK:-0}" = 1 ] && ! grep -qs "^State: SUCCEEDED" "$RUN_DIR/m-drop-db2.reason.txt"; then
     cleanup_drop "DROP DATABASE IF EXISTS ${PROBE_PREFIX}_db2 CASCADE"
@@ -793,6 +1000,7 @@ ${FEDERATED_CATALOG^^}	<FEDERATED_CATALOG_UPPER>
 $FEDERATED_DB	<FEDERATED_DB>
 $FEDERATED_TABLE	<FEDERATED_TABLE>
 ${DB^^}	<DB_UPPER>
+$GLUE_CATALOG_CREATED_NAME	<GLUE_PROBE_CATALOG>
 EOF
 }
 
@@ -1143,6 +1351,30 @@ PYEOF
   fi
 }
 
+# Athena のクエリではない AWS CLI 呼び出し（ROUND=13、issue #266 の create/delete-data-catalog・
+# sts:GetCallerIdentity・list-data-catalogs・get-data-catalog）を、start_query_retry と同じ
+# 考え方で名前解決・接続などの一時的な失敗だけ再試行する。標準出力は $2 に、標準エラーは
+# $RUN_DIR/$1.err に保存し、試行回数を $RUN_DIR/.tmp-attempts-$1 に記録する（read_attempts で読める）。
+# $1: ラベル、$2: 標準出力の保存先、$3 以降: 実行するコマンド。
+aws_call_retry() {
+  local label=$1 outfile=$2
+  shift 2
+  local attempt=1
+  while :; do
+    if "$@" > "$outfile" 2> "$RUN_DIR/$label.err"; then
+      echo "$attempt" > "$RUN_DIR/.tmp-attempts-$label"
+      return 0
+    fi
+    if [ "$attempt" -ge "$RETRY_MAX" ] || ! is_transient_error "$RUN_DIR/$label.err"; then
+      echo "$attempt" > "$RUN_DIR/.tmp-attempts-$label"
+      return 1
+    fi
+    echo "== $label: 一時的な失敗とみて ${RETRY_DELAY} 秒後に再試行します（試行 $attempt/$RETRY_MAX）" >&2
+    sleep "$RETRY_DELAY"
+    attempt=$((attempt + 1))
+  done
+}
+
 # CREATE TABLE を投げ、成功したら（想定どおりでも想定外でも）その場で
 # DROP TABLE IF EXISTS <name> を <label>-cleanup として投げて消す。成功するまで
 # PENDING_DROPS[name] を立てておき、後始末が SUCCEEDED になったら下ろす（trap の保険が
@@ -1177,6 +1409,96 @@ run_create_then_drop_ctx() {
     fi
   else
     skip "$label-cleanup" "CREATE TABLE が失敗したため後始末不要"
+  fi
+}
+
+# $create_ctx で CREATE TABLE を投げ、受理されたら Catalog=$FC,Database=$drop_db の Context で
+# DROP TABLE IF EXISTS <name> を <label>-cleanup として投げて消す（run_create_then_drop_ctx を
+# 呼ぶだけ）。$FC が CREATE_GLUE_CATALOG=1 で作ったデータカタログ（$GLUE_CATALOG_NAME と一致）の
+# ときは、その DROP が SUCCEEDED にならなければ、既定の Context（$DEFAULT_CTX）でも同じ DROP を
+# <label>-cleanup2 としてもう一度投げる（同じ Glue を指すため）。drop_db は呼び出し元が渡す
+# （ROUND=13 の X 群は連携カタログ側の DB、ROUND=14 の Z 群は athena-local の DB。文の qualified
+# name の 2 部目に合わせる）。$FC・$GLUE_CATALOG_NAME・$DEFAULT_CTX はグローバルを読む
+# （呼び出し前に呼び出し元が設定しておく。ROUND=13・14 で共有、issue #266）。
+run_x_create() {
+  local create_ctx=$1 drop_db=$2 label=$3 sql=$4 name=$5
+  local drop_ctx="Catalog=$FC,Database=$drop_db"
+  local key="$drop_ctx|$name"
+  run_create_then_drop_ctx "$create_ctx" "$drop_ctx" "$label" "$sql" "$name"
+  if [ -n "$GLUE_CATALOG_NAME" ] && [ "$FC" = "$GLUE_CATALOG_NAME" ] \
+    && [ -n "${PENDING_DROPS_CTX[$key]:-}" ]; then
+    run_in_ctx "$DEFAULT_CTX" "$label-cleanup2" "DROP TABLE IF EXISTS $name"
+    if succeeded "$label-cleanup2"; then
+      unset 'PENDING_DROPS_CTX[$key]'
+    fi
+  fi
+}
+
+# 連携カタログを決める（ROUND=13 の X 群・ROUND=14 の Z 群で共有、issue #266）。
+# FEDERATED_CATALOG があればそれを使う（作らない・消さない）。無く、CREATE_GLUE_CATALOG=1 の
+# ときだけ、sts:GetCallerIdentity・athena:ListDataCatalogs の疎通が通ることを確かめてから、
+# 自分のアカウントの Glue を指すデータカタログを作って使う。結果はグローバル FC・FDB・
+# GLUE_CATALOG_NAME・GLUE_CATALOG_CREATED_NAME・FEDCAT_SKIP_REASON に積む（呼び出しのたびに
+# 初期化する）。$1: ラベルの接頭辞（呼び出し元の group 名。ファイル名の衝突を避ける。
+# ROUND=13 は "x"、ROUND=14 は "z"）。
+resolve_federated_catalog() {
+  local prefix=$1
+  FC=""
+  FDB=""
+  FEDCAT_SKIP_REASON=""
+  GLUE_CATALOG_DELETED=""
+  if [ -n "$FEDERATED_CATALOG" ]; then
+    FC="$FEDERATED_CATALOG"
+    FDB="${FEDERATED_DB:-$DB}"
+  elif [ "${CREATE_GLUE_CATALOG:-}" = 1 ]; then
+    if aws_call_retry "$prefix-sts-preflight" "$RUN_DIR/.tmp-sts.json" \
+        aws sts get-caller-identity --region "$REGION" --output json \
+      && aws_call_retry "$prefix-list-catalogs-preflight" "$RUN_DIR/.tmp-list-catalogs.json" \
+        aws athena list-data-catalogs --region "$REGION"; then
+      ACCOUNT_ID=$(python3 -c 'import json, sys
+try:
+    print(json.load(open(sys.argv[1])).get("Account", ""))
+except Exception:
+    print("")' "$RUN_DIR/.tmp-sts.json" 2>/dev/null)
+      if [ -n "$ACCOUNT_ID" ]; then
+        GLUE_CATALOG_NAME="athena_local_probe_266_${RAND_SUFFIX}cat"
+        GLUE_CATALOG_CREATED_NAME="$GLUE_CATALOG_NAME"
+        if aws_call_retry "$prefix-create-catalog" "$RUN_DIR/$prefix-create-catalog.json" \
+          aws athena create-data-catalog --region "$REGION" --name "$GLUE_CATALOG_NAME" \
+          --type GLUE --parameters "catalog-id=$ACCOUNT_ID"; then
+          FC="$GLUE_CATALOG_NAME"
+          FDB="$DB"
+          aws_call_retry "$prefix-get-catalog" "$RUN_DIR/$prefix-get-catalog.json" \
+            aws athena get-data-catalog --region "$REGION" --name "$GLUE_CATALOG_NAME" || true
+        else
+          FEDCAT_SKIP_REASON="未測定（データカタログを作れませんでした: $(first_err_line "$RUN_DIR/$prefix-create-catalog.err")）"
+          GLUE_CATALOG_NAME=""
+        fi
+      else
+        FEDCAT_SKIP_REASON="未測定（アカウント ID を取得できませんでした）"
+      fi
+    else
+      FEDCAT_SKIP_REASON="未測定（CREATE_GLUE_CATALOG の疎通確認に失敗しました）"
+    fi
+  else
+    FEDCAT_SKIP_REASON="未測定（FEDERATED_CATALOG 未設定・CREATE_GLUE_CATALOG 未指定）"
+  fi
+}
+
+# CREATE_GLUE_CATALOG=1 で作ったデータカタログ（$GLUE_CATALOG_NAME）が残っていれば、明示的に
+# 削除する（ROUND=13 の X 群・ROUND=14 の Z 群で共有）。結果を $GLUE_CATALOG_DELETED に積み
+# （1: 消せた、0: 消せなかった）、消せたら $GLUE_CATALOG_NAME を空に戻す（trap のベストエフォート
+# 削除の対象から外す）。$1: ラベルの接頭辞（resolve_federated_catalog と同じものを渡す）。
+delete_glue_catalog_if_created() {
+  local prefix=$1
+  if [ -n "$GLUE_CATALOG_NAME" ]; then
+    if aws_call_retry "$prefix-delete-catalog" "$RUN_DIR/$prefix-delete-catalog.json" \
+      aws athena delete-data-catalog --region "$REGION" --name "$GLUE_CATALOG_NAME"; then
+      GLUE_CATALOG_DELETED=1
+      GLUE_CATALOG_NAME=""
+    else
+      GLUE_CATALOG_DELETED=0
+    fi
   fi
 }
 
@@ -2196,6 +2518,323 @@ fetch_failed_attachments $O_LABELS
 
 fi # ROUND=12
 
+# ROUND=13 だけ、T・U・V・W・X・Y 群を投げる（issue #266）。
+if [ "$ROUND" = 13 ]; then
+
+DEFAULT_CTX="Catalog=$CATALOG,Database=$DB"
+# バッククォート 1 文字（v9・w9。ROUND=10 の s11 と同じ理由で変数にして埋め込む）。
+BT='`'
+# LOCATION 付きの項目の置き場（ROUND=10 の probe_location_s と同じ形。空のプレフィックス）。
+probe_location_t() { printf '%sathena-local-probe-266/%s/' "$OUTPUT" "$(new_name "$1")"; }
+
+if [ -n "$S3TABLES_CATALOG" ] && [ -n "$S3TABLES_NS" ]; then
+  S3T_CTX="Catalog=$S3TABLES_CATALOG,Database=$S3TABLES_NS"
+fi
+
+# --- T 群（issue の 2: 実在しないカタログ nosuchcatalog266 の 3 部 + LOCATION に句が付く形） ---
+# 常に投げる（既定の Context）。t0 は同じラウンドで測り直す s12 の対照。
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" t0 \
+  "CREATE TABLE nosuchcatalog266.$DB.$(new_name t0) (n int) LOCATION '$(probe_location_t t0)'" "$(new_name t0)"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" t1 \
+  "CREATE EXTERNAL TABLE nosuchcatalog266.$DB.$(new_name t1) (n int) LOCATION '$(probe_location_t t1)'" "$(new_name t1)"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" t2 \
+  "CREATE TABLE IF NOT EXISTS nosuchcatalog266.$DB.$(new_name t2) (n int) LOCATION '$(probe_location_t t2)'" "$(new_name t2)"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" t3 \
+  "CREATE TABLE nosuchcatalog266.$DB.$(new_name t3) (n int) COMMENT 't comment' LOCATION '$(probe_location_t t3)'" "$(new_name t3)"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" t4 \
+  "CREATE TABLE nosuchcatalog266.$DB.$(new_name t4) (n int) PARTITIONED BY (p int) LOCATION '$(probe_location_t t4)'" "$(new_name t4)"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" t5 \
+  "CREATE TABLE nosuchcatalog266.$DB.$(new_name t5) (n int) CLUSTERED BY (n) INTO 4 BUCKETS LOCATION '$(probe_location_t t5)'" "$(new_name t5)"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" t6 \
+  "CREATE TABLE nosuchcatalog266.$DB.$(new_name t6) (n int) ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde' LOCATION '$(probe_location_t t6)'" "$(new_name t6)"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" t7 \
+  "CREATE TABLE nosuchcatalog266.$DB.$(new_name t7) (n int) STORED AS PARQUET LOCATION '$(probe_location_t t7)'" "$(new_name t7)"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" t8 \
+  "CREATE TABLE nosuchcatalog266.$DB.$(new_name t8) (n int) LOCATION '$(probe_location_t t8)' TBLPROPERTIES ('a266'='b')" "$(new_name t8)"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" t9 \
+  "CREATE EXTERNAL TABLE IF NOT EXISTS nosuchcatalog266.$DB.$(new_name t9) (n int) COMMENT 't comment' PARTITIONED BY (p int) ROW FORMAT DELIMITED FIELDS TERMINATED BY ',' STORED AS TEXTFILE LOCATION '$(probe_location_t t9)' TBLPROPERTIES ('a266'='b')" "$(new_name t9)"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" t10 \
+  "CREATE TABLE nosuchcatalog266.$DB.$(new_name t10) LOCATION '$(probe_location_t t10)'" "$(new_name t10)"
+
+# t0s・t1s・t2s・t7s・t9s: t0・t1・t2・t7・t9 と同じ文で表名の接尾辞だけ変え、S3 Tables の
+# Context で投げる（2 部目は $DB のまま）。S3TABLES_* が揃うときだけ。
+if [ -n "$S3TABLES_CATALOG" ] && [ -n "$S3TABLES_NS" ]; then
+  run_create_then_drop_ctx "$S3T_CTX" "$DEFAULT_CTX" t0s \
+    "CREATE TABLE nosuchcatalog266.$DB.$(new_name t0s) (n int) LOCATION '$(probe_location_t t0s)'" "$(new_name t0s)"
+  run_create_then_drop_ctx "$S3T_CTX" "$DEFAULT_CTX" t1s \
+    "CREATE EXTERNAL TABLE nosuchcatalog266.$DB.$(new_name t1s) (n int) LOCATION '$(probe_location_t t1s)'" "$(new_name t1s)"
+  run_create_then_drop_ctx "$S3T_CTX" "$DEFAULT_CTX" t2s \
+    "CREATE TABLE IF NOT EXISTS nosuchcatalog266.$DB.$(new_name t2s) (n int) LOCATION '$(probe_location_t t2s)'" "$(new_name t2s)"
+  run_create_then_drop_ctx "$S3T_CTX" "$DEFAULT_CTX" t7s \
+    "CREATE TABLE nosuchcatalog266.$DB.$(new_name t7s) (n int) STORED AS PARQUET LOCATION '$(probe_location_t t7s)'" "$(new_name t7s)"
+  run_create_then_drop_ctx "$S3T_CTX" "$DEFAULT_CTX" t9s \
+    "CREATE EXTERNAL TABLE IF NOT EXISTS nosuchcatalog266.$DB.$(new_name t9s) (n int) COMMENT 't comment' PARTITIONED BY (p int) ROW FORMAT DELIMITED FIELDS TERMINATED BY ',' STORED AS TEXTFILE LOCATION '$(probe_location_t t9s)' TBLPROPERTIES ('a266'='b')" "$(new_name t9s)"
+else
+  for l in t0s t1s t2s t7s t9s; do
+    skip "$l" "未測定（S3TABLES_* 未設定）"
+    skip "$l-cleanup" "CREATE TABLE を投げていないため後始末不要"
+  done
+fi
+
+T_LABELS="t0 t1 t2 t3 t4 t5 t6 t7 t8 t9 t10 t0s t1s t2s t7s t9s"
+
+# --- Y 群（issue の 1 のうち、Trino にだけあるよくあるカタログ名） ---
+# 常に投げる（既定の Context）。万一受理されたら既定の Context で消す。
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" y1 \
+  "CREATE TABLE hive.$DB.$(new_name y1) (n int) LOCATION '$(probe_location_t y1)'" "$(new_name y1)"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" y2 \
+  "CREATE TABLE iceberg.$DB.$(new_name y2) (n int) LOCATION '$(probe_location_t y2)'" "$(new_name y2)"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" y3 \
+  "CREATE TABLE system.$DB.$(new_name y3) (n int) LOCATION '$(probe_location_t y3)'" "$(new_name y3)"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" y4 \
+  "CREATE TABLE tpch.$DB.$(new_name y4) (n int) LOCATION '$(probe_location_t y4)'" "$(new_name y4)"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" y5 \
+  "CREATE TABLE memory.$DB.$(new_name y5) (n int) LOCATION '$(probe_location_t y5)'" "$(new_name y5)"
+
+Y_LABELS="y1 y2 y3 y4 y5"
+
+# --- U 群（issue の 3: S3 Tables の Context の LOCATION 付きの句の組み合わせ） ---
+# S3TABLES_* が揃うときだけ、S3 Tables の Context で投げる。
+if [ -n "$S3TABLES_CATALOG" ] && [ -n "$S3TABLES_NS" ]; then
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" u0 \
+    "CREATE TABLE $(new_name u0) (n int) LOCATION '$(probe_location_t u0)'" "$(new_name u0)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" u1 \
+    "CREATE TABLE $(new_name u1) (n int) COMMENT 't comment' CLUSTERED BY (n) INTO 4 BUCKETS LOCATION '$(probe_location_t u1)'" "$(new_name u1)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" u2 \
+    "CREATE TABLE $(new_name u2) (n int) PARTITIONED BY (p int) ROW FORMAT DELIMITED FIELDS TERMINATED BY ',' STORED AS TEXTFILE LOCATION '$(probe_location_t u2)' TBLPROPERTIES ('a266'='b')" "$(new_name u2)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" u3 \
+    "CREATE TABLE $(new_name u3) (n int) COMMENT 't comment' ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde' STORED AS TEXTFILE LOCATION '$(probe_location_t u3)'" "$(new_name u3)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" u4 \
+    "CREATE EXTERNAL TABLE $(new_name u4) (n int) COMMENT 't comment' PARTITIONED BY (p int) CLUSTERED BY (n) INTO 4 BUCKETS ROW FORMAT DELIMITED FIELDS TERMINATED BY ',' STORED AS TEXTFILE LOCATION '$(probe_location_t u4)' TBLPROPERTIES ('a266'='b')" "$(new_name u4)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" u5 \
+    "CREATE TABLE IF NOT EXISTS $(new_name u5) (n int) COMMENT 't comment' LOCATION '$(probe_location_t u5)'" "$(new_name u5)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" u6 \
+    "CREATE TABLE $S3TABLES_NS.$(new_name u6) (n int) COMMENT 't comment' STORED AS PARQUET LOCATION '$(probe_location_t u6)'" "$(new_name u6)"
+  run_create_then_drop_ctx "$S3T_CTX" "$DEFAULT_CTX" u7 \
+    "CREATE TABLE AwsDataCatalog.$DB.$(new_name u7) (n int) PARTITIONED BY (p int) LOCATION '$(probe_location_t u7)'" "$(new_name u7)"
+else
+  for l in u0 u1 u2 u3 u4 u5 u6 u7; do
+    skip "$l" "未測定（S3TABLES_* 未設定）"
+    skip "$l-cleanup" "CREATE TABLE を投げていないため後始末不要"
+  done
+fi
+
+U_LABELS="u0 u1 u2 u3 u4 u5 u6 u7"
+
+# --- V 群（issue の 4: LOCATION の無い CREATE EXTERNAL TABLE に句が付く形） ---
+# S3TABLES_* が揃うときだけ、S3 Tables の Context で投げる。vc1・vc4 は EXTERNAL の無い対照。
+if [ -n "$S3TABLES_CATALOG" ] && [ -n "$S3TABLES_NS" ]; then
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" v0 \
+    "CREATE EXTERNAL TABLE $(new_name v0) (n int)" "$(new_name v0)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" v1 \
+    "CREATE EXTERNAL TABLE $(new_name v1) (n int) COMMENT 't comment'" "$(new_name v1)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" v2 \
+    "CREATE EXTERNAL TABLE $(new_name v2) (n int) PARTITIONED BY (p int)" "$(new_name v2)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" v3 \
+    "CREATE EXTERNAL TABLE $(new_name v3) (n int) CLUSTERED BY (n) INTO 4 BUCKETS" "$(new_name v3)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" v4 \
+    "CREATE EXTERNAL TABLE $(new_name v4) (n int) ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'" "$(new_name v4)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" v5 \
+    "CREATE EXTERNAL TABLE $(new_name v5) (n int) ROW FORMAT DELIMITED FIELDS TERMINATED BY ','" "$(new_name v5)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" v6 \
+    "CREATE EXTERNAL TABLE $(new_name v6) (n int) COMMENT 't comment' ROW FORMAT DELIMITED FIELDS TERMINATED BY ',' STORED AS PARQUET TBLPROPERTIES ('a266'='b')" "$(new_name v6)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" v7 \
+    "CREATE EXTERNAL TABLE IF NOT EXISTS $(new_name v7) (n int)" "$(new_name v7)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" v8 \
+    "CREATE EXTERNAL TABLE $(new_name v8) TBLPROPERTIES ('a266'='b')" "$(new_name v8)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" v9 \
+    "CREATE EXTERNAL TABLE ${BT}$(new_name v9)${BT} (n int)" "$(new_name v9)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" vc1 \
+    "CREATE TABLE $(new_name vc1) (n int) COMMENT 't comment'" "$(new_name vc1)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" vc4 \
+    "CREATE TABLE $(new_name vc4) (n int) ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'" "$(new_name vc4)"
+else
+  for l in v0 v1 v2 v3 v4 v5 v6 v7 v8 v9 vc1 vc4; do
+    skip "$l" "未測定（S3TABLES_* 未設定）"
+    skip "$l-cleanup" "CREATE TABLE を投げていないため後始末不要"
+  done
+fi
+
+V_LABELS="v0 v1 v2 v3 v4 v5 v6 v7 v8 v9 vc1 vc4"
+
+# --- W 群（issue の 5: LOCATION の無い STORED AS の 2〜3 部の名前・IF NOT EXISTS・ほかの句） ---
+# S3TABLES_* が揃うときだけ、S3 Tables の Context で投げる。受理されうるものも含め、
+# すべて run_create_then_drop_ctx で投げる（失敗しても後始末は skip になるだけで安全）。
+if [ -n "$S3TABLES_CATALOG" ] && [ -n "$S3TABLES_NS" ]; then
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" w0 \
+    "CREATE TABLE $(new_name w0) (n int) STORED AS PARQUET" "$(new_name w0)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" w1 \
+    "CREATE TABLE $S3TABLES_NS.$(new_name w1) (n int) STORED AS PARQUET" "$(new_name w1)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" w2 \
+    "CREATE TABLE AwsDataCatalog.$S3TABLES_NS.$(new_name w2) (n int) STORED AS PARQUET" "$(new_name w2)"
+  run_create_then_drop_ctx "$S3T_CTX" "$DEFAULT_CTX" w3 \
+    "CREATE TABLE awsdatacatalog.$DB.$(new_name w3) (n int) STORED AS PARQUET" "$(new_name w3)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" w4 \
+    "CREATE TABLE IF NOT EXISTS $(new_name w4) (n int) STORED AS PARQUET" "$(new_name w4)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" w5 \
+    "CREATE TABLE $(new_name w5) (n int) COMMENT 't comment' STORED AS PARQUET" "$(new_name w5)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" w6 \
+    "CREATE TABLE $(new_name w6) (n int) PARTITIONED BY (p int) STORED AS PARQUET" "$(new_name w6)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" w7 \
+    "CREATE TABLE $(new_name w7) (n int) ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde' STORED AS TEXTFILE" "$(new_name w7)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" w8 \
+    "CREATE TABLE $(new_name w8) (n int) STORED AS PARQUET TBLPROPERTIES ('a266'='b')" "$(new_name w8)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" w9 \
+    "CREATE TABLE ${BT}$(new_name w9)${BT} (n int) STORED AS PARQUET" "$(new_name w9)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" w10 \
+    "CREATE TABLE $(new_name w10) STORED AS PARQUET" "$(new_name w10)"
+else
+  for l in w0 w1 w2 w3 w4 w5 w6 w7 w8 w9 w10; do
+    skip "$l" "未測定（S3TABLES_* 未設定）"
+    skip "$l-cleanup" "CREATE TABLE を投げていないため後始末不要"
+  done
+fi
+
+W_LABELS="w0 w1 w2 w3 w4 w5 w6 w7 w8 w9 w10"
+
+# --- X 群（issue の 1: 実在する連携カタログの 3 部 + LOCATION） ---
+# xc は既定の Context の対照で、連携カタログの有無によらず常に投げる。
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" xc \
+  "CREATE TABLE AwsDataCatalog.$DB.$(new_name xc) (n int) LOCATION '$(probe_location_t xc)'" "$(new_name xc)"
+
+# 連携カタログを決める（共有関数。ROUND=14 の Z 群と同じ）。ラベルの接頭辞は "x"。
+resolve_federated_catalog x
+
+# x1〜x4: 連携カタログの表を作り、受理されたら Catalog=<FC>,Database=<FDB> の Context で消す
+# （run_x_create。共有関数。ROUND=14 の Z 群と同じ）。
+if [ -n "$FC" ]; then
+  run_x_create "$DEFAULT_CTX" "$FDB" x1 \
+    "CREATE TABLE $FC.$FDB.$(new_name x1) (n int) LOCATION '$(probe_location_t x1)'" "$(new_name x1)"
+  if [ -n "$S3TABLES_CATALOG" ] && [ -n "$S3TABLES_NS" ]; then
+    run_x_create "$S3T_CTX" "$FDB" x2 \
+      "CREATE TABLE $FC.$FDB.$(new_name x2) (n int) LOCATION '$(probe_location_t x2)'" "$(new_name x2)"
+  else
+    skip x2 "未測定（S3TABLES_* 未設定）"
+    skip x2-cleanup "CREATE TABLE を投げていないため後始末不要"
+  fi
+  run_x_create "$DEFAULT_CTX" "$FDB" x3 \
+    "CREATE EXTERNAL TABLE $FC.$FDB.$(new_name x3) (n int) LOCATION '$(probe_location_t x3)'" "$(new_name x3)"
+  run_x_create "$DEFAULT_CTX" "$FDB" x4 \
+    "CREATE TABLE $FC.$FDB.$(new_name x4) (n int) STORED AS PARQUET LOCATION '$(probe_location_t x4)'" "$(new_name x4)"
+else
+  for l in x1 x2 x3 x4; do
+    skip "$l" "$FEDCAT_SKIP_REASON"
+    skip "$l-cleanup" "CREATE TABLE を投げていないため後始末不要"
+  done
+fi
+
+# CREATE_GLUE_CATALOG=1 で作ったデータカタログは、x1〜x4 の後始末が終わってから明示的に消す
+# （共有関数。結果を summary に出す。消せなければ trap がもう一度ベストエフォートで消しにいく）。
+delete_glue_catalog_if_created x
+
+X_LABELS="xc x1 x2 x3 x4"
+
+# --- 付随物の取得（FAILED になった項目だけ） --------------------------------------------
+fetch_failed_attachments $T_LABELS $Y_LABELS $U_LABELS $V_LABELS $W_LABELS $X_LABELS
+
+fi # ROUND=13
+
+# ROUND=14 だけ、Z 群を投げる（issue #266 の補足）。
+if [ "$ROUND" = 14 ]; then
+
+DEFAULT_CTX="Catalog=$CATALOG,Database=$DB"
+# バッククォート 1 文字（z14。ROUND=10 の s11 と同じ理由で変数にして埋め込む）。
+BT='`'
+# LOCATION 付きの項目の置き場（ROUND=13 と同じ probe_location_t。接頭辞は 266 のまま変えていない）。
+probe_location_t() { printf '%sathena-local-probe-266/%s/' "$OUTPUT" "$(new_name "$1")"; }
+
+if [ -n "$S3TABLES_CATALOG" ] && [ -n "$S3TABLES_NS" ]; then
+  S3T_CTX="Catalog=$S3TABLES_CATALOG,Database=$S3TABLES_NS"
+fi
+
+# --- z0・z0b・z0c（ROUND=13 で見つかった x3 の対照。既定の Context。EXTERNAL 付きの 1〜3 部の
+# 名前 + LOCATION）。常に投げる。受理される見込み。 ---
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" z0 \
+  "CREATE EXTERNAL TABLE AwsDataCatalog.$DB.$(new_name z0) (n int) LOCATION '$(probe_location_t z0)'" "$(new_name z0)"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" z0b \
+  "CREATE EXTERNAL TABLE $DB.$(new_name z0b) (n int) LOCATION '$(probe_location_t z0b)'" "$(new_name z0b)"
+run_create_then_drop_ctx "$DEFAULT_CTX" "$DEFAULT_CTX" z0c \
+  "CREATE EXTERNAL TABLE awsdatacatalog.$DB.$(new_name z0c) (n int) LOCATION '$(probe_location_t z0c)'" "$(new_name z0c)"
+
+Z_LABELS_PREFIX="z0 z0b z0c"
+
+# --- z1〜z5（連携カタログの 3 部・1 部の名前。既定の Context と、連携カタログを Catalog に
+# した Context <GCTX>=Catalog=<連携カタログ>,Database=<DB>）。連携カタログが使えるときだけ。
+# 連携カタログの決め方・Glue のデータカタログの作成/削除は ROUND=13 の X 群と共有する。 ---
+resolve_federated_catalog z
+
+if [ -n "$FC" ]; then
+  GCTX="Catalog=$FC,Database=$DB"
+  run_x_create "$DEFAULT_CTX" "$DB" z1 \
+    "CREATE EXTERNAL TABLE $FC.$DB.$(new_name z1) (n int) LOCATION '$(probe_location_t z1)'" "$(new_name z1)"
+  run_x_create "$GCTX" "$DB" z2 \
+    "CREATE EXTERNAL TABLE $FC.$DB.$(new_name z2) (n int) LOCATION '$(probe_location_t z2)'" "$(new_name z2)"
+  # z3 は既定の Context に作られる見込みなので、run_x_create のフォールバックは要らない
+  # （w3・u7 と同じ、直接 run_create_then_drop_ctx で消す Context を <DEF> にする）。
+  run_create_then_drop_ctx "$GCTX" "$DEFAULT_CTX" z3 \
+    "CREATE EXTERNAL TABLE AwsDataCatalog.$DB.$(new_name z3) (n int) LOCATION '$(probe_location_t z3)'" "$(new_name z3)"
+  run_x_create "$GCTX" "$DB" z4 \
+    "CREATE EXTERNAL TABLE $(new_name z4) (n int) LOCATION '$(probe_location_t z4)'" "$(new_name z4)"
+  run_x_create "$GCTX" "$DB" z5 \
+    "CREATE TABLE $FC.$DB.$(new_name z5) (n int) LOCATION '$(probe_location_t z5)'" "$(new_name z5)"
+else
+  for l in z1 z2 z3 z4 z5; do
+    skip "$l" "$FEDCAT_SKIP_REASON"
+    skip "$l-cleanup" "CREATE TABLE を投げていないため後始末不要"
+  done
+fi
+
+# CREATE_GLUE_CATALOG=1 で作ったデータカタログは、z1〜z5 の後始末が終わってから明示的に消す
+# （共有関数。結果を summary に出す。消せなければ trap がもう一度ベストエフォートで消しにいく）。
+delete_glue_catalog_if_created z
+
+Z_LABELS_FEDCAT="z1 z2 z3 z4 z5"
+
+# --- z6〜z17（S3 Tables の Context。LOCATION の無い非 EXTERNAL の ROW FORMAT の族と、ほかの
+# 単独の Hive の句。S3TABLES_* が揃うときだけ。受理されたら S3 Tables の Context で消す） ---
+if [ -n "$S3TABLES_CATALOG" ] && [ -n "$S3TABLES_NS" ]; then
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" z6 \
+    "CREATE TABLE $(new_name z6) (n int) ROW FORMAT DELIMITED FIELDS TERMINATED BY ','" "$(new_name z6)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" z7 \
+    "CREATE TABLE $(new_name z7) (n int) COMMENT 't comment' ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'" "$(new_name z7)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" z8 \
+    "CREATE TABLE $S3TABLES_NS.$(new_name z8) (n int) ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'" "$(new_name z8)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" z9 \
+    "CREATE TABLE IF NOT EXISTS $(new_name z9) (n int) ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'" "$(new_name z9)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" z10 \
+    "CREATE TABLE $(new_name z10) (n int) ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde' TBLPROPERTIES ('a266'='b')" "$(new_name z10)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" z11 \
+    "CREATE TABLE $(new_name z11) (n int) ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'" "$(new_name z11)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" z12 \
+    "CREATE TABLE AwsDataCatalog.$S3TABLES_NS.$(new_name z12) (n int) ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'" "$(new_name z12)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" z13 \
+    "CREATE TABLE $(new_name z13) ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'" "$(new_name z13)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" z14 \
+    "CREATE TABLE ${BT}$(new_name z14)${BT} (n int) ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'" "$(new_name z14)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" z15 \
+    "CREATE TABLE $(new_name z15) (n int) PARTITIONED BY (p int)" "$(new_name z15)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" z16 \
+    "CREATE TABLE $(new_name z16) (n int) CLUSTERED BY (n) INTO 4 BUCKETS" "$(new_name z16)"
+  run_create_then_drop_ctx "$S3T_CTX" "$S3T_CTX" z17 \
+    "CREATE TABLE $(new_name z17) (n int) TBLPROPERTIES ('a266'='b')" "$(new_name z17)"
+else
+  for l in z6 z7 z8 z9 z10 z11 z12 z13 z14 z15 z16 z17; do
+    skip "$l" "未測定（S3TABLES_* 未設定）"
+    skip "$l-cleanup" "CREATE TABLE を投げていないため後始末不要"
+  done
+fi
+
+Z_LABELS_S3="z6 z7 z8 z9 z10 z11 z12 z13 z14 z15 z16 z17"
+Z_LABELS="$Z_LABELS_PREFIX $Z_LABELS_FEDCAT $Z_LABELS_S3"
+# 開始できた項目の QueryExecutionContext・StatementType/SubstatementType の詳細を出す対象
+# （ROUND=13 の X 群と同じ範囲。z6〜z17 の S3 Tables の族は対象外）。
+Z_REPR_LABELS="$Z_LABELS_PREFIX $Z_LABELS_FEDCAT"
+
+# --- 付随物の取得（FAILED になった項目だけ） --------------------------------------------
+fetch_failed_attachments $Z_LABELS
+
+fi # ROUND=14
+
 # ROUND=15 だけ、T 群を投げる（issue #251 の 2 ラウンド目）。
 if [ "$ROUND" = 15 ]; then
 
@@ -2391,6 +3030,22 @@ elif [ "$ROUND" = 11 ]; then
   done
 elif [ "$ROUND" = 12 ]; then
   ALL_LABELS="$ALL_LABELS o-setup $O_LABELS o-cleanup"
+elif [ "$ROUND" = 13 ]; then
+  for l in $T_LABELS $Y_LABELS $U_LABELS $V_LABELS $W_LABELS $X_LABELS; do
+    ALL_LABELS="$ALL_LABELS $l $l-cleanup"
+  done
+  # x1〜x4 は、作った Glue のデータカタログを指すときだけ -cleanup2 も投げる（存在すれば拾う）。
+  for l in x1 x2 x3 x4; do
+    ALL_LABELS="$ALL_LABELS $l-cleanup2"
+  done
+elif [ "$ROUND" = 14 ]; then
+  for l in $Z_LABELS; do
+    ALL_LABELS="$ALL_LABELS $l $l-cleanup"
+  done
+  # z1・z2・z4・z5 は、作った Glue のデータカタログを指すときだけ -cleanup2 も投げる（存在すれば拾う）。
+  for l in z1 z2 z4 z5; do
+    ALL_LABELS="$ALL_LABELS $l-cleanup2"
+  done
 elif [ "$ROUND" = 15 ]; then
   for l in $T_LABELS; do
     ALL_LABELS="$ALL_LABELS $l $l-cleanup"
@@ -2594,6 +3249,117 @@ write_summary_txt() {
       echo "#   aws s3 cp で読み出して保存する（<label>.output.txt・<label>.output.metadata）。"
       echo "# 課金: スキャンの無いクエリだけ（CTAS・SELECT・INSERT はどれも 0〜1 行）。結果ファイルの"
       echo "#   読み出しは S3 の GetObject で、Athena のクエリ課金には乗らない。"
+      echo "# 注意: これは実測した本物の Athena の挙動であり、将来の Athena の変更で変わりうる。"
+      echo "#   実測値は既定とは限らない。"
+    elif [ "$ROUND" = 13 ]; then
+      echo "# issue #266（#208 ラウンド 13）: #248 の実装（s3_tables_rejection・s3_tables_stored_as・"
+      echo "#             location_catalog）が「測った形だけ」に絞った条件の外側（実在しないカタログの"
+      echo "#             3 部 + LOCATION に句が付く形、S3 Tables の Context の LOCATION 付きの句の"
+      echo "#             組み合わせ、LOCATION の無い CREATE EXTERNAL TABLE に句が付く形、LOCATION の"
+      echo "#             無い STORED AS の 2〜3 部の名前・IF NOT EXISTS・ほかの句、Trino にだけある"
+      echo "#             カタログ名・実在する連携カタログの 3 部 + LOCATION）を実測"
+      echo "# 実行日時: $(date -Iseconds)"
+      if [ -n "$S3TABLES_CATALOG" ] && [ -n "$S3TABLES_NS" ]; then
+        echo "# S3TABLES_*: 設定あり（T 群の t0s・t1s・t2s・t7s・t9s、U・V・W 群、X 群の x2 を測る）"
+      else
+        echo "# S3TABLES_*: 未設定（T 群の *s・U・V・W 群、X 群の x2 は未測定）"
+      fi
+      if [ -n "$FEDERATED_CATALOG" ]; then
+        echo "# FEDERATED_CATALOG: 設定あり（X 群の x1・x3・x4 を FEDERATED_CATALOG で測る）"
+      elif [ "${CREATE_GLUE_CATALOG:-}" = 1 ]; then
+        if [ -n "$FC" ]; then
+          echo "# CREATE_GLUE_CATALOG=1: データカタログを作成できた（X 群の x1・x3・x4 を測る）"
+        else
+          echo "# CREATE_GLUE_CATALOG=1: 設定あり（$FEDCAT_SKIP_REASON）"
+        fi
+      else
+        echo "# FEDERATED_CATALOG・CREATE_GLUE_CATALOG: 未設定（X 群の x1・x3・x4 は未測定。xc だけ測る）"
+      fi
+      echo "# StartQueryExecution の見込み本数: 19（S3TABLES_* も連携カタログも無し）／"
+      echo "#   55（S3TABLES_* のみ）／22（連携カタログのみ）／59（両方あり）"
+      echo "#   （preflight 2 + 常に投げる T 群 11・Y 群 5・X 群の xc 1 + S3TABLES_* が揃うときだけの"
+      echo "#   T 群の *s 5・U 群 8・V 群 12・W 群 11（計 36）+ 連携カタログが使えるときだけの"
+      echo "#   x1・x3・x4 の 3、そのうち S3TABLES_* も揃えば x2 の 1）。"
+      echo "#   このスクリプトの実測値: $(wc -l < "$START_CALL_FILE" | tr -d ' ') 回"
+      echo "#   受理された CREATE TABLE ごとに、その場で DROP する後始末が 1 本ずつ増える"
+      echo "#   （最大 +16 T 群、+5 Y 群、+8 U 群、+12 V 群、+11 W 群、+4 X 群 = 最大 +56。"
+      echo "#   作った Glue のデータカタログを指す x1〜x4 は、DROP が失敗すると既定の Context でも"
+      echo "#   もう一度 DROP を試みる。最大 +4、上の内訳には含めない）。"
+      echo "# DDL: 実在する表 <PROBE>_real は作らない。T・U・V・W・X・Y 群の CREATE TABLE（EXTERNAL を"
+      echo "#   含む）は、受理されたらその場で DROP して消す（消す Context は項目ごとに issue 本文の"
+      echo "#   指示どおり）。CREATE_GLUE_CATALOG=1 かつ FEDERATED_CATALOG 未設定のときは、"
+      echo "#   athena_local_probe_266_<乱数>cat（自分のアカウントの Glue を指す GLUE 型のデータ"
+      echo "#   カタログ）を 1 つ作り、x1〜x4 の後始末が終わったあとに必ず削除を試みる。"
+      if [ "${CREATE_GLUE_CATALOG:-}" = 1 ] && [ -n "$FEDERATED_CATALOG" ]; then
+        : # FEDERATED_CATALOG が優先されるので、この回は作っていない。
+      elif [ "${CREATE_GLUE_CATALOG:-}" = 1 ]; then
+        case "${GLUE_CATALOG_DELETED:-}" in
+          1) echo "#   このスクリプトの実測: データカタログを作成し、削除できた。" ;;
+          0) echo "#   このスクリプトの実測: データカタログを作成したが、削除できなかった（要手動削除）。" ;;
+          *) echo "#   このスクリプトの実測: データカタログは作成していない（$FEDCAT_SKIP_REASON）。" ;;
+        esac
+      fi
+      echo "# 付随物: FAILED になった項目は、結果ファイル本体と <OutputLocation>.metadata を"
+      echo "#   aws s3 cp で読み出して保存する（<label>.output.txt・<label>.output.metadata）。"
+      echo "# 課金: スキャンの無いクエリだけ（CREATE は 0〜1 行、DROP はメタデータのみ）。結果ファイルの"
+      echo "#   読み出し、create/get/delete/list-data-catalog・sts:GetCallerIdentity は Athena の"
+      echo "#   クエリ課金には乗らない。"
+      echo "# 注意: これは実測した本物の Athena の挙動であり、将来の Athena の変更で変わりうる。"
+      echo "#   実測値は既定とは限らない。"
+    elif [ "$ROUND" = 14 ]; then
+      echo "# issue #266 の補足（#208 ラウンド 14）: ROUND=13 の実測で見つかった「未測定のまま"
+      echo "#             残るもの」（x3 の対照。既定の Context の EXTERNAL 付きの AwsDataCatalog"
+      echo "#             3 部 + LOCATION）と「範囲外の発見」（S3 Tables の Context で LOCATION の"
+      echo "#             無い非 EXTERNAL の ROW FORMAT が開始して FAILED になる族、ほかの単独の"
+      echo "#             Hive の句）を実測"
+      echo "# 実行日時: $(date -Iseconds)"
+      if [ -n "$S3TABLES_CATALOG" ] && [ -n "$S3TABLES_NS" ]; then
+        echo "# S3TABLES_*: 設定あり（Z 群の z6〜z17 を測る）"
+      else
+        echo "# S3TABLES_*: 未設定（Z 群の z6〜z17 は未測定）"
+      fi
+      if [ -n "$FEDERATED_CATALOG" ]; then
+        echo "# FEDERATED_CATALOG: 設定あり（Z 群の z1〜z5 を FEDERATED_CATALOG で測る）"
+      elif [ "${CREATE_GLUE_CATALOG:-}" = 1 ]; then
+        if [ -n "$FC" ]; then
+          echo "# CREATE_GLUE_CATALOG=1: データカタログを作成できた（Z 群の z1〜z5 を測る）"
+        else
+          echo "# CREATE_GLUE_CATALOG=1: 設定あり（$FEDCAT_SKIP_REASON）"
+        fi
+      else
+        echo "# FEDERATED_CATALOG・CREATE_GLUE_CATALOG: 未設定（Z 群の z1〜z5 は未測定。"
+        echo "#   z0・z0b・z0c だけ測る）"
+      fi
+      echo "# StartQueryExecution の見込み本数: 5（S3TABLES_* も連携カタログも無し）／"
+      echo "#   17（S3TABLES_* のみ）／10（連携カタログのみ）／22（両方あり）"
+      echo "#   （preflight 2 + 常に投げる z0・z0b・z0c の 3 + 連携カタログが使えるときだけの"
+      echo "#   z1〜z5 の 5 + S3TABLES_* が揃うときだけの z6〜z17 の 12）。"
+      echo "#   このスクリプトの実測値: $(wc -l < "$START_CALL_FILE" | tr -d ' ') 回"
+      echo "#   受理された CREATE TABLE ごとに、その場で DROP する後始末が 1 本ずつ増える"
+      echo "#   （最大 +3 z0 系、+5 z1〜z5、+12 z6〜z17 ＝ 最大 +20。作った Glue のデータカタログを"
+      echo "#   指す z1・z2・z4・z5 は、DROP が失敗すると既定の Context でももう一度 DROP を試みる。"
+      echo "#   最大 +4、上の内訳には含めない。z3 は最初から既定の Context で消す）。"
+      echo "# DDL: 実在する表 <PROBE>_real は作らない。Z 群の CREATE TABLE（EXTERNAL を含む）は、"
+      echo "#   受理されたらその場で DROP して消す（消す Context は項目ごとに issue 本文の指示"
+      echo "#   どおり）。連携カタログの決め方・Glue のデータカタログの作成/削除は ROUND=13 の"
+      echo "#   X 群と共有する関数（resolve_federated_catalog・delete_glue_catalog_if_created）を"
+      echo "#   使う（ROUND=13 の挙動は変えていない）。CREATE_GLUE_CATALOG=1 かつ FEDERATED_CATALOG"
+      echo "#   未設定のときは、athena_local_probe_266_<乱数>cat を 1 つ作り、z1〜z5 の後始末が"
+      echo "#   終わったあとに必ず削除を試みる。"
+      if [ "${CREATE_GLUE_CATALOG:-}" = 1 ] && [ -n "$FEDERATED_CATALOG" ]; then
+        : # FEDERATED_CATALOG が優先されるので、この回は作っていない。
+      elif [ "${CREATE_GLUE_CATALOG:-}" = 1 ]; then
+        case "${GLUE_CATALOG_DELETED:-}" in
+          1) echo "#   このスクリプトの実測: データカタログを作成し、削除できた。" ;;
+          0) echo "#   このスクリプトの実測: データカタログを作成したが、削除できなかった（要手動削除）。" ;;
+          *) echo "#   このスクリプトの実測: データカタログは作成していない（$FEDCAT_SKIP_REASON）。" ;;
+        esac
+      fi
+      echo "# 付随物: FAILED になった項目は、結果ファイル本体と <OutputLocation>.metadata を"
+      echo "#   aws s3 cp で読み出して保存する（<label>.output.txt・<label>.output.metadata）。"
+      echo "# 課金: スキャンの無いクエリだけ（CREATE は 0〜1 行、DROP はメタデータのみ）。結果ファイルの"
+      echo "#   読み出し、create/get/delete/list-data-catalog・sts:GetCallerIdentity は Athena の"
+      echo "#   クエリ課金には乗らない。"
       echo "# 注意: これは実測した本物の Athena の挙動であり、将来の Athena の変更で変わりうる。"
       echo "#   実測値は既定とは限らない。"
     elif [ "$ROUND" = 15 ]; then
@@ -2807,13 +3573,19 @@ PYEOF
       fi
     done
     if [ "$ROUND" = 6 ] || [ "$ROUND" = 7 ] || [ "$ROUND" = 8 ] || [ "$ROUND" = 10 ] || [ "$ROUND" = 11 ] \
-      || [ "$ROUND" = 12 ] || [ "$ROUND" = 15 ]; then
+      || [ "$ROUND" = 12 ] || [ "$ROUND" = 13 ] || [ "$ROUND" = 14 ] || [ "$ROUND" = 15 ]; then
       case "$ROUND" in
         6) REPR_LABELS=$K_LABELS ;;
         7) REPR_LABELS=$L_LABELS ;;
         8) REPR_LABELS=$M_LABELS ;;
         10) REPR_LABELS=$S_LABELS ;;
         12) REPR_LABELS=$O_LABELS ;;
+        # ROUND=13（issue #266）は X 群だけ、開始できた項目の QueryExecutionContext・
+        # StatementType/SubstatementType も見たいので repr の対象にする。
+        13) REPR_LABELS=$X_LABELS ;;
+        # ROUND=14（issue #266 の補足）は Z 群のうち z0 系・連携カタログ絡みの z1〜z5 だけ
+        # （ROUND=13 の X 群と同じ範囲。z6〜z17 の S3 Tables の族は対象外）。
+        14) REPR_LABELS=$Z_REPR_LABELS ;;
         15) REPR_LABELS=$T_LABELS ;;
         *) REPR_LABELS=$R_LABELS ;;
       esac
@@ -2866,7 +3638,7 @@ PYEOF
         echo
       done
     fi
-    if [ "$ROUND" = 5 ] || [ "$ROUND" = 10 ] || [ "$ROUND" = 11 ] || [ "$ROUND" = 12 ] || [ "$ROUND" = 15 ]; then
+    if [ "$ROUND" = 5 ] || [ "$ROUND" = 10 ] || [ "$ROUND" = 11 ] || [ "$ROUND" = 12 ] || [ "$ROUND" = 13 ] || [ "$ROUND" = 14 ] || [ "$ROUND" = 15 ]; then
       echo
       if [ "$ROUND" = 15 ]; then
         echo "## 付随物（結果ファイル本体・.metadata。FAILED または SUCCEEDED の CTAS だけ。実名は伏せる）"
@@ -2877,6 +3649,8 @@ PYEOF
         5) ATTACH_LABELS=$J_LABELS ;;
         10) ATTACH_LABELS=$S_LABELS ;;
         12) ATTACH_LABELS=$O_LABELS ;;
+        13) ATTACH_LABELS="$T_LABELS $Y_LABELS $U_LABELS $V_LABELS $W_LABELS $X_LABELS" ;;
+        14) ATTACH_LABELS=$Z_LABELS ;;
         15) ATTACH_LABELS=$T_LABELS ;;
         *) ATTACH_LABELS=$R_LABELS ;;
       esac
@@ -2934,7 +3708,7 @@ PYEOF
 # 手で消す必要が残っていれば summary の冒頭に警告を積む（PENDING_DROPS に名前が
 # 残っている = 本編の -cleanup では消せず、trap のベストエフォートに委ねた状態）。
 if [ "${#PENDING_DROPS[@]}" -gt 0 ] || [ "${#PENDING_DROPS_CTX[@]}" -gt 0 ] \
-  || [ "$C20_CREATED" = 1 ] || [ "$REAL_SETUP_ATTEMPTED" = 1 ]; then
+  || [ "$C20_CREATED" = 1 ] || [ "$REAL_SETUP_ATTEMPTED" = 1 ] || [ -n "${GLUE_CATALOG_NAME:-}" ]; then
   PENDING_DROPS_REPORT="- **手で消してください**: 次のテーブルが残っているか、消えたか確かめられませんでした。"
   PENDING_DROPS_REPORT="$PENDING_DROPS_REPORT 終了時に trap がもう一度 DROP を投げますが、結果は確かめません。"
   if [ "$REAL_SETUP_ATTEMPTED" = 1 ]; then
@@ -2949,6 +3723,11 @@ if [ "${#PENDING_DROPS[@]}" -gt 0 ] || [ "${#PENDING_DROPS_CTX[@]}" -gt 0 ] \
   for key in "${!PENDING_DROPS_CTX[@]}"; do
     PENDING_DROPS_REPORT="$PENDING_DROPS_REPORT"$'\n'"  - $(hide "${key##*|}")（$(hide "${key%|*}") で DROP TABLE IF EXISTS）"
   done
+  # ROUND=13（issue #266）で CREATE_GLUE_CATALOG=1 により作ったデータカタログを、本編の
+  # 明示的な delete-data-catalog で消せなかった（GLUE_CATALOG_NAME がまだ残っている）。
+  if [ -n "${GLUE_CATALOG_NAME:-}" ]; then
+    PENDING_DROPS_REPORT="$PENDING_DROPS_REPORT"$'\n'"  - **要手動削除**: データカタログ $(hide "$GLUE_CATALOG_NAME")（aws athena delete-data-catalog で確認）"
+  fi
 fi
 
 SUMMARY_TXT=$(write_summary_txt)
