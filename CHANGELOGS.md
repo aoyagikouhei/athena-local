@@ -11,247 +11,127 @@ later name the date they were measured on.
 
 ### Changed
 
-- `DESCRIBE` on an Iceberg table now spells a `timestamp with time zone` column as `timestamp`,
-  and fails like real Athena when the table has a `time` or `uuid` column (measured 2026-09-27;
-  [docs](docs/caveats.md#result-files-and-metadata)).
-- `DESCRIBE EXTENDED` and `DESCRIBE FORMATTED` (and `DESC`), with or without a column or a
-  `PARTITION (...)` clause, now run like real Athena instead of failing Trino's syntax check
-  ([docs](docs/ddl.md#describe-extended-and-describe-formatted)).
+- `DESCRIBE` on an Iceberg table spells `timestamp with time zone` as `timestamp` and fails on a
+  `time` or `uuid` column like real Athena (measured 2026-09-27) ([docs](docs/caveats.md#result-files-and-metadata)).
+- `DESCRIBE EXTENDED` / `FORMATTED` (and `DESC`), with or without a column or `PARTITION (...)`,
+  now run like real Athena ([docs](docs/ddl.md#describe-extended-and-describe-formatted)).
 - Outside an S3 Tables context catalog, Hive's `CREATE TABLE ... LOCATION` is rejected at start
-  with real Athena's `External keyword required` or `Unsupported ddl with 2 catalogs`
-  ([docs](docs/caveats.md#plain-create-table)).
-
-- Under an S3 Tables context catalog, a CTAS into a missing namespace fails with real
-  Athena's `NOT_FOUND` reason and error type
-  ([docs](docs/caveats.md#parameters-and-catalog-aliases)).
-- Under an S3 Tables context catalog with no `Database`, a one-part `CREATE TABLE` or CTAS
-  fails like real Athena when the namespace `default` does not exist
-  ([docs](docs/caveats.md#plain-create-table)).
-- Under an S3 Tables context catalog, a plain `CREATE TABLE` with Hive's `ROW FORMAT`,
-  `CLUSTERED BY`, typed `PARTITIONED BY`, an unknown `TBLPROPERTIES` key or no column list
-  now fails like real Athena, and a non-Iceberg `table_type` is rejected at start
-  ([docs](docs/caveats.md#plain-create-table)).
-- Under an S3 Tables context catalog, `CREATE TABLE AwsDataCatalog.<namespace>.<table>`
-  reports `Query` without the catalog and the namespace as the context
-  `Database`, like real Athena ([docs](docs/caveats.md#plain-create-table)).
-- A block comment right after the `.` of the name in `SHOW CREATE TABLE`, after
-  the name in `MSCK REPAIR TABLE`, before `ADD COLUMNS`, after
-  `DESCRIBE EXTENDED`, or after `ALTER` in `REPLACE COLUMNS` / `CHANGE COLUMN`
-  now fails on a Hive table like real Athena
-  ([docs](docs/caveats.md#block-comments-athenas-hive-parser-rejects)).
-- The `ParseException` reason reads `<=`, `!=` and an unclosed quote in a
-  leading comment like real Athena, and a commented `DROP COLUMN` on
-  `awsdatacatalog.<database>.<table>` keeps the received `Query`
-  ([docs](docs/caveats.md#block-comments-athenas-hive-parser-rejects)).
-- Under an S3 Tables context catalog, more Hive `CREATE TABLE` forms (`COMMENT`,
-  `CLUSTERED BY`, `ROW FORMAT SERDE`, other `DELIMITED` terminators, several
-  `TBLPROPERTIES`, a backquoted name, `EXTERNAL` without `LOCATION` on more
-  names) get real Athena's `Table location` / `External keyword` messages, and
-  `STORED AS` without `LOCATION` fails like real Athena
-  ([docs](docs/caveats.md#plain-create-table)).
-- A Hive `CREATE TABLE <catalog>.<db>.<table> ... LOCATION` whose catalog does
-  not exist is rejected with `DATACATALOG_NOT_FOUND` under any context catalog
-  ([docs](docs/caveats.md#plain-create-table)).
-- Under an S3 Tables context catalog, `EXTERNAL` without `LOCATION` is rejected
-  with real Athena's message whatever clauses follow, and `STORED AS` without
-  `LOCATION` fails like real Athena also on two-part and `AwsDataCatalog`
-  names and with `IF NOT EXISTS`, `COMMENT`, `PARTITIONED BY` or
-  `TBLPROPERTIES`; `CREATE TABLE ... LOCATION` into a catalog Trino does not
-  have gets `DATACATALOG_NOT_FOUND` also with `EXTERNAL`, `IF NOT EXISTS` or
-  other clauses ([docs](docs/caveats.md#plain-create-table)).
-
-- An unquoted `awsdatacatalog.<database>.<table>` in `SELECT`, `INSERT`, CTAS,
-  `CREATE VIEW` and `EXPLAIN` now runs through the `AwsDataCatalog` alias
-  ([docs](docs/caveats.md#parameters-and-catalog-aliases)).
-- The `AwsDataCatalog` alias now also reaches an unquoted
-  `awsdatacatalog.<database>.<table>` in `SELECT` and `INSERT` under an S3
-  Tables context catalog or one Trino does not have, and, under an
-  `AwsDataCatalog` or omitted context catalog, a `SELECT` name with one quoted
-  part or a four-part column reference
-  ([docs](docs/caveats.md#parameters-and-catalog-aliases)).
-- Under an S3 Tables context catalog, a CTAS into
-  `awsdatacatalog.<database>.<table>` now creates the table through the
-  `AwsDataCatalog` alias, and fails like real Athena when the database does not
-  exist ([docs](docs/caveats.md#parameters-and-catalog-aliases)).
-- A CTAS into a missing `awsdatacatalog.<database>` also fails like real
-  Athena with `IF NOT EXISTS` and under an `AwsDataCatalog` or omitted context
-  catalog, naming the database in lower case
-  ([docs](docs/caveats.md#parameters-and-catalog-aliases)).
-- That failed CTAS now runs its query part on Trino first, failing with
-  Trino's error when the query fails and otherwise writing the `.metadata`
-  companion real Athena leaves ([docs](docs/caveats.md#parameters-and-catalog-aliases)).
-- Under an S3 Tables context catalog, a one-part `CREATE TABLE <table>` fails
-  like real Athena when the context database is not a namespace
-  ([docs](docs/caveats.md#plain-create-table)).
-- A `QueryString` holding more than one statement, such as `SELECT 1; -- c`, is
-  rejected at `StartQueryExecution` with real Athena's message ([docs](docs/api.md)).
-- `DESCRIBE`, `SHOW COLUMNS`, `SHOW CREATE TABLE`, `SHOW TABLES IN`,
-  `ALTER TABLE` and `DROP TABLE` on an unquoted `awsdatacatalog.` name now run,
-  and `DESCRIBE` on a table reports `Query` and `Database` the way real Athena
-  does ([docs](docs/api.md)).
-- A block comment before or between the keywords of `SHOW CREATE TABLE`,
-  `MSCK REPAIR TABLE`, `ALTER TABLE` and `DESCRIBE` now fails the query with real
-  Athena's `ParseException` on the tables where Athena fails it
-  ([docs](docs/caveats.md#block-comments-athenas-hive-parser-rejects)).
-- `ALTER TABLE ... DROP COLUMN` and `ALTER TABLE ... RENAME TO` on a Hive table
-  or a missing table now fail with real Athena's reason instead of running on
-  Trino ([docs](docs/caveats.md#alter-table-and-format-dependent-ddl)).
-- A statement ending (or starting) with `;`, such as `SELECT 1;`, now runs, and
-  the `;` and the whitespace around the statement are removed from `Query` and
-  from syntax error positions, as on real Athena; `;` alone is rejected with
-  `Empty sql statement` ([docs](docs/api.md)).
-- The companion `.metadata` of a literals-only `SELECT` (such as `SELECT 1`)
-  now starts with the `QueryExecutionId`, as on real Athena
+  like real Athena ([docs](docs/caveats.md#plain-create-table)).
+- Under an S3 Tables context catalog, a CTAS into a missing namespace fails with real Athena's
+  `NOT_FOUND` ([docs](docs/caveats.md#parameters-and-catalog-aliases)).
+- Under an S3 Tables context catalog with no `Database`, a one-part `CREATE TABLE` or CTAS fails
+  like real Athena when namespace `default` is missing ([docs](docs/caveats.md#plain-create-table)).
+- Under an S3 Tables context catalog, a plain `CREATE TABLE` with Hive-only clauses or a
+  non-Iceberg `table_type` fails like real Athena ([docs](docs/caveats.md#plain-create-table)).
+- Under an S3 Tables context catalog, `CREATE TABLE AwsDataCatalog.<namespace>.<table>` reports
+  `Query` and `Database` like real Athena ([docs](docs/caveats.md#plain-create-table)).
+- More block-comment positions in `SHOW CREATE TABLE`, `MSCK REPAIR TABLE`, `ALTER TABLE` and
+  `DESCRIBE EXTENDED` fail on a Hive table like real Athena ([docs](docs/caveats.md#block-comments-athenas-hive-parser-rejects)).
+- The `ParseException` reason reads `<=`, `!=` and an unclosed quote in a leading comment like
+  real Athena ([docs](docs/caveats.md#block-comments-athenas-hive-parser-rejects)).
+- Under an S3 Tables context catalog, more Hive `CREATE TABLE` forms get real Athena's
+  `Table location` / `External keyword` messages ([docs](docs/caveats.md#plain-create-table)).
+- A Hive `CREATE TABLE <catalog>.<db>.<table> ... LOCATION` naming a missing catalog is rejected
+  with `DATACATALOG_NOT_FOUND` ([docs](docs/caveats.md#plain-create-table)).
+- Under an S3 Tables context catalog, `EXTERNAL` or `STORED AS` without `LOCATION` is rejected
+  like real Athena in more forms ([docs](docs/caveats.md#plain-create-table)).
+- An unquoted `awsdatacatalog.<database>.<table>` in `SELECT`, `INSERT`, CTAS, `CREATE VIEW` and
+  `EXPLAIN` runs through the `AwsDataCatalog` alias ([docs](docs/caveats.md#parameters-and-catalog-aliases)).
+- The `AwsDataCatalog` alias reaches unquoted `awsdatacatalog.` names under more context catalogs
+  and in more `SELECT` name forms ([docs](docs/caveats.md#parameters-and-catalog-aliases)).
+- A CTAS into `awsdatacatalog.<database>.<table>` runs through the alias under an S3 Tables context
+  catalog too ([docs](docs/caveats.md#parameters-and-catalog-aliases)).
+- A CTAS into a missing `awsdatacatalog.<database>` fails like real Athena, after running its
+  query part on Trino ([docs](docs/caveats.md#parameters-and-catalog-aliases)).
+- Under an S3 Tables context catalog, a one-part `CREATE TABLE <table>` fails like real Athena
+  when the context database is not a namespace ([docs](docs/caveats.md#plain-create-table)).
+- A `QueryString` holding more than one statement, such as `SELECT 1; -- c`, is rejected at
+  `StartQueryExecution` with real Athena's message ([docs](docs/api.md)).
+- `DESCRIBE`, `SHOW` and `ALTER` / `DROP TABLE` statements on an unquoted `awsdatacatalog.` name
+  now run, and `DESCRIBE` reports `Query` and `Database` like real Athena ([docs](docs/api.md)).
+- A block comment before or between the keywords of `SHOW CREATE TABLE`, `MSCK REPAIR TABLE`,
+  `ALTER TABLE` or `DESCRIBE` fails like real Athena ([docs](docs/caveats.md#block-comments-athenas-hive-parser-rejects)).
+- `ALTER TABLE ... DROP COLUMN` and `RENAME TO` on a Hive or missing table fail with real Athena's
+  reason ([docs](docs/caveats.md#alter-table-and-format-dependent-ddl)).
+- A statement with a leading or trailing `;`, such as `SELECT 1;`, runs and is normalized like
+  real Athena; `;` alone is rejected ([docs](docs/api.md)).
+- The `.metadata` of a literals-only `SELECT` starts with the `QueryExecutionId` like real Athena
   ([docs](docs/result-files.md#companion-metadata-files)).
-- `DESCRIBE`, `DESC` and `SHOW COLUMNS` now check the target table when the
-  context catalog is a `TRINO_CATALOG_MAP` alias such as `AwsDataCatalog`
-  ([docs](docs/caveats.md#sql-dialect)).
-- A `QueryExecutionContext.Catalog` that does not exist in Trino now also falls
-  back for a plain `CREATE TABLE`, `ALTER TABLE ... ADD COLUMN`, views and
-  `CREATE` / `DROP SCHEMA`, as on real Athena (measured 2026-09-26)
-  ([docs](docs/caveats.md#sql-dialect)).
-- Unquoted `ALTER TABLE IF EXISTS ...`, singular `ADD COLUMN` and six other
-  Trino-only `ALTER TABLE` spellings are rejected at `StartQueryExecution` with
-  real Athena's message ([docs](docs/caveats.md#alter-table-and-format-dependent-ddl)).
-- A CTAS-less, unquoted `CREATE TABLE` whose column list Trino's grammar
-  accepts is rejected at `StartQueryExecution` with real Athena's message
-  ([docs](docs/caveats.md#plain-create-table)).
-- A plain `CREATE TABLE` with a double-quoted column or type name, a
-  four-part `CREATE TABLE IF NOT EXISTS` and a four-part unquoted CTAS are
-  rejected at `StartQueryExecution` as on real Athena, and an S3 Tables
-  context catalog no longer gets `No location` (measured 2026-09-26)
-  ([docs](docs/caveats.md#plain-create-table)).
-- Under an S3 Tables context catalog, a plain `CREATE TABLE` naming
-  `awsdatacatalog.<db>.<t>` is rejected with real Athena's
-  `Unsupported ddl with 2 catalogs: <statement>` instead of `No location`
-  (measured 2026-09-26) ([docs](docs/caveats.md#plain-create-table)).
-- A plain `CREATE TABLE` whose three-part name names a catalog that does not
-  exist is rejected with `DATACATALOG_NOT_FOUND`, and under an S3 Tables context
-  catalog `AwsDataCatalog.<namespace>.<t>` with a missing namespace starts and
-  fails as on real Athena (measured 2026-09-26) ([docs](docs/caveats.md#plain-create-table)).
-- Under an S3 Tables context catalog, a plain `CREATE TABLE <namespace>.<t>`
-  with a missing namespace starts and fails as on real Athena (measured
-  2026-09-26) ([docs](docs/caveats.md#plain-create-table)).
-- Under an S3 Tables context catalog, a plain
-  `CREATE TABLE AwsDataCatalog.<namespace>.<t>` with an existing namespace now
-  creates the table instead of answering `No location`, as on real Athena
-  (measured 2026-09-26) ([docs](docs/caveats.md#plain-create-table)).
-- Under an S3 Tables context catalog, a Hive-style `CREATE TABLE` with
-  `LOCATION`, and `CREATE EXTERNAL TABLE` without one, are rejected with real
-  Athena's messages instead of Trino's syntax error (measured 2026-09-26)
-  ([docs](docs/caveats.md#plain-create-table)).
-
-- `GetQueryResults` returns `SHOW CREATE TABLE` and `SHOW CREATE VIEW` one row
-  per line, as real Athena does (measured 2026-09-16 and 2026-09-24), instead
-  of a single value with embedded newlines ([docs](docs/api.md#supported-api)).
-- `GetQueryResults` and the `.metadata` companion carry real Athena's columns
-  for `SHOW TABLES`, `SHOW SCHEMAS`, `SHOW COLUMNS` and `DESCRIBE` / `DESC`
-  (measured 2026-09-24) ([docs](docs/api.md#supported-api)).
-- `DESCRIBE` / `DESC` and `SHOW COLUMNS` return real Athena's rows, padding
-  included, in `GetQueryResults` and `<id>.txt`, and `DESC_VIEW` on a view
-  (measured 2026-09-24) ([docs](docs/result-files.md), [DDL](docs/ddl.md)).
-- `GetQueryResults` and the `.metadata` companion name the column of
-  `SHOW CREATE TABLE` `createtab_stmt` / `string` and of `SHOW CREATE VIEW`
-  `create view` / `varchar`, as real Athena does (measured 2026-09-23 and
-  2026-09-24), instead of Trino's `Create Table` / `Create View`
-  ([docs](docs/api.md#supported-api)).
-- `GetQueryResults` leaves `UpdateCount` out for `EXPLAIN` (every variant), as
-  real Athena does (measured 2026-09-16 to 2026-09-23), instead of returning
-  `0` ([docs](docs/api.md#supported-api)).
-- `GetQueryExecution` no longer fills `QueryExecutionContext.Catalog` /
-  `Database` from `TRINO_CATALOG` / `TRINO_SCHEMA` when the request left them
-  out; the defaults are still applied when the query is sent to Trino, and the
-  response leaves the keys out as real Athena does (measured 2026-09-24)
-  ([docs](docs/api.md#supported-api)).
-- `GetQueryResults` leaves `UpdateCount` out for `DESCRIBE` and
-  `SHOW CREATE TABLE` on a Hive table and returns `0` on an Iceberg table, as
-  real Athena does (measured 2026-09-24); the format probe for these two
-  statements now also runs with `ATHENA_LOCAL_RESULTS=none`
-  ([docs](docs/api.md#supported-api),
-  [docs](docs/ddl.md#ddl-that-depends-on-the-target-tables-format)).
-- `DESCRIBE` on an Iceberg table writes its `.txt` and `.metadata` as
-  `binary/octet-stream` with the engine's query id at the head of the
-  `.metadata`, as real Athena does (measured 2026-09-24)
-  ([docs](docs/ddl.md#ddl-that-depends-on-the-target-tables-format)).
-- `SHOW CREATE VIEW` writes its `.txt` and `.metadata` as `binary/octet-stream`
-  with the engine's query id at the head of the `.metadata`, and reports
-  `SubstatementType` `SHOW_CREATE_VIEW`, as real Athena does (measured
+- `DESCRIBE`, `DESC` and `SHOW COLUMNS` check the target table when the context catalog is a
+  `TRINO_CATALOG_MAP` alias ([docs](docs/caveats.md#sql-dialect)).
+- A context catalog Trino does not have also falls back for plain `CREATE TABLE`, `ADD COLUMN`,
+  views and schemas (measured 2026-09-26) ([docs](docs/caveats.md#sql-dialect)).
+- Unquoted, Trino-only `ALTER TABLE` spellings such as `IF EXISTS` are rejected at start with real
+  Athena's message ([docs](docs/caveats.md#alter-table-and-format-dependent-ddl)).
+- A plain, unquoted `CREATE TABLE` whose column list only Trino's grammar accepts is rejected at
+  start with real Athena's message ([docs](docs/caveats.md#plain-create-table)).
+- A plain `CREATE TABLE` with a double-quoted column or type and four-part names in more forms
+  are rejected at start like real Athena (measured 2026-09-26) ([docs](docs/caveats.md#plain-create-table)).
+- Under an S3 Tables context catalog, a plain `CREATE TABLE awsdatacatalog.<db>.<t>` gets real
+  Athena's `Unsupported ddl with 2 catalogs` (measured 2026-09-26) ([docs](docs/caveats.md#plain-create-table)).
+- A plain `CREATE TABLE` naming a missing catalog is rejected with `DATACATALOG_NOT_FOUND`, and a
+  missing S3 Tables namespace fails like real Athena (measured 2026-09-26) ([docs](docs/caveats.md#plain-create-table)).
+- Under an S3 Tables context catalog, `CREATE TABLE AwsDataCatalog.<namespace>.<t>` creates the
+  table like real Athena (measured 2026-09-26) ([docs](docs/caveats.md#plain-create-table)).
+- Under an S3 Tables context catalog, Hive's `CREATE TABLE ... LOCATION` and `CREATE EXTERNAL TABLE`
+  get real Athena's messages (measured 2026-09-26) ([docs](docs/caveats.md#plain-create-table)).
+- `GetQueryResults` returns `SHOW CREATE TABLE` and `SHOW CREATE VIEW` one row per line like real
+  Athena (measured 2026-09-16 and 2026-09-24) ([docs](docs/api.md#supported-api)).
+- `GetQueryResults` and `.metadata` carry real Athena's columns for `SHOW TABLES`, `SHOW SCHEMAS`,
+  `SHOW COLUMNS` and `DESCRIBE` (measured 2026-09-24) ([docs](docs/api.md#supported-api)).
+- `DESCRIBE` / `DESC` and `SHOW COLUMNS` return real Athena's padded rows, and `DESC_VIEW` on a
+  view (measured 2026-09-24) ([docs](docs/result-files.md), [DDL](docs/ddl.md)).
+- `SHOW CREATE TABLE` and `SHOW CREATE VIEW` name their result column like real Athena (measured
+  2026-09-23 and 2026-09-24) ([docs](docs/api.md#supported-api)).
+- `GetQueryResults` leaves `UpdateCount` out for every `EXPLAIN` like real Athena (measured
+  2026-09-16 to 2026-09-23) ([docs](docs/api.md#supported-api)).
+- `GetQueryExecution` leaves `QueryExecutionContext.Catalog` / `Database` out when the request did,
+  like real Athena (measured 2026-09-24) ([docs](docs/api.md#supported-api)).
+- `UpdateCount` of `DESCRIBE` and `SHOW CREATE TABLE` follows the table format like real Athena
+  (measured 2026-09-24) ([docs](docs/ddl.md#ddl-that-depends-on-the-target-tables-format)).
+- `DESCRIBE` and `SHOW CREATE TABLE` on an Iceberg table write their files like real Athena
+  (measured 2026-09-24) ([docs](docs/ddl.md#ddl-that-depends-on-the-target-tables-format)).
+- `SHOW CREATE VIEW` writes its files and reports `SubstatementType` like real Athena (measured
   2026-09-24) ([docs](docs/result-files.md#result-files)).
-- `SHOW CREATE TABLE` on an Iceberg table writes its `.txt` and `.metadata` as
-  `binary/octet-stream` with the engine's query id at the head of the
-  `.metadata`, as real Athena does (measured 2026-09-24)
-  ([docs](docs/ddl.md#ddl-that-depends-on-the-target-tables-format)).
-- A `varbinary` inside an `array`, `map` or `row` is rendered as `[B@<hex>`,
-  the shape real Athena prints (measured 2026-09-24), instead of the top-level
-  `01 02` hex form ([docs](docs/caveats.md#value-rendering)).
-- A `StartQueryExecution` retry with the same `ClientRequestToken` now also
-  compares `QueryExecutionContext.Catalog`, as real Athena does (measured
-  2026-09-24) ([docs](docs/api.md#supported-api)).
-- `GetQueryExecution` returns `QueryExecutionContext.Catalog` lower-cased, as
-  real Athena does (measured 2026-09-24); `Database` stays as sent
-  ([docs](docs/api.md#supported-api)).
-- `StartQueryExecution` rejects a `ClientRequestToken` longer than 128 UTF-8
-  bytes even when it is at most 128 characters, with the message real Athena
-  returns (measured 2026-09-24) ([docs](docs/api.md#supported-api)).
-- Error responses no longer carry an `x-amzn-errortype` header, matching
-  real Athena (measured 2026-09-17 to 2026-09-24); the error type is in the
-  body's `__type` as before ([docs](docs/caveats.md#errors-and-request-bodies)).
-- `GetWorkGroup` returns `Configuration.EnableMinimumEncryptionConfiguration`
-  as `false` (measured 2026-09-23) ([docs](docs/caveats.md#workgroups)).
-- A CTAS whose query is `VALUES`, `TABLE` or parenthesised (`AS (VALUES 1)`,
-  `AS(SELECT 1)`) is `CREATE_TABLE_AS_SELECT` with `tables/<id>`, as on real
+- A `varbinary` inside an `array`, `map` or `row` is rendered as `[B@<hex>` like real Athena
+  (measured 2026-09-24) ([docs](docs/caveats.md#value-rendering)).
+- A `ClientRequestToken` retry also compares `QueryExecutionContext.Catalog` like real Athena
+  (measured 2026-09-24) ([docs](docs/api.md#supported-api)).
+- `GetQueryExecution` returns `QueryExecutionContext.Catalog` lower-cased like real Athena
+  (measured 2026-09-24) ([docs](docs/api.md#supported-api)).
+- A `ClientRequestToken` longer than 128 UTF-8 bytes is rejected with real Athena's message
+  (measured 2026-09-24) ([docs](docs/api.md#supported-api)).
+- Error responses no longer carry an `x-amzn-errortype` header, like real Athena (measured
+  2026-09-17 to 2026-09-24) ([docs](docs/caveats.md#errors-and-request-bodies)).
+- `GetWorkGroup` returns `Configuration.EnableMinimumEncryptionConfiguration` as `false`
+  (measured 2026-09-23) ([docs](docs/caveats.md#workgroups)).
+- A CTAS whose query is `VALUES`, `TABLE` or parenthesised is `CREATE_TABLE_AS_SELECT` like real
   Athena (measured 2026-09-25) ([docs](docs/result-files.md#result-files)).
-- A keyword with no space before what follows it (`SELECT(1)`, `SELECT'a'`,
-  `SELECT*FROM t`, `EXPLAIN(TYPE IO) SELECT 1`, `CREATE TABLE"t" AS SELECT`, ...)
-  classifies the same as the spaced form, as real Athena does (measured
-  2026-09-25) ([docs](docs/api.md#supported-api)).
-- The retention caveat and the `ATHENA_LOCAL_RETENTION_SECONDS` entry now say
-  that the one-hour default is shorter than real Athena's, which still knew a
-  query and its token 67 minutes after completion (measured 2026-09-24)
-  ([docs](docs/caveats.md#query-lifecycle),
-  [docs](docs/configuration.md#configuration)).
-- Caveats that said "not measured" now cite the 2026-09-24 measurements
-  ([docs](docs/caveats.md#result-files-and-metadata)).
-- The caveats on `ClientRequestToken` normalization, on real Athena's
-  retention period and on `ErrorCode` for syntax errors cite the 2026-09-24
-  measurements too
-  ([docs](docs/caveats.md#query-lifecycle),
-  [docs](docs/caveats.md#errors-and-request-bodies)).
-- `StartQueryExecution` now rejects `DESCRIBE`, `DESC`, `SHOW COLUMNS`,
-  `DROP TABLE`, `SHOW CREATE TABLE`, `ALTER TABLE`, `SHOW TABLES IN` and a
-  plain `CREATE TABLE` whose table name has a double-quoted part, with real
-  Athena's own message, instead of running them on Trino (measured
-  2026-09-25) ([docs](docs/caveats.md#sql-dialect)).
-- A `SELECT` of literals in parentheses (`SELECT (1)`, `SELECT ((1)) AS x`,
-  `SELECT ('a')`) or of `- 1` writes its result file and `.metadata` as
-  `binary/octet-stream`, as real Athena does (measured 2026-09-25)
-  ([docs](docs/result-files.md#result-files)).
-- `StartQueryExecution` now also rejects a name of four parts or more
-  (quoted or not) and more forms of a double-quoted table name, with real
-  Athena's own message (measured 2026-09-25) ([docs](docs/caveats.md#sql-dialect)).
-- `StartQueryExecution` now checks whether the target of `DESCRIBE`, `DESC`
-  and `SHOW COLUMNS` exists, the same way real Athena does, and runs it
-  (quoted name included) when the target is a view (measured 2026-09-25)
-  ([docs](docs/caveats.md#sql-dialect), [docs](docs/caveats.md#failed-queries)).
-- A `QueryExecutionContext.Catalog` that does not exist in Trino now falls back
-  to the `AwsDataCatalog` alias (or `TRINO_CATALOG`) for metadata statements,
-  and `CATALOG_NOT_FOUND` fails with `ErrorType` 1006, as on real Athena
-  (measured 2026-09-25) ([docs](docs/caveats.md#sql-dialect)).
-- `StartQueryExecution` now also rejects `SHOW CREATE TABLE` and a plain
-  `CREATE TABLE` with four parts or more and `SHOW TABLES IN` with three
-  parts or more, and lower-cases quoted parts in `Invalid table name`, as real
-  Athena does (measured 2026-09-25) ([docs](docs/caveats.md#sql-dialect)).
-- The reason of a CTAS or `INSERT` that fails on the engine ends with real
-  Athena's sentence naming the result location, and a CTAS in the measured
-  forms reports the error position of Athena's reformatted statement
+- A keyword with no space before what follows it (`SELECT(1)`, `SELECT*FROM t`, ...) classifies
+  like the spaced form (measured 2026-09-25) ([docs](docs/api.md#supported-api)).
+- The retention docs say the one-hour default is shorter than real Athena's (measured 2026-09-24)
+  ([docs](docs/caveats.md#query-lifecycle), [docs](docs/configuration.md#configuration)).
+- Caveats that said "not measured" cite the 2026-09-24 measurements ([docs](docs/caveats.md#result-files-and-metadata),
+  [docs](docs/caveats.md#query-lifecycle), [docs](docs/caveats.md#errors-and-request-bodies)).
+- A double-quoted table name in `DESCRIBE`, `SHOW`, `ALTER` / `DROP TABLE` or a plain
+  `CREATE TABLE` is rejected with real Athena's message (measured 2026-09-25) ([docs](docs/caveats.md#sql-dialect)).
+- A `SELECT` of parenthesised literals or of `- 1` writes its files as `binary/octet-stream` like
+  real Athena (measured 2026-09-25) ([docs](docs/result-files.md#result-files)).
+- Names of four parts or more, and more double-quoted table names, are rejected with real Athena's
+  message (measured 2026-09-25) ([docs](docs/caveats.md#sql-dialect)).
+- `StartQueryExecution` checks that the target of `DESCRIBE`, `DESC` and `SHOW COLUMNS` exists and
+  runs it on a view (measured 2026-09-25) ([docs](docs/caveats.md#sql-dialect)).
+- A context catalog Trino does not have falls back for metadata statements, and `CATALOG_NOT_FOUND`
+  has `ErrorType` 1006 (measured 2026-09-25) ([docs](docs/caveats.md#sql-dialect)).
+- Too many name parts in `SHOW CREATE TABLE`, `CREATE TABLE` and `SHOW TABLES IN` are rejected
+  like real Athena (measured 2026-09-25) ([docs](docs/caveats.md#sql-dialect)).
+- A CTAS or `INSERT` that fails on the engine gets real Athena's reason, error position included
   ([docs](docs/caveats.md#failed-queries)).
 
 ### Fixed
 
-- A table whose Trino connector is neither `hive` nor `iceberg` (for example
-  `memory`) is no longer failed as a Hive table by the block-comment and plain
-  `DROP COLUMN` / `RENAME TO` checks; the statement is sent to Trino
-  ([docs](docs/caveats.md#block-comments-athenas-hive-parser-rejects)).
+- A table on a connector other than `hive` or `iceberg` is no longer treated as a Hive table by
+  the block-comment and `DROP COLUMN` / `RENAME TO` checks ([docs](docs/caveats.md#block-comments-athenas-hive-parser-rejects)).
 
 ## [0.5.0] - 2026-09-23
 
