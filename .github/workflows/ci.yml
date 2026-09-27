@@ -37,6 +37,14 @@ jobs:
           esac
           tools/ci/code-changed.sh "$from" "$to" | tee -a "$GITHUB_OUTPUT"
 
+  # 実測スクリプトの共通 lib（tools/measure/lib.sh）の自己テスト（#310）。DRY_RUN=1 の偽 aws で流すので、aws も
+  # 資格情報もビルドも要らない。tools/measure/ だけの変更では changes が check と e2e を飛ばすので、changes に依存させず毎回走らせる。
+  measure-lib:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - run: bash tools/measure/lib/selftest.sh
+
   check:
     needs: changes
     if: needs.changes.outputs.code == 'true'

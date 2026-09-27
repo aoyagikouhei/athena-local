@@ -50,6 +50,38 @@ tools/dev.sh bash -c 'cargo test 2>&1 | tail -n 5'             # パイプやリ
 （dev にホストのホームを同じパスでマウントし、`DEV_HOST_HOME` を既定の出力先にしている）。`opaque-metadata-form.sh` は
 aws を呼ばず保存済みの実測データを検算するだけなので、ホストで直接流す（xxd を使う）。
 
+#### 共通の lib（tools/measure/lib.sh）
+
+新しいラウンドは内容で名前を付けたスクリプトを `tools/measure/` に 1 本新しく作る（issue 番号は先頭のコメントに書く。既存のスクリプトに
+ラウンドを追記しない。#310）。スクリプトは `lib.sh` を source して項目を宣言し、`run_items` を呼ぶだけにする。preflight（対象の aws で
+最小の 1 本・`DB` の自動選択・同名の表の確認）、一時的な失敗のリトライ、保存（要求・応答・`.err`・結果ファイル・`.metadata`・
+GetQueryResults）、実名のマスク、後始末の台帳、summary は lib が持つ。例は `tools/measure/describe-types.sh`（#307）。
+
+```bash
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+lib_init 307 athena_local_probe_307     # issue 番号と、作る表の名前の接頭辞。preflight もここで済む
+item mk_h creates=TABLE:"$T_H" "CREATE EXTERNAL TABLE $DB.$T_H (c char(10)) LOCATION '$LOC_H'"
+item d_h  needs=mk_h "DESCRIBE $DB.$T_H"
+item s_all ctx=catalog "SHOW SCHEMAS"
+item x_void skip="Athena の文書の変換の表に無い" -
+api  l_db ListDatabases '{"CatalogName":"AwsDataCatalog"}'
+run_items
+```
+
+- `ctx=`: `db`（既定。`Catalog=$CATALOG,Database=$DB`）／`catalog`（`Catalog=$CATALOG` だけ）／`none`（Context を付けない）／`<Catalog>/<Database>`
+- `needs=<id>[,<id>]`: 前提の項目が SUCCEEDED でなければ投げずに skip し、理由を summary に出す
+- `creates=TABLE|VIEW:<名前>`: SUCCEEDED なら台帳に記録し、その表を `needs` に持つ最後の項目の直後に DROP する。最後に DROP の終端を
+  待ち、消せなかった分は `cleanup-report.txt` に出す。中断したときは trap が台帳の残りに DROP を投げる
+- `skip=<理由>`: 投げずに未測定として残す（作れないと文書で分かっている形など）
+- `ONLY=<id>,<id>` で項目を絞る（`needs` の先は自動では含めないので一緒に指定する）
+- 出力は `~/athena-<スクリプトの名前>-measurements/run-<日時>/`。`summary.tsv`（機械可読）と、実名を伏せた `summary.txt`
+
+`tools/dev.sh env DRY_RUN=1 bash tools/measure/<名前>.sh` は本物に 1 本も投げない。`lib/dry-run-bin/aws`（偽の aws）を PATH の先頭に置き、
+資格情報をダミーに、送り先を届かないアドレスにして、lib の全経路（preflight・保存・後始末・summary）を通す。`summary.txt` の冒頭に
+StartQueryExecution の回数、作った表と DROP の対、skip の数が出るので、実測を依頼する前の受け入れ判定はこの出力で行い、bash を読まない。
+`DRY_RUN_FAIL=<id>`（その項目を FAILED にする）で、前提が崩れたときの skip と後始末の経路も確かめられる。
+lib を変えたら `tools/dev.sh bash tools/measure/lib/selftest.sh` を流す（CI の `measure-lib` ジョブも毎回流す）。
+
 ### 足場の環境と同時実行
 
 足場が相手にする環境は、ルートの [compose.yml](../../compose.yml) の次のサービス（どれもホストにポートを公開しない）。
