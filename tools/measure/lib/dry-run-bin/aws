@@ -1,0 +1,371 @@
+#!/usr/bin/env python3
+"""DRY_RUN=1 のときに lib.sh の lib_init が PATH の先頭に置く偽の aws。#310。
+
+本物の AWS には一切繋がない。状態は $RUN_DIR/.dry-run/ の中だけに json で
+読み書きする（手書きの JSON 連結をしない）。呼ばれるたびに操作名を
+$RUN_DIR/.dry-run/calls.log に1行積む（lib/aws.sh の START_CALL_FILE との
+突き合わせに使う。selftest.sh 参照）。
+
+応える操作:
+  athena start-query-execution / get-query-execution / get-query-results /
+  list-work-groups、それ以外の athena の Operation（athena_call が
+  --cli-input-json で渡すもの）は "{}" を返す。
+  s3 cp <src> - / s3 ls、s3api head-object、sts get-caller-identity。
+知らない操作は stderr に「dry-run: 未対応の操作」と書いて exit 255。
+
+失敗の注入（環境変数。id は DRY_RUN_CURRENT_ID と照合）:
+  DRY_RUN_FAIL=<id>[,<id>]      get-query-execution が FAILED と AthenaError を返す
+  DRY_RUN_START_FAIL=<id>       start-query-execution が botocore 風のエラーで exit 254
+  DRY_RUN_TRANSIENT=<id>:<n>    その id での最初の n 回の呼び出し（操作の種類を問わない。
+                                 start-query-execution の再試行にも retry_aws 経由の呼び出し
+                                 （fetch・head_object・capture_results・athena_call）にも効く）を
+                                 「Could not connect to the endpoint URL」で exit 255
+"""
+import json
+import os
+import sys
+
+
+def run_dir():
+    d = os.environ.get("RUN_DIR")
+    if not d:
+        sys.stderr.write("dry-run: RUN_DIR が設定されていません\n")
+        sys.exit(255)
+    return d
+
+
+def state_dir():
+    d = os.path.join(run_dir(), ".dry-run")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def log_call(parts):
+    with open(os.path.join(state_dir(), "calls.log"), "a", encoding="utf-8") as f:
+        f.write(" ".join(parts) + "\n")
+
+
+def executions_dir():
+    d = os.path.join(state_dir(), "executions")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def load_exec(item_id):
+    path = os.path.join(executions_dir(), item_id + ".json")
+    if not os.path.exists(path):
+        return None
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_exec(item_id, data):
+    path = os.path.join(executions_dir(), item_id + ".json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+
+
+def counter_path(item_id):
+    return os.path.join(state_dir(), "transient-count-" + item_id)
+
+
+def read_counter(item_id):
+    p = counter_path(item_id)
+    if not os.path.exists(p):
+        return 0
+    with open(p, encoding="utf-8") as f:
+        text = f.read().strip()
+    return int(text) if text else 0
+
+
+def write_counter(item_id, n):
+    with open(counter_path(item_id), "w", encoding="utf-8") as f:
+        f.write(str(n))
+
+
+def maybe_transient_fail(item_id):
+    # DRY_RUN_CURRENT_ID が対象の id と一致する呼び出しなら、操作の種類を問わず
+    # 数える（start-query-execution の再試行ループにも、retry_aws 経由の呼び出しにも
+    # 同じカウンタが効く）。呼び出しごとに main() の先頭近くから呼ぶ。
+    spec = os.environ.get("DRY_RUN_TRANSIENT", "")
+    if not spec or ":" not in spec or not item_id:
+        return
+    target, _, n_s = spec.partition(":")
+    if target != item_id:
+        return
+    try:
+        n = int(n_s)
+    except ValueError:
+        return
+    count = read_counter(item_id)
+    if count < n:
+        write_counter(item_id, count + 1)
+        sys.stderr.write('Could not connect to the endpoint URL: "http://127.0.0.1:9/"\n')
+        sys.exit(255)
+
+
+def parse_shorthand_context(s):
+    out = {}
+    if not s:
+        return out
+    for part in s.split(","):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            if k in ("Catalog", "Database"):
+                out[k] = v
+    return out
+
+
+def statement_type_of(sql):
+    words = sql.strip().split()
+    first = words[0].upper() if words else ""
+    if first in ("CREATE", "DROP", "ALTER"):
+        return "DDL"
+    if first in ("SELECT", "INSERT", "UPDATE", "DELETE", "MERGE", "WITH"):
+        return "DML"
+    return "UTILITY"
+
+
+def parse_args(argv):
+    """`--flag value` の並びを辞書に、それ以外を位置引数のリストにする。"""
+    positional = []
+    opts = {}
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a.startswith("--"):
+            if i + 1 < len(argv) and not argv[i + 1].startswith("--"):
+                opts[a] = argv[i + 1]
+                i += 2
+            else:
+                opts[a] = ""
+                i += 1
+        else:
+            positional.append(a)
+            i += 1
+    return positional, opts
+
+
+def cmd_start_query_execution(opts):
+    item_id = os.environ.get("DRY_RUN_CURRENT_ID", "")
+    if not item_id:
+        sys.stderr.write("dry-run: DRY_RUN_CURRENT_ID が設定されていません\n")
+        sys.exit(255)
+
+    start_fail = os.environ.get("DRY_RUN_START_FAIL", "")
+    if start_fail and start_fail == item_id:
+        sys.stderr.write(
+            "An error occurred (InvalidRequestException) when calling the "
+            "StartQueryExecution operation: dry-run: 注入された開始失敗\n\n"
+            "Additional error details:\n"
+            "AthenaErrorCode: MALFORMED_QUERY\n"
+        )
+        sys.exit(254)
+
+    sql = opts.get("--query-string", "")
+    context_s = opts.get("--query-execution-context", "")
+    output_conf = opts.get("--result-configuration", "")
+    output_location = ""
+    if output_conf.startswith("OutputLocation="):
+        output_location = output_conf[len("OutputLocation="):]
+
+    stype = statement_type_of(sql)
+    ext = "csv" if stype == "DML" else "txt"
+    loc = (output_location + item_id + "." + ext) if output_location else ""
+
+    fail_ids = {x for x in os.environ.get("DRY_RUN_FAIL", "").split(",") if x}
+    state = "FAILED" if item_id in fail_ids else "SUCCEEDED"
+
+    save_exec(item_id, {
+        "id": item_id,
+        "query": sql,
+        "context": parse_shorthand_context(context_s),
+        "output_location": loc,
+        "statement_type": stype,
+        "state": state,
+    })
+
+    qid = "qexec-" + item_id
+    if opts.get("--output") == "text" and opts.get("--query") == "QueryExecutionId":
+        sys.stdout.write(qid + "\n")
+    else:
+        sys.stdout.write(json.dumps({"QueryExecutionId": qid}) + "\n")
+    return 0
+
+
+def cmd_get_query_execution(opts):
+    qid = opts.get("--query-execution-id", "")
+    item_id = qid[len("qexec-"):] if qid.startswith("qexec-") else qid
+    record = load_exec(item_id)
+    if record is None:
+        sys.stderr.write("dry-run: 不明な QueryExecutionId です: %s\n" % qid)
+        sys.exit(255)
+
+    status = {"State": record["state"]}
+    if record["state"] == "FAILED":
+        status["StateChangeReason"] = "dry-run: 注入された失敗"
+        status["AthenaError"] = {
+            "ErrorCategory": 2,
+            "ErrorType": 1000,
+            "ErrorMessage": "dry-run: 注入された失敗（DRY_RUN_FAIL）",
+        }
+    body = {
+        "QueryExecution": {
+            "QueryExecutionId": qid,
+            "Query": record["query"],
+            "StatementType": record["statement_type"],
+            "ResultConfiguration": {"OutputLocation": record["output_location"]},
+            "QueryExecutionContext": record["context"],
+            "Status": status,
+        }
+    }
+    sys.stdout.write(json.dumps(body) + "\n")
+    return 0
+
+
+def cmd_get_query_results(opts):
+    qid = opts.get("--query-execution-id", "")
+    item_id = qid[len("qexec-"):] if qid.startswith("qexec-") else qid
+    record = load_exec(item_id) or {}
+    sql = record.get("query", "")
+    upper = sql.strip().upper()
+    if upper.startswith("SHOW DATABASES") or upper.startswith("SHOW SCHEMAS"):
+        columns = [{"Name": "database_name", "Type": "varchar"}]
+        rows = [{"Data": [{"VarCharValue": "dry_run_db"}]}]
+    else:
+        columns = [{"Name": "col", "Type": "varchar"}]
+        rows = [{"Data": [{"VarCharValue": "dry-run-value"}]}]
+    body = {"ResultSet": {"ResultSetMetadata": {"ColumnInfo": columns}, "Rows": rows}}
+    sys.stdout.write(json.dumps(body) + "\n")
+    return 0
+
+
+def cmd_list_work_groups():
+    sys.stdout.write(json.dumps({"WorkGroups": [{"Name": "primary", "State": "ENABLED"}]}) + "\n")
+    return 0
+
+
+def cmd_athena_generic():
+    sys.stdout.write("{}\n")
+    return 0
+
+
+def cmd_s3_cp(positional):
+    if not positional:
+        sys.stderr.write("dry-run: s3 cp の引数が足りません\n")
+        sys.exit(255)
+    src = positional[0]
+    base = src.rsplit("/", 1)[-1]
+    if base.endswith(".metadata"):
+        sys.stdout.buffer.write(b"dry-run-metadata-bytes")
+        return 0
+    item_id = base
+    for suf in (".csv", ".txt"):
+        if base.endswith(suf):
+            item_id = base[: -len(suf)]
+            break
+    record = load_exec(item_id) or {}
+    sql = record.get("query", "")
+    upper = sql.strip().upper()
+    if upper.startswith("SHOW DATABASES") or upper.startswith("SHOW SCHEMAS"):
+        sys.stdout.write('"database_name"\n"dry_run_db"\n')
+    else:
+        sys.stdout.write('"col"\n"dry-run-value"\n')
+    return 0
+
+
+def cmd_s3_ls(positional):
+    target = positional[0] if positional else ""
+    sys.stdout.write("2026-01-01 00:00:00          8 %s\n" % target)
+    return 0
+
+
+def cmd_s3api_head_object(opts):
+    key = opts.get("--key", "")
+    if key.endswith(".metadata"):
+        ctype = "application/octet-stream"
+    elif key.endswith(".csv"):
+        ctype = "text/csv"
+    else:
+        ctype = "text/plain"
+    sys.stdout.write(json.dumps({"ContentType": ctype, "ContentLength": 8}) + "\n")
+    return 0
+
+
+def cmd_sts_get_caller_identity():
+    body = {
+        "UserId": "AIDADRYRUN000000000000",
+        "Account": "000000000000",
+        "Arn": "arn:aws:iam::000000000000:user/dry-run",
+    }
+    sys.stdout.write(json.dumps(body) + "\n")
+    return 0
+
+
+def unsupported():
+    sys.stderr.write("dry-run: 未対応の操作\n")
+    sys.exit(255)
+
+
+def main(argv):
+    if not argv:
+        unsupported()
+    service = argv[0]
+    rest = argv[1:]
+
+    if service == "athena":
+        if not rest:
+            unsupported()
+        sub = rest[0]
+        _positional, opts = parse_args(rest[1:])
+        log_call(["athena", sub])
+        maybe_transient_fail(os.environ.get("DRY_RUN_CURRENT_ID", ""))
+        if sub == "start-query-execution":
+            return cmd_start_query_execution(opts)
+        if sub == "get-query-execution":
+            return cmd_get_query_execution(opts)
+        if sub == "get-query-results":
+            return cmd_get_query_results(opts)
+        if sub == "list-work-groups":
+            return cmd_list_work_groups()
+        return cmd_athena_generic()
+
+    if service == "s3":
+        if not rest:
+            unsupported()
+        sub = rest[0]
+        positional, _opts = parse_args(rest[1:])
+        log_call(["s3", sub])
+        maybe_transient_fail(os.environ.get("DRY_RUN_CURRENT_ID", ""))
+        if sub == "cp":
+            return cmd_s3_cp(positional)
+        if sub == "ls":
+            return cmd_s3_ls(positional)
+        unsupported()
+
+    if service == "s3api":
+        if not rest:
+            unsupported()
+        sub = rest[0]
+        _positional, opts = parse_args(rest[1:])
+        log_call(["s3api", sub])
+        maybe_transient_fail(os.environ.get("DRY_RUN_CURRENT_ID", ""))
+        if sub == "head-object":
+            return cmd_s3api_head_object(opts)
+        unsupported()
+
+    if service == "sts":
+        if not rest:
+            unsupported()
+        sub = rest[0]
+        log_call(["sts", sub])
+        maybe_transient_fail(os.environ.get("DRY_RUN_CURRENT_ID", ""))
+        if sub == "get-caller-identity":
+            return cmd_sts_get_caller_identity()
+        unsupported()
+
+    unsupported()
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]) or 0)
