@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# issue #244 で作成。issue #257 で ROUND=3 を、issue #276 で ROUND=4 を追加。
+# issue #244 で作成。issue #257 で ROUND=3 を、issue #276 で ROUND=4・5 を追加。
 # 本物の Athena で、SHOW CREATE TABLE・ALTER TABLE・MSCK REPAIR TABLE・DESCRIBE の
 # キーワードの間や直後にブロックコメント（/* c */）を挟んだ SQL がどう扱われるか
 # （ParseException になるか、成功するか、位置・綴りでどう変わるか）を実測する
@@ -12,7 +12,11 @@
 # ほかのコメント位置、先頭コメントの字句のほかの記号・閉じていない引用符、
 # awsdatacatalog. 付き 3 部の名前と ADD COLUMNS・RENAME TO の組、コメント無しの
 # awsdatacatalog. 付き DROP COLUMN の位置、連携カタログ・S3 Tables を Context の
-# Catalog に直接指定したときの判定）を測る。
+# Catalog に直接指定したときの判定）を測る。ROUND=5（#276）は ROUND=4（生データ
+# run-20260927-032737）が設計の誤りで測り残した組（閉じていない引用符の字句を
+# 成功しない文に載せ直したもの、元の名前だけに awsdatacatalog. が付いた RENAME TO
+# （改名先は 2 部のまま）、awsdatacatalog. 付きの名前の後ろに置いたコメントの位置、
+# S3 Tables を Context の Catalog に直接指定したときの判定）を測る。
 #
 # 出どころ（.claude/issue-notes/244.md・257.md・276.md、issue #244・#257・#276 本文）:
 #   #242（DESCRIBE の直後のブロックコメントを本物どおり FAILED にする）の設計時に見つかった、
@@ -22,7 +26,9 @@
 #   ALTER と、SHOW CREATE TABLE の一部の形しかカバーしていない。#257 は #244 の
 #   3 ラウンド目で測り残した形（issue 本文の表、docs/dev/unmeasured.md の #244・#257 の行）
 #   を測る。#276 は #257 の ROUND=3（生データ run-20260926-204740）が測り残した組
-#   （issue #276 本文の表）を測る。
+#   （issue #276 本文の表）を測る。ROUND=4（生データ run-20260927-032737）は設計の誤りで
+#   一部が狙いを測れなかったため、#276 の ROUND=5 でそれらを測り直す
+#   （.claude/issue-notes/276.md の「測れなかったもの」）。
 #
 # 使い方:
 #   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db bash tools/measure/block-comment-parse-error.sh
@@ -44,6 +50,11 @@
 #     S3TABLES_CATALOG=s3tablescatalog/your-bucket S3TABLES_NS=your_ns S3TABLES_TABLE=your_table \
 #     FEDERATED_CATALOG=your_catalog FEDERATED_DB=your_db FEDERATED_TABLE=your_table \
 #     bash tools/measure/block-comment-parse-error.sh
+#   ラウンド 5（issue #276。下の「項目（ROUND=5、issue #276）」。群 S は S3TABLES_* が
+#   揃っているときだけ流す。ROUND=3・4 と違い FEDERATED_* は使わない）:
+#   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=5 \
+#     S3TABLES_CATALOG=s3tablescatalog/your-bucket S3TABLES_NS=your_ns S3TABLES_TABLE=your_table \
+#     bash tools/measure/block-comment-parse-error.sh
 #
 # 必要な環境変数:
 #   OUTPUT    結果の出力先。s3://bucket/prefix/ の形（末尾の / を付ける）。
@@ -52,9 +63,10 @@
 #   DB           データベース名。省略するか実在しなければ、SHOW DATABASES の候補の 1 件目を使う
 #                （$RUN_DIR/available-databases.bytes に一覧を残す。実名を含む）。
 #   ROUND        既定 1（A・S・R・D 群）。2 にすると「項目（ROUND=2）」、3 にすると
-#                「項目（ROUND=3、issue #257）」、4 にすると「項目（ROUND=4、issue #276）」
-#                だけを流す（フィクスチャの作成・形式の裏取り・後始末・衝突確認・preflight・
-#                マスク・summary の仕組みは全ラウンド共通）。
+#                「項目（ROUND=3、issue #257）」、4 にすると「項目（ROUND=4、issue #276）」、
+#                5 にすると「項目（ROUND=5、issue #276）」だけを流す（フィクスチャの作成・
+#                形式の裏取り・後始末・衝突確認・preflight・マスク・summary の仕組みは
+#                全ラウンド共通）。
 #   CATALOG      既定 AwsDataCatalog
 #   REGION       既定 ap-northeast-1
 #   OUT_DIR      既定 ${DEV_HOST_HOME:-$HOME}/athena-block-comment-parse-error-measurements
@@ -63,10 +75,10 @@
 #   POLL_TIMEOUT 終端状態を待つ上限（秒）。既定 180
 #   RETRY_MAX    名前解決・接続など一時的な失敗を再試行する回数の上限。既定 4
 #   RETRY_DELAY  再試行の間隔（秒）。既定 5
-#   S3TABLES_CATALOG  ROUND=3 の s3t1・s3t2、ROUND=4 の s3t_ctx_desc・s3t_ctx_msck で使う。
-#                S3 Tables のカタログ名（例 s3tablescatalog/your-bucket）。S3TABLES_NS・
-#                S3TABLES_TABLE と 3 つとも揃っていなければ、対応する項目は未測定として
-#                summary に残る。
+#   S3TABLES_CATALOG  ROUND=3 の s3t1・s3t2、ROUND=4 の s3t_ctx_desc・s3t_ctx_msck、
+#                ROUND=5 の s5_desc・s5_msck・s5_desc_nc で使う。S3 Tables のカタログ名
+#                （例 s3tablescatalog/your-bucket）。S3TABLES_NS・S3TABLES_TABLE と
+#                3 つとも揃っていなければ、対応する項目は未測定として summary に残る。
 #   S3TABLES_NS       S3 Tables の名前空間。
 #   S3TABLES_TABLE    S3 Tables のテーブル名。
 #   FEDERATED_CATALOG ROUND=3 の fc1、ROUND=4 の fed_ctx_desc・fed_ctx_msck で使う。
@@ -118,6 +130,17 @@
 #   reason.txt の全文で見分ける（ROUND=2 の n5〜n7 と同じ方針）。s3t_ctx_desc・
 #   s3t_ctx_msck・fed_ctx_desc・fed_ctx_msck は既存の S3 Tables・連携カタログの表を
 #   Context 経由で読むだけで、新しく作らない（環境変数が無ければ流さない）。
+#
+#   ROUND=5（#276。ROUND=4 の測り残し）も同じ 3 つのフィクスチャを使う。群 R の RENAME TO が
+#   決め手の位置にある項目（rr_h0・rr_h2・rr_h3・rr_hn は H、rr_v0・rr_v2・rr_v3・rr_vn は V）は
+#   先着 1 回だけ成功させる設計で、成功すると H は athena_local_probe_244_h_r5a／_r5b／_r5c／
+#   _r5n のどれか、V は athena_local_probe_244_v_r5a／_r5b／_r5c／_r5n のどれかに移る。
+#   後始末は元の名前と全部の行き先候補に DROP TABLE/VIEW IF EXISTS を投げる。群 P（awsdatacatalog.
+#   付きの名前の後ろのコメントの位置）は H の名前が要るので、群 R の RENAME より前に置く。
+#   群 Q（閉じていない引用符の字句を、成功しない ADD COLUMNS・読み取り専用の SHOW CREATE TABLE に
+#   載せ直したもの）は H の列を新しい名前（c50〜c53）で増やすだけで、既存の列とは競合しない。
+#   s5_desc・s5_msck・s5_desc_nc は既存の S3 Tables の表を Context 経由で読むだけで、新しく
+#   作らない（S3TABLES_* が揃っているときだけ。ROUND=3・4 と違い連携カタログの項目は無い）。
 #
 # 課金について: メタデータだけの操作（DDL は 0 行、SHOW/DESCRIBE/MSCK は読み取りのみ）。
 # Athena の最小課金 × クエリ数の見込み。StartQueryExecution を呼んだ回数は summary.txt の
@@ -324,6 +347,62 @@
 #   fed_ctx_desc/fed_ctx_msck   Context: Catalog=<FEDERATED_CATALOG>,Database=<FEDERATED_DB> で
 #                               DESCRIBE /* c */ <FEDERATED_TABLE>・MSCK REPAIR /* c */ TABLE <FEDERATED_TABLE>
 #
+# 項目（ROUND=5、issue #276。ROUND=4（生データ run-20260927-032737）が設計の誤りで狙いを
+# 測れなかった組を測り直す。<H>/<V>/<M> はフィクスチャの修飾名。実行順は群 Q → 群 P → 群 R
+# （M → H → V）→ 群 S。群 P は H の名前が要るので群 R の RENAME より前に置く）:
+#
+# 群 Q（閉じていない引用符の字句。ParseException になる文に載せる。ROUND=4 の
+# lex_quote_later・lex_quote_later_name は SET LOCATION という成功する文に載せてしまい
+# 測れなかった反省で、成功しにくい ADD COLUMNS と読み取り専用の SHOW CREATE TABLE に載せ直す）:
+#   q1    /* 'a */ ALTER TABLE <DB>.<H> ADD COLUMNS (c50 int COMMENT 'x')   先頭。後ろに別の ' がある
+#   q2    ALTER TABLE /* 'a */ <DB>.<H> ADD COLUMNS (c51 int COMMENT 'x')  名前の直前
+#   q1c   /* 'a */ ALTER TABLE <DB>.<H> ADD COLUMNS (c52 int)              対照（後ろに ' が無い）
+#   q2c   ALTER TABLE /* 'a */ <DB>.<H> ADD COLUMNS (c53 int)              対照
+#   q3    /* 'a */ SHOW CREATE TABLE <DB>.<H> /* 'b' */                   先頭。後ろのコメントの
+#                                                                          中に ' がある（読み取りのみ）
+#
+# 群 P（issue #276 本文の表 4 行目の続き。awsdatacatalog. 付きの名前の後ろにコメントを置き、
+# 落とす前・後で ErrorMessage の位置が変わるようにする。H。ROUND=4 の aa_* は名前より前に
+# コメントを置いてしまい、位置が落とす前・後で同じ値になって区別できなかった反省）:
+#   pa1   ALTER TABLE awsdatacatalog.<DB>.<H> /* c */ ADD COLUMNS (c54 int)
+#   pa2   ALTER TABLE awsdatacatalog.<DB>.<H> /* c */ DROP COLUMN n
+#   pa3   SHOW CREATE TABLE awsdatacatalog.<DB>.<H> /* c */
+#   pa4   MSCK REPAIR TABLE awsdatacatalog.<DB>.<H> /* c */
+#   pa5   DESCRIBE awsdatacatalog.<DB>.<H> /* c */
+#   pa6   ALTER TABLE awsdatacatalog.<DB>.<H> ADD COLUMNS (c55 int)         対照（コメント無し。
+#                                                                           成功して列が増えてもよい）
+#
+# 群 R（元の名前だけに awsdatacatalog. が付いた RENAME TO。改名先は 2 部 <DB>.<new>。ROUND=4 の
+# ar_* は改名先も 3 部にしてしまい、開始時の構文エラー（改名先の 2 つ目の .）で潰れて測れなかった
+# 反省。RENAME TO は成功しうるので、H・V それぞれ先着 1 回だけ成功させ、以後は改名済みとして
+# skip する（ROUND=4 の rename_h4／rename_v4 と同じ仕組み）。成功しない M を先に置く）:
+#   無い表 M（依存が無いのでまとめて先に流す）:
+#     rr_m0  /* c */ ALTER TABLE awsdatacatalog.<DB>.<M> RENAME TO <DB>.<renamed>   先頭
+#     rr_m2  ALTER TABLE /* c */ awsdatacatalog.<DB>.<M> RENAME TO <DB>.<renamed>   TABLE の後
+#     rr_m3  ALTER TABLE awsdatacatalog.<DB>.<M> /* c */ RENAME TO <DB>.<renamed>   名前の後ろ
+#     rr_mn  ALTER TABLE awsdatacatalog.<DB>.<M> RENAME TO <DB>.<renamed>           対照（コメント無し）
+#   H（先着 1 回だけ成功。成功すると <H>_r5a/_r5b/_r5c/_r5n のどれかに移る）:
+#     rr_h0  /* c */ ALTER TABLE awsdatacatalog.<DB>.<H> RENAME TO <DB>.<H>_r5a      先頭
+#     rr_h2  ALTER TABLE /* c */ awsdatacatalog.<DB>.<H> RENAME TO <DB>.<H>_r5b      TABLE の後
+#     rr_h3  ALTER TABLE awsdatacatalog.<DB>.<H> /* c */ RENAME TO <DB>.<H>_r5c      名前の後ろ
+#     rr_hn  ALTER TABLE awsdatacatalog.<DB>.<H> RENAME TO <DB>.<H>_r5n              対照（コメント無し）
+#   V（同じ 4 形。先着 1 回だけ成功。成功すると <V>_r5a/_r5b/_r5c/_r5n のどれかに移る）:
+#     rr_v0/rr_v2/rr_v3/rr_vn   H と同じ 4 形を V に
+#
+# 群 S（S3 Tables の Context。ROUND=4 の s3t_ctx_desc・s3t_ctx_msck と同じ形・同じ環境変数
+# S3TABLES_*。連携カタログはこのアカウントに登録が無く ROUND=3・4 とも未測定のため、
+# ROUND=5 では連携カタログの項目を作らない）:
+#   s5_desc     DESCRIBE /* c */ <S3TABLES_TABLE>
+#   s5_msck     MSCK REPAIR /* c */ TABLE <S3TABLES_TABLE>
+#   s5_desc_nc  DESCRIBE <S3TABLES_TABLE>                                 対照（コメント無し）
+#
+# summary の note には、ROUND=4 までと同じ情報（attempts=N など）に加えて、送った文の長さ
+# （len=N。python3 の len()、文字数）と、awsdatacatalog. を落とした文でのコメントの対応位置
+# （comment_col_raw=N が受け取った文でのコメントの開始列、comment_col_dropped=N が
+# 「awsdatacatalog.」を 1 回だけ取り除いた文での開始列。どちらも 1 始まり）を出す
+# （sql_measure 関数。awsdatacatalog. を含まない項目や、コメントを持たない対照は該当する
+# フィールドを省く）。
+#
 # ** SQL に改行を含める書き方の注意 **
 # 「ALTER\n/* c */ TABLE ...」のような文は、シェルで実際の改行文字（0x0a）にしてから渡さないと、
 # 「\」「n」という 2 文字が入った 1 行の文字列になり、まったく別の測定になる。そのため bash の
@@ -381,9 +460,9 @@ RETRY_MAX=${RETRY_MAX:-4}
 RETRY_DELAY=${RETRY_DELAY:-5}
 ROUND=${ROUND:-1}
 case "$ROUND" in
-  1 | 2 | 3 | 4) ;;
+  1 | 2 | 3 | 4 | 5) ;;
   *)
-    echo "ROUND には 1・2・3・4 のどれかを指定してください（既定 1）" >&2
+    echo "ROUND には 1・2・3・4・5 のどれかを指定してください（既定 1）" >&2
     exit 1
     ;;
 esac
@@ -416,6 +495,19 @@ H_AR0REN="${H}_ar0ren"
 H_AR2REN="${H}_ar2ren"
 V_AR0REN="${V}_ar0ren"
 V_AR2REN="${V}_ar2ren"
+
+# ROUND=5（issue #276）専用。群 R の RENAME TO が決め手の位置にある 4 つの項目
+# （rr_h0・rr_h2・rr_h3・rr_hn、いずれも H を対象。V も同様に rr_v0・rr_v2・rr_v3・rr_vn）の
+# 行き先。4 つとも同じ H（または V）を取り合うので、H_RENAMED5／H_CURRENT5（ROUND=5 の中で
+# 定義）で「先に成功した 1 回だけ」に抑える（M は表が無いのでどの RENAME も実体に触れない）。
+H_R5A="${H}_r5a"
+H_R5B="${H}_r5b"
+H_R5C="${H}_r5c"
+H_R5N="${H}_r5n"
+V_R5A="${V}_r5a"
+V_R5B="${V}_r5b"
+V_R5C="${V}_r5c"
+V_R5N="${V}_r5n"
 
 # ROUND=3（issue #257）専用: S3 Tables・連携カタログ（tools/measure/quoted-names.sh と
 # 同じ環境変数の名前）。どちらも揃っていなければ、対応する項目だけ未測定にする。
@@ -521,6 +613,43 @@ cleanup() {
         --result-configuration "OutputLocation=$OUTPUT" >/dev/null 2>&1 || true
       aws athena start-query-execution --region "$REGION" \
         --query-string "DROP VIEW IF EXISTS $DB.$V_AR2REN" \
+        --query-execution-context "Catalog=$CATALOG,Database=$DB" \
+        --result-configuration "OutputLocation=$OUTPUT" >/dev/null 2>&1 || true
+    fi
+    if [ "$ROUND" = 5 ]; then
+      # ROUND=5（#276）の rr_h0/rr_h2/rr_h3/rr_hn（H の RENAME TO）、rr_v0/rr_v2/rr_v3/rr_vn
+      # （V の RENAME TO）が成功していると、対象は元の名前ではなく次のどれかに残っている。
+      # IF EXISTS なので全部の名前に投げて無害に消す（元の名前 $H・$V は上ですでに消している）。
+      aws athena start-query-execution --region "$REGION" \
+        --query-string "DROP TABLE IF EXISTS $DB.$H_R5A" \
+        --query-execution-context "Catalog=$CATALOG,Database=$DB" \
+        --result-configuration "OutputLocation=$OUTPUT" >/dev/null 2>&1 || true
+      aws athena start-query-execution --region "$REGION" \
+        --query-string "DROP TABLE IF EXISTS $DB.$H_R5B" \
+        --query-execution-context "Catalog=$CATALOG,Database=$DB" \
+        --result-configuration "OutputLocation=$OUTPUT" >/dev/null 2>&1 || true
+      aws athena start-query-execution --region "$REGION" \
+        --query-string "DROP TABLE IF EXISTS $DB.$H_R5C" \
+        --query-execution-context "Catalog=$CATALOG,Database=$DB" \
+        --result-configuration "OutputLocation=$OUTPUT" >/dev/null 2>&1 || true
+      aws athena start-query-execution --region "$REGION" \
+        --query-string "DROP TABLE IF EXISTS $DB.$H_R5N" \
+        --query-execution-context "Catalog=$CATALOG,Database=$DB" \
+        --result-configuration "OutputLocation=$OUTPUT" >/dev/null 2>&1 || true
+      aws athena start-query-execution --region "$REGION" \
+        --query-string "DROP VIEW IF EXISTS $DB.$V_R5A" \
+        --query-execution-context "Catalog=$CATALOG,Database=$DB" \
+        --result-configuration "OutputLocation=$OUTPUT" >/dev/null 2>&1 || true
+      aws athena start-query-execution --region "$REGION" \
+        --query-string "DROP VIEW IF EXISTS $DB.$V_R5B" \
+        --query-execution-context "Catalog=$CATALOG,Database=$DB" \
+        --result-configuration "OutputLocation=$OUTPUT" >/dev/null 2>&1 || true
+      aws athena start-query-execution --region "$REGION" \
+        --query-string "DROP VIEW IF EXISTS $DB.$V_R5C" \
+        --query-execution-context "Catalog=$CATALOG,Database=$DB" \
+        --result-configuration "OutputLocation=$OUTPUT" >/dev/null 2>&1 || true
+      aws athena start-query-execution --region "$REGION" \
+        --query-string "DROP VIEW IF EXISTS $DB.$V_R5N" \
         --query-execution-context "Catalog=$CATALOG,Database=$DB" \
         --result-configuration "OutputLocation=$OUTPUT" >/dev/null 2>&1 || true
     fi
@@ -812,12 +941,17 @@ skip() {
 # OutputLocation の末尾・エラー・本体・.metadata を採取する。開始できなければ、
 # AthenaErrorCode・Message をその場の start.err からそのまま抜く（追加の呼び出しはしない）。
 # 成功したときだけ 0 を返す。
+# EXTRA_NOTE（グローバル）が非空なら note の末尾に足す。呼び出しごとに使い切りで、
+# 呼び出し側が設定しなければ既定は空（ROUND=1〜4 は一度も設定しないので挙動は変わらない。
+# ROUND=5 の sql_measure・run5 が使う）。
 run() {
   local label=$1 sql=$2
   local id state stype sub loc loc_tail note
   local err_cat="-" err_type="-"
   local start_msg="-" start_code="-"
   local body_bytes="-" meta_present="no"
+  local extra_note="${EXTRA_NOTE:-}"
+  EXTRA_NOTE=""
 
   printf '%s' "$sql" > "$RUN_DIR/$label.sql"
   id=$(start_query_retry "$label" "$sql")
@@ -828,6 +962,7 @@ run() {
     start_msg=$(start_err_message "$RUN_DIR/$label.start.err")
     start_code=$(start_err_code "$RUN_DIR/$label.start.err")
     note="attempts=$attempts; $(first_err_line "$RUN_DIR/$label.start.err")"
+    [ -n "$extra_note" ] && note="$note; $extra_note"
     echo "== $label: 開始できませんでした（試行 $attempts 回）。AthenaErrorCode=$start_code"
     emit_row "$label" "START_FAILED" - - - - - "$start_msg" "$start_code" - - "$(sanitize "$note")"
     return 1
@@ -867,6 +1002,7 @@ run() {
   fi
 
   note="attempts=$attempts"
+  [ -n "$extra_note" ] && note="$note; $extra_note"
   echo "== $label  state=$state  type=$stype/$sub  loc_tail=$loc_tail  body=${body_bytes}B  metadata=$meta_present  error=$err_cat/$err_type"
   emit_row "$label" "$state" "$stype" "$sub" "$loc_tail" "$err_cat" "$err_type" "$start_msg" "$start_code" "$body_bytes" "$meta_present" "$(sanitize "$note")"
   [ "$state" = SUCCEEDED ]
@@ -1534,6 +1670,146 @@ fi
 fi # ROUND=4
 
 # ============================================================================
+# ROUND=5（issue #276）: ROUND=4（生データ run-20260927-032737）が設計の誤りで狙いを
+# 測れなかった組を測り直す。実行順は群 Q → 群 P → 群 R（M → H → V）→ 群 S（群 P は H の
+# 名前が要るので群 R の RENAME より前に置く。詳細は上の見出しコメントに）。
+# ============================================================================
+
+if [ "$ROUND" = 5 ]; then
+
+# 送った文の長さ（len。python3 の len()、文字数）と、awsdatacatalog. を 1 回だけ取り除いた
+# 文でのコメントの対応位置（comment_col_raw が受け取った文での開始列、comment_col_dropped が
+# 取り除いた後の文での開始列。どちらも 1 始まり）を "; " 区切りで返す。コメントが無い文は
+# comment_col_* を省き、awsdatacatalog. を含まない文は comment_col_dropped を省く。
+sql_measure() {
+  python3 -c '
+import sys
+sql = sys.argv[1]
+marker = "/*"
+prefix = "awsdatacatalog."
+parts = ["len=%d" % len(sql)]
+idx_raw = sql.find(marker)
+if idx_raw != -1:
+    parts.append("comment_col_raw=%d" % (idx_raw + 1))
+    pidx = sql.find(prefix)
+    if pidx != -1:
+        dropped = sql[:pidx] + sql[pidx + len(prefix):]
+        idx_dropped = dropped.find(marker)
+        parts.append("comment_col_dropped=%d" % (idx_dropped + 1 if idx_dropped != -1 else -1))
+print("; ".join(parts))
+' "$1"
+}
+
+# EXTRA_NOTE に sql_measure の結果を積んでから run_req を呼ぶ（run() が消費して note に足す。
+# 呼び終わったら成否によらず EXTRA_NOTE を空に戻す）。H/I/V の要件は run_req と同じ可変長
+# 引数（無ければ plain run と同じ）。
+run5() {
+  local label=$1 sql=$2
+  shift 2
+  EXTRA_NOTE=$(sql_measure "$sql")
+  run_req "$label" "$sql" "$@"
+  local rc=$?
+  EXTRA_NOTE=""
+  return $rc
+}
+
+# run_in_ctx 版（群 S。Context を差し替えて呼ぶ）。
+run5_in_ctx() {
+  local ctx=$1 label=$2 sql=$3
+  EXTRA_NOTE=$(sql_measure "$sql")
+  run_in_ctx "$ctx" "$label" "$sql"
+  local rc=$?
+  EXTRA_NOTE=""
+  return $rc
+}
+
+# --- 群 Q: 閉じていない引用符の字句。ParseException になりやすい ADD COLUMNS・読み取り専用の
+# SHOW CREATE TABLE に載せる（ROUND=4 の lex_quote_later・lex_quote_later_name は成功する
+# SET LOCATION に載せてしまい測れなかった反省）。列名（c50〜c53）は他項目と競合しない。 -------
+
+run5 q1  "/* 'a */ ALTER TABLE $DB.$H ADD COLUMNS (c50 int COMMENT 'x')" H
+run5 q2  "ALTER TABLE /* 'a */ $DB.$H ADD COLUMNS (c51 int COMMENT 'x')" H
+run5 q1c "/* 'a */ ALTER TABLE $DB.$H ADD COLUMNS (c52 int)" H
+run5 q2c "ALTER TABLE /* 'a */ $DB.$H ADD COLUMNS (c53 int)" H
+run5 q3  "/* 'a */ SHOW CREATE TABLE $DB.$H /* 'b' */" H
+
+# --- 群 P: awsdatacatalog. 付きの名前の後ろにコメントを置き、落とす前・後で ErrorMessage の
+# 位置が変わるようにする（H。ROUND=4 の aa_* は名前より前にコメントを置いてしまい、位置が
+# 落とす前・後で同じ値になり区別できなかった反省）。群 R の RENAME より前に置く
+# （H の名前が要る）。pa2 は列 n を消すが、ROUND=5 のほかの項目は列 n を使わない。 -----------
+
+run5 pa1 "ALTER TABLE awsdatacatalog.$DB.$H /* c */ ADD COLUMNS (c54 int)" H
+run5 pa2 "ALTER TABLE awsdatacatalog.$DB.$H /* c */ DROP COLUMN n" H
+run5 pa3 "SHOW CREATE TABLE awsdatacatalog.$DB.$H /* c */" H
+run5 pa4 "MSCK REPAIR TABLE awsdatacatalog.$DB.$H /* c */" H
+run5 pa5 "DESCRIBE awsdatacatalog.$DB.$H /* c */" H
+run5 pa6 "ALTER TABLE awsdatacatalog.$DB.$H ADD COLUMNS (c55 int)" H
+
+# --- 群 R: 元の名前だけに awsdatacatalog. が付いた RENAME TO（改名先は 2 部 <DB>.<new>。
+# ROUND=4 の ar_* は改名先も 3 部にしてしまい、開始時の構文エラー（改名先の 2 つ目の . ）で
+# 潰れて測れなかった反省）。成功しない M を先に流し、H・V はそれぞれ先着 1 回だけ成功させ、
+# 以後は改名済みとして skip する（ROUND=4 の rename_h4／rename_v4 と同じ仕組み）。 -----------
+
+run5 rr_m0 "/* c */ ALTER TABLE awsdatacatalog.$DB.$MISSING RENAME TO $DB.$RENAMED"
+run5 rr_m2 "ALTER TABLE /* c */ awsdatacatalog.$DB.$MISSING RENAME TO $DB.$RENAMED"
+run5 rr_m3 "ALTER TABLE awsdatacatalog.$DB.$MISSING /* c */ RENAME TO $DB.$RENAMED"
+run5 rr_mn "ALTER TABLE awsdatacatalog.$DB.$MISSING RENAME TO $DB.$RENAMED"
+
+H_RENAMED5=0
+H_CURRENT5=$H
+V_RENAMED5=0
+V_CURRENT5=$V
+
+rename_h5() {
+  local label=$1 sql=$2 target=$3
+  if [ "$H_RENAMED5" = 1 ]; then
+    skip "$label" "直前の RENAME TO が成功し H が改名済みのため未測定"
+    return
+  fi
+  if run5 "$label" "$sql" H; then
+    H_RENAMED5=1
+    H_CURRENT5=$target
+  fi
+}
+rename_v5() {
+  local label=$1 sql=$2 target=$3
+  if [ "$V_RENAMED5" = 1 ]; then
+    skip "$label" "直前の RENAME TO が成功し V が改名済みのため未測定"
+    return
+  fi
+  if run5 "$label" "$sql" V; then
+    V_RENAMED5=1
+    V_CURRENT5=$target
+  fi
+}
+
+rename_h5 rr_h0 "/* c */ ALTER TABLE awsdatacatalog.$DB.$H_CURRENT5 RENAME TO $DB.$H_R5A" "$H_R5A"
+rename_h5 rr_h2 "ALTER TABLE /* c */ awsdatacatalog.$DB.$H_CURRENT5 RENAME TO $DB.$H_R5B" "$H_R5B"
+rename_h5 rr_h3 "ALTER TABLE awsdatacatalog.$DB.$H_CURRENT5 /* c */ RENAME TO $DB.$H_R5C" "$H_R5C"
+rename_h5 rr_hn "ALTER TABLE awsdatacatalog.$DB.$H_CURRENT5 RENAME TO $DB.$H_R5N" "$H_R5N"
+
+rename_v5 rr_v0 "/* c */ ALTER TABLE awsdatacatalog.$DB.$V_CURRENT5 RENAME TO $DB.$V_R5A" "$V_R5A"
+rename_v5 rr_v2 "ALTER TABLE /* c */ awsdatacatalog.$DB.$V_CURRENT5 RENAME TO $DB.$V_R5B" "$V_R5B"
+rename_v5 rr_v3 "ALTER TABLE awsdatacatalog.$DB.$V_CURRENT5 /* c */ RENAME TO $DB.$V_R5C" "$V_R5C"
+rename_v5 rr_vn "ALTER TABLE awsdatacatalog.$DB.$V_CURRENT5 RENAME TO $DB.$V_R5N" "$V_R5N"
+
+# --- 群 S: S3 Tables の Context（ROUND=4 の s3t_ctx_desc・s3t_ctx_msck と同じ形・同じ
+# 環境変数。連携カタログはこのアカウントに無く ROUND=3・4 とも未測定のため、ROUND=5 では
+# 連携カタログの項目は作らない）。 ----------------------------------------------------
+
+if [ -n "$S3TABLES_CATALOG" ] && [ -n "$S3TABLES_NS" ] && [ -n "$S3TABLES_TABLE" ]; then
+  run5_in_ctx "Catalog=$S3TABLES_CATALOG,Database=$S3TABLES_NS" s5_desc "DESCRIBE /* c */ $S3TABLES_TABLE"
+  run5_in_ctx "Catalog=$S3TABLES_CATALOG,Database=$S3TABLES_NS" s5_msck "MSCK REPAIR /* c */ TABLE $S3TABLES_TABLE"
+  run5_in_ctx "Catalog=$S3TABLES_CATALOG,Database=$S3TABLES_NS" s5_desc_nc "DESCRIBE $S3TABLES_TABLE"
+else
+  skip s5_desc "S3TABLES_CATALOG・S3TABLES_NS・S3TABLES_TABLE が揃っていないため未測定"
+  skip s5_msck "S3TABLES_CATALOG・S3TABLES_NS・S3TABLES_TABLE が揃っていないため未測定"
+  skip s5_desc_nc "S3TABLES_CATALOG・S3TABLES_NS・S3TABLES_TABLE が揃っていないため未測定"
+fi
+
+fi # ROUND=5
+
+# ============================================================================
 # 後始末: 作った 3 つを DROP する。
 # ============================================================================
 
@@ -1585,6 +1861,24 @@ if [ "$ROUND" = 4 ]; then
     run drop-v-ar2ren "DROP VIEW IF EXISTS $DB.$V_AR2REN" || CLEANUP_ALL_OK=0
   fi
 fi
+if [ "$ROUND" = 5 ]; then
+  # rr_h0/rr_h2/rr_h3/rr_hn（H の RENAME TO）が成功していると、H は次のどれかの名前に
+  # 残っている（先着 1 回だけ成功する設計なので、実際に残るのは高々 1 つ。IF EXISTS なので
+  # 全部に投げて無害に消す。上の drop-h は元の名前が見つからないだけで SUCCEEDED のまま）。
+  if [ "$H_OK" = 1 ]; then
+    run drop-h-r5a "DROP TABLE IF EXISTS $DB.$H_R5A" || CLEANUP_ALL_OK=0
+    run drop-h-r5b "DROP TABLE IF EXISTS $DB.$H_R5B" || CLEANUP_ALL_OK=0
+    run drop-h-r5c "DROP TABLE IF EXISTS $DB.$H_R5C" || CLEANUP_ALL_OK=0
+    run drop-h-r5n "DROP TABLE IF EXISTS $DB.$H_R5N" || CLEANUP_ALL_OK=0
+  fi
+  # rr_v0/rr_v2/rr_v3/rr_vn（V の RENAME TO）も同様。
+  if [ "$V_OK" = 1 ]; then
+    run drop-v-r5a "DROP VIEW IF EXISTS $DB.$V_R5A" || CLEANUP_ALL_OK=0
+    run drop-v-r5b "DROP VIEW IF EXISTS $DB.$V_R5B" || CLEANUP_ALL_OK=0
+    run drop-v-r5c "DROP VIEW IF EXISTS $DB.$V_R5C" || CLEANUP_ALL_OK=0
+    run drop-v-r5n "DROP VIEW IF EXISTS $DB.$V_R5N" || CLEANUP_ALL_OK=0
+  fi
+fi
 if [ "$CLEANUP_ALL_OK" = 1 ]; then
   FIXTURES_ATTEMPTED=0
 else
@@ -1603,6 +1897,7 @@ case "$ROUND" in
   2) CLEANUP_LABELS="$CLEANUP_LABELS drop-v-ren drop-i-ren drop-h-ren" ;;
   3) CLEANUP_LABELS="$CLEANUP_LABELS drop-i-ren3a drop-i-ren3b" ;;
   4) CLEANUP_LABELS="$CLEANUP_LABELS drop-h-pn5ren drop-h-ar0ren drop-h-ar2ren drop-v-ar0ren drop-v-ar2ren" ;;
+  5) CLEANUP_LABELS="$CLEANUP_LABELS drop-h-r5a drop-h-r5b drop-h-r5c drop-h-r5n drop-v-r5a drop-v-r5b drop-v-r5c drop-v-r5n" ;;
 esac
 
 if [ "$ROUND" = 1 ]; then
@@ -1621,7 +1916,7 @@ elif [ "$ROUND" = 3 ]; then
   # I の列・名前を変えるので最後に置く。
   ROUND3_LABELS="g1 g2 g3 g4 msck1 msck2 pos1 de1 nc1 nc2 e1 e2 e3 e4 e5 s3t1 s3t2 fc1 r1 r2 r3 ri1 ri2 ri3"
   ALL_LABELS="$PREFLIGHT_LABELS $FIXTURE_LABELS $ROUND3_LABELS $CLEANUP_LABELS"
-else
+elif [ "$ROUND" = 4 ]; then
   # issue #276（ROUND=4）。群 A（新しく失敗させた形の H/I/V/M）→ 群 B（ほかの位置）→
   # 群 C（字句）→ 群 D（awsdatacatalog + ADD COLUMNS・RENAME TO）→ 群 E（#256 の
   # コメント無し DROP COLUMN）→ 群 F（連携カタログ・S3 Tables の Context）の順（群 E だけは H を
@@ -1637,6 +1932,16 @@ else
   GROUP_F_LABELS="s3t_ctx_desc s3t_ctx_msck fed_ctx_desc fed_ctx_msck"
   ROUND4_LABELS="$GROUP_A_LABELS $GROUP_B_LABELS $GROUP_C_LABELS $GROUP_D_LABELS $GROUP_E_LABELS $GROUP_F_LABELS"
   ALL_LABELS="$PREFLIGHT_LABELS $FIXTURE_LABELS $ROUND4_LABELS $CLEANUP_LABELS"
+else
+  # issue #276（ROUND=5）。ROUND=4 が測り残した組を測り直す。実行順と同じ、群 Q（閉じていない
+  # 引用符の字句）→ 群 P（awsdatacatalog. 付きの名前の後ろのコメント）→ 群 R（元の名前だけに
+  # awsdatacatalog. が付いた RENAME TO。M → H → V）→ 群 S（S3 Tables の Context）。
+  GROUP_Q_LABELS="q1 q2 q1c q2c q3"
+  GROUP_P_LABELS="pa1 pa2 pa3 pa4 pa5 pa6"
+  GROUP_R_LABELS="rr_m0 rr_m2 rr_m3 rr_mn rr_h0 rr_h2 rr_h3 rr_hn rr_v0 rr_v2 rr_v3 rr_vn"
+  GROUP_S_LABELS="s5_desc s5_msck s5_desc_nc"
+  ROUND5_LABELS="$GROUP_Q_LABELS $GROUP_P_LABELS $GROUP_R_LABELS $GROUP_S_LABELS"
+  ALL_LABELS="$PREFLIGHT_LABELS $FIXTURE_LABELS $ROUND5_LABELS $CLEANUP_LABELS"
 fi
 
 # summary.tsv から 1 行を読み、要点を 1 行にまとめて返す。
@@ -1677,6 +1982,13 @@ write_summary_txt() {
         echo "#             無しの awsdatacatalog. 付き DROP COLUMN の位置、連携カタログ・"
         echo "#             S3 Tables を Context の Catalog に直接指定したときの判定）を実測"
         ;;
+      5)
+        echo "# issue #276: ROUND=4（生データ run-20260927-032737）が設計の誤りで狙いを測れ"
+        echo "#             なかった組を測り直す（閉じていない引用符の字句を成功しない文に載せ"
+        echo "#             直したもの、元の名前だけに awsdatacatalog. が付いた RENAME TO、"
+        echo "#             awsdatacatalog. 付きの名前の後ろのコメントの位置、S3 Tables を"
+        echo "#             Context の Catalog に直接指定したときの判定）を実測"
+        ;;
     esac
     echo "# ROUND: $ROUND"
     echo "# 実行日時: $(date -Iseconds)"
@@ -1712,7 +2024,7 @@ write_summary_txt() {
       echo "#   I を使うほかの項目が全部終わった後に置く。S3 Tables・連携カタログの項目"
       echo "#   （s3t1・s3t2・fc1）は対応する環境変数（S3TABLES_*・FEDERATED_*）が揃っている"
       echo "#   ときだけ投げる（既存の表を読むだけで、新しく作らない）。"
-    else
+    elif [ "$ROUND" = 4 ]; then
       echo "# DDL: あり（ROUND=4、issue #276）。フィクスチャの作成・後始末は ROUND=1 と同じ"
       echo "#   3 つ（${PREFIX}_h・${PREFIX}_i・${PREFIX}_v）。群 A で 6 つの形（SHOW CREATE"
       echo "#   TABLE・MSCK REPAIR TABLE・DESCRIBE EXTENDED・ALTER TABLE の ADD COLUMNS・"
@@ -1729,6 +2041,19 @@ write_summary_txt() {
       echo "#   全文で見分ける（ROUND=2 の n5〜n7 と同じ方針）。I だけは r1i（REPLACE COLUMNS で"
       echo "#   n・s に作り直す）→ r3i（s を s2 に改名）→ pn4i（DROP COLUMN n）の順を固定し、"
       echo "#   列名をずらして競合を避ける。"
+    else
+      echo "# DDL: あり（ROUND=5、issue #276）。フィクスチャの作成・後始末は ROUND=1 と同じ"
+      echo "#   3 つ（${PREFIX}_h・${PREFIX}_i・${PREFIX}_v）。群 Q で閉じていない引用符の字句を"
+      echo "#   ADD COLUMNS（列 c50〜c53）・読み取り専用の SHOW CREATE TABLE に載せ、群 P で"
+      echo "#   awsdatacatalog. 付きの名前の後ろのコメントの位置を H で測る（列 c54・c55 の"
+      echo "#   ADD COLUMNS、DROP COLUMN n、SHOW CREATE TABLE、MSCK REPAIR TABLE、DESCRIBE）。"
+      echo "#   群 R で元の名前だけに awsdatacatalog. が付いた RENAME TO を、成功しない無い表を"
+      echo "#   先に、H・V はそれぞれ先着 1 回だけ成功させる設計で測る（後始末は元の名前と"
+      echo "#   ${PREFIX}_h_r5a・_r5b・_r5c・_r5n、${PREFIX}_v_r5a・_r5b・_r5c・_r5n の全部に"
+      echo "#   DROP TABLE/VIEW IF EXISTS を投げる）。群 S は既存の S3 Tables の表を Context 経由で"
+      echo "#   読むだけで、新しく作らない（S3TABLES_* が揃っているときだけ）。summary の note には"
+      echo "#   送った文の長さと、群 P・R では awsdatacatalog. を落とした文でのコメントの対応位置も"
+      echo "#   出す（sql_measure 関数）。"
     fi
     echo "# 課金の見込み: スキャンする SELECT は投げていない。ALTER・DROP はメタデータのみ、"
     echo "#   CREATE は 0 行、SHOW/MSCK/DESCRIBE は読み取りのみ。Athena の最小課金 × クエリ数の見込み。"
