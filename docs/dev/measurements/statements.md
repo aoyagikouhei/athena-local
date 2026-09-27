@@ -823,3 +823,40 @@ Content-Type と `.metadata` を含む置き場所は本項が主で、[result-f
 
 - 採用した判断: 別名置換の無引用の `awsdatacatalog` を、測った Context と文の組に広げる（S3 Tables・Trino に無いカタログの Context の SELECT・INSERT の無引用の 3 部、既定の Context の SELECT の引用符付きの部品を 1 つ含む 3 部と無引用の 4 部の列の参照）。実在しないカタログの SELECT は #214 の生データで SUCCEEDED と分かっていたので、このラウンドには入れなかった（decisions.md の #260 の項）
 - 備考: 結果ファイルの中身（o8 の列名、o2・o5 で行が入ったか）は保存していない。ほかの文の種類（DELETE・UPDATE・MERGE・DROP VIEW・SHOW CREATE VIEW・`RENAME TO` の 2 つ目の名前。#246 の独立レビュー）も未測定（unmeasured.md。測るのは #279）
+
+### S3 Tables の Context の Hive の CREATE TABLE の句の組み合わせ・実在しないカタログ・実在する別カタログ（#266）
+- 日付: 2026-09-27（UTC 2026-09-26 22:15・22:36）／ issue: #266 ／ スクリプト: `tools/measure/unquoted-ddl.sh`（`ROUND=13`・`ROUND=14`、`CREATE_GLUE_CATALOG=1`）／ 生データ: `$HOME/athena-unquoted-ddl-measurements/run-20260926-221348`・`run-20260926-223637`
+- 相手: 本物の Athena（`AwsDataCatalog`・S3 Tables のカタログ `s3tablescatalog/<bucket>`・自分のアカウントの Glue を指す GLUE 型のデータカタログ `<GLUE_PROBE_CATALOG>`（両ラウンドで作って最後に消した））
+- 投げたもの: ROUND=13 が StartQueryExecution 60 回（t・y・u・v・w・x 群と vc1・vc4、受理された vc1 の DROP）、ROUND=14 が 28 回（z 群と、受理された z0・z0b・z0c・z2・z3・z4 の DROP）。受理された表はすべてその場で消した
+- 返ったもの（開始時に弾かれたものは InvalidRequestException、開始して FAILED のものは結果ファイル本体・`.metadata` とも無かった）:
+
+  | 項目 | 文（Context） | 本物 |
+  |---|---|---|
+  | t0〜t10 | `CREATE [EXTERNAL] TABLE [IF NOT EXISTS] nosuchcatalog266.<db>.<t> [(n int)] [COMMENT・PARTITIONED BY・CLUSTERED BY・ROW FORMAT SERDE・STORED AS・TBLPROPERTIES の 1 つ／全部] LOCATION '..'`（既定） | 11 件すべて開始時に `Catalog 'nosuchcatalog266' does not exist`（DATACATALOG_NOT_FOUND） |
+  | t0s・t1s・t2s・t7s・t9s | t0・t1・t2・t7・t9 と同じ文（S3 Tables） | 同上（5 件） |
+  | y1〜y5 | `CREATE TABLE {hive,iceberg,system,tpch,memory}.<db>.<t> (n int) LOCATION '..'`（既定） | `Catalog '<書いたとおり>' does not exist`（DATACATALOG_NOT_FOUND） |
+  | u0〜u7 | S3 Tables の Context で LOCATION 付き。句の組み合わせ（u1〜u3）、EXTERNAL + 全部の句（u4）、IF NOT EXISTS（u5）、2 部 `<ns>.<t>`（u6）、`AwsDataCatalog.<db>.<t>`（u7） | 8 件すべて開始時に `Table location can not be specified for tables hosted in S3 table buckets`（MALFORMED_QUERY）。EXTERNAL が付いても LOCATION の文言が先（u4） |
+  | v0〜v9 | S3 Tables の Context で LOCATION の無い `CREATE EXTERNAL TABLE`。句無し（v0）、COMMENT・PARTITIONED BY・CLUSTERED BY・ROW FORMAT SERDE・ROW FORMAT DELIMITED（v1〜v5）、組み合わせ（v6）、IF NOT EXISTS（v7）、列リスト無し + TBLPROPERTIES（v8）、バッククォート（v9） | 10 件すべて開始時に `External keyword not supported for table type ICEBERG`（MALFORMED_QUERY） |
+  | vc1 | `CREATE TABLE <t> (n int) COMMENT 't comment'`（S3 Tables。EXTERNAL の無い対照） | SUCCEEDED（DDL/CREATE_TABLE）。DROP も SUCCEEDED |
+  | vc4 | `CREATE TABLE <t> (n int) ROW FORMAT SERDE '..'`（S3 Tables） | **開始して FAILED**: `Iceberg create table statement does not allow ROW FORMAT`（2/1200）。結果ファイル本体・`.metadata` とも 404（置かれない） |
+  | w0・w1・w2・w4〜w6・w8〜w10 | S3 Tables の Context で LOCATION の無い `STORED AS PARQUET`。1 部（w0）、2 部 `<ns>.<t>`（w1）、`AwsDataCatalog.<ns>.<t>`（w2）、IF NOT EXISTS（w4）、COMMENT（w5）、PARTITIONED BY（w6）、TBLPROPERTIES（w8）、バッククォート（w9）、列リスト無し（w10） | 9 件すべて開始して FAILED: `Iceberg create table statement does not allow STORED AS/BY`（2/1200）。結果ファイル本体・`.metadata` とも 404 |
+  | w7 | `CREATE TABLE <t> (n int) ROW FORMAT SERDE '..' STORED AS TEXTFILE`（S3 Tables） | 開始して FAILED: `Iceberg create table statement does not allow ROW FORMAT`（ROW FORMAT の文言が STORED AS より先）。結果ファイル無し |
+  | w3 | `CREATE TABLE awsdatacatalog.<db>.<t> (n int) STORED AS PARQUET`（S3 Tables） | 開始時に `Unsupported ddl with 2 catalogs: <文>`（MALFORMED_QUERY。#224 の小文字 `awsdatacatalog` の規則が STORED AS より先） |
+  | xc | `CREATE TABLE AwsDataCatalog.<db>.<t> (n int) LOCATION '..'`（既定） | 開始時に `External keyword required for table type HIVE`（#208 ラウンド 1 と同じ） |
+  | x1 | `CREATE TABLE <GLUE_PROBE_CATALOG>.<db>.<t> (n int) LOCATION '..'`（既定） | 開始時に `External keyword required for table type HIVE`（xc と同じ） |
+  | x2 | x1 と同じ文（S3 Tables） | 開始時に `Table location can not be specified for tables hosted in S3 table buckets` |
+  | x3 | `CREATE EXTERNAL TABLE <GLUE_PROBE_CATALOG>.<db>.<t> (n int) LOCATION '..'`（既定） | 開始時に `Unsupported ddl with 2 catalogs: <文>`（MALFORMED_QUERY）。**既定の Context で 2 catalogs が出たのは初めて** |
+  | x4 | `CREATE TABLE <GLUE_PROBE_CATALOG>.<db>.<t> (n int) STORED AS PARQUET LOCATION '..'`（既定） | 開始時に `External keyword required for table type HIVE` |
+  | z0・z0b・z0c | `CREATE EXTERNAL TABLE {AwsDataCatalog.<db>, <db>, awsdatacatalog.<db>}.<t> (n int) LOCATION '..'`（既定。x3 の対照） | 3 件とも SUCCEEDED（DDL/CREATE_TABLE・`.txt`）。**Query は `CREATE EXTERNAL TABLE <db>.<t> ...`（1 部目のカタログと `.` が落ちる）**。返った Context は `awsdatacatalog`/`<db>` |
+  | z1 | x3 の再現（`CREATE EXTERNAL TABLE <GLUE_PROBE_CATALOG>.<db>.<t> ... LOCATION`、既定） | 開始時に `Unsupported ddl with 2 catalogs: <文>`（x3 と同じ） |
+  | z2 | z1 と同じ形を Context `Catalog=<GLUE_PROBE_CATALOG>,Database=<db>` で | SUCCEEDED。Query は `CREATE EXTERNAL TABLE <db>.<t> ...`（カタログが落ちる）。返った Context の Catalog は `<GLUE_PROBE_CATALOG>` |
+  | z3 | `CREATE EXTERNAL TABLE AwsDataCatalog.<db>.<t> ... LOCATION` を Context `<GLUE_PROBE_CATALOG>` で | **SUCCEEDED**（2 catalogs にならない）。Query は `CREATE EXTERNAL TABLE <db>.<t> ...`。返った Context の Catalog は `<GLUE_PROBE_CATALOG>`。表がどちらのカタログに作られたかは、両者が同じ Glue を指すため区別できない |
+  | z4 | `CREATE EXTERNAL TABLE <t> (n int) LOCATION '..'`（Context `<GLUE_PROBE_CATALOG>`） | SUCCEEDED。Query は送ったまま |
+  | z5 | `CREATE TABLE <GLUE_PROBE_CATALOG>.<db>.<t> (n int) LOCATION '..'`（Context `<GLUE_PROBE_CATALOG>`） | 開始時に `External keyword required for table type HIVE` |
+  | z6〜z14 | S3 Tables の Context で LOCATION の無い非 EXTERNAL の ROW FORMAT。DELIMITED（z6）、COMMENT + SERDE（z7）、2 部（z8）、IF NOT EXISTS（z9）、+ TBLPROPERTIES（z10）、SERDE だけ（z11。vc4 の再現）、`AwsDataCatalog.<ns>.<t>`（z12）、列リスト無し（z13）、バッククォート（z14） | 9 件すべて開始して FAILED: `Iceberg create table statement does not allow ROW FORMAT`（2/1200）。結果ファイル本体・`.metadata` とも 404 |
+  | z15 | `CREATE TABLE <t> (n int) PARTITIONED BY (p int)`（S3 Tables） | 開始して FAILED: `Invalid PARTITIONED BY clause in Iceberg create table statement`（**2/1006**）。結果ファイル無し |
+  | z16 | `CREATE TABLE <t> (n int) CLUSTERED BY (n) INTO 4 BUCKETS`（S3 Tables） | 開始して FAILED: `Iceberg create table statement does not allow CLUSTERED BY`（2/1200）。結果ファイル無し |
+  | z17 | `CREATE TABLE <t> (n int) TBLPROPERTIES ('a266'='b')`（S3 Tables） | 開始して FAILED: `Unsupported table property key: a266`（2/1200）。結果ファイル無し |
+
+- 採用した判断: `hive.rs` の 3 つの判定から #248 で測った形だけに絞った条件を外した（LOCATION の無い EXTERNAL の句・IF NOT EXISTS・列の並び・バッククォート、LOCATION の無い STORED AS の 2 部・`AwsDataCatalog` の 3 部・IF NOT EXISTS・COMMENT・PARTITIONED BY・TBLPROPERTIES・バッククォート・列の並び無し、`location_catalog` の EXTERNAL・IF NOT EXISTS・句）。STORED AS は ROW FORMAT（w7）・CLUSTERED BY（未測定）と組む形と、ちょうど小文字の `awsdatacatalog` の 3 部（w3）を外した。S3 Tables の Context の ROW FORMAT などと w3・w7 は #270、既定の Context の Hive の DDL（x3・z1 の 2 catalogs、xc・x1・x4・z5 の External keyword required）は #278、`CREATE EXTERNAL TABLE` の Query から 1 部目のカタログが落ちること（z0 系）は #271（decisions.md の #266 の項）
+- 備考: ノートの表と生データ（`<label>.start.err`・`<label>.execution.json`・`<label>.reason.txt`・`summary.txt`）を全項目で突き合わせ、食い違いは無かった。LAMBDA・FEDERATED 型の連携カタログと z3 の表の置き場は未測定（unmeasured.md）

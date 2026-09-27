@@ -29,6 +29,13 @@ later name the date they were measured on.
 - A Hive `CREATE TABLE <catalog>.<db>.<table> ... LOCATION` whose catalog does
   not exist is rejected with `DATACATALOG_NOT_FOUND` under any context catalog
   ([docs](docs/caveats.md#plain-create-table)).
+- Under an S3 Tables context catalog, `EXTERNAL` without `LOCATION` is rejected
+  with real Athena's message whatever clauses follow, and `STORED AS` without
+  `LOCATION` fails like real Athena also on two-part and `AwsDataCatalog`
+  names and with `IF NOT EXISTS`, `COMMENT`, `PARTITIONED BY` or
+  `TBLPROPERTIES`; `CREATE TABLE ... LOCATION` into a catalog Trino does not
+  have gets `DATACATALOG_NOT_FOUND` also with `EXTERNAL`, `IF NOT EXISTS` or
+  other clauses ([docs](docs/caveats.md#plain-create-table)).
 
 - An unquoted `awsdatacatalog.<database>.<table>` in `SELECT`, `INSERT`, CTAS,
   `CREATE VIEW` and `EXPLAIN` now runs through the `AwsDataCatalog` alias
