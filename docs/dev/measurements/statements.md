@@ -208,7 +208,7 @@
   | `MSCK REPAIR TABLE <t>`・`<ns>.<t>`、コメントを先頭・MSCK の後・REPAIR の後・TABLE の後・名前の後ろに置いた形、無い表 | **開始時**に InvalidRequestException `Unsupported DDL query for S3 table buckets`（MALFORMED_QUERY）。コメント・部の数・表の有無によらない |
 
 - 測れなかったもの: 連携カタログの Context（アカウントに連携カタログが無い）。群 B の新しい位置のビュー・無い表・Iceberg 表（DROP COLUMN の Iceberg だけ測った）、`awsdatacatalog.` 付きの DROP COLUMN・RENAME TO の Iceberg 表、S3 Tables の Context の 3 部の名前の MSCK
-- 採用した判断: 測った範囲（文×位置×表の種類）だけ本物に合わせる。コメント入りの DESCRIBE EXTENDED・FORMATTED は #276、コメント無しの実行は #275（ユーザーの判断）。S3 Tables の Context の MSCK はコメントによらず開始時に弾く（ROUND=6 で範囲を測ってから決めた）
+- 採用した判断: #276 は合わせる範囲（[decisions.md](../decisions.md) の「合わせる範囲」）の外として閉じ、この実測に基づく実装（新しい位置の失敗、S3 Tables の Context の MSCK を開始時に弾く）は取り込まない。測った事実だけをここに残す（2026-09-27、ユーザーの判断）。コメント無しの DESCRIBE EXTENDED・FORMATTED の実行は #275
 - 備考: #257 の pos1（ALTER の直後のコメント・DROP COLUMN・Hive 表）で見つけた「Query は受け取ったまま」は、DROP COLUMN・RENAME TO ではコメントの有無・位置・ビューか無い表かによらない規則だった（#256 のコメント無しの DROP COLUMN もこの形）。#257 の「ビュー・無い表は測っていない」形は、どれも Hive 表と同じだった
 
 ## 本物だけが実行時に弾く形（`/* c */ SHOW CREATE TABLE`）
