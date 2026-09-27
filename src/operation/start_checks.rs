@@ -49,6 +49,25 @@ pub(super) async fn decide(
     {
         return Err(response);
     }
+    // S3 Tables でない Context でも、本物は Hive の CREATE TABLE として読める LOCATION 付きの文を、EXTERNAL が無ければ
+    // External、別のカタログの 3 部なら 2 catalogs で開始時に弾く。Trino に LOCATION は無いので構文チェックより前に見る
+    // （2026-09-27 実測 ROUND=21。#278）。
+    if !s3_tables && let Some(rejection) = unquoted_ddl::location_rejection(&query, catalog) {
+        let message = match rejection {
+            unquoted_ddl::HiveLocation::Reject(message) => Some(message),
+            unquoted_ddl::HiveLocation::RejectIfContextExists(message) => {
+                let context = catalog.unwrap_or_default();
+                (!create_table_catalog::catalog_missing(&app.trino, &app.config, context).await)
+                    .then_some(message)
+            }
+        };
+        if let Some(message) = message {
+            return Err(Box::new(invalid_request_with_code(
+                message,
+                "MALFORMED_QUERY",
+            )));
+        }
+    }
     // S3 Tables の Context では、本物は Hive の CREATE TABLE として読める文の LOCATION・EXTERNAL を開始時に弾く。
     // Trino には両方とも無いので構文チェックより前に見る（2026-09-26 実測 n1〜n32。#229）。
     if s3_tables && let Some(message) = unquoted_ddl::s3_tables_rejection(&query) {

@@ -970,3 +970,30 @@ Content-Type と `.metadata` を含む置き場所は本項が主で、[result-f
 - 採用した判断: 実行時の Trino の `NOT_FOUND: Schema <ns> not found` だけを本物の文言に直す（アカウント ID は `000000000000`、カタログは Context の Catalog を受け取ったまま）。順序は Trino に任せる。Database を省略した Context は名前空間 `default` を問い合わせ、無いときだけ CTAS は NOT_FOUND、CTAS でない形は `Cannot find or access the specified table` で Trino に送らずに終える
 - 備考: f7 の表名の内部名と f11 の開始時の文言は合わせていない（範囲外として起票）
 
+
+### 既定の Context などの LOCATION 付きの Hive の CREATE TABLE（2 catalogs・External keyword required。#278）
+- 日付: 2026-09-27（UTC 05:05）／ issue: #278 ／ スクリプト: `tools/measure/unquoted-ddl.sh`（`ROUND=21`）／ 生データ: `$HOME/athena-unquoted-ddl-measurements/run-20260927-050540`
+- 相手: 本物の Athena。StartQueryExecution 60 回、51 項目すべて測れた。`<G>` は `CREATE_GLUE_CATALOG=1` で一時的に作った GLUE 型のデータカタログ（名前は小文字。測り終えて消した）。受理された 7 件はその場で消した
+- 投げたもの: r1〜r51。`<DEF>` は `Catalog=AwsDataCatalog,Database=<DB>`、`<GCTX>` は `Catalog=<G>,Database=<DB>`。「2 catalogs」は開始時の `Unsupported ddl with 2 catalogs: <文>`、「External」は開始時の `External keyword required for table type HIVE`（どちらも InvalidRequestException・MALFORMED_QUERY）
+- 返ったもの:
+
+  | 文（Context は断りが無ければ `<DEF>`） | 本物 |
+  |---|---|
+  | `CREATE EXTERNAL TABLE <G>.<DB>.<t> (n int) LOCATION '..'`（r1）と、IF NOT EXISTS・COMMENT・PARTITIONED BY・ROW FORMAT SERDE・STORED AS・TBLPROPERTIES・全部（r3〜r9）、`<G>` の大文字（r13）、全部小文字の文（r14）、名前の前・途中のブロックコメント（r16・r18）、無い DB（r20）、列の並び無し（r22） | 2 catalogs。`<文>` は送った文のまま |
+  | 前後に空白・タブ・改行、末尾に `;`（r15） | 2 catalogs。`<文>` は前後の空白・タブ・改行と末尾の `;` が落ちる |
+  | 先頭の行コメント `-- c\n`（r17） | 2 catalogs。`<文>` に `-- c\n` が残る |
+  | 引用符付きの `"<G>"`・`"<DB>"`・`"<t>"`（r10〜r12）、`(n int NOT NULL)`（r19）、`<DEF>` で `"<S3 Tables のカタログ>".<ns>.<t>` の EXTERNAL（r50） | `line 1:8: mismatched input 'EXTERNAL'. Expecting: 'MATERIALIZED', 'MULTI', 'OR', 'PROTECTED', 'ROLE', 'SCHEMA', 'TABLE', 'VIEW'` |
+  | 2 部 `<G>.<t>` の EXTERNAL + LOCATION（r21） | 開始して FAILED、`FAILED: SemanticException [Error 10072]: Database does not exist: <G>`、2/1301 `Database <G> not found.` |
+  | LOCATION の無い `CREATE EXTERNAL TABLE <G>.<DB>.<t> (n int)`（+ STORED AS。r23・r24）、非 EXTERNAL の `CREATE TABLE <G>.<DB>.<t> (n int)`（+ table_type ICEBERG。r25・r26） | `No location was specified for table. An S3 location must be specified` |
+  | r1 の形を Context の Catalog 省略（`Database=<DB>` だけ）で（r27） | SUCCEEDED、DDL / CREATE_TABLE。返った Context の Catalog は `<G>`、Query は `CREATE EXTERNAL TABLE <DB>.<t> ...` |
+  | `CREATE TABLE AwsDataCatalog.<DB>.<t> (n int) LOCATION '..'` を `<DEF>`・Catalog 省略で（r2・r28） | External |
+  | `<GCTX>` で `CREATE EXTERNAL TABLE awsdatacatalog.<DB>.<t> ... LOCATION`（r29） | 2 catalogs |
+  | 非 EXTERNAL + LOCATION の 1 部・2 部・IF NOT EXISTS・COMMENT・PARTITIONED BY・ROW FORMAT SERDE・CLUSTERED BY・TBLPROPERTIES ('a278'='b')・小文字・末尾 `;`・`'table_type'='HIVE'`（r30〜r37・r39・r40・r46） | External |
+  | 非 EXTERNAL の `(n int NOT NULL) LOCATION`（r38）、`<DEF>` で `"<S3 Tables のカタログ>".<ns>.<t>` の非 EXTERNAL（r51） | `line 1:<C>: mismatched input 'LOCATION'. Expecting: 'COMMENT', 'WITH', <EOF>` |
+  | 非 EXTERNAL + LOCATION + `'table_type'='ICEBERG'`・`'iceberg'`・`'table_type' = 'ICEBERG'`・`'TABLE_TYPE'='ICEBERG'`・2 つ目のキー（r41〜r45）、`AwsDataCatalog.<DB>.<t>` で（r49） | SUCCEEDED |
+  | 同上 + `STORED AS PARQUET`（r47） | 開始して FAILED `Iceberg create table statement does not allow STORED AS/BY` |
+  | 非 EXTERNAL の `<G>.<DB>.<t>` + LOCATION + table_type ICEBERG（r48） | 2 catalogs |
+
+- 過去の測定（#266 の ROUND=13・14）: `<DEF>` で `{AwsDataCatalog.<db>, <db>, awsdatacatalog.<db>}.<t>` の EXTERNAL + LOCATION は SUCCEEDED（z0・z0b・z0c）、`<GCTX>` で `<G>.<db>.<t>`・`AwsDataCatalog.<db>.<t>`・`<t>` の EXTERNAL + LOCATION は SUCCEEDED（z2〜z4）、`CREATE TABLE {AwsDataCatalog, <G>}.<db>.<t> ... LOCATION` は `<DEF>` でも `<GCTX>` でも External（xc・x1・x4・z5）
+- 手元の Trino 482（2026-09-27）: r38 の形は本物と同じ文言（位置は名前の長さの差だけ）。r10・r19 の形の Expecting は `'BRANCH', 'CATALOG', 'FUNCTION', 'MATERIALIZED', 'OR', 'ROLE', 'SCHEMA', 'TABLE', 'VIEW'` で本物と違う
+- 採用した判断: S3 Tables でない Context で、`hive.rs` の `read` が読める LOCATION 付きの文を構文チェックの前に弾く。EXTERNAL も table_type ICEBERG も無ければ Context によらず External、3 部の名前は Context が `AwsDataCatalog` なら 1 部目が `awsdatacatalog` の類でないとき（実在しないカタログは先に DATACATALOG_NOT_FOUND）、Context がほかの実在するカタログなら EXTERNAL の 1 部目がちょうど小文字の `awsdatacatalog` のとき 2 catalogs。本物が成功した形（手元の Trino では実行できない）、r21・r47 の開始後の失敗、LOCATION の無い EXTERNAL は扱わない

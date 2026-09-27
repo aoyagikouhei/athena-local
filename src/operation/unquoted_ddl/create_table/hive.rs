@@ -165,6 +165,54 @@ pub(in crate::operation) fn s3_tables_two_catalogs(query: &str) -> Option<String
     })
 }
 
+/// S3 Tables でない Context で EXTERNAL の無い LOCATION に本物が返す文言（位置なし）。
+const EXTERNAL_REQUIRED: &str = "External keyword required for table type HIVE";
+
+/// S3 Tables でない Context の LOCATION 付きの Hive の `CREATE TABLE` を本物が開始時に弾くときの文言。
+pub(in crate::operation) enum HiveLocation {
+    Reject(String),
+    /// Context の Catalog が実在するときだけ弾く（呼び出し側が確かめる）。
+    RejectIfContextExists(String),
+}
+
+/// S3 Tables でない Context で、本物が Hive の `CREATE TABLE` として読んでから開始時に弾く LOCATION 付きの文
+/// （2026-09-27 実測 ROUND=21 の r1〜r49、#266 の x・z 群。#278）。`catalog` は Context の Catalog（省略なら None）。
+/// EXTERNAL の無い形は、TBLPROPERTIES の `table_type` が ICEBERG（綴りによらない。r41〜r45）でなければ、名前の部の数・句・
+/// Context によらず External の文言（r2・r28・r30〜r37・r39・r40・r46・x1・x4・z5）。EXTERNAL の形と table_type が ICEBERG の
+/// 形の 3 部の名前は、Context が AwsDataCatalog（大文字小文字によらない）なら 1 部目が `awsdatacatalog` の類でないとき
+/// （実在しないカタログは先に `location_catalog` で弾く。r1・r3〜r9・r13〜r18・r20・r22・r48）、Context がほかのカタログ
+/// なら EXTERNAL の形の 1 部目がちょうど小文字の `awsdatacatalog` のとき（r29。Context が実在しなければ測っていない）に
+/// `Unsupported ddl with 2 catalogs: <文>`。Catalog の省略では本物は成功した（r27）ので弾かない。
+pub(in crate::operation) fn location_rejection(
+    query: &str,
+    catalog: Option<&str>,
+) -> Option<HiveLocation> {
+    let hive = read(query)?;
+    if !hive.location {
+        return None;
+    }
+    let iceberg = hive.properties.iter().any(|(key, value)| {
+        key.eq_ignore_ascii_case("table_type") && value.eq_ignore_ascii_case("iceberg")
+    });
+    if !hive.external && !iceberg {
+        return Some(HiveLocation::Reject(EXTERNAL_REQUIRED.to_string()));
+    }
+    let [first, _, _] = hive.parts.as_slice() else {
+        return None;
+    };
+    let message = format!(
+        "{TWO_CATALOGS}: {}",
+        query.trim_matches([' ', '\t', '\r', '\n'])
+    );
+    match catalog? {
+        catalog if catalog.eq_ignore_ascii_case("awsdatacatalog") => {
+            (!first.eq_ignore_ascii_case("awsdatacatalog")).then_some(HiveLocation::Reject(message))
+        }
+        _ => (hive.external && *first == "awsdatacatalog")
+            .then_some(HiveLocation::RejectIfContextExists(message)),
+    }
+}
+
 /// LOCATION 付きの Hive の `CREATE [EXTERNAL] TABLE <無引用の 3 部> ... LOCATION '..'` の 1 部目（書いたとおり）。
 /// `awsdatacatalog` の類は None。本物は 1 部目のカタログが実在しなければ Context によらず開始時に DATACATALOG_NOT_FOUND で
 /// 弾いた（2026-09-26 実測 n6・2026-09-27 実測 s12・s13）。EXTERNAL・IF NOT EXISTS・句（1 つ・全部）・列の並びの有無に

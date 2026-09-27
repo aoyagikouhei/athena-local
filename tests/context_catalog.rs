@@ -122,10 +122,13 @@ async fn 実在しないカタログの_ddl_とビューの文は差し替え_in
         .await;
 
     for (query, sent) in [
-        // 場所の無い CREATE TABLE と引用符付きの列名は開始時に弾く（#208・#221）ので、本物が受理する
-        // LOCATION 付きの形で CREATE_TABLE のカタログの差し替えを観測する（本物の Trino は構文エラーに
-        // するが、偽 Trino の構文チェックは通す）。
-        ("CREATE TABLE c (n integer) LOCATION 's3://b/p/'", "hive"),
+        // 場所の無い CREATE TABLE と引用符付きの列名は開始時に弾き（#208・#221）、EXTERNAL の無い Hive の LOCATION も
+        // 開始時に弾く（#278）ので、本物が受理する table_type が ICEBERG の LOCATION 付きの形で CREATE_TABLE のカタログの
+        // 差し替えを観測する（本物の Trino は構文エラーにするが、偽 Trino の構文チェックは通す）。
+        (
+            "CREATE TABLE c (n integer) LOCATION 's3://b/p/' TBLPROPERTIES ('table_type'='ICEBERG')",
+            "hive",
+        ),
         ("ALTER TABLE t ADD COLUMNS (c varchar)", "hive"),
         ("CREATE VIEW v AS SELECT n FROM t", "hive"),
         ("SHOW CREATE VIEW v", "hive"),
