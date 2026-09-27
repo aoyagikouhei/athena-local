@@ -65,8 +65,12 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
 
   trino:
-    # trino-probe/versions.sh が TRINO_TAG と CATALOG_DIR で版とカタログを差し替える（古い版は fs の設定が違う）。
+    # trino-probe/versions.sh が TRINO_TAG・CATALOG_DIR・JAVA_TOOL_OPTIONS で版とカタログと JVM を差し替える（古い版は fs の設定が違う）。
     image: trinodb/trino:${TRINO_TAG:-482}
+    environment:
+      # 値を書かない形なので、compose を呼ぶ側の環境に無ければコンテナにも入らない（空で入れると JVM が「Picked up」を出す）。
+      # versions.sh が、同梱の JDK が cgroup v2 で落ちる版（400）だけ -XX:-UseContainerSupport を入れて起動し直す（#308）。
+      - JAVA_TOOL_OPTIONS
     volumes:
       # hive / iceberg（データはコンテナ内の /tmp/hive・/tmp/iceberg。MinIO は指さない）と memory（sdk-retry・retention）。相対パスはこのファイルの場所が基準。
       # データの volume は置かない（足場は毎回 down -v で作り直す。volume は root の持ち物で trino が書けず、使われていなかった。#233）。

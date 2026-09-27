@@ -114,7 +114,7 @@ WSL2 の Ubuntu 24.04、ネイティブの Docker Engine、arm64 で、2026-09-2
 - `tools/dev.sh tools/e2e/minio/verify.sh` の走行中（ケース 1 の実行中）に端末で Ctrl-C を押すと、1 秒で終了コード 130 で抜け、足場の trap が `down -v trino minio minio-init` を流す。`docker ps -a --filter label=com.docker.compose.project=athena-local` は dev も含めて 0 件になる（compose.yml の `init: true` が効いている）。
 - `tools/dev.sh tools/e2e/jdbc-drivers/verify.sh` を既定の全 7 版（3.8.1〜3.0.0）で最後まで流して FAIL 0。
 - その走行中に同じプロジェクト名で `tools/dev.sh cargo test --locked` を動かし、tls-proxy から `dev` が 2 つのアドレスに解決されている間も、cargo test は全件通り、tls-proxy のログに接続失敗・upstream のエラー・5xx は 0 件（上の同時実行の項目の理由による）。
-- `tools/dev.sh tools/e2e/trino-probe/versions.sh` を既定の 5 版（480 475 470 440 400 の pull から）で最後まで流して FAIL 0（結果は [measurements/trino.md](measurements/trino.md) の #131 の節）。
+- `tools/dev.sh tools/e2e/trino-probe/versions.sh` を既定の 5 版（480 475 470 440 400 の pull から）で最後まで流して FAIL 0（結果は [measurements/trino.md](measurements/trino.md) の #131 の節）。2026-09-27 に足場を直した後（#308）は、`COMPOSE_PROJECT_NAME=athena-local-308` で `TRINO_TAGS="470 440 400 482"` を流し、SKIP 0・FAIL 0（400 は `JAVA_TOOL_OPTIONS` を付けた起動し直しで起動した）。
 
 rootless docker（同じマシンに `dockerd-rootless-setuptool.sh install --force` で並べて入れ、CLI のコンテキストを `rootless` にした）では、toolbox のイメージはビルドできるが `tools/dev.sh cargo test` が `could not find Cargo.toml` で止まる（2026-09-25。#184）。理由は 2 つ:
 

@@ -4,8 +4,10 @@
 # system.metadata.catalogs の connector_name、probe_sql（src/operation/table_format.rs）の結果、
 # DROP TABLE / ALTER TABLE ... ADD COLUMN の updateType がどう返るかを版ごとに集める。
 # 版ごとにルートの compose.yml の trino を TRINO_TAG と CATALOG_DIR で作り直し（down -v trino → up -d trino）、
-# catalog → catalog-legacy → catalog-nofsflag の順に
+# catalog → catalog-legacy → catalog-nofsflag → catalog-hadoop の順に
 # 「SHOW SCHEMAS FROM hive / iceberg が error 無しで返る」構成を探して採用し、probe.sh を流す。
+# 起動が同梱の JDK の cgroup v2 の不具合（CgroupInfo の NullPointerException）で落ちた試行は、
+# JAVA_TOOL_OPTIONS=-XX:-UseContainerSupport を付けて同じ catalog でもう一度起動する（400。#308）。
 # 本物の AWS は使わない。
 #
 # 使い方: tools/dev.sh tools/e2e/trino-probe/versions.sh
@@ -29,7 +31,8 @@ TRINO_TAGS="${TRINO_TAGS:-480 475 470 440 400}"
 BASE="http://trino:8080"
 START_TIMEOUT="${START_TIMEOUT:-120}"
 PULL_TIMEOUT="${PULL_TIMEOUT:-600}"
-CATALOG_DIRS="catalog catalog-legacy catalog-nofsflag"
+CATALOG_DIRS="catalog catalog-legacy catalog-nofsflag catalog-hadoop"
+CGROUP_JVM_OPTS="-XX:-UseContainerSupport"
 CONTROL_TAG="482"
 # 482 の期待値。A2・C1・C2 は docs/dev/measurements/trino.md の「Trino のバージョン差」（#39）の表。
 # D1〜D4 は probe.sh の D 節（src/operation/table_format.rs の probe_sql と同じ形）の値で、D2・D3 は
@@ -112,17 +115,35 @@ startup_reason() {
   echo "${line:-ログに手がかり無し}" | tr '\t' ' ' | cell
 }
 
+# $1 タグ, $2 catalog, $3 JAVA_TOOL_OPTIONS（空で無し）, $4 試行の証跡: trino を作り直して起動を待つ。
+# 起動しなければ起動ログを残して 1
+start_trino() {
+  local -a jvm_env=()
+  # 空のときは変数ごと渡さない（compose.yml の trino は値を書かない形で JAVA_TOOL_OPTIONS を受け取る）
+  [ -z "$3" ] || jvm_env=("JAVA_TOOL_OPTIONS=$3")
+  down
+  env "${jvm_env[@]}" TRINO_TAG="$1" CATALOG_DIR="$SCRIPT_DIR/$2" \
+    docker compose -f "$COMPOSE_FILE" up -d --pull never trino >"$4/compose-up.log" 2>&1
+  wait_ready && return 0
+  docker logs --tail 60 "$(trino_id)" >"$4/startup.log" 2>&1
+  return 1
+}
+
 # $1 タグ, $2 証跡: catalog を順に試し、採用した名前を ADOPTED、試行の記録を NOTES に入れる。
 # 戻り値 0=採用、1=どれも通らない、2=nodeVersion がタグと違う
 try_catalogs() {
-  local tag="$1" ev="$2" dir att err_h err_i version
+  local tag="$1" ev="$2" dir att err_h err_i version started jvm=""
   ADOPTED=""; NOTES=""; NODE_VERSION="-"
   for dir in $CATALOG_DIRS; do
-    att="$ev/attempt-$dir"; mkdir -p "$att"; down
-    TRINO_TAG="$tag" CATALOG_DIR="$SCRIPT_DIR/$dir" \
-      compose up -d --pull never trino >"$att/compose-up.log" 2>&1
-    if ! wait_ready; then
-      docker logs --tail 60 "$(trino_id)" >"$att/startup.log" 2>&1
+    att="$ev/attempt-$dir"; mkdir -p "$att"; started=0
+    start_trino "$tag" "$dir" "$jvm" "$att" && started=1
+    # JDK の cgroup v2 の不具合なら、この版の以降の試行はすべて JVM のオプション付きで起動する
+    if [ "$started" = 0 ] && [ -z "$jvm" ] && grep -q 'CgroupInfo' "$att/startup.log"; then
+      jvm="$CGROUP_JVM_OPTS"; NOTES+="JDK が cgroup v2 で落ちたので JAVA_TOOL_OPTIONS=$jvm で起動し直した; "
+      att="$ev/attempt-$dir-jvm"; mkdir -p "$att"
+      start_trino "$tag" "$dir" "$jvm" "$att" && started=1
+    fi
+    if [ "$started" = 0 ]; then
       NOTES+="$dir: 起動せず（$(startup_reason "$att")）; "
       continue
     fi
@@ -221,7 +242,7 @@ measure_tag() {
   elif [ "$rc" -eq 2 ]; then
     status=FAIL; detail="$NOTES"
   else
-    status=SKIP; detail="未測定: 3 つの catalog とも SHOW SCHEMAS が通らない（$NOTES）"
+    status=SKIP; detail="未測定: どの catalog でも SHOW SCHEMAS が通らない（$NOTES）"
   fi
   [ "${#vals[@]}" -gt 0 ] || vals=(- - - - - - - -)
   [ "$status" = FAIL ] && FAILS=$((FAILS + 1))
