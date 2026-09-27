@@ -11,6 +11,7 @@ use crate::trino::{Outcome, QueryError, Trino};
 
 use super::completion;
 use super::context_catalog;
+use super::ctas_reformat;
 use super::format_probe;
 use super::result_output;
 use super::table_format::{self, FormatOverride};
@@ -102,6 +103,38 @@ fn engine_failure(execution: &Execution, error: &QueryError) -> Failure {
     }
 }
 
+/// Trino に送った `sent`（`full` の `offset` バイト目から始まる）が失敗したときの `error` の位置を、本物が
+/// CTAS を整形し直した文の位置に直す（`ctas_reformat::remap`。対象外・読めない形は `error` をそのまま返す）。
+/// パラメータがある（EXECUTE IMMEDIATE で包む）ときは対象外（測っていない。#272）。
+fn remap_ctas_position(
+    execution: &Execution,
+    sent: &str,
+    offset: usize,
+    full: &str,
+    error: QueryError,
+) -> QueryError {
+    if !execution.execution_parameters.is_empty() {
+        return error;
+    }
+    // 対象の形は受け取ったままの文の名前で決める。S3 Tables の Context の `awsdatacatalog.<DB>.<表>` の CTAS は、開始時に
+    // 1 部目を差し替えた文が `execution.query` に入り、受け取った文は `reported` にある（#232）。
+    let received = execution
+        .reported
+        .as_ref()
+        .map_or(execution.query.as_str(), |reported| reported.query.as_str());
+    match ctas_reformat::remap(
+        sent,
+        offset,
+        full,
+        received,
+        execution.catalog.as_deref(),
+        &error.message,
+    ) {
+        Some(message) => QueryError { message, ..error },
+        None => error,
+    }
+}
+
 /// CTAS の問い合わせ部分（`ctas_query::query_part`）を、本体と同じ Context・別名置換・パラメータで Trino に投げ、
 /// エンジンのクエリ ID と行数（`WITH NO DATA` は 0。t9）を返す。count(*) で包むと使わない列の計算が省かれ、実行中の
 /// 失敗（t2 の `CAST`）を見逃すので、包まずに行を数える。切り出せないときは None（`.metadata` を置かない）。
@@ -130,15 +163,28 @@ async fn ctas_rows(
         return Ok(None);
     };
     let bound = bind_parameters(trino, execution, catalog, database).await;
-    let outcome = execute_bound(
+    let sent = &query[part.range.clone()];
+    let outcome = match execute_bound(
         trino,
-        &query[part.range],
+        sent,
         bound.get(part.leading_parameters..).unwrap_or_default(),
         catalog,
         database,
         &execution.cancel,
     )
-    .await?;
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            return Err(remap_ctas_position(
+                execution,
+                sent,
+                part.range.start,
+                &query,
+                error,
+            ));
+        }
+    };
     let rows = if part.no_data {
         0
     } else {
@@ -183,7 +229,10 @@ async fn run(
 
     let bound = bind_parameters(trino, execution, catalog, database).await;
     let query = aliased_query(trino, config, execution).await;
-    let outcome = execute_bound(trino, &query, &bound, catalog, database, cancel).await?;
+    let outcome = match execute_bound(trino, &query, &bound, catalog, database, cancel).await {
+        Ok(outcome) => outcome,
+        Err(error) => return Err(remap_ctas_position(execution, &query, 0, &query, error)),
+    };
     let outcome = completion::split_explain_rows(&execution.query, outcome);
     let outcome = completion::split_show_create_rows(&execution.query, outcome);
     // Iceberg のテーブルの DESCRIBE だけ、パーティション行のために `SHOW CREATE TABLE` を別に投げる（#173）。

@@ -820,6 +820,54 @@ async fn db_が無い_ctas_の問い合わせ部分が失敗すればそのエ�
     assert!(harness.s3_puts().is_empty(), "{:?}", harness.s3_puts());
 }
 
+/// `ctas_rows` の経路（DB が無い CTAS）でも、問い合わせ部分の失敗の位置を本物と同じ整形後の位置に直す
+/// （p1 の X 版。2026-09-27 実測。#272 フェーズ 2）。
+#[tokio::test]
+async fn db_が無い_ctas_の問い合わせ部分の失敗の位置を整形後の位置に直す() {
+    let probe = schema_probe_sql("hive", "missing");
+    let part = "SELECT * FROM db.nosuch";
+    let harness = Harness::builder(select_response())
+        .catalog_map(&[("AwsDataCatalog", "hive")])
+        .route(
+            &probe,
+            trino_error(
+                "SCHEMA_NOT_FOUND",
+                "line 1:1: Schema 'missing' does not exist",
+            ),
+        )
+        .route(
+            part,
+            trino_error(
+                "TABLE_NOT_FOUND",
+                "line 1:15: Table 'db.nosuch' does not exist",
+            ),
+        )
+        .results_s3()
+        .start()
+        .await;
+
+    let execution = harness
+        .run_query(json!({
+            "QueryString": format!("CREATE TABLE awsdatacatalog.missing.t AS {part}"),
+            "QueryExecutionContext": { "Catalog": "AwsDataCatalog", "Database": "db" },
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+        }))
+        .await;
+    let status = &execution["QueryExecution"]["Status"];
+    assert_eq!(status["State"], "FAILED", "{execution}");
+    let id = execution["QueryExecution"]["QueryExecutionId"]
+        .as_str()
+        .unwrap();
+    assert_eq!(
+        status["StateChangeReason"],
+        format!(
+            "TABLE_NOT_FOUND: line 6:3: Table 'db.nosuch' does not exist. You may need to manually clean the data \
+             at location 's3://results-bucket/athena/tables/{id}' before retrying. Athena will not delete data in \
+             your account."
+        )
+    );
+}
+
 /// `AS` より前（`WITH (prop = ?)`）の `?` の値は問い合わせ部分に当てない（その数だけ読み飛ばす）。
 #[tokio::test]
 async fn db_が無い_ctas_の問い合わせ部分には_as_より前の値を当てない() {
