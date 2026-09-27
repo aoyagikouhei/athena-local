@@ -6,6 +6,11 @@
 - 後の issue で覆った判断は載せない。変わったものは新しいほうを載せ、「#N で変更」と添える。
 - 実測の値そのものは [measurements/](measurements/README.md)、まだ測っていないものは [unmeasured.md](unmeasured.md)。
 
+## 合わせる範囲
+
+- 本物に合わせるのは次の 3 つだけにする。(a) [roadmap.md](roadmap.md) で調べたクライアント（PyAthena・awswrangler・dbt-athena・Grafana・JDBC・SDK）が送る文の成功系（結果の形、型、ファイル名、`.metadata` を含む）。(b) 失敗の状態とエラーコード（`FAILED` になるか開始時に `InvalidRequestException` で弾くか、`AthenaErrorCode`・`ErrorCategory`・`ErrorType` の区分）。(c) 文言の完全一致は、クライアントが文字列を読むものだけ（今わかっているのは PyAthena の `MetadataException` と Entity Not Found の類）。これ以外の本物との差（文言の綴り、開始時に弾くか実行してから失敗するかの違い、内部名の綴り、クライアントが送らない形の DDL など）は [docs/caveats.md](../caveats.md) に 1 行書いて終わりにし、issue は立てない。理由: 2026-09-14 からの 2 週間で issue が 152 件になり、146 件が別の issue から派生し、連鎖は 13 段（#192 → … → #303）に達した。測る空間が Context × 文 × 名前の部数 × 引用 × 句の直積で、1 ラウンド測るたびに隣の未実測が見えて次の issue になっていた。矛盾の往復は無く（覆した判断は #26 → #39、#204 → #207、#227 → #237 の 3 つで、どれも追加の実測による一方向の修正）、増え続ける原因は「どこまで合わせるか」の線が無いことだった。（2026-09-27、ユーザーの判断）
+- [unmeasured.md](unmeasured.md) の行は起票の理由にしない。未実測の「残り」は unmeasured.md に置くだけにし、issue にするのは (a)〜(c) に入るか利用者の報告があるときだけ。範囲外として閉じた issue には `out-of-scope` のラベルを付けて、報告が来たら拾い直せるようにする（#276・#279・#283・#293・#294・#301・#303 をこの規則で閉じた。範囲外の一覧は roadmap.md の「3.」）。先行実測（実装より前に実測だけを回すもの）は unmeasured.md の古い順ではなく、roadmap.md の未実装機能（ListDatabases・ListTableMetadata・GetTableMetadata など、測らないと実装できないもの）を対象にする。（2026-09-27、ユーザーの判断）
+
 ## 実測の進め方
 
 - 挙動を決める issue では、本物で実測してから計画を確定する（失敗時・取り消し時の扱いもそうした）。（#5・#6、2026-09-17）
