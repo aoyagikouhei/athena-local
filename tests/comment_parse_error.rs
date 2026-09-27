@@ -644,9 +644,9 @@ async fn describe_extended_のブロックコメントは_hive_表だけ_failed_
     );
 }
 
-/// A1: `EXTENDED` を表の名前と読んでしまう `entity_check::check` に「表が無い」で開始時に弾かれず、
-/// Iceberg・ビューは今までどおり構文チェックへ進む（構文チェックの前の失敗があるときは
-/// `entity_check::check` を呼ばない。計画攻撃 A1）。
+/// de1 は Hive 表だけで失敗させるので（測ったのは Hive 表だけ。#257）、Iceberg・ビューは構文チェックの
+/// 前の失敗にならず、今までどおり構文チェックへ進む（`entity_check::check` を飛ばす計画攻撃 A1 の分岐は
+/// 通らない。A1 は Hive 表のテストが固定している）。
 #[tokio::test]
 async fn describe_extended_のブロックコメントは_iceberg_ビューなら開始時に弾かれず構文チェックへ進む()
  {

@@ -359,10 +359,13 @@ it as without the comment. `MSCK REPAIR TABLE` on an Iceberg table, with or with
   other statement whose `SubstatementType` was not measured (see
   [Supported API](api.md#supported-api)). Only two of the nine can actually be run
   through athena-local — `DROP COLUMN` and `RENAME TO`, on an Iceberg table
-  (see below for the other tables). The other six are
+  (see below for the other tables). The other seven are
   rejected at the syntax check or at `StartQueryExecution` (the items above),
   so their classification is what athena-local would answer if the backend's
-  grammar accepted the statement.
+  grammar accepted the statement — except that `ADD COLUMNS`,
+  `REPLACE COLUMNS` and `CHANGE COLUMN` with a block comment where Athena's
+  Hive parser rejects it are started and failed with their classification (see
+  [Block comments Athena's Hive parser rejects](#block-comments-athenas-hive-parser-rejects)).
 - **`DROP COLUMNS` (plural) is a syntax error on Athena.** `ADD` takes the
   plural `COLUMNS`, but `DROP` takes only the singular `COLUMN`: Athena rejects
   `DROP COLUMNS` in `StartQueryExecution` with `mismatched input 'COLUMNS'.
