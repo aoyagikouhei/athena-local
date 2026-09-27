@@ -401,3 +401,37 @@ fn describe_iceberg_rows_はコメントをそのまま置き_パーティショ
     assert_eq!(describe_iceberg_rows(&rows, &[]), head);
     assert_eq!(describe_iceberg_rows(&rows, &["void(s)".to_string()]), head);
 }
+
+/// 本物が DESCRIBE で失敗にしたのは最上位の `time`・`uuid` の列（2026-09-27 実測 dci_time・dci_uuid。#307）。
+/// 成功した timestamp with time zone（dci_tstz）と、測っていない入れ子・`time with time zone` は当てない。
+#[test]
+fn has_unsupported_iceberg_column_は最上位の_time_と_uuid_だけを見る() {
+    let row = |column_type: &str| {
+        vec![
+            Value::from("c"),
+            Value::from(column_type),
+            Value::from(""),
+            Value::from(""),
+        ]
+    };
+    for column_type in ["time(6)", "time(3)", "uuid"] {
+        assert!(
+            has_unsupported_iceberg_column(&[trino_row("n"), row(column_type)]),
+            "{column_type}"
+        );
+    }
+    for column_type in [
+        "timestamp(6) with time zone",
+        "timestamp(6)",
+        "time(6) with time zone",
+        "array(uuid)",
+        r#"row("a" time(6))"#,
+        "varchar",
+    ] {
+        assert!(
+            !has_unsupported_iceberg_column(&[trino_row("n"), row(column_type)]),
+            "{column_type}"
+        );
+    }
+    assert!(!has_unsupported_iceberg_column(&[]));
+}

@@ -154,6 +154,19 @@ pub(super) fn describe_hive_rows(rows: &[Vec<Value>]) -> Vec<String> {
     lines
 }
 
+/// Trino の DESCRIBE（4 列）の行に、本物の Iceberg の表が DESCRIBE で失敗にする型（`time(p)`・`uuid`）の
+/// 列があるか（2026-09-27 実測 dci_time・dci_uuid。#307）。見るのは最上位の列だけ（入れ子の中は測っていない）。
+pub(super) fn has_unsupported_iceberg_column(rows: &[Vec<Value>]) -> bool {
+    rows.iter().any(|row| {
+        let column_type = cell(row, 1);
+        column_type == "uuid"
+            || column_type
+                .strip_prefix("time(")
+                .and_then(|rest| rest.strip_suffix(')'))
+                .is_some_and(|precision| precision.bytes().all(|byte| byte.is_ascii_digit()))
+    })
+}
+
 /// Trino の DESCRIBE（4 列）と `partitioning` の要素を、本物の Iceberg のテーブルの行にする
 /// （2026-09-24 実測 d2・d8。#173）。詰めない。
 /// 型は `type_spelling::iceberg`、コメントはそのまま（無ければ空）。パーティションの行は

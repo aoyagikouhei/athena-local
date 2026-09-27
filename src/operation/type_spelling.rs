@@ -1,7 +1,9 @@
 //! Trino の型の綴りを、本物の Athena が DESCRIBE に出す型の綴り（Hive のテーブルと Iceberg のテーブルで違う）に
-//! 写す（#173）。写すのは実測した綴りだけ（2026-09-24 実測 d1・d2・d8。Trino 482 の綴りは同じ日に手元で確認）。
-//! 測っていない型（`interval …`、`time`、`json`、`uuid`、`timestamp(3) with time zone` など）は
-//! Trino の綴りのまま返す。
+//! 写す（#173）。写すのは実測した綴りだけ（2026-09-24 実測 d1・d2・d8、2026-09-27 実測 #307。Trino 482 の
+//! 綴りは同じ日に手元で確認）。それ以外の型（`interval …`、`time`、`json`、`uuid` など）は Trino の綴りのまま
+//! 返す。本物はこれらの列を Hive の表に作れず（CTAS が `Unsupported Hive type`）、Iceberg の表でも
+//! `interval`・`json` は作れない（2026-09-27 実測。#307）。Iceberg の `time`・`uuid` の列の表は `DESCRIBE`
+//! 自体が失敗する（`background_execution::run` が `utility_rows::has_unsupported_iceberg_column` で見る）。
 
 /// Trino の型の綴りを Hive のテーブルの表記にする。`array`・`map`・`row` は中の型も写し、区切りは空白無しの
 /// `,`・`:`（`map<string,int>`、`struct<aa:int,b:int>`。2026-09-24 実測 d1）。
@@ -10,9 +12,19 @@ pub(super) fn hive(trino: &str) -> String {
 }
 
 /// Trino の型の綴りを Iceberg のテーブルの表記にする。区切りは空白付きの `, `・`: `
-/// （`decimal(10, 2)`、`map<string, int>`、`struct<a: int>`。2026-09-24 実測 d2・d8）。
-/// 複数フィールドの `row` の区切りは未実測（#173）で、`map` に倣って `, ` にしている。
+/// （`decimal(10, 2)`、`map<string, int>`、`struct<a: int, b: string>`。2026-09-24 実測 d2・d8、
+/// 2026-09-27 実測 d_i。#307）。最上位の `timestamp(p) with time zone` は `timestamp`（2026-09-27 実測
+/// dci_tstz）。入れ子の中のものは測っていないので Trino の綴りのまま。
 pub(super) fn iceberg(trino: &str) -> String {
+    if trino
+        .strip_prefix("timestamp(")
+        .and_then(|rest| rest.split_once(')'))
+        .is_some_and(|(precision, zone)| {
+            precision.bytes().all(|byte| byte.is_ascii_digit()) && zone == " with time zone"
+        })
+    {
+        return "timestamp".to_string();
+    }
     spell(trino, ", ", ": ")
 }
 
@@ -99,6 +111,24 @@ fn split_parameters(trino: &str) -> Option<(&str, Vec<&str>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 本物の d_h（Hive、2026-09-27 実測。#307）。入れ子の `struct` も 2 フィールドを空白無しの `,` でつなぐ。
+    /// 採取元: run-20260927-102840/d_h.results.rows.txt。
+    #[test]
+    fn hive_は_307_で実測した入れ子を本物の綴りに写す() {
+        for (trino, hive_spelling) in [
+            ("char(10)", "char(10)"),
+            ("varchar(10)", "varchar(10)"),
+            (
+                r#"array(row("a" integer, "b" varchar))"#,
+                "array<struct<a:int,b:string>>",
+            ),
+            (r#"row("a" integer, "b" varchar)"#, "struct<a:int,b:string>"),
+            ("map(varchar, array(integer))", "map<string,array<int>>"),
+        ] {
+            assert_eq!(hive(trino), hive_spelling, "{trino}");
+        }
+    }
 
     /// 本物の d1（Hive、2026-09-24 実測）の 17 種。左は Trino 482 の DESCRIBE の `Type`。
     #[test]
@@ -204,7 +234,29 @@ mod tests {
         }
     }
 
-    /// 入れ子も写す。複数フィールドの `row` の区切りは未実測で、`map` に倣って `, `。
+    /// 本物の d_i・dci_tstz（Iceberg、2026-09-27 実測。#307）。2 フィールドの `row` も `, ` でつなぐ。
+    /// 最上位の `timestamp(p) with time zone` は `timestamp`。
+    /// 採取元: run-20260927-102840/d_i.results.rows.txt、dci_tstz.results.rows.txt。
+    #[test]
+    fn iceberg_は_307_で実測した型を本物の綴りに写す() {
+        for (trino, iceberg_spelling) in [
+            ("decimal(10,2)", "decimal(10, 2)"),
+            ("varbinary", "binary"),
+            (
+                r#"row("a" integer, "b" varchar)"#,
+                "struct<a: int, b: string>",
+            ),
+            (
+                r#"array(row("a" integer, "b" varchar))"#,
+                "array<struct<a: int, b: string>>",
+            ),
+            ("timestamp(6) with time zone", "timestamp"),
+        ] {
+            assert_eq!(iceberg(trino), iceberg_spelling, "{trino}");
+        }
+    }
+
+    /// 入れ子も写す。
     #[test]
     fn iceberg_は入れ子を空白付きの区切りで写す() {
         for (trino, iceberg_spelling) in [
@@ -221,14 +273,14 @@ mod tests {
 
     #[test]
     fn iceberg_は測っていない型を_trino_の綴りのまま返す() {
-        for trino in [
-            "uuid",
-            "time(6)",
-            "timestamp(6) with time zone",
-            "row(integer)",
-        ] {
+        for trino in ["uuid", "time(6)", "row(integer)"] {
             assert_eq!(iceberg(trino), trino, "{trino}");
         }
         assert_eq!(iceberg("array(uuid)"), "array<uuid>");
+        // 入れ子の中の timestamp with time zone は測っていない（#307 で測ったのは最上位の列だけ）。
+        assert_eq!(
+            iceberg("array(timestamp(6) with time zone)"),
+            "array<timestamp(6) with time zone>"
+        );
     }
 }

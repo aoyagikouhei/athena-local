@@ -65,16 +65,31 @@ pub(super) fn spawn_query(app: App, id: String) {
                     .await
                     .map(|outcome| (outcome, update_count, substatement_type))
             }
-            Err(error) => {
+            Err(RunError::Engine(error)) => {
                 let failure = engine_failure(&execution, &error);
                 // FAILED にする前に置く（クライアントは FAILED を見た直後に S3 を読みに行く）。
                 result_output::write_failure(&app, &execution, &failure).await;
                 Err(failure)
             }
+            Err(RunError::NoResultFile(failure)) => Err(failure),
         };
         // 途中で止められていれば CANCELLED が先に書かれているので、finish は何もしない。
         app.store.finish(&id, outcome);
     });
+}
+
+/// `run` の失敗。`Engine` は Trino のエラーで、失敗の理由の `.txt` を置く（EXPLAIN などの例外は
+/// `result_output::write_failure` が決める）。`NoResultFile` は実行の後で本物に合わせて FAILED にするもので、
+/// 本体も `.metadata` も置かない（time・uuid の列の Iceberg 表への DESCRIBE。#307）。
+enum RunError {
+    Engine(QueryError),
+    NoResultFile(Failure),
+}
+
+impl From<QueryError> for RunError {
+    fn from(error: QueryError) -> Self {
+        Self::Engine(error)
+    }
 }
 
 /// Trino のエラーを FAILED の理由にする。エンジンで失敗した CTAS・INSERT には、本物と同じく結果の置き場所を示す文を
@@ -220,7 +235,7 @@ async fn run(
     trino: &Trino,
     config: &Config,
     execution: &Execution,
-) -> Result<(Outcome, Option<FormatOverride>, Option<&'static str>), QueryError> {
+) -> Result<(Outcome, Option<FormatOverride>, Option<&'static str>), RunError> {
     // 省略した Catalog / Database にはここで既定を当てる（実行情報には残さない。#167）。
     // Trino に送るのは別名を当てた名前。実行情報には受け取った名前が残る。
     // 実在しない Catalog は、メタデータの文だけ既定のカタログに差し替える（#214）。
@@ -270,14 +285,23 @@ async fn run(
     let query = aliased_query(trino, config, execution).await;
     let outcome = match execute_bound(trino, &query, &bound, catalog, database, cancel).await {
         Ok(outcome) => outcome,
-        Err(error) => return Err(remap_ctas_position(execution, &query, 0, &query, error)),
+        Err(error) => {
+            return Err(remap_ctas_position(execution, &query, 0, &query, error).into());
+        }
     };
     let outcome = completion::split_explain_rows(&execution.query, outcome);
     let outcome = completion::split_show_create_rows(&execution.query, outcome);
+    let iceberg_describe = statement == Some(table_format::TargetStatement::Describe)
+        && format == Some(table_format::TableFormat::Iceberg);
+    // 本物は time・uuid の列を持つ Iceberg の表への DESCRIBE を開始してから FAILED にし、何も置かない
+    // （2026-09-27 実測。#307）。
+    if iceberg_describe && super::utility_rows::has_unsupported_iceberg_column(&outcome.rows) {
+        return Err(RunError::NoResultFile(
+            Failure::describe_iceberg_unsupported_column_types(),
+        ));
+    }
     // Iceberg のテーブルの DESCRIBE だけ、パーティション行のために `SHOW CREATE TABLE` を別に投げる（#173）。
-    let partitions = if statement == Some(table_format::TargetStatement::Describe)
-        && format == Some(table_format::TableFormat::Iceberg)
-    {
+    let partitions = if iceberg_describe {
         completion::iceberg_partition_specs(
             trino,
             config,

@@ -312,6 +312,102 @@ async fn desc_は_iceberg_でも_describe_と同じ行を返す() {
     assert_describe_columns(&results);
 }
 
+/// 列 `n integer` と、型が `column_type` の列 `c` を持つ表の Trino の `DESCRIBE`。
+fn describe_response_with(column_type: &str) -> Value {
+    json!({
+        "columns": [
+            { "name": "Column", "type": "varchar" },
+            { "name": "Type", "type": "varchar" },
+            { "name": "Extra", "type": "varchar" },
+            { "name": "Comment", "type": "varchar" }
+        ],
+        "data": [["n", "integer", "", ""], ["c", column_type, "", ""]]
+    })
+}
+
+/// 本物は time・uuid の列を持つ Iceberg の表への DESCRIBE を、開始してから FAILED にし、結果ファイル本体も
+/// `.metadata` も置かない（2026-09-27 実測 dci_time・dci_uuid。#307）。`SHOW CREATE TABLE` は投げない。
+#[tokio::test]
+async fn describe_は_iceberg_の_time_か_uuid_の列があれば本物と同じく_failed_にし何も置かない() {
+    for (query, column_type) in [
+        ("DESCRIBE t", "time(6)"),
+        ("DESCRIBE t", "uuid"),
+        ("DESC t", "uuid"),
+    ] {
+        let harness = Harness::builder(describe_response_with(column_type))
+            .route(
+                &probe_sql("default_catalog", "default_schema", "t"),
+                probe_response("iceberg"),
+            )
+            .route(query, describe_response_with(column_type))
+            .route(
+                "SHOW CREATE TABLE t",
+                show_create_response(UNPARTITIONED_DDL),
+            )
+            .results_s3()
+            .start()
+            .await;
+        let execution = harness
+            .run_query(json!({
+                "QueryString": query,
+                "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+            }))
+            .await;
+        let status = &execution["QueryExecution"]["Status"];
+        assert_eq!(status["State"], "FAILED", "{query} {column_type}");
+        assert_eq!(
+            status["StateChangeReason"],
+            "Table has unsupported column types"
+        );
+        assert_eq!(
+            status["AthenaError"]["ErrorMessage"],
+            "Table has unsupported column types"
+        );
+        assert_eq!(status["AthenaError"]["ErrorCategory"], 2);
+        assert_eq!(status["AthenaError"]["ErrorType"], 1100);
+        assert_eq!(execution["QueryExecution"]["StatementType"], "UTILITY");
+        assert_eq!(
+            execution["QueryExecution"]["SubstatementType"],
+            "DESCRIBE_TABLE"
+        );
+        assert!(harness.s3_puts().is_empty(), "{:?}", harness.s3_puts());
+        assert_eq!(
+            harness.trino_sqls(),
+            [
+                probe_sql("default_catalog", "default_schema", "t"),
+                probe_sql("default_catalog", "default_schema", "t"),
+                query.to_string()
+            ]
+        );
+    }
+}
+
+/// timestamp with time zone の列の Iceberg の表は本物でも成功し、型は `timestamp`（2026-09-27 実測 dci_tstz。#307）。
+#[tokio::test]
+async fn describe_は_iceberg_の_timestamp_with_time_zone_の列を_timestamp_と綴って成功する() {
+    let (harness, execution) = run_iceberg_describe(
+        "DESCRIBE t",
+        true,
+        describe_response_with("timestamp(6) with time zone"),
+        show_create_response(UNPARTITIONED_DDL),
+    )
+    .await;
+    let (values, _) = show_columns_results(&harness, &execution).await;
+    let mut expected = unpartitioned_iceberg_rows();
+    expected.insert(3, "c\ttimestamp\t".to_string());
+    assert_eq!(values, expected);
+}
+
+/// time・uuid で失敗にするのは Iceberg の表だけ。Hive の表（本物では作れない。athena-local では Trino が作れる）は
+/// 今までどおり Trino の綴りで成功する。
+#[tokio::test]
+async fn describe_は_hive_の表の_uuid_の列では失敗にしない() {
+    let (harness, execution) =
+        run_describe_query("DESCRIBE t", "hive", true, describe_response_with("uuid")).await;
+    let (values, _) = show_columns_results(&harness, &execution).await;
+    assert_eq!(values[1], format!("{:<20}\t{:<20}\t{:20}", "c", "uuid", ""));
+}
+
 /// 本物は S3 Tables のカタログ名（引用符付き）を取る DESCRIBE を、名前を解決する前に開始時に弾く
 /// （`Unsupported DDL with 2 catalogs`。存在しない表でも同じ。2026-09-25 実測。#204）。
 #[tokio::test]
