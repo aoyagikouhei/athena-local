@@ -85,14 +85,16 @@ fn バッククォートを含む名前は今の経路に任せて_none() {
 #[test]
 fn 対象外の形は_none_を返す() {
     for query in [
-        "DESCRIBE EXTENDED",                      // 名前無し（z1・z2）
-        "DESCRIBE FORMATTED",                     // 名前無し
-        "DESCRIBE db.t",                          // 修飾子も後ろも無い
-        "DESCRIBE EXTENDED a.b.c.d",              // 4 部
-        "DESCRIBE EXTENDED \"db\".t",             // 二重引用符
-        "DESCRIBE EXTENDED db.t n m",             // 列の後ろに余計な語
-        "DESCRIBE EXTENDED db.t PARTITION (p=1)", // 値が文字列でない
-        "SELECT 1",                               // 先頭語が違う
+        "DESCRIBE EXTENDED",                          // 名前無し（z1・z2）
+        "DESCRIBE FORMATTED",                         // 名前無し
+        "DESCRIBE db.t",                              // 修飾子も後ろも無い
+        "DESCRIBE EXTENDED a.b.c.d",                  // 4 部
+        "DESCRIBE EXTENDED \"db\".t",                 // 二重引用符
+        "DESCRIBE EXTENDED db.t n m",                 // 列の後ろに余計な語
+        "DESCRIBE EXTENDED db.t PARTITION (p=1)",     // 値が文字列でない
+        "DESCRIBE EXTENDED db.t PARTITION (p='", // 閉じ引用符が無くクエリの末尾が開き引用符自体（panic の再現）
+        "DESCRIBE EXTENDED db.t PARTITION (p='x') m", // 閉じ括弧の後ろに余計な語（列指定側の n m と対称）
+        "SELECT 1",                                   // 先頭語が違う
     ] {
         assert_eq!(parse(query), None, "{query}");
     }

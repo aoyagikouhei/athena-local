@@ -290,18 +290,21 @@ async fn hive_partition_decision(
         return None;
     }
 
-    let trino_catalog = raw_catalog.map(|catalog| app.config.trino_catalog(catalog));
+    // カタログ名・スキーマ名は小文字にしてから引用符付き識別子として埋める（Trino がカタログ・スキーマを
+    // 小文字で持ち、引用符付き識別子は大文字小文字を区別して照合するため。entity_check.rs:probe・
+    // Probe::Missing の腕と同じ規則。decisions.md「存在の確認に渡すスキーマ・テーブル名は小文字にする」）。
+    let trino_catalog = raw_catalog.map(|catalog| app.config.trino_catalog(catalog).to_lowercase());
     let sql = format!(
         "SELECT 1 FROM {}.{}.{} WHERE {} = {}",
-        quote_identifier(trino_catalog.unwrap_or_default()),
-        quote_identifier(&target.schema),
+        quote_identifier(trino_catalog.as_deref().unwrap_or_default()),
+        quote_identifier(&target.schema.to_lowercase()),
         quote_identifier(&format!("{}$partitions", target.table)),
         quote_identifier(key),
         quote_literal(value),
     );
     let outcome = app
         .trino
-        .execute(&sql, trino_catalog, database, &Cancel::default())
+        .execute(&sql, trino_catalog.as_deref(), database, &Cancel::default())
         .await
         .ok()?;
     if outcome.rows.is_empty() {

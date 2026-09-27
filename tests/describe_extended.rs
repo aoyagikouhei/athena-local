@@ -559,11 +559,13 @@ async fn extended_は_hive_の列指定で成功し_from_deserializer_を返す(
         ]
     );
 
-    let (values, _) = values_and_results(&harness, &execution).await;
+    let (values, results) = values_and_results(&harness, &execution).await;
     assert_eq!(
         values,
         ["n                   \tint                 \tfrom deserializer   "]
     );
+    // EXTENDED の列指定は FORMATTED（p2）と違い 3 列のまま（describe_run.rs の formatted_column）。
+    assert_describe_columns(&results);
 }
 
 /// 本物の p2（2026-09-27 実測）。列指定 FORMATTED の ColumnInfo は 11 列。
@@ -715,6 +717,44 @@ async fn formatted_は_hive_の_partition_指定で存在を確かめて成功�
             .iter()
             .any(|line| line.starts_with("Partition Value:")),
         "{values:?}"
+    );
+}
+
+/// 独立レビュー: Context の Database を大文字混在にしても、`$partitions` の存在確認は小文字のカタログ・
+/// スキーマで投げる（`entity_check::probe`・`Probe::Missing` の腕と同じ規則。名前に DB を書かない
+/// （Context の Database だけで決まる）形なので、`target.schema` は `default_schema` から来た大文字混在の
+/// まま渡る）。
+#[tokio::test]
+async fn extended_は_partition_指定で_context_の_database_を小文字にしてから確かめる() {
+    let probe = probe_sql("default_catalog", "db", "hp");
+    let rows = describe_rows(&[
+        ["n", "integer", "", ""],
+        ["p", "varchar(1)", "partition key", ""],
+    ]);
+    let partitions = partitions_sql("default_catalog", "db", "hp", "p", "x");
+    let harness = Harness::builder(rows.clone())
+        .route(&probe, probe_response("hive"))
+        .route("DESCRIBE hp", rows)
+        .route(
+            &partitions,
+            json!({ "columns": [{ "name": "_col0", "type": "integer" }], "data": [[1]] }),
+        )
+        .results_s3()
+        .start()
+        .await;
+
+    let execution = harness
+        .run_query(json!({
+            "QueryString": "DESCRIBE EXTENDED hp PARTITION (p='x')",
+            "QueryExecutionContext": { "Database": "Db" },
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+        }))
+        .await;
+    assert_eq!(execution["QueryExecution"]["Status"]["State"], "SUCCEEDED");
+    assert!(
+        harness.trino_sqls().contains(&partitions),
+        "小文字のカタログ・スキーマで確かめていない: {:?}",
+        harness.trino_sqls()
     );
 }
 

@@ -237,7 +237,10 @@ fn read_string_literal_value(cursor: &mut athena_sql::Cursor, query: &str) -> Op
     }
     let end = query.len() - cursor.rest().len();
     let text = &query[start..end];
-    Some(text[1..text.len() - 1].replace("''", "'"))
+    // 閉じ引用符が無くクエリの末尾まで読んだとき、開き引用符自体が最後の 1 バイトだと `text.len() == 1`
+    // になり、直接の範囲添字（`text[1..text.len() - 1]`）は `1..0` で panic する。`.get()` は範囲が
+    // 無効なら None を返すので、姉妹関数 `iceberg_partitions::string_value` と同じ形にして避ける。
+    Some(text.get(1..text.len() - 1)?.replace("''", "'"))
 }
 
 #[cfg(test)]
