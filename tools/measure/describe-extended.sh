@@ -47,7 +47,8 @@
 #   ALTER・RENAME・DROP COLUMN の類は一切投げない（対象の表を変えない）。
 #   最後に 4 つとも DROP する（正常終了なら本編の中で。異常終了時は trap がベストエフォートで
 #   もう一度 DROP TABLE IF EXISTS / DROP VIEW IF EXISTS を投げる）。
-#   athena_local_probe_275_hp・_i は location を $OUTPUT の下に置いてあり、DROP でデータも消える。
+#   location は $OUTPUT の下の実行ごとの場所（tables-probe-275-*-<日時>/）。_i（Iceberg）は DROP で
+#   データも消えるが、_hp（Hive の CTAS。external_location）は DROP してもデータ（1 行）が残る。
 #   athena_local_probe_275_h は EXTERNAL なので DROP TABLE では S3 の場所自体は残るが、
 #   行を入れていないので中身は無い。
 #   スキャンする SELECT は一切投げない（CTAS の SELECT はリテラルだけで、既存データを読まない）。
@@ -173,11 +174,14 @@ I="${PREFIX}_i"
 V="${PREFIX}_v"
 X="${PREFIX}_x"
 NODB="${PREFIX}_nodb"
-LOC_HP="${OUTPUT}tables-probe-275-hp/"
-LOC_I="${OUTPUT}tables-probe-275-i/"
-LOC_H="${OUTPUT}tables-probe-275-h/"
+# 場所は実行ごとに分ける。Hive の CTAS（external_location）は DROP してもデータが残り、
+# 同じ場所で 2 回目を流すと「場所が既にある」で作成が失敗するため。
+RUN_STAMP="$(date +%Y%m%d-%H%M%S)"
+LOC_HP="${OUTPUT}tables-probe-275-hp-${RUN_STAMP}/"
+LOC_I="${OUTPUT}tables-probe-275-i-${RUN_STAMP}/"
+LOC_H="${OUTPUT}tables-probe-275-h-${RUN_STAMP}/"
 
-RUN_DIR="$OUT_DIR/run-$(date +%Y%m%d-%H%M%S)"
+RUN_DIR="$OUT_DIR/run-$RUN_STAMP"
 mkdir -p "$RUN_DIR"
 SUMMARY="$RUN_DIR/summary.tsv"
 printf 'label\tstate\tstatement_type\tsubstatement_type\text\tcontent_type\tmetadata_present\tupdate_count\trow_count\terror_category\terror_type\tstart_message\tstart_athena_error_code\tnote\n' > "$SUMMARY"
@@ -1094,9 +1098,9 @@ write_summary_txt() {
     echo "# DDL: あり。作成: ${PREFIX}_h（Hive の EXTERNAL TABLE）・${PREFIX}_hp（パーティション付き"
     echo "#   Hive、CTAS）・${PREFIX}_i（Iceberg、CTAS）・${PREFIX}_v（ビュー）の 4 つ。投げる項目は"
     echo "#   すべて DESCRIBE 系の読み取りのみ（ALTER・RENAME・DROP COLUMN は投げない）。最後に 4 つ"
-    echo "#   とも DROP。${PREFIX}_hp・${PREFIX}_i は location を <OUTPUT> の下に置いてあり、DROP で"
-    echo "#   データも消える。${PREFIX}_h（Hive の EXTERNAL）は DROP TABLE では S3 の場所自体は残るが、"
-    echo "#   行を入れていないので中身は無い。"
+    echo "#   とも DROP。location は <OUTPUT> の下の実行ごとの場所（tables-probe-275-*-<日時>/）。"
+    echo "#   ${PREFIX}_i（Iceberg）は DROP でデータも消えるが、${PREFIX}_hp（Hive の CTAS）は DROP しても"
+    echo "#   データ（1 行）が残る。${PREFIX}_h（Hive の EXTERNAL）は行を入れていないので中身は無い。"
     echo "# 課金の見込み: スキャンする SELECT は投げていない。CTAS の SELECT はリテラルだけ。"
     echo "#   DROP はメタデータのみ、DESCRIBE 系は読み取りのみ。Athena の最小課金 × クエリ数の見込み。"
     echo "# フィクスチャの形式（SHOW CREATE TABLE で裏取り。作成直後の値）: H=$FMT_H  HP=$FMT_HP  I=$FMT_I"
