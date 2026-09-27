@@ -33,6 +33,12 @@ later name the date they were measured on.
 - An unquoted `awsdatacatalog.<database>.<table>` in `SELECT`, `INSERT`, CTAS,
   `CREATE VIEW` and `EXPLAIN` now runs through the `AwsDataCatalog` alias
   ([docs](docs/caveats.md#parameters-and-catalog-aliases)).
+- The `AwsDataCatalog` alias now also reaches an unquoted
+  `awsdatacatalog.<database>.<table>` in `SELECT` and `INSERT` under an S3
+  Tables context catalog or one Trino does not have, and, under an
+  `AwsDataCatalog` or omitted context catalog, a `SELECT` name with one quoted
+  part or a four-part column reference
+  ([docs](docs/caveats.md#parameters-and-catalog-aliases)).
 - Under an S3 Tables context catalog, a CTAS into
   `awsdatacatalog.<database>.<table>` now creates the table through the
   `AwsDataCatalog` alias, and fails like real Athena when the database does not

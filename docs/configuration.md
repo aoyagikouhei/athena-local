@@ -35,10 +35,10 @@ under an S3 Tables context catalog, the first part of a plain
 [Caveats](caveats.md#plain-create-table)), and, under an S3 Tables context
 catalog, the first part of a CTAS into `awsdatacatalog.<database>.<table>`,
 which is replaced by the Trino catalog of the `AwsDataCatalog` alias (see
-[Caveats](caveats.md#parameters-and-catalog-aliases)), and, under an
-`AwsDataCatalog` or omitted context catalog, an unquoted
-`awsdatacatalog.<database>.<table>` in any case, whose first part is replaced by
-the same Trino catalog (see
+[Caveats](caveats.md#parameters-and-catalog-aliases)), and a qualified name
+whose first part is an unquoted `awsdatacatalog` in any case, in the context
+catalogs and statements real Athena was measured to run it in, whose first part
+is replaced by the same Trino catalog (see
 [Caveats](caveats.md#parameters-and-catalog-aliases)). Unqualified table names with the
 context carrying the catalog and database remain the most portable form.
 

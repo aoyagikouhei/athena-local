@@ -566,17 +566,32 @@ it as without the comment. `MSCK REPAIR TABLE` on an Iceberg table, with or with
   `DESCRIBE`, `SHOW COLUMNS`, `SHOW CREATE TABLE`, `SHOW TABLES IN`,
   `ALTER TABLE` and `DROP TABLE` (see [Supported API](api.md)), where
   real Athena reads the first part of a CTAS under an S3 Tables context
-  catalog as `AwsDataCatalog` (next item), and where the context catalog is
-  `AwsDataCatalog` or omitted: there an unquoted three-part name whose first
-  part is `awsdatacatalog` in any case (`SELECT * FROM AwsDataCatalog.db.t`)
-  gets the Trino catalog of the `AwsDataCatalog` alias (keys compared
-  case-insensitively), double-quoted and padded with spaces as above, while
-  `Query` stays as sent. Real Athena ran such names in `SELECT`, `INSERT`,
-  CTAS, `CREATE VIEW` and `EXPLAIN` (measured 2026-09-26); athena-local
-  applies the alias whatever the statement, and other statements (`DELETE`,
-  `DROP VIEW`, the target of `RENAME TO`) have not been measured. Other unquoted
-  aliases, names with a quoted part or a part count other than three, and
-  other context catalogs are sent as written; they have not been measured.
+  catalog as `AwsDataCatalog` (next item), and where real Athena was measured
+  to read an unquoted first part `awsdatacatalog` (in any case) as
+  `AwsDataCatalog`. There the name gets the Trino catalog of the
+  `AwsDataCatalog` alias (keys compared case-insensitively), double-quoted and
+  padded with spaces as above, while `Query` stays as sent:
+  - under an `AwsDataCatalog` or omitted context catalog, an unquoted
+    three-part name (`SELECT * FROM AwsDataCatalog.db.t`) in any statement.
+    Real Athena ran such names in `SELECT`, `INSERT`, CTAS, `CREATE VIEW` and
+    `EXPLAIN` (measured 2026-09-26); other statements (`DELETE`, `DROP VIEW`,
+    the target of `RENAME TO`) have not been measured. In `SELECT` also a
+    three-part name with exactly one quoted part (`awsdatacatalog."db".t`,
+    `awsdatacatalog.db."t"`) and an unquoted four-part column reference
+    (`SELECT awsdatacatalog.db.t.n FROM awsdatacatalog.db.t`), measured
+    2026-09-27;
+  - under an S3 Tables context catalog, or a context catalog that is neither
+    an alias key nor a Trino catalog, an unquoted three-part name in `SELECT`
+    and `INSERT` (measured 2026-09-25 and 2026-09-27). The context catalog is
+    still sent to Trino as written, since Trino resolves fully qualified names
+    without it; whether the catalog exists is asked of Trino only when the SQL
+    has such a name.
+
+  Other forms (two quoted parts, a quoted part in a four-part name or in
+  `INSERT`, other statements under those context catalogs), a context catalog
+  that is an alias key or a Trino catalog (a federated catalog on real Athena,
+  not measured), and other unquoted aliases are sent as written; they have not
+  been measured.
   Real Athena resolves `QueryExecutionContext.Catalog` and `Database`
   case-insensitively (`SHOW TABLES` under `AWSDATACATALOG` and under an
   upper-cased database name both listed the tables, measured 2026-09-24);
