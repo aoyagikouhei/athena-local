@@ -2,7 +2,7 @@
 # issue #208 で作成。issue #221 で ROUND=3、issue #224 で ROUND=4、issue #227 で ROUND=5、
 # issue #228 で ROUND=6、issue #240 で ROUND=7、issue #242 で ROUND=8、issue #229 で ROUND=9、
 # issue #248 で ROUND=10、issue #251 で ROUND=11・15、issue #260 で ROUND=12、
-# issue #266 で ROUND=13・14、issue #270 で ROUND=16、issue #271 で ROUND=17、issue #272 で ROUND=18 を追加
+# issue #266 で ROUND=13・14、issue #270 で ROUND=16・20、issue #271 で ROUND=17、issue #272 で ROUND=18 を追加
 # 本物の Athena が StartQueryExecution の時点で弾く、無引用の DDL 3 種
 # （ALTER TABLE IF EXISTS、ALTER TABLE ... ADD COLUMN（単数）、場所の無い CREATE TABLE）の
 # 弾かれ方の規則（`line L:C` の位置、`no viable alternative at input '...'` の input の範囲、
@@ -245,6 +245,23 @@
 #     `<GCTX>`（Database=`<DB>`）のまま `<DB2>` 側の表を消す。後始末の順序は
 #     表（各項目の `-cleanup`）→ `<DB2>` の DROP DATABASE → `<PROBE>_qdup` の DROP TABLE →
 #     （連携カタログを作っていれば）データカタログの削除。
+#   - 【issue #270 の 2 ラウンド目で追加】ROUND=20 は、ROUND=16 と同じ族（S3 Tables の Context で
+#     LOCATION の無い非 EXTERNAL の CREATE TABLE が開始してから FAILED にする句）のうち、
+#     issue #270 のコメントで挙がった続き（TBLPROPERTIES のキーの範囲、table_type の値と組、
+#     列リスト無しの形、ちょうど小文字の awsdatacatalog の 3 部、名前空間が無いときとの優先順）を
+#     測る k・v・c・a・m 群と、対照 x0（cl0 と同じ `(n int)` だけの形）だけを測る。ROUND=18 は #272、19 は
+#     #273 の実測が使う（16 の次は 20）。preflight・DB 確認は
+#     共通で走るが、実在する表は作らない。すべて S3 Tables の Context（Catalog=`<S3TABLES_CATALOG>`,
+#     Database=`<S3TABLES_NS>`）だけに投げ（m5 だけ Context の Database を実在しない名前空間
+#     `<NOPE>`=`<PROBE>_nope270` にする）、LOCATION は付けない。S3TABLES_* が揃わなければ全項目
+#     「未測定」として残す。m 群（m0〜m7）は名前空間 `<NOPE>` を文の中で 2 部・3 部の qualified
+#     name に含める形（m5 だけ Context の Database に `<NOPE>` を使う 1 部の名前）で、名前空間が
+#     無いときの理由（#231 の i2・j12 と同じ `Cannot find or access the specified table` の見込み。
+#     m0 が対照）と、ほかの句の理由との優先順を測る。a 群は、ROUND=13〜16 で測った大文字混じりの
+#     `AwsDataCatalog`・`awsdatacatalog . ` ではなく、ちょうど小文字の 3 部連続（空白・ドット無し）が
+#     句付きでも同じ扱いかを見る。受理された項目は ROUND=16 と同じ `run_create_then_drop_ctx_showcreate`
+#     で、DROP の前に同じ Context で `SHOW CREATE TABLE <名前>` を `<label>-showcreate` として投げ、
+#     結果ファイル本体を取得・保存する（この分も見込み本数に数える）。
 #   - 【issue #272 で追加】ROUND=18 は、#251 の 2 ラウンド目の実測（ROUND=15、生データ
 #     `run-20260926-231125` の t1〜t5）で見つかった、エンジン（Trino）で失敗した CTAS の理由に
 #     本物が付ける接尾辞（` You may need to manually clean the data at location
@@ -413,6 +430,12 @@
 #   測る。S3 Tables・連携カタログは使わない）:
 #   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=18 \
 #     bash tools/measure/unquoted-ddl.sh
+#   ラウンド 20（issue #270 の 2 ラウンド目。ROUND=16 の続きで、TBLPROPERTIES のキーの範囲・
+#   table_type の値と組・列リスト無しの形・ちょうど小文字の awsdatacatalog の 3 部・名前空間が
+#   無いときとの優先順だけを測る。S3TABLES_* が無ければ全項目が未測定として残る）:
+#   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=20 \
+#     S3TABLES_CATALOG=s3tablescatalog/your-bucket S3TABLES_NS=your_ns \
+#     bash tools/measure/unquoted-ddl.sh
 #   （資格情報はホストのシェルで AWS_ACCESS_KEY_ID などを export してから。または ~/.aws/credentials）
 #
 # 必要な環境変数:
@@ -459,6 +482,8 @@
 #                    GetQueryExecution の Query から 1 部目のカタログを落とす周辺。issue #271）
 #                    だけ。実在する表 `<PROBE>_real` は作らないが、同名の表がある形（q14）用に
 #                    `<PROBE>_qdup` を、別の DB として `<PROBE>_db2` を作り、最後に消す。
+#                    20 は k・v・c・a・m 群と対照 x0（ROUND=16 の続き。issue #270 の 2 ラウンド目）
+#                    だけ。実在する表は作らない（ROUND=18 は #272、19 は #273 の実測が使う）。
 #                    18 は p・w 群と c1y・i 群（エンジンで失敗した CTAS の理由の接尾辞と、解析の
 #                    エラー位置の組み直しの規則、INSERT の位置、WITH NO DATA の失敗。issue #272）
 #                    だけ。実在する表 `<PROBE>_real` は作らないが、SELECT の失敗の対象にする実在する
@@ -488,7 +513,8 @@
 #                    （合計 31）を測る（欠ければ全項目が未測定として残る。GLUE のデータカタログ
 #                    （CREATE_GLUE_CATALOG）はこのラウンドでは使わない）。ROUND=17 は q22・q23
 #                    （S3 Tables の Context の CREATE TABLE）を測る（欠ければこの 2 項目だけ
-#                    未測定として残る）。
+#                    未測定として残る）。ROUND=20 は k・v・c・a・m 群と対照 x0 の全項目
+#                    （合計 32）を測る（欠ければ全項目が未測定として残る）。
 #   FEDERATED_CATALOG 連携カタログ（S3 Tables 以外）の名前。設定されていれば ROUND=10 の s14
 #                    （TRINO_CATALOG_MAP の別名や Trino にだけあるカタログの 3 部 + LOCATION が
 #                    実在するカタログのとき）と ROUND=12 の o3・o4（連携カタログの Context の
@@ -667,13 +693,20 @@
 #     その場で `DROP DATABASE IF EXISTS <PROBE>_q17db CASCADE` を投げて消す。CREATE_GLUE_CATALOG=1
 #     かつ FEDERATED_CATALOG 未設定のときは、ROUND=13・14 と同じ `athena_local_probe_266_<乱数>cat`
 #     を 1 つ作り、q24・q25 の後始末が終わったあとに必ず削除を試みる。
+#   - ROUND=20: 実在する表 `<接頭辞>_real` は作らない。k・v・c・a・m 群と対照 x0 の CREATE TABLE は
+#     すべて S3 Tables の Context（m5 だけ Database を `<NOPE>` にした Context）だけに
+#     `run_create_then_drop_ctx_showcreate`（作る Context と消す Context は常に同じ）で投げる。
+#     受理されたら、DROP の前に同じ Context で `SHOW CREATE TABLE <名前>` を投げて結果ファイル本体を
+#     取得し（SHOW CREATE TABLE が失敗しても続ける）、そのあと無引用 + IF EXISTS の DROP TABLE を
+#     投げて消す（結果は確かめ、SUCCEEDED にならなければ trap がもう一度ベストエフォートで投げる）。
+#     LOCATION は付けない（このラウンドは全部 LOCATION 無し）。
 #
 # 課金について: ALTER TABLE・DROP TABLE はメタデータだけを見る／書く文で、実データの
 # スキャンは無い。CREATE TABLE（実在する表の準備・C3・C20・C21・C22・C23、E・F 群、
 # ROUND=3 の H・Q・P 群、ROUND=5 の J 群、ROUND=9 の N 群、ROUND=10 の S 群、ROUND=11 の R 群、
 # ROUND=12 の O_TABLE の準備、ROUND=13 の T・U・V・W・X・Y 群、ROUND=14 の Z 群、ROUND=15 の
 # T 群、ROUND=16 の cl・pr・pn・pa・tp 群、ROUND=17 の準備（<PROBE>_qdup）と q 群、ROUND=18 の
-# 準備（<PROBE>_src）と p・w 群・c1y。いずれも 0〜3 行（t11 だけ 3 行、ほかは 0 行）もスキャンや
+# 準備（<PROBE>_src）と p・w 群・c1y、ROUND=20 の k・v・c・a・m 群と対照 x0。いずれも 0〜3 行（t11 だけ 3 行、ほかは 0 行）もスキャンや
 # 書き込みは軽微。SHOW CREATE TABLE・ROUND=12 の SELECT・INSERT も 1 行だけ、ROUND=18 の i1・i2
 # （INSERT）は 0〜1 行。Athena の最小課金 × クエリ数の見込み。ROUND=5・10・11・13・14・15・16・17・18
 # の結果ファイルの読み出し（aws s3 cp）と ROUND=11・15・18 のオーファンデータ確認（aws s3 ls）は
@@ -1066,9 +1099,9 @@ set -uo pipefail
 : "${DB:?DB にデータベース名を設定してください}"
 ROUND=${ROUND:-1}
 case "$ROUND" in
-  1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18) ;;
+  1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 20) ;;
   *)
-    echo "ROUND には 1・2・3・4・5・6・7・8・9・10・11・12・13・14・15・16・17・18 のどれかを指定してください（既定 1）" >&2
+    echo "ROUND には 1・2・3・4・5・6・7・8・9・10・11・12・13・14・15・16・17・18・20 のどれかを指定してください（既定 1）" >&2
     exit 1
     ;;
 esac
@@ -3898,6 +3931,128 @@ fi
 
 fi # ROUND=18
 
+# ROUND=20 だけ、k・v・c・a・m 群と対照 x0 を投げる（issue #270 の 2 ラウンド目。ROUND=16 の続きで、
+# TBLPROPERTIES のキーの範囲・table_type の値と組・列リスト無しの形・ちょうど小文字の
+# awsdatacatalog の 3 部・名前空間が無いときとの優先順を測る。ROUND=18 は #272、19 は
+# #273 の実測が使う）。すべて S3 Tables の Context（Catalog=$S3TABLES_CATALOG,
+# Database=$S3TABLES_NS。m5 だけ Database を <NOPE> にする）だけに投げ、LOCATION は付けない。
+# S3TABLES_* が揃わなければ全項目「未測定」として残す。
+if [ "$ROUND" = 20 ]; then
+
+X0_LABEL="x0"
+K_LABELS="k1 k2 k3 k4 k5 k6 k7 k8"
+V_LABELS="v1 v2 v3 v4 v5 v6"
+C_LABELS="c1 c2 c3 c4"
+A_LABELS="a1 a2 a3 a4 a5"
+M_LABELS="m0 m1 m2 m3 m4 m5 m6 m7"
+
+if [ -n "$S3TABLES_CATALOG" ] && [ -n "$S3TABLES_NS" ]; then
+  S3T_CTX="Catalog=$S3TABLES_CATALOG,Database=$S3TABLES_NS"
+  # 実在しない名前空間（乱数入りの接頭辞なので実在しない見込み）。
+  NOPE270="$(new_name nope270)"
+
+  # --- 対照（ROUND=16 の cl0 と同じ形。SUCCEEDED の見込み） ---
+  run_create_then_drop_ctx_showcreate "$S3T_CTX" x0 \
+    "CREATE TABLE $(new_name x0) (n int)" "$(new_name x0)"
+
+  # --- k 群（TBLPROPERTIES のキーの範囲） ---
+  run_create_then_drop_ctx_showcreate "$S3T_CTX" k1 \
+    "CREATE TABLE $(new_name k1) (n int) TBLPROPERTIES ('vacuum_max_snapshot_age_seconds'='432000')" "$(new_name k1)"
+  run_create_then_drop_ctx_showcreate "$S3T_CTX" k2 \
+    "CREATE TABLE $(new_name k2) (n int) TBLPROPERTIES ('vacuum_min_snapshots_to_keep'='1')" "$(new_name k2)"
+  run_create_then_drop_ctx_showcreate "$S3T_CTX" k3 \
+    "CREATE TABLE $(new_name k3) (n int) TBLPROPERTIES ('optimize_rewrite_delete_file_threshold'='2')" "$(new_name k3)"
+  run_create_then_drop_ctx_showcreate "$S3T_CTX" k4 \
+    "CREATE TABLE $(new_name k4) (n int) TBLPROPERTIES ('write_target_data_file_size_bytes'='536870912')" "$(new_name k4)"
+  run_create_then_drop_ctx_showcreate "$S3T_CTX" k5 \
+    "CREATE TABLE $(new_name k5) (n int) TBLPROPERTIES ('compression_level'='3')" "$(new_name k5)"
+  run_create_then_drop_ctx_showcreate "$S3T_CTX" k6 \
+    "CREATE TABLE $(new_name k6) (n int) TBLPROPERTIES ('classification'='csv')" "$(new_name k6)"
+  run_create_then_drop_ctx_showcreate "$S3T_CTX" k7 \
+    "CREATE TABLE $(new_name k7) (n int) TBLPROPERTIES ('a270x'='b', 'a270y'='c')" "$(new_name k7)"
+  run_create_then_drop_ctx_showcreate "$S3T_CTX" k8 \
+    "CREATE TABLE $(new_name k8) (n int) TBLPROPERTIES ('A270'='b')" "$(new_name k8)"
+
+  # --- v 群（table_type の値と組） ---
+  run_create_then_drop_ctx_showcreate "$S3T_CTX" v1 \
+    "CREATE TABLE $(new_name v1) (n int) TBLPROPERTIES ('table_type'='hive')" "$(new_name v1)"
+  run_create_then_drop_ctx_showcreate "$S3T_CTX" v2 \
+    "CREATE TABLE $(new_name v2) (n int) TBLPROPERTIES ('table_type'='DELTA')" "$(new_name v2)"
+  run_create_then_drop_ctx_showcreate "$S3T_CTX" v3 \
+    "CREATE TABLE $(new_name v3) (n int) ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde' TBLPROPERTIES ('table_type'='HIVE')" "$(new_name v3)"
+  run_create_then_drop_ctx_showcreate "$S3T_CTX" v4 \
+    "CREATE TABLE $(new_name v4) (n int) PARTITIONED BY (p int) TBLPROPERTIES ('table_type'='HIVE')" "$(new_name v4)"
+  run_create_then_drop_ctx_showcreate "$S3T_CTX" v5 \
+    "CREATE TABLE $(new_name v5) (n int) TBLPROPERTIES ('table_type'='HIVE', 'a270'='b')" "$(new_name v5)"
+  run_create_then_drop_ctx_showcreate "$S3T_CTX" v6 \
+    "CREATE TABLE $(new_name v6) TBLPROPERTIES ('table_type'='HIVE')" "$(new_name v6)"
+
+  # --- c 群（列リスト無し） ---
+  run_create_then_drop_ctx_showcreate "$S3T_CTX" c1 \
+    "CREATE TABLE $(new_name c1)" "$(new_name c1)"
+  run_create_then_drop_ctx_showcreate "$S3T_CTX" c2 \
+    "CREATE TABLE $(new_name c2) TBLPROPERTIES ('table_type'='ICEBERG')" "$(new_name c2)"
+  run_create_then_drop_ctx_showcreate "$S3T_CTX" c3 \
+    "CREATE TABLE $(new_name c3) PARTITIONED BY (p int)" "$(new_name c3)"
+  run_create_then_drop_ctx_showcreate "$S3T_CTX" c4 \
+    "CREATE TABLE $(new_name c4) COMMENT 't comment'" "$(new_name c4)"
+
+  # --- a 群（ちょうど小文字の awsdatacatalog の 3 部。名前は awsdatacatalog.$S3TABLES_NS.<t>） ---
+  run_create_then_drop_ctx_showcreate "$S3T_CTX" a1 \
+    "CREATE TABLE awsdatacatalog.$S3TABLES_NS.$(new_name a1) (n int) ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'" \
+    "awsdatacatalog.$S3TABLES_NS.$(new_name a1)"
+  run_create_then_drop_ctx_showcreate "$S3T_CTX" a2 \
+    "CREATE TABLE awsdatacatalog.$S3TABLES_NS.$(new_name a2) (n int) CLUSTERED BY (n) INTO 4 BUCKETS" \
+    "awsdatacatalog.$S3TABLES_NS.$(new_name a2)"
+  run_create_then_drop_ctx_showcreate "$S3T_CTX" a3 \
+    "CREATE TABLE awsdatacatalog.$S3TABLES_NS.$(new_name a3) (n int) PARTITIONED BY (p int)" \
+    "awsdatacatalog.$S3TABLES_NS.$(new_name a3)"
+  run_create_then_drop_ctx_showcreate "$S3T_CTX" a4 \
+    "CREATE TABLE awsdatacatalog.$S3TABLES_NS.$(new_name a4) (n int) TBLPROPERTIES ('a270'='b')" \
+    "awsdatacatalog.$S3TABLES_NS.$(new_name a4)"
+  run_create_then_drop_ctx_showcreate "$S3T_CTX" a5 \
+    "CREATE TABLE awsdatacatalog.$S3TABLES_NS.$(new_name a5) (n int) TBLPROPERTIES ('table_type'='HIVE')" \
+    "awsdatacatalog.$S3TABLES_NS.$(new_name a5)"
+
+  # --- m 群（名前空間が無いときとの優先。m0 は #231 の i2・j12 と同じ形の対照） ---
+  run_create_then_drop_ctx_showcreate "$S3T_CTX" m0 \
+    "CREATE TABLE $NOPE270.$(new_name m0) (n int)" "$NOPE270.$(new_name m0)"
+  run_create_then_drop_ctx_showcreate "$S3T_CTX" m1 \
+    "CREATE TABLE $NOPE270.$(new_name m1) (n int) ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'" \
+    "$NOPE270.$(new_name m1)"
+  run_create_then_drop_ctx_showcreate "$S3T_CTX" m2 \
+    "CREATE TABLE $NOPE270.$(new_name m2) (n int) STORED AS PARQUET" "$NOPE270.$(new_name m2)"
+  run_create_then_drop_ctx_showcreate "$S3T_CTX" m3 \
+    "CREATE TABLE $NOPE270.$(new_name m3) (n int) PARTITIONED BY (p int)" "$NOPE270.$(new_name m3)"
+  run_create_then_drop_ctx_showcreate "$S3T_CTX" m4 \
+    "CREATE TABLE $NOPE270.$(new_name m4) (n int) TBLPROPERTIES ('a270'='b')" "$NOPE270.$(new_name m4)"
+  run_create_then_drop_ctx_showcreate "Catalog=$S3TABLES_CATALOG,Database=$NOPE270" m5 \
+    "CREATE TABLE $(new_name m5) (n int) CLUSTERED BY (n) INTO 4 BUCKETS" "$(new_name m5)"
+  run_create_then_drop_ctx_showcreate "$S3T_CTX" m6 \
+    "CREATE TABLE AwsDataCatalog.$NOPE270.$(new_name m6) (n int) ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'" \
+    "AwsDataCatalog.$NOPE270.$(new_name m6)"
+  run_create_then_drop_ctx_showcreate "$S3T_CTX" m7 \
+    "CREATE TABLE $NOPE270.$(new_name m7) (n int) TBLPROPERTIES ('table_type'='HIVE')" "$NOPE270.$(new_name m7)"
+else
+  for l in $X0_LABEL $K_LABELS $V_LABELS $C_LABELS $A_LABELS $M_LABELS; do
+    skip "$l" "未測定（S3TABLES_* 未設定）"
+    skip "$l-showcreate" "CREATE TABLE を投げていないため SHOW CREATE TABLE 不要"
+    skip "$l-cleanup" "CREATE TABLE を投げていないため後始末不要"
+  done
+fi
+
+# SHOW CREATE TABLE のラベル一覧（付随物の取得・summary で使う）。
+SC_LABELS=""
+for l in $X0_LABEL $K_LABELS $V_LABELS $C_LABELS $A_LABELS $M_LABELS; do
+  SC_LABELS="$SC_LABELS $l-showcreate"
+done
+
+# --- 付随物の取得（FAILED になった項目だけ。SHOW CREATE TABLE の結果本体は
+# run_create_then_drop_ctx_showcreate の中で受理された項目ごとに取得済み） -----------------
+fetch_failed_attachments $X0_LABEL $K_LABELS $V_LABELS $C_LABELS $A_LABELS $M_LABELS $SC_LABELS
+
+fi # ROUND=20
+
 # --- 後始末（実在する表） ----------------------------------------------------------
 
 if [ "$REAL_SETUP_OK" = 1 ]; then
@@ -3985,6 +4140,10 @@ elif [ "$ROUND" = 17 ]; then
     ALL_LABELS="$ALL_LABELS $l $l-cleanup $l-cleanup2"
   done
   ALL_LABELS="$ALL_LABELS q-drop-db2 q-drop-qdup"
+elif [ "$ROUND" = 20 ]; then
+  for l in $X0_LABEL $K_LABELS $V_LABELS $C_LABELS $A_LABELS $M_LABELS; do
+    ALL_LABELS="$ALL_LABELS $l $l-showcreate $l-cleanup"
+  done
 elif [ "$ROUND" = 18 ]; then
   ALL_LABELS="$ALL_LABELS p-setup-src"
   for l in $P_LABELS $W_LABELS; do
@@ -4462,6 +4621,37 @@ write_summary_txt() {
       echo "#   Athena のクエリ課金には乗らない。"
       echo "# 注意: これは実測した本物の Athena の挙動であり、将来の Athena の変更で変わりうる。"
       echo "#   実測値は既定とは限らない。"
+    elif [ "$ROUND" = 20 ]; then
+      echo "# issue #270 の 2 ラウンド目（#208 ラウンド 20）: ROUND=16 で測った族（S3 Tables の Context で"
+      echo "#             LOCATION の無い非 EXTERNAL の CREATE TABLE が開始してから FAILED になる句）の続き"
+      echo "#             （TBLPROPERTIES のキーの範囲、table_type の値と組、列リスト無しの形、ちょうど"
+      echo "#             小文字の awsdatacatalog の 3 部、名前空間が無いときとの優先順）を実測"
+      echo "# 実行日時: $(date -Iseconds)"
+      if [ -n "$S3TABLES_CATALOG" ] && [ -n "$S3TABLES_NS" ]; then
+        echo "# S3TABLES_*: 設定あり（k・v・c・a・m 群と対照 x0 を測る）"
+      else
+        echo "# S3TABLES_*: 未設定（k・v・c・a・m 群と対照 x0 はすべて未測定）"
+      fi
+      echo "# StartQueryExecution の見込み本数: 34（S3TABLES_* あり）／2（無し）"
+      echo "#   （preflight 2 + 常に投げる対照 x0 1・k 群 8・v 群 6・c 群 4・a 群 5・m 群 8 の計 32。"
+      echo "#   S3TABLES_* が無ければ 32 項目すべて未測定になり、preflight の 2 だけになる）。"
+      echo "#   このスクリプトの実測値: $(wc -l < "$START_CALL_FILE" | tr -d ' ') 回"
+      echo "#   受理された CREATE TABLE ごとに、その場で SHOW CREATE TABLE 1 本・DROP する後始末 1 本が"
+      echo "#   増える（それぞれ最大 +32。x0 は受理される見込み（対照）。ほかの項目が受理されるかどうかは、"
+      echo "#   このラウンドで確かめるのが目的）。"
+      echo "# DDL: 実在する表 <PROBE>_real は作らない。k・v・c・a・m 群と対照 x0 の CREATE TABLE は、S3 Tables の"
+      echo "#   Context（m5 だけ Database を <NOPE>=<PROBE>_nope270 にした Context。作る Context と"
+      echo "#   消す Context は常に同じ）だけに投げ、LOCATION は付けない。受理されたら DROP の前に同じ"
+      echo "#   Context で SHOW CREATE TABLE <名前> を投げて結果ファイル本体を取得し"
+      echo "#   （<label>-showcreate.output.txt）、そのあと DROP TABLE IF EXISTS で消す（SHOW CREATE TABLE"
+      echo "#   が失敗しても DROP は続ける）。"
+      echo "# 付随物: FAILED になった項目（CREATE TABLE・SHOW CREATE TABLE のどちらでも）は、結果ファイル"
+      echo "#   本体と <OutputLocation>.metadata を aws s3 cp で読み出して保存する"
+      echo "#   （<label>.output.txt・<label>.output.metadata）。"
+      echo "# 課金: スキャンの無いクエリだけ（CREATE は 0 行、SHOW CREATE TABLE・DROP はメタデータのみ）。"
+      echo "#   結果ファイルの読み出しは S3 の GetObject で、Athena のクエリ課金には乗らない。"
+      echo "# 注意: これは実測した本物の Athena の挙動であり、将来の Athena の変更で変わりうる。"
+      echo "#   実測値は既定とは限らない。"
     elif [ "$ROUND" = 8 ]; then
       echo "# issue #242（#208 ラウンド 8）: DESCRIBE・DESC の GetQueryExecution の Query から修飾が落ちる範囲と"
       echo "#             QueryExecutionContext.Database の書き換え、ほかの文で awsdatacatalog. のカタログ部分が"
@@ -4712,7 +4902,7 @@ PYEOF
         echo
       done
     fi
-    if [ "$ROUND" = 5 ] || [ "$ROUND" = 10 ] || [ "$ROUND" = 11 ] || [ "$ROUND" = 12 ] || [ "$ROUND" = 13 ] || [ "$ROUND" = 14 ] || [ "$ROUND" = 15 ] || [ "$ROUND" = 16 ] || [ "$ROUND" = 17 ] || [ "$ROUND" = 18 ]; then
+    if [ "$ROUND" = 5 ] || [ "$ROUND" = 10 ] || [ "$ROUND" = 11 ] || [ "$ROUND" = 12 ] || [ "$ROUND" = 13 ] || [ "$ROUND" = 14 ] || [ "$ROUND" = 15 ] || [ "$ROUND" = 16 ] || [ "$ROUND" = 17 ] || [ "$ROUND" = 18 ] || [ "$ROUND" = 20 ]; then
       echo
       if [ "$ROUND" = 15 ]; then
         echo "## 付随物（結果ファイル本体・.metadata。FAILED または SUCCEEDED の CTAS だけ。実名は伏せる）"
@@ -4729,6 +4919,7 @@ PYEOF
         17) ATTACH_LABELS=$Q_LABELS ;;
         18) ATTACH_LABELS="$P_LABELS $W_LABELS c1y $I_LABELS" ;;
         16) ATTACH_LABELS="$CL_LABELS $PR_LABELS $PN_LABELS $PA_LABELS $TP_LABELS $SC_LABELS" ;;
+        20) ATTACH_LABELS="$X0_LABEL $K_LABELS $V_LABELS $C_LABELS $A_LABELS $M_LABELS $SC_LABELS" ;;
         *) ATTACH_LABELS=$R_LABELS ;;
       esac
       for label in $ATTACH_LABELS; do
@@ -4759,10 +4950,14 @@ PYEOF
         echo
       done
     fi
-    if [ "$ROUND" = 16 ]; then
+    if [ "$ROUND" = 16 ] || [ "$ROUND" = 20 ]; then
       echo
       echo "## SHOW CREATE TABLE の結果（受理された項目だけ。実名・LOCATION の S3 URI は伏せる）"
-      for label in $CL_LABELS $PR_LABELS $PN_LABELS $PA_LABELS $TP_LABELS; do
+      case "$ROUND" in
+        20) SHOWCREATE_LABELS="$X0_LABEL $K_LABELS $V_LABELS $C_LABELS $A_LABELS $M_LABELS" ;;
+        *) SHOWCREATE_LABELS="$CL_LABELS $PR_LABELS $PN_LABELS $PA_LABELS $TP_LABELS" ;;
+      esac
+      for label in $SHOWCREATE_LABELS; do
         f="$RUN_DIR/$label-showcreate.output.txt"
         [ -s "$f" ] || continue
         echo "### $label"
