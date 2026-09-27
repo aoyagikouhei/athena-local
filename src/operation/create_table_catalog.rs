@@ -23,6 +23,7 @@ use crate::trino::{Cancel, Trino};
 use super::classification::substatement_type;
 use super::context_catalog::missing;
 use super::table_format::{catalog_exists_sql, schema_probe_sql};
+use super::target_table::table_name_start;
 use super::unquoted_ddl::{location_catalog, one_part_name, three_part_name, two_part_namespace};
 
 /// 開始時にどうするか。
@@ -165,8 +166,8 @@ pub(super) async fn two_part_failure(
 
 /// S3 Tables の Context（`s3_tables` は受け取ったままの Catalog）の無引用の 1 部の名前の場所の無い `CREATE TABLE`
 /// （本物は Context の Database の名前空間に作る）。Context の Database（`database`、受け取ったまま）の名前空間が無いと
-/// 確かめられたときだけ、Trino に送らずに終える失敗を返す（2026-09-27 実測 r1。#251）。Database が無ければ名前空間が
-/// 決まらないので問い合わせない。
+/// 確かめられたときだけ、Trino に送らずに終える失敗を返す（2026-09-27 実測 r1。#251）。Database が無ければ本物は名前空間
+/// `default` を引いた（2026-09-27 実測 d1。#273）。`default` があるときの本物は測っていないので、今までどおり送る。
 pub(super) async fn one_part_failure(
     trino: &Trino,
     config: &Config,
@@ -174,10 +175,40 @@ pub(super) async fn one_part_failure(
     s3_tables: &str,
     database: Option<&str>,
 ) -> Option<Failure> {
-    let namespace = database.filter(|_| one_part_name(query))?;
+    if !one_part_name(query) {
+        return None;
+    }
+    let namespace = database.unwrap_or("default");
     namespace_missing(trino, config, s3_tables, namespace)
         .await
         .then(Failure::cannot_find_table)
+}
+
+/// S3 Tables の Context（`s3_tables` は受け取ったままの Catalog）で Database を省略した、1 部の名前の CTAS。本物は名前空間
+/// `default` を引き、無ければ開始して FAILED にした（本体も `.metadata` も置かない。2026-09-27 実測 d2。#273）。`default` が
+/// 無いと確かめられ、結果の置き場所（`location`）があるときだけ失敗を返す。`default` があるときの本物は測っていないので、
+/// 今までどおり送る。
+pub(super) async fn default_namespace_ctas_failure(
+    trino: &Trino,
+    config: &Config,
+    query: &str,
+    s3_tables: &str,
+    database: Option<&str>,
+    location: Option<&str>,
+) -> Option<Failure> {
+    let location = location.filter(|_| database.is_none() && one_part_ctas(query))?;
+    namespace_missing(trino, config, s3_tables, "default")
+        .await
+        .then(|| Failure::s3_tables_schema_not_found(s3_tables, "default", location))
+}
+
+/// `CREATE TABLE [IF NOT EXISTS] <1 部の名前> ... AS ...` か。
+fn one_part_ctas(query: &str) -> bool {
+    substatement_type(query) == Some("CREATE_TABLE_AS_SELECT")
+        && table_name_start(query, &["CREATE", "TABLE"])
+            .or_else(|| table_name_start(query, &["CREATE", "TABLE", "IF", "NOT", "EXISTS"]))
+            .and_then(|rest| athena_sql::Cursor::new(rest).qualified_name())
+            .is_some_and(|name| name.parts.len() == 1)
 }
 
 /// S3 Tables のカタログ（受け取ったまま）に名前空間が無いと確かめられたときだけ真。どちらも小文字にして引く

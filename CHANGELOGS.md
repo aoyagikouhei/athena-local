@@ -11,6 +11,12 @@ later name the date they were measured on.
 
 ### Changed
 
+- Under an S3 Tables context catalog, a CTAS into a missing namespace fails with real
+  Athena's `NOT_FOUND` reason and error type
+  ([docs](docs/caveats.md#parameters-and-catalog-aliases)).
+- Under an S3 Tables context catalog with no `Database`, a one-part `CREATE TABLE` or CTAS
+  fails like real Athena when the namespace `default` does not exist
+  ([docs](docs/caveats.md#plain-create-table)).
 - Under an S3 Tables context catalog, a plain `CREATE TABLE` with Hive's `ROW FORMAT`,
   `CLUSTERED BY`, typed `PARTITIONED BY`, an unknown `TBLPROPERTIES` key or no column list
   now fails like real Athena, and a non-Iceberg `table_type` is rejected at start

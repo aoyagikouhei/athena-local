@@ -485,7 +485,12 @@ it as without the comment. `MSCK REPAIR TABLE` on an Iceberg table, with or with
   2026-09-26), and so does an unquoted one-part `<table>` when the context
   database does not exist as a namespace in the context catalog
   ([#251](https://github.com/aoyagikouhei/athena-local/issues/251), measured
-  2026-09-27). With no context database, a one-part name is sent as written.
+  2026-09-27). With no context database, real Athena looks for the namespace
+  `default` and fails the same way when it does not exist; athena-local asks
+  Trino for `default` and does the same
+  ([#273](https://github.com/aoyagikouhei/athena-local/issues/273), measured
+  2026-09-27). When `default` exists the one-part name is sent as written;
+  what real Athena does then has not been measured.
 - **With an S3 Tables context catalog, Hive's `LOCATION` and `EXTERNAL` are
   rejected with real Athena's messages.** Trino's grammar has neither, so under
   any other context catalog such a statement gets Trino's syntax error. When
@@ -683,6 +688,28 @@ it as without the comment. `MSCK REPAIR TABLE` on an Iceberg table, with or with
   database exists, the statement is sent instead
   ([#232](https://github.com/aoyagikouhei/athena-local/issues/232),
   [#251](https://github.com/aoyagikouhei/athena-local/issues/251)).
+- **A CTAS into a missing S3 Tables namespace fails like Athena, with a
+  placeholder account ID.** Under an S3 Tables context catalog, a CTAS whose
+  target namespace does not exist (the context `Database` for a one-part
+  name, the first part of a two-part name) starts and fails on real Athena
+  with `NOT_FOUND: Schema catalog:<account ID>:<context catalog>$schema:<namespace>
+  not found.` followed by the sentence of any CTAS that fails on the engine
+  (see [Failed queries](#failed-queries)), `ErrorCategory` 2, `ErrorType`
+  1300, the namespace in lower case, and no result file and no `.metadata`.
+  This held with `IF NOT EXISTS`, `WITH NO DATA`, `WITH (...)` table
+  properties, a double-quoted namespace and a query part that would fail at
+  run time; a query part naming a missing table failed with that table's
+  `TABLE_NOT_FOUND` instead (measured 2026-09-27,
+  [#273](https://github.com/aoyagikouhei/athena-local/issues/273)).
+  athena-local sends the statement to Trino, which checks in the same order,
+  and turns Trino's `Schema <namespace> not found` for the target into real
+  Athena's reason with the account ID `000000000000` and the context catalog
+  as sent. With no context database, real Athena looked for the namespace
+  `default`: a one-part CTAS then fails the same way, without being sent to
+  Trino, when `default` does not exist, and is sent as written when it
+  exists (not measured on real Athena). The `TABLE_NOT_FOUND` message keeps
+  Trino's table name, where real Athena names the table by its internal
+  Iceberg catalog and namespace.
 
 ## Value rendering
 

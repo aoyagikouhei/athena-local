@@ -946,3 +946,27 @@ Content-Type と `.metadata` を含む置き場所は本項が主で、[result-f
 - 採用した判断: `hive.rs` の `s3_tables_failure` が句の優先順で失敗を 1 つ選び、構文チェックより前に開始して FAILED にする（名前空間の確認より前）。`table_type` の値・`compression_level` は `s3_tables_rejection`、ちょうど小文字の 3 部は `s3_tables_two_catalogs` が開始時に弾く。未知のキーは、受理を測ったキーと Athena の文書のキーと `compression_level` の外（文書にあるが測っていないキーは未知にしない）。本物が受理する Iceberg の書き方は Trino の構文エラーのまま（書き換えない）
 - 備考: 受理された表の SHOW CREATE TABLE は、どれも `TBLPROPERTIES ('table_type'='iceberg', 'write_compression'='zstd')` を持つ（指定しなくても）。pa5 は Iceberg の書き方の PARTITIONED BY が Trino に無いので athena-local では届かない
 
+### S3 Tables の Context の名前空間が無い CTAS と、Database を省略した Context（#273）
+- 日付: 2026-09-27（UTC 00:12）／ issue: #273 ／ スクリプト: `tools/measure/unquoted-ddl.sh`（`ROUND=19`）／ 生データ: `$HOME/athena-unquoted-ddl-measurements/run-20260927-001229`
+- 相手: 本物の Athena（S3 Tables のカタログ `s3tablescatalog/<bucket>`）。StartQueryExecution 25 回、全項目を測れた
+- 投げたもの: d・f・c 群 19 項目。`<S3>` は `Catalog=<S3 Tables のカタログ>,Database=<ns>`、`<S3NODB>` は Catalog だけ（Database 省略）、`<S3NOPE>` は Database が無い名前空間。受理された表はその場で消した
+- 返ったもの（`<内部名>` は `catalog:<アカウント ID>:s3tablescatalog/<bucket>`、「+接尾辞」は ` You may need to manually clean the data at location '<OUTPUT>tables/<id>' before retrying. Athena will not delete data in your account.`）:
+
+  | 文（Context） | 本物 |
+  |---|---|
+  | `SELECT 1`（`<S3NODB>`。d0） | SUCCEEDED |
+  | `CREATE TABLE <t> (n int)`（`<S3NODB>`。CTAS でない。d1） | FAILED、DDL / CREATE_TABLE、2/1100 `Cannot find or access the specified table` |
+  | `CREATE TABLE <t> AS SELECT 1 AS n`（`<S3NODB>`。d2） | FAILED、2/1300 `NOT_FOUND: Schema <内部名>$schema:default not found.` +接尾辞（名前空間 `default` を引いた。このアカウントに `default` は無い） |
+  | `<ある ns>.<t>` / `<無い ns>.<t>` の CTAS（`<S3NODB>`。d3・d4） | d3 は SUCCEEDED、d4 は NOT_FOUND（`$schema:<無い ns>`） |
+  | t16・t17 の再現（`<S3NOPE>` の 1 部・`<S3>` の 2 部。f1・f2）、`IF NOT EXISTS`（f3）、`WITH NO DATA`（f5）、`WITH (format = 'PARQUET')`（f8）、Glue にだけある名前を 2 部目に（f9）、問い合わせは通る `SELECT n FROM awsdatacatalog.<DB>.<src>`（`<S3NOPE>`。f10）、二重引用符の `"<無い ns>".<t>`（f12） | FAILED、DDL / CREATE_TABLE_AS_SELECT、2/1300 `NOT_FOUND: Schema <内部名>$schema:<ns> not found.` +接尾辞 |
+  | 名前空間の一部を大文字にした `<無い NS>.<t>`（f4） | 同上。理由の名前空間は小文字 |
+  | `<無い ns>.<t> AS SELECT CAST('x' AS integer) AS n`（f6） | 同上（名前空間が問い合わせの実行の失敗より先） |
+  | `<無い ns>.<t> AS SELECT * FROM <ns>.<無い表>`（f7） | FAILED、2/1301 `TABLE_NOT_FOUND: line 1:98: Table '"awsdatacatalog$iceberg-aws"."<内部名>$schema:<ns>".<無い表>' does not exist.` +接尾辞（無い表の解析が名前空間より先。位置は送った文のまま） |
+  | `` CREATE TABLE `<無い ns>`.<t> AS SELECT 1 AS n ``（f11） | 開始時に `Creation of tables using select query uses a different syntax. Please see https://docs.aws.amazon.com/athena/latest/ug/ctas.html`（MALFORMED_QUERY） |
+  | `<ns>.<t>` の CTAS（c1）・`<無い ns>.<t> (n int)`（c2） | c1 は SUCCEEDED、c2 は 2/1100 `Cannot find or access the specified table` |
+
+  FAILED の CTAS 13 件は、結果ファイル本体・`.metadata` とも無く、理由の location にデータの置き残しも無い。返った Query・Context は送ったまま（d 群は Database が無いまま返る）
+- 手元の Trino（compose の iceberg カタログ、2026-09-27）: 書き込む先の名前空間が無い CTAS は位置無しの `Schema <ns> not found`（エラー名 `NOT_FOUND`。`system.runtime.queries` の `error_code`）、問い合わせの表の名前空間が無ければ解析の `line 1:53: Schema '<ns>' does not exist`、`CAST('x' AS integer)` より名前空間が先で、本物の f6・f7 と同じ順
+- 採用した判断: 実行時の Trino の `NOT_FOUND: Schema <ns> not found` だけを本物の文言に直す（アカウント ID は `000000000000`、カタログは Context の Catalog を受け取ったまま）。順序は Trino に任せる。Database を省略した Context は名前空間 `default` を問い合わせ、無いときだけ CTAS は NOT_FOUND、CTAS でない形は `Cannot find or access the specified table` で Trino に送らずに終える
+- 備考: f7 の表名の内部名と f11 の開始時の文言は合わせていない（範囲外として起票）
+
