@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # issue #208 で作成。issue #221 で ROUND=3、issue #224 で ROUND=4、issue #227 で ROUND=5、
 # issue #228 で ROUND=6、issue #240 で ROUND=7、issue #242 で ROUND=8、issue #229 で ROUND=9、
-# issue #248 で ROUND=10、issue #251 で ROUND=11・15 を追加
+# issue #248 で ROUND=10、issue #251 で ROUND=11・15、issue #260 で ROUND=12 を追加
 # 本物の Athena が StartQueryExecution の時点で弾く、無引用の DDL 3 種
 # （ALTER TABLE IF EXISTS、ALTER TABLE ... ADD COLUMN（単数）、場所の無い CREATE TABLE）の
 # 弾かれ方の規則（`line L:C` の位置、`no viable alternative at input '...'` の input の範囲、
@@ -119,6 +119,14 @@
 #     読み取り専用に確かめ、データが実際に書かれているかを見る（`check_ctas_orphan_data`。
 #     #251 のコメントの項目 4）。S3TABLES_* が無ければ、既定の Context だけで測れる r8a〜r8c を
 #     除いて未測定として残す。
+#   - 【issue #260 で追加】ROUND=12 は、#246 の無引用の `awsdatacatalog.<db>.<t>` の置換で
+#     測っていない周辺（S3 Tables・連携カタログ・実在しないカタログの Context の SELECT・INSERT、
+#     部品に引用符付きを含む形、3 部以外の 4 部の列の参照、AwsDataCatalog 以外の別名キーを
+#     無引用で書いた形、Context の Catalog を省略したとき）を測る O 群だけを測る。実在しない
+#     カタログの Context の SELECT は #214 で SUCCEEDED と実測済みなので投げない（同じ理由の
+#     INSERT は未測定なので測る）。preflight・DB 確認は共通で走るが、O 群だけ実在する表
+#     `<PROBE>_o` を 1 つ作り、全項目で使い回して最後に消す（M 群と同じ作り）。S3TABLES_* が
+#     無ければ o0・o1・o2 が、FEDERATED_CATALOG が無ければ o3・o4・o9 が「未測定」として残る。
 #   - 【issue #251 で追加（2 ラウンド目）】ROUND=15 は、CTAS の SELECT 部分が解析／実行の
 #     どちらで失敗するか（issue #251 のコメントの項目 1〜3）と、Catalog 省略・プロパティ付き・
 #     `WITH NO DATA`・複数行／0 行・括弧／`WITH` 句・ExecutionParameters（項目 4〜10）、
@@ -133,8 +141,8 @@
 #     なった項目は結果ファイル本体・`.metadata` を取得し、CTAS（t1〜t18）は理由に書かれた
 #     location のオーファンデータ確認（`check_ctas_orphan_data`）も行う。SUCCEEDED の CTAS
 #     （t1〜t18）は `.metadata` も取得する（t19 は CTAS でないので、どちらも r1 と同じ
-#     本体・`.metadata` の有無だけを見る）。ROUND=12〜14 は他ブランチ（#260・#266）が使うため、
-#     この変更では飛番のまま足さない。
+#     本体・`.metadata` の有無だけを見る）。ROUND=12 は issue #260 が使う。ROUND=13・14 は
+#     他ブランチ（#266）が使うため、この変更では飛番のまま足さない。
 #
 # 使い方:
 #   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db bash tools/measure/unquoted-ddl.sh
@@ -204,6 +212,15 @@
 #   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=11 \
 #     S3TABLES_CATALOG=s3tablescatalog/your-bucket S3TABLES_NS=your_ns \
 #     bash tools/measure/unquoted-ddl.sh
+#   ラウンド 12（issue #260。無引用の awsdatacatalog.<db>.<t> の置換（#246）で測っていない周辺
+#   （S3 Tables・連携カタログ・実在しないカタログの Context の SELECT・INSERT、引用符付きの部品、
+#   4 部の列の参照、AwsDataCatalog 以外の別名キー、Context の Catalog 省略）だけを測る。
+#   S3TABLES_*・FEDERATED_CATALOG が無ければ該当項目だけ未測定として残す）:
+#   tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=12 \
+#     S3TABLES_CATALOG=s3tablescatalog/your-bucket S3TABLES_NS=your_ns \
+#     FEDERATED_CATALOG=your_federated_catalog FEDERATED_DB=your_federated_db \
+#     FEDERATED_TABLE=your_federated_table \
+#     bash tools/measure/unquoted-ddl.sh
 #   ラウンド 15（issue #251 の 2 ラウンド目。CTAS の SELECT が解析／実行のどちらで失敗するか、
 #   Catalog 省略・プロパティ付き・WITH NO DATA・複数行／0 行・括弧／WITH 句・
 #   ExecutionParameters、S3 Tables の Context の名前空間まわりだけを測る。S3TABLES_* が
@@ -241,6 +258,8 @@
 #                    実在する表は作らない。
 #                    11 は R 群（S3 Tables の Context の場所の無い CREATE TABLE の名前空間まわりと
 #                    CTAS の残り。issue #251）だけ。実在する表は作らない。
+#                    12 は O 群（無引用の awsdatacatalog. の置換で測っていない周辺。issue #260）
+#                    だけ。実在する表 `<PROBE>_o` を 1 つ作り、全項目で使い回して最後に消す。
 #                    15 は T 群（CTAS の SELECT が解析／実行のどちらで失敗するか、Catalog 省略・
 #                    プロパティ付き・WITH NO DATA・複数行／0 行・括弧／WITH 句・
 #                    ExecutionParameters、S3 Tables の Context の名前空間まわり。issue #251 の
@@ -257,15 +276,20 @@
 #                    この 2 つが揃ったときだけ、ROUND=1 の C20（S3 Tables への場所の無い
 #                    CREATE TABLE）と ROUND=3 の H 群（h0〜h9）、ROUND=5 の J 群（j0〜j13）、
 #                    ROUND=9 の N 群（n0〜n30・n32）、ROUND=10 の S 群（s1〜s11・s13・s15〜s18）、
-#                    ROUND=11 の R 群（r1〜r7b）、ROUND=15 の T 群のうち t3・t4・t16〜t19 を測る。
-#                    1 つでも欠けていれば「未測定（S3TABLES_* 未設定）」として summary に残す
-#                    （ROUND=5 は j14〜j16、ROUND=9 は n31、ROUND=10 は s12、ROUND=11 は
-#                    r8a〜r8c、ROUND=15 は t1・t2・t5〜t15 だけ測る）。
+#                    ROUND=11 の R 群（r1〜r7b）、ROUND=12 の O 群（o0〜o2）、ROUND=15 の T 群のうち
+#                    t3・t4・t16〜t19 を測る。1 つでも欠けていれば「未測定（S3TABLES_* 未設定）」
+#                    として summary に残す（ROUND=5 は j14〜j16、ROUND=9 は n31、ROUND=10 は s12、
+#                    ROUND=11 は r8a〜r8c、ROUND=15 は t1・t2・t5〜t15 だけ測る）。
 #                    ROUND=2 では使わない。
 #   FEDERATED_CATALOG 連携カタログ（S3 Tables 以外）の名前。設定されていれば ROUND=10 の s14
 #                    （TRINO_CATALOG_MAP の別名や Trino にだけあるカタログの 3 部 + LOCATION が
-#                    実在するカタログのとき）も測る。無ければ s14 だけ「未測定（FEDERATED_CATALOG
-#                    未設定）」として残す（他の S 群は S3TABLES_* だけで測れる）。
+#                    実在するカタログのとき）と ROUND=12 の o3・o4（連携カタログの Context の
+#                    SELECT・INSERT）も測る。無ければ該当項目だけ「未測定（FEDERATED_CATALOG
+#                    未設定）」として残す。
+#   FEDERATED_DB     連携カタログの中の、実在するデータベース名。
+#   FEDERATED_TABLE  同じく実在する表名。この 2 つと FEDERATED_CATALOG が揃ったときだけ、
+#                    ROUND=12 の o9（AwsDataCatalog 以外の別名キーを無引用の大文字混じりで
+#                    書いた形）を測る。無ければ o9 だけ「未測定」として残す。
 #
 # ** このスクリプトが本物に対して行う破壊的な操作 **
 #   - 実在する表 <db>.athena_local_probe_208_<乱数>_real を 1 つ CTAS で作り、
@@ -361,6 +385,11 @@
 #     FAILED になった項目（r4・r5・r6a・r6b・r7a・r7b・r8a・r8b・r8c のうち FAILED のもの）は、
 #     理由に書かれた `location '...'` を `aws s3 ls --recursive` で読み取り、データが実際に
 #     書かれているかも確かめる（`check_ctas_orphan_data`。読み取りのみで、書き込みは行わない）。
+#   - ROUND=12: `<db>.<接頭辞>_o` を 1 つ CTAS で作り（O_TABLE）、O 群の全項目（SELECT・INSERT・
+#     4 部の列の参照）で使い回して、最後に無引用 + IF EXISTS の DROP TABLE で消す（trap でも
+#     保険をかける）。o5（実在しないカタログの Context）・o2・o4（S3 Tables・連携カタログの
+#     Context）の INSERT は同じ表に 1 行足すだけで、表そのものは作り直さない。CREATE TABLE は
+#     投げない（新しい表を作らない）。
 #   - ROUND=15: 実在する表 <接頭辞>_real は作らない。T 群（t1〜t19。t19 だけ CTAS でない
 #     plain CREATE TABLE）はすべて run_create_then_drop_ctx で投げ（t15 だけ
 #     ExecutionParameters を CREATE の 1 回にしか掛けられないため手組みで同じ形の後始末を
@@ -379,10 +408,10 @@
 # 課金について: ALTER TABLE・DROP TABLE はメタデータだけを見る／書く文で、実データの
 # スキャンは無い。CREATE TABLE（実在する表の準備・C3・C20・C21・C22・C23、E・F 群、
 # ROUND=3 の H・Q・P 群、ROUND=5 の J 群、ROUND=9 の N 群、ROUND=10 の S 群、ROUND=11 の R 群、
-# ROUND=15 の T 群。いずれも 0〜3 行、t11 だけ 3 行）もスキャンや書き込みは軽微。Athena の
-# 最小課金 × クエリ数の見込み。ROUND=5・10・11・15 の結果ファイルの読み出し（aws s3 cp）と
-# ROUND=11・15 のオーファンデータ確認（aws s3 ls）は Athena のクエリではなく S3 の
-# GetObject／ListObjects で、課金には乗らない。
+# ROUND=12 の O_TABLE の準備、ROUND=15 の T 群。いずれも 0〜3 行、t11 だけ 3 行）もスキャンや
+# 書き込みは軽微。ROUND=12 の SELECT・INSERT も 1 行だけ。Athena の最小課金 × クエリ数の見込み。
+# ROUND=5・10・11・15 の結果ファイルの読み出し（aws s3 cp）と ROUND=11・15 のオーファンデータ
+# 確認（aws s3 ls）は Athena のクエリではなく S3 の GetObject／ListObjects で、課金には乗らない。
 #
 # 本物への呼び出し回数の見込み（内訳。実際の回数は下で更新される。GetQueryExecution は
 # poll_until_terminal のポーリング + 終端後の 1 回で、開始できた項目の数 × 数回のオーダー。
@@ -559,6 +588,26 @@
 #   データの確認（aws s3 ls --recursive、1 回）にも使う。どちらも Athena の API ではないので
 #   上の StartQueryExecution・GetQueryExecution の回数には含めない。
 #
+# == ROUND=12（O 群のみ。issue #260。preflight・DB 確認は共通） ==
+#
+#   [StartQueryExecution]
+#   preflight（SELECT 1 + SHOW TABLES）2
+#   + O_TABLE の準備 1・後始末 1
+#   + 常に投げる o5・o6・o7・o8・o10・o11 の 6
+#   + S3TABLES_* が揃うときだけの o0・o1・o2 の 3
+#   + FEDERATED_CATALOG が揃うときだけの o3・o4 の 2
+#   + FEDERATED_CATALOG・FEDERATED_DB・FEDERATED_TABLE が揃うときだけの o9 の 1
+#   = 16（全部あり）／10（どちらも無し）。
+#   このスクリプトの実測値は $START_CALL_FILE の行数（summary.txt に出る）。
+#
+#   [GetQueryExecution]
+#   開始できた項目だけ終端状態までポーリングし、終端後にもう 1 回まとめて取得する。
+#
+#   [その他]
+#   FAILED になった項目ごとに、結果ファイル本体と `<OutputLocation>.metadata` の取得
+#   （aws s3 cp、それぞれ 1 回）を追加で呼ぶ（最大で O 群の項目数 × 2 回）。Athena の
+#   API ではないので上の StartQueryExecution・GetQueryExecution の回数には含めない。
+#
 # == ROUND=15（T 群のみ。issue #251 の 2 ラウンド目。preflight・DB 確認は共通、実在する表は作らない） ==
 #
 #   [StartQueryExecution]
@@ -607,9 +656,9 @@ set -uo pipefail
 : "${DB:?DB にデータベース名を設定してください}"
 ROUND=${ROUND:-1}
 case "$ROUND" in
-  1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 15) ;;
+  1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 15) ;;
   *)
-    echo "ROUND には 1・2・3・4・5・6・7・8・9・10・11・15 のどれかを指定してください（既定 1）" >&2
+    echo "ROUND には 1・2・3・4・5・6・7・8・9・10・11・12・15 のどれかを指定してください（既定 1）" >&2
     exit 1
     ;;
 esac
@@ -622,8 +671,12 @@ RETRY_MAX=${RETRY_MAX:-4}
 RETRY_DELAY=${RETRY_DELAY:-5}
 S3TABLES_CATALOG=${S3TABLES_CATALOG:-}
 S3TABLES_NS=${S3TABLES_NS:-}
-# 連携カタログ（S3 Tables 以外）の名前。ROUND=10 の s14 だけが使う（issue #248）。
+# 連携カタログ（S3 Tables 以外）の名前。ROUND=10 の s14（issue #248）と ROUND=12 の
+# o3・o4・o9（issue #260）が使う。
 FEDERATED_CATALOG=${FEDERATED_CATALOG:-}
+# 連携カタログの中の実在する DB・表名。ROUND=12 の o9 だけが使う。
+FEDERATED_DB=${FEDERATED_DB:-}
+FEDERATED_TABLE=${FEDERATED_TABLE:-}
 # S3TABLES_CATALOG が s3tablescatalog/<バケット> の形なら、そのバケット名（伏せ字用）。
 S3TABLES_BUCKET=""
 case "$S3TABLES_CATALOG" in
@@ -736,6 +789,9 @@ $S3TABLES_CATALOG	<S3TABLES_CATALOG>
 $S3TABLES_BUCKET	<S3TABLES_BUCKET>
 $S3TABLES_NS	<S3TABLES_NS>
 $FEDERATED_CATALOG	<FEDERATED_CATALOG>
+${FEDERATED_CATALOG^^}	<FEDERATED_CATALOG_UPPER>
+$FEDERATED_DB	<FEDERATED_DB>
+$FEDERATED_TABLE	<FEDERATED_TABLE>
 ${DB^^}	<DB_UPPER>
 EOF
 }
@@ -2073,6 +2129,73 @@ done
 
 fi # ROUND=11
 
+# ROUND=12 だけ、O 群を投げる（issue #260）。
+if [ "$ROUND" = 12 ]; then
+
+DEFAULT_CTX="Catalog=$CATALOG,Database=$DB"
+
+# --- O 群（無引用の awsdatacatalog.<db>.<t> の置換（#246）で測っていない周辺） ------------------
+# Context が AwsDataCatalog か省略のときの SELECT・INSERT・EXPLAIN などは #242 の m30〜m41 で
+# 実測済み（ここには含めない）。実在しないカタログの Context の SELECT も #214 で SUCCEEDED と
+# 実測済み（run-20260925-131314）なので投げない。同じ理由の INSERT は未測定なので o5 で測る。
+O_TABLE="$(new_name o)"
+PENDING_DROPS[$O_TABLE]=1
+run_in_ctx "$DEFAULT_CTX" o-setup "CREATE TABLE $DB.$O_TABLE AS SELECT 1 AS n, 'x' AS s"
+
+if [ -n "$S3TABLES_CATALOG" ] && [ -n "$S3TABLES_NS" ]; then
+  S3T_CTX="Catalog=$S3TABLES_CATALOG,Database=$S3TABLES_NS"
+  run_in_ctx "$S3T_CTX" o0 "SELECT 1"
+  # S3 Tables の Context で AwsDataCatalog 側の表を無引用の 3 部で読み書きできるか
+  # （CREATE TABLE は #227 の j2 などで FAILED、SELECT・INSERT は未測定）。
+  run_in_ctx "$S3T_CTX" o1 "SELECT * FROM awsdatacatalog.$DB.$O_TABLE"
+  run_in_ctx "$S3T_CTX" o2 "INSERT INTO awsdatacatalog.$DB.$O_TABLE VALUES (2, 'y')"
+else
+  skip o0 "未測定（S3TABLES_* 未設定）"
+  skip o1 "未測定（S3TABLES_* 未設定）"
+  skip o2 "未測定（S3TABLES_* 未設定）"
+fi
+
+if [ -n "$FEDERATED_CATALOG" ]; then
+  # 連携カタログの Context でも同じ無引用の awsdatacatalog. が Glue 側を指すか。
+  run_in_ctx "Catalog=$FEDERATED_CATALOG" o3 "SELECT * FROM awsdatacatalog.$DB.$O_TABLE"
+  run_in_ctx "Catalog=$FEDERATED_CATALOG" o4 "INSERT INTO awsdatacatalog.$DB.$O_TABLE VALUES (2, 'y')"
+else
+  skip o3 "未測定（FEDERATED_CATALOG 未設定）"
+  skip o4 "未測定（FEDERATED_CATALOG 未設定）"
+fi
+
+# 実在しないカタログの Context の SELECT は #214 で SUCCEEDED と実測済み（同じ理由で投げない）。
+# INSERT は #214 でも測っていないのでここで測る。
+run_in_ctx "Catalog=nosuchcatalog260,Database=$DB" o5 "INSERT INTO awsdatacatalog.$DB.$O_TABLE VALUES (2, 'y')"
+
+# 部品に引用符付きを含む形（1 部目は無引用のまま）。
+run_in_ctx "$DEFAULT_CTX" o6 "SELECT * FROM awsdatacatalog.\"$DB\".$O_TABLE"
+run_in_ctx "$DEFAULT_CTX" o7 "SELECT * FROM awsdatacatalog.$DB.\"$O_TABLE\""
+
+# 3 部以外（4 部の列の参照）。
+run_in_ctx "$DEFAULT_CTX" o8 "SELECT awsdatacatalog.$DB.$O_TABLE.n FROM awsdatacatalog.$DB.$O_TABLE"
+
+if [ -n "$FEDERATED_CATALOG" ] && [ -n "$FEDERATED_DB" ] && [ -n "$FEDERATED_TABLE" ]; then
+  # AwsDataCatalog 以外の別名キー（連携カタログの名前）を無引用の大文字混じりで書いた形。
+  run_in_ctx "Catalog=$FEDERATED_CATALOG" o9 "SELECT * FROM ${FEDERATED_CATALOG^^}.$FEDERATED_DB.$FEDERATED_TABLE"
+else
+  skip o9 "未測定（FEDERATED_CATALOG・FEDERATED_DB・FEDERATED_TABLE のいずれか未設定）"
+fi
+
+# Context の Catalog を省略したとき（既定と同じ扱いになるか。大文字小文字も併せて見る）。
+run_in_ctx "Database=$DB" o10 "SELECT * FROM awsdatacatalog.$DB.$O_TABLE"
+run_in_ctx "Database=$DB" o11 "SELECT * FROM AWSDATACATALOG.$DB.$O_TABLE"
+
+run_in_ctx "$DEFAULT_CTX" o-cleanup "DROP TABLE IF EXISTS $DB.$O_TABLE"
+succeeded o-cleanup && unset "PENDING_DROPS[$O_TABLE]"
+
+O_LABELS="o0 o1 o2 o3 o4 o5 o6 o7 o8 o9 o10 o11"
+
+# --- 付随物の取得（FAILED になった項目だけ） --------------------------------------------
+fetch_failed_attachments $O_LABELS
+
+fi # ROUND=12
+
 # ROUND=15 だけ、T 群を投げる（issue #251 の 2 ラウンド目）。
 if [ "$ROUND" = 15 ]; then
 
@@ -2266,6 +2389,8 @@ elif [ "$ROUND" = 11 ]; then
   for l in $R_LABELS; do
     ALL_LABELS="$ALL_LABELS $l $l-cleanup"
   done
+elif [ "$ROUND" = 12 ]; then
+  ALL_LABELS="$ALL_LABELS o-setup $O_LABELS o-cleanup"
 elif [ "$ROUND" = 15 ]; then
   for l in $T_LABELS; do
     ALL_LABELS="$ALL_LABELS $l $l-cleanup"
@@ -2435,6 +2560,40 @@ write_summary_txt() {
       echo "#   確かめ、データが実際に書かれているかも見る（<label>.orphan-data.txt）。"
       echo "# 課金: スキャンの無いクエリだけ（CREATE は 0〜1 行、DROP はメタデータのみ）。結果ファイルの"
       echo "#   読み出し・オーファンデータの確認は Athena のクエリ課金には乗らない。"
+      echo "# 注意: これは実測した本物の Athena の挙動であり、将来の Athena の変更で変わりうる。"
+      echo "#   実測値は既定とは限らない。"
+    elif [ "$ROUND" = 12 ]; then
+      echo "# issue #260（#208 ラウンド 12）: 無引用の awsdatacatalog.<db>.<t> の置換（#246）で"
+      echo "#             測っていない周辺（S3 Tables・連携カタログ・実在しないカタログの Context の"
+      echo "#             SELECT・INSERT、引用符付きの部品、4 部の列の参照、AwsDataCatalog 以外の"
+      echo "#             別名キー、Context の Catalog 省略）を実測"
+      echo "# 実行日時: $(date -Iseconds)"
+      if [ -n "$S3TABLES_CATALOG" ] && [ -n "$S3TABLES_NS" ]; then
+        echo "# S3TABLES_*: 設定あり（o0・o1・o2 を測る）"
+      else
+        echo "# S3TABLES_*: 未設定（o0・o1・o2 は未測定）"
+      fi
+      if [ -n "$FEDERATED_CATALOG" ]; then
+        echo "# FEDERATED_CATALOG: 設定あり（o3・o4 を測る）"
+      else
+        echo "# FEDERATED_CATALOG: 未設定（o3・o4 は未測定）"
+      fi
+      if [ -n "$FEDERATED_CATALOG" ] && [ -n "$FEDERATED_DB" ] && [ -n "$FEDERATED_TABLE" ]; then
+        echo "# FEDERATED_DB・FEDERATED_TABLE: 設定あり（o9 を測る）"
+      else
+        echo "# FEDERATED_DB・FEDERATED_TABLE: 未設定（o9 は未測定）"
+      fi
+      echo "# StartQueryExecution の見込み本数: 16（すべて設定あり）／10（S3TABLES_*・FEDERATED_* 無し）"
+      echo "#   （preflight 2 + O_TABLE の準備/後始末 2 + 常に投げる o5・o6・o7・o8・o10・o11 の 6"
+      echo "#   + S3TABLES_* が揃うときだけの o0・o1・o2 の 3 + FEDERATED_CATALOG が揃うときだけの"
+      echo "#   o3・o4 の 2 + FEDERATED_CATALOG・FEDERATED_DB・FEDERATED_TABLE が揃うときだけの o9 の 1）。"
+      echo "#   このスクリプトの実測値: $(wc -l < "$START_CALL_FILE" | tr -d ' ') 回"
+      echo "# DDL: <db>.<PROBE>_o を 1 つ CTAS で作り、O 群の全項目で使い回して最後に DROP する"
+      echo "#   （新しい表は作らない。o2・o4・o5 の INSERT は同じ表に 1 行足すだけ）。"
+      echo "# 付随物: FAILED になった項目は、結果ファイル本体と <OutputLocation>.metadata を"
+      echo "#   aws s3 cp で読み出して保存する（<label>.output.txt・<label>.output.metadata）。"
+      echo "# 課金: スキャンの無いクエリだけ（CTAS・SELECT・INSERT はどれも 0〜1 行）。結果ファイルの"
+      echo "#   読み出しは S3 の GetObject で、Athena のクエリ課金には乗らない。"
       echo "# 注意: これは実測した本物の Athena の挙動であり、将来の Athena の変更で変わりうる。"
       echo "#   実測値は既定とは限らない。"
     elif [ "$ROUND" = 15 ]; then
@@ -2648,12 +2807,13 @@ PYEOF
       fi
     done
     if [ "$ROUND" = 6 ] || [ "$ROUND" = 7 ] || [ "$ROUND" = 8 ] || [ "$ROUND" = 10 ] || [ "$ROUND" = 11 ] \
-      || [ "$ROUND" = 15 ]; then
+      || [ "$ROUND" = 12 ] || [ "$ROUND" = 15 ]; then
       case "$ROUND" in
         6) REPR_LABELS=$K_LABELS ;;
         7) REPR_LABELS=$L_LABELS ;;
         8) REPR_LABELS=$M_LABELS ;;
         10) REPR_LABELS=$S_LABELS ;;
+        12) REPR_LABELS=$O_LABELS ;;
         15) REPR_LABELS=$T_LABELS ;;
         *) REPR_LABELS=$R_LABELS ;;
       esac
@@ -2706,7 +2866,7 @@ PYEOF
         echo
       done
     fi
-    if [ "$ROUND" = 5 ] || [ "$ROUND" = 10 ] || [ "$ROUND" = 11 ] || [ "$ROUND" = 15 ]; then
+    if [ "$ROUND" = 5 ] || [ "$ROUND" = 10 ] || [ "$ROUND" = 11 ] || [ "$ROUND" = 12 ] || [ "$ROUND" = 15 ]; then
       echo
       if [ "$ROUND" = 15 ]; then
         echo "## 付随物（結果ファイル本体・.metadata。FAILED または SUCCEEDED の CTAS だけ。実名は伏せる）"
@@ -2716,6 +2876,7 @@ PYEOF
       case "$ROUND" in
         5) ATTACH_LABELS=$J_LABELS ;;
         10) ATTACH_LABELS=$S_LABELS ;;
+        12) ATTACH_LABELS=$O_LABELS ;;
         15) ATTACH_LABELS=$T_LABELS ;;
         *) ATTACH_LABELS=$R_LABELS ;;
       esac

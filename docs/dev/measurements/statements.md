@@ -805,3 +805,21 @@ Content-Type と `.metadata` を含む置き場所は本項が主で、[result-f
 - 採用した判断: SELECT の失敗（解析・実行中とも）は Database not found より先に出て `.metadata` を置かないので、athena-local は FAILED の CTAS の `.metadata` を置く前に問い合わせ部分を Trino でそのまま実行し、失敗すれば Trino のエラーで終える（`count(*)` で包むと使わない列の計算が省かれ、t2 の形を見逃すので包まない）。`.metadata` の件数はその行数で、`WITH NO DATA` は 0。Catalog 省略も同じ判定にする。1 部の名前の `IF NOT EXISTS` も名前空間を確かめる
 - 備考: エンジンで失敗した CTAS の理由の接尾辞（` You may need to manually clean ...`）と `line 6:3` の位置、S3 Tables の Context の 1 部・2 部の CTAS の `NOT_FOUND` は、athena-local は Trino の文言のまま（範囲外として起票）
 
+### 無引用の `awsdatacatalog.<DB>.<表>` の置換の周り: Context・引用符付きの部品・4 部の列の参照（#260）
+- 日付: 2026-09-27（UTC 2026-09-26 21:01）／ issue: #260 ／ スクリプト: `tools/measure/unquoted-ddl.sh`（`ROUND=12`）／ 生データ: `$HOME/athena-unquoted-ddl-measurements/run-20260926-210106`
+- 相手: 本物の Athena（`AwsDataCatalog`・Catalog 省略・S3 Tables のカタログ `s3tablescatalog/<bucket>`・実在しないカタログ `nosuchcatalog260`）
+- 投げたもの: 9 項目（o0〜o2・o5〜o8・o10・o11）と準備・後始末 2 本。表 `<DB>.<t>`（`n`・`s` の 1 行）を CTAS で作り、全項目で使い回して最後に消した。連携カタログの Context（o3・o4）と `AwsDataCatalog` 以外の別名キー（o9）は、このアカウントに連携カタログが無く未測定
+- 返ったもの（すべて SUCCEEDED。Query は送った文のまま（`awsdatacatalog.` は落ちない））:
+
+  | 文 | Context | StatementType / SubstatementType | 返った Context |
+  |---|---|---|---|
+  | `SELECT 1`（o0。対照） | S3 Tables | DML / SELECT | 送ったまま |
+  | `SELECT * FROM awsdatacatalog.<DB>.<t>`（o1） | S3 Tables | DML / SELECT | 送ったまま |
+  | `INSERT INTO awsdatacatalog.<DB>.<t> VALUES (2, 'y')`（o2） | S3 Tables | DML / INSERT | 送ったまま |
+  | 同じ INSERT（o5） | `Catalog=nosuchcatalog260,Database=<DB>` | DML / INSERT | 送ったまま |
+  | `SELECT * FROM awsdatacatalog."<DB>".<t>`（o6）・`awsdatacatalog.<DB>."<t>"`（o7） | `Catalog=AwsDataCatalog` | DML / SELECT | Catalog は小文字の `awsdatacatalog`（#157 と同じ） |
+  | `SELECT awsdatacatalog.<DB>.<t>.n FROM awsdatacatalog.<DB>.<t>`（o8。4 部の列の参照） | `Catalog=AwsDataCatalog` | DML / SELECT | 同上 |
+  | `SELECT * FROM awsdatacatalog.<DB>.<t>`（o10）・`AWSDATACATALOG.`（o11） | `Database=<DB>` だけ（Catalog 省略） | DML / SELECT | `Database` だけ |
+
+- 採用した判断: 別名置換の無引用の `awsdatacatalog` を、測った Context と文の組に広げる（S3 Tables・Trino に無いカタログの Context の SELECT・INSERT の無引用の 3 部、既定の Context の SELECT の引用符付きの部品を 1 つ含む 3 部と無引用の 4 部の列の参照）。実在しないカタログの SELECT は #214 の生データで SUCCEEDED と分かっていたので、このラウンドには入れなかった（decisions.md の #260 の項）
+- 備考: 結果ファイルの中身（o8 の列名、o2・o5 で行が入ったか）は保存していない。ほかの文の種類（DELETE・UPDATE・MERGE・DROP VIEW・SHOW CREATE VIEW・`RENAME TO` の 2 つ目の名前。#246 の独立レビュー）も未測定（unmeasured.md。測るのは #279）

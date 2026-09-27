@@ -13,6 +13,7 @@ use super::context_catalog;
 use super::format_probe;
 use super::result_output;
 use super::table_format::{self, FormatOverride};
+use super::unquoted_alias;
 
 /// 本物と同じく実行はバックグラウンドで進み、状態はポーリングで見る。
 pub(super) fn spawn_query(app: App, id: String) {
@@ -96,7 +97,7 @@ async fn ctas_rows(
         .database
         .as_deref()
         .or(config.default_database.as_deref());
-    let query = aliased_query(config, execution);
+    let query = aliased_query(trino, config, execution).await;
     let Some(part) = super::ctas_query::query_part(&query) else {
         return Ok(None);
     };
@@ -153,7 +154,7 @@ async fn run(
             .await;
 
     let bound = bind_parameters(trino, execution, catalog, database).await;
-    let query = aliased_query(config, execution);
+    let query = aliased_query(trino, config, execution).await;
     let outcome = execute_bound(trino, &query, &bound, catalog, database, cancel).await?;
     let outcome = completion::split_explain_rows(&execution.query, outcome);
     let outcome = completion::split_show_create_rows(&execution.query, outcome);
@@ -201,17 +202,20 @@ async fn bind_parameters(
 
 /// 修飾名のカタログにもヘッダと同じ別名を当てる。EXECUTE IMMEDIATE で文字列リテラルに包む前に当てるので、
 /// 包んだ後の引用符の二重化を考えなくてよい。構文チェックと GetQueryExecution の Query は受け取った SQL のまま。
-/// 無引用の `awsdatacatalog.<db>.<t>` は、本物が実行した Context（AwsDataCatalog か省略）でだけ当てる（#246）。
-fn aliased_query<'a>(config: &Config, execution: &'a Execution) -> std::borrow::Cow<'a, str> {
-    let aws_data_catalog_context = execution
-        .catalog
-        .as_deref()
-        .is_none_or(super::reported_query::is_aws_data_catalog);
-    alias_qualified_names(
+/// 無引用の `awsdatacatalog` の名前は、本物が実行した Context と文の種類の組でだけ当てる（`unquoted_alias`。#246・#260）。
+async fn aliased_query<'a>(
+    trino: &Trino,
+    config: &Config,
+    execution: &'a Execution,
+) -> std::borrow::Cow<'a, str> {
+    let forms = unquoted_alias::forms(
+        trino,
+        config,
         &execution.query,
-        &config.catalog_map,
-        aws_data_catalog_context,
+        execution.catalog.as_deref(),
     )
+    .await;
+    alias_qualified_names(&execution.query, &config.catalog_map, forms)
 }
 
 /// 値を当てて EXECUTE IMMEDIATE で包んで投げ、パラメータを使わない文だと言われたら包まずに投げ直す。

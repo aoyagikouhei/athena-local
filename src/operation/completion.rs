@@ -1,6 +1,6 @@
 //! run の完了後の後処理（Iceberg のパーティション取得・EXPLAIN の行分割・UpdateCount の決定）。
 
-use crate::catalog::alias_qualified_names;
+use crate::catalog::{UnquotedForms, alias_qualified_names};
 use crate::config::Config;
 use crate::trino::{Cancel, Outcome, Trino};
 
@@ -23,7 +23,7 @@ pub(super) async fn iceberg_partition_specs(
     };
     let sql = format!("SHOW CREATE TABLE {name}");
     // 無引用の `awsdatacatalog.` は、当てる Context では開始時に DESCRIBE から落としてある（#242）ので見ない。
-    let sql = alias_qualified_names(&sql, &config.catalog_map, false);
+    let sql = alias_qualified_names(&sql, &config.catalog_map, UnquotedForms::None);
     let Ok(outcome) = trino.execute(&sql, catalog, database, cancel).await else {
         return Vec::new();
     };

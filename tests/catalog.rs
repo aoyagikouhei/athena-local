@@ -266,22 +266,209 @@ async fn aws_data_catalog_の_context_では無引用の_awsdatacatalog_に別�
     }
 }
 
-/// S3 Tables の Context での無引用の `awsdatacatalog.<db>.<t>` の SELECT は測っていないので、今までどおり送る。
+/// 本物は Context の Catalog が AwsDataCatalog か省略の SELECT で、部品に引用符付きを含む名前と 4 部の列の参照も
+/// 送ったまま SUCCEEDED にした（2026-09-27 実測 o6〜o8・o10。#260）。INSERT の引用符付きの部品は測っていないので送ったまま。
 #[tokio::test]
-async fn aws_data_catalog_でない_context_では無引用の_awsdatacatalog_をそのまま送る() {
+async fn aws_data_catalog_の_context_の_select_は引用符付きの部品と_4_部の列の参照にも別名を当てる()
+{
+    for (query, sent) in [
+        (
+            "SELECT * FROM awsdatacatalog.\"db\".t",
+            "SELECT * FROM \"hive\"        .\"db\".t",
+        ),
+        (
+            "SELECT * FROM awsdatacatalog.db.\"t\"",
+            "SELECT * FROM \"hive\"        .db.\"t\"",
+        ),
+        (
+            "SELECT awsdatacatalog.db.t.n FROM awsdatacatalog.db.t",
+            "SELECT \"hive\"        .db.t.n FROM \"hive\"        .db.t",
+        ),
+        (
+            "INSERT INTO awsdatacatalog.\"db\".t VALUES (1)",
+            "INSERT INTO awsdatacatalog.\"db\".t VALUES (1)",
+        ),
+    ] {
+        for context in [
+            json!({ "Catalog": "AwsDataCatalog", "Database": "db" }),
+            json!({ "Database": "db" }),
+        ] {
+            let harness = Harness::builder(select_response())
+                .catalog_map(&[("AwsDataCatalog", "hive")])
+                .start()
+                .await;
+
+            let execution = harness
+                .run_query(json!({ "QueryString": query, "QueryExecutionContext": context }))
+                .await;
+
+            assert_eq!(harness.trino_sqls(), [sent], "{query} {context}");
+            assert_eq!(execution["QueryExecution"]["Query"], query);
+        }
+    }
+}
+
+/// カタログの有無の問い合わせ（`src/operation/table_format.rs` の `catalog_exists_sql` と同じ形。
+/// ずれればルートに当たらずテストが落ちる）。
+fn catalog_exists_sql(catalog: &str) -> String {
+    format!(
+        "SELECT (SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = '{catalog}')"
+    )
+}
+
+fn catalog_exists_response(connector_name: Option<&str>) -> serde_json::Value {
+    json!({
+        "columns": [{ "name": "_col0", "type": "varchar" }],
+        "data": [[connector_name]]
+    })
+}
+
+const SELECT_UNQUOTED: (&str, &str) = (
+    "SELECT * FROM awsdatacatalog.db.t",
+    "SELECT * FROM \"hive\"        .db.t",
+);
+const INSERT_UNQUOTED: (&str, &str) = (
+    "INSERT INTO AwsDataCatalog.db.t VALUES (2, 'y')",
+    "INSERT INTO \"hive\"        .db.t VALUES (2, 'y')",
+);
+
+/// 本物は S3 Tables の Context でも、無引用の `awsdatacatalog.<db>.<t>` の SELECT・INSERT を Glue の表として
+/// SUCCEEDED にした（2026-09-27 実測 o1・o2。#260）。Query は受け取ったまま返す。
+#[tokio::test]
+async fn s3_tables_の_context_の_select_と_insert_は無引用の_awsdatacatalog_に別名を当てて送る() {
+    for (query, sent) in [SELECT_UNQUOTED, INSERT_UNQUOTED] {
+        let harness = Harness::builder(select_response())
+            .catalog_map(&[("AwsDataCatalog", "hive"), (S3_TABLES_CATALOG, "iceberg")])
+            .start()
+            .await;
+
+        let execution = harness
+            .run_query(json!({
+                "QueryString": query,
+                "QueryExecutionContext": { "Catalog": S3_TABLES_CATALOG, "Database": "ns" }
+            }))
+            .await;
+
+        assert_eq!(
+            execution["QueryExecution"]["Status"]["State"], "SUCCEEDED",
+            "{query}: {execution}"
+        );
+        assert_eq!(harness.trino_sqls(), [sent], "{query}");
+        assert_eq!(execution["QueryExecution"]["Query"], query);
+    }
+}
+
+/// S3 Tables の Context のほかの文と、引用符付きの部品を含む名前は測っていないので、今までどおり送る。
+#[tokio::test]
+async fn s3_tables_の_context_のほかの文と引用符付きの部品は無引用の_awsdatacatalog_をそのまま送る()
+{
+    for query in [
+        "EXPLAIN SELECT * FROM awsdatacatalog.db.t",
+        "SELECT * FROM awsdatacatalog.\"db\".t",
+    ] {
+        let harness = Harness::builder(select_response())
+            .catalog_map(&[("AwsDataCatalog", "hive"), (S3_TABLES_CATALOG, "iceberg")])
+            .start()
+            .await;
+
+        harness
+            .run_query(json!({
+                "QueryString": query,
+                "QueryExecutionContext": { "Catalog": S3_TABLES_CATALOG, "Database": "ns" }
+            }))
+            .await;
+
+        assert_eq!(harness.trino_sqls(), [query], "{query}");
+    }
+}
+
+/// 本物は実在しないカタログの Context でも、無引用の `awsdatacatalog.<db>.<t>` の SELECT（2026-09-25 実測 #214）と
+/// INSERT（2026-09-27 実測 o5。#260）を SUCCEEDED にした。Trino に無いことを確かめてから別名を当て、ヘッダのカタログは
+/// 受け取ったまま送る（Trino はセッションのカタログが無くても完全修飾の名前を引く）。
+#[tokio::test]
+async fn 実在しないカタログの_context_の_select_と_insert_は無引用の_awsdatacatalog_に別名を当てて送る()
+ {
+    for (query, sent) in [SELECT_UNQUOTED, INSERT_UNQUOTED] {
+        let harness = Harness::builder(select_response())
+            .catalog_map(&[("AwsDataCatalog", "hive")])
+            .route(
+                &catalog_exists_sql("nosuchcatalog260"),
+                catalog_exists_response(None),
+            )
+            .start()
+            .await;
+
+        let execution = harness
+            .run_query(json!({
+                "QueryString": query,
+                "QueryExecutionContext": { "Catalog": "NoSuchCatalog260", "Database": "db" }
+            }))
+            .await;
+
+        assert_eq!(
+            execution["QueryExecution"]["Status"]["State"], "SUCCEEDED",
+            "{query}: {execution}"
+        );
+        let requests = harness.trino_requests();
+        assert_eq!(
+            requests.iter().map(|r| r.sql.as_str()).collect::<Vec<_>>(),
+            [catalog_exists_sql("nosuchcatalog260").as_str(), sent],
+            "{query}"
+        );
+        assert_eq!(requests[1].catalog.as_deref(), Some("NoSuchCatalog260"));
+        assert_eq!(execution["QueryExecution"]["Query"], query);
+    }
+}
+
+/// 連携カタログの Context は測っていないので、Trino にあるカタログ（連携カタログとみなす）と別名のキーの Context では
+/// 今までどおり送る。別名のキーは Trino に問い合わせない。
+#[tokio::test]
+async fn trino_にあるカタログと別名のキーの_context_では無引用の_awsdatacatalog_をそのまま送る() {
+    let (query, _) = SELECT_UNQUOTED;
     let harness = Harness::builder(select_response())
-        .catalog_map(&[("AwsDataCatalog", "hive"), (S3_TABLES_CATALOG, "iceberg")])
+        .catalog_map(&[("AwsDataCatalog", "hive"), ("Federated", "pg")])
+        .route(
+            &catalog_exists_sql("postgres"),
+            catalog_exists_response(Some("postgresql")),
+        )
         .start()
         .await;
-    let query = "SELECT * FROM awsdatacatalog.db.t";
 
-    let execution = harness
+    for catalog in ["postgres", "Federated"] {
+        harness
+            .run_query(json!({
+                "QueryString": query,
+                "QueryExecutionContext": { "Catalog": catalog, "Database": "db" }
+            }))
+            .await;
+    }
+
+    assert_eq!(
+        harness.trino_sqls(),
+        [catalog_exists_sql("postgres").as_str(), query, query]
+    );
+}
+
+/// 実在しないカタログの Context のほかの文は測っていないので、有無を問い合わせずに今までどおり送る。
+#[tokio::test]
+async fn 実在しないカタログの_context_のほかの文は問い合わせずに無引用の_awsdatacatalog_をそのまま送る()
+ {
+    let query = "EXPLAIN SELECT * FROM awsdatacatalog.db.t";
+    let harness = Harness::builder(select_response())
+        .catalog_map(&[("AwsDataCatalog", "hive")])
+        .route(
+            &catalog_exists_sql("nosuchcatalog260"),
+            catalog_exists_response(None),
+        )
+        .start()
+        .await;
+
+    harness
         .run_query(json!({
             "QueryString": query,
-            "QueryExecutionContext": { "Catalog": S3_TABLES_CATALOG, "Database": "ns" }
+            "QueryExecutionContext": { "Catalog": "nosuchcatalog260", "Database": "db" }
         }))
         .await;
 
-    assert_eq!(execution["QueryExecution"]["Status"]["State"], "SUCCEEDED");
     assert_eq!(harness.trino_sqls(), [query]);
 }
