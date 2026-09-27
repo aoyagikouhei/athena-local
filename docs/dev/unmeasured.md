@@ -23,10 +23,6 @@
 
 - 32 文字未満かつ 128 バイト超の組は測る対象から外す。UTF-8 は 1 文字が最大 4 バイトなので 31 文字は最大 124 バイトで、その組は作れない（#153、2026-09-24）
 
-## 実クライアントでの疎通（[measurements/clients.md](measurements/clients.md)）
-
-- [ ] Athena JDBC 3.0.0〜3.3.0 が素の protobuf の `.txt.metadata` を解けるか（#111 で測ったのは auto のある 3.4.0・3.5.0 だけ。3.3.0 以下は auto が無く、`ResultFetcher=S3` は `.txt.metadata` を取りに行かない。既定の経路 GetQueryResultsStream は athena-local が持たないので手元では測れない）
-
 ## Trino（[measurements/trino.md](measurements/trino.md)）
 
 - [ ] Trino 470・400 のすべての値と、440 の存在するテーブルへの probe（D1・D2）と `updateType`（#111 の足場で 480・475 は測れたが、470 はローカル FS の設定名が無く、400 は cgroup v2 で JVM が落ち、440 は file メタストアに書けなかった）
@@ -96,6 +92,7 @@
 
 本物の Athena でも観測できない・誘発できないと分かった項目。測る対象から外す（#112）。理由が崩れたら（新しいアカウントを用意した、Athena が空の列名を通すようになった、など）上の一覧に戻す。
 
+- Athena JDBC 3.0.0〜3.3.0 が素の protobuf の `.txt.metadata` を解けるか（#111）。3.3.0 以下は `ResultFetcher` に auto が無く、`S3` は `.txt.metadata` を取りに行かず、既定の経路 GetQueryResultsStream は athena-local が持たないので、athena-local 相手には観測できない。実測ではなく GetQueryResultsStream を実装するかの話（2026-09-27）
 - カタログの既定など、`WITH` 句以外からテーブルの形式が決まる場合の CTAS・INSERT の結果ファイル（#26・#35）。Athena のテーブルの形式は文の `WITH` 句（`table_type` など）で決まり、カタログの既定で形式が決まるテーブルを Athena では作れない。athena-local は Trino のカタログの connector から形式を決めるので、[docs/caveats.md](../caveats.md) の「Table format is detected per Trino catalog」にある差分はこの理由で埋まらない
 - `.metadata` の空の列名の扱い（#5）。本物では空の列名の列を作れないので観測できない。athena-local は空の列名でも列の field を出す
 - `AthenaErrorCode` の無い経路のうち `InternalServerException` の本文の形。本物ではサーバ側の障害でしか出ず、クライアントから誘発できない（パース失敗と未対応オペレーションは #84 で実測: `SerializationException`・`UnknownOperationException` はどちらも `AthenaErrorCode` 無し）。athena-local は `AthenaErrorCode` も `ErrorCode` も付けずに返す（[docs/caveats.md](../caveats.md) の「Error body key casing」）
