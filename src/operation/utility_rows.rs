@@ -18,7 +18,7 @@ const HIVE_WIDTH: usize = 20;
 
 /// Hive のテーブルの DESCRIBE で、パーティション列があるときに上半分の後ろに置く見出し行群
 /// （2026-09-16／24 実測。#173 d1・d6）。
-const PARTITION_HEADER: [&str; 4] = [
+pub(super) const PARTITION_HEADER: [&str; 4] = [
     "\t \t ",
     "# Partition Information\t \t ",
     "# col_name            \tdata_type           \tcomment             ",
@@ -127,7 +127,7 @@ fn show_columns_rows(rows: &[Vec<Value>], format: Option<TableFormat>) -> Vec<St
 /// （`<列名>\t<型>\t<コメント>`、どれも 20 桁に左詰め）にする。パーティション列（`Extra` が
 /// `partition key`）は上半分にも普通の列として出し、1 つでもあれば見出し行群の後ろにもう一度並べる
 /// （2026-09-24 実測。#173 d1・d6）。
-fn describe_hive_rows(rows: &[Vec<Value>]) -> Vec<String> {
+pub(super) fn describe_hive_rows(rows: &[Vec<Value>]) -> Vec<String> {
     let line = |row: &Vec<Value>| {
         format!(
             "{}\t{}\t{}",
@@ -153,7 +153,7 @@ fn describe_hive_rows(rows: &[Vec<Value>]) -> Vec<String> {
 /// （2026-09-24 実測 d2・d8。#173）。詰めない。
 /// 型は `type_spelling::iceberg`、コメントはそのまま（無ければ空）。パーティションの行は
 /// `iceberg_partitions::partition_row` が写せるものだけ（パーティションが無ければ見出しまで）。
-fn describe_iceberg_rows(rows: &[Vec<Value>], partitions: &[String]) -> Vec<String> {
+pub(super) fn describe_iceberg_rows(rows: &[Vec<Value>], partitions: &[String]) -> Vec<String> {
     let mut lines = vec![
         "# Table schema:\t\t".to_string(),
         "# col_name\tdata_type\tcomment".to_string(),
@@ -183,7 +183,7 @@ fn describe_iceberg_rows(rows: &[Vec<Value>], partitions: &[String]) -> Vec<Stri
 
 /// DESCRIBE のコメント欄。20 桁に詰めてから先頭のタブまでを取る（空なら空白 20 個、`abc` は `abc` + 空白 17 個、
 /// `a\tb` は `a`。2026-09-24 実測 d1・#146）。改行入りのコメントは本物に存在しないので何もしない。
-fn comment_field(comment: &str) -> String {
+pub(super) fn comment_field(comment: &str) -> String {
     let padded = pad(comment);
     match padded.split_once('\t') {
         Some((head, _)) => head.to_string(),
@@ -192,7 +192,7 @@ fn comment_field(comment: &str) -> String {
 }
 
 /// 20 桁に満たなければ右を空白で埋める。20 桁以上はそのまま（切らない）。幅は文字数で数える。
-fn pad(text: &str) -> String {
+pub(super) fn pad(text: &str) -> String {
     let width = text.chars().count();
     if width < HIVE_WIDTH {
         format!("{text}{}", " ".repeat(HIVE_WIDTH - width))
@@ -202,7 +202,7 @@ fn pad(text: &str) -> String {
 }
 
 /// 行の `index` 番目の文字列。文字列でない値（null）や欠けている値は空文字にする。
-fn cell(row: &[Value], index: usize) -> &str {
+pub(super) fn cell(row: &[Value], index: usize) -> &str {
     match row.get(index) {
         Some(Value::String(text)) => text,
         _ => "",
