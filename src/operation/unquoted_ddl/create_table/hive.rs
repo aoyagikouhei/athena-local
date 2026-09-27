@@ -188,7 +188,9 @@ pub(in crate::operation) fn location_rejection(
     catalog: Option<&str>,
 ) -> Option<HiveLocation> {
     let hive = read(query)?;
-    if !hive.location {
+    // 測ったのは無引用の 1〜3 部だけ（4 部以上とバッククォートの名前は今までどおり構文チェックに任せる）。
+    let measured_name = hive.parts.len() <= 3 && !hive.parts[0].starts_with('`');
+    if !hive.location || !measured_name {
         return None;
     }
     let iceberg = hive.properties.iter().any(|(key, value)| {

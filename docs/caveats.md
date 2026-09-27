@@ -576,8 +576,9 @@ it as without the comment. `MSCK REPAIR TABLE` on an Iceberg table, with or with
 - **Outside an S3 Tables context catalog, Hive's `LOCATION` is rejected with
   real Athena's messages.** Real Athena reads `CREATE [EXTERNAL] TABLE ...
   LOCATION '<path>'` as Hive DDL first, and athena-local does the same, before
-  the syntax check, for the statements the first table in the entry above
-  reads (same clauses, names and order), answering `InvalidRequestException` /
+  the syntax check, for an unquoted one- to three-part name with the clauses
+  read in the first table of the S3 Tables entry above (same clauses and
+  order), answering `InvalidRequestException` /
   `MALFORMED_QUERY` with nothing sent to Trino
   ([#278](https://github.com/aoyagikouhei/athena-local/issues/278), measured
   2026-09-27):
@@ -599,7 +600,8 @@ it as without the comment. `MSCK REPAIR TABLE` on an Iceberg table, with or with
   which athena-local cannot run on Trino, and the statements real Athena also
   answers with Trino's syntax error (a double-quoted name, `NOT NULL`), where
   the `Expecting:` list after `mismatched input 'EXTERNAL'` differs from real
-  Athena's. Not handled either: `EXTERNAL` on `<catalog>.<table>`, which real
+  Athena's. A name in backquotes or with four parts or more was not measured
+  here and is left to the syntax check. Not handled either: `EXTERNAL` on `<catalog>.<table>`, which real
   Athena starts and fails because it reads the catalog as a database, and
   `'table_type'='ICEBERG'` with `STORED AS`, which real Athena starts and
   fails with `Iceberg create table statement does not allow STORED AS/BY`.

@@ -209,8 +209,8 @@ async fn 実在する別カタログの_context_ではちょうど小文字の_a
 }
 
 /// 本物が成功した形（既定の Context の `awsdatacatalog` の類・1〜2 部、Catalog の省略の r27、table_type が ICEBERG の
-/// EXTERNAL の無い形）と、Hive の文法で読めない形（引用符付きの名前 r10〜r12・NOT NULL r19・r38）は弾かずに構文チェックに
-/// 任せる。
+/// EXTERNAL の無い形）と、Hive の文法で読めない形（引用符付きの名前 r10〜r12・NOT NULL r19・r38）と、既定の Context で
+/// 測っていない名前は弾かずに構文チェックに任せる。
 #[tokio::test]
 async fn 本物が成功する形と_hive_の文法で読めない形は構文チェックに任せる() {
     let harness = harness().await;
@@ -250,6 +250,15 @@ async fn 本物が成功する形と_hive_の文法で読めない形は構文�
         ),
         (
             "CREATE TABLE db.t (n int NOT NULL) LOCATION 's3://b/p/'",
+            Some("AwsDataCatalog"),
+        ),
+        // 既定の Context で測っていない名前（4 部・バッククォート）は今までどおり
+        (
+            "CREATE TABLE awsdatacatalog.db.t.n (n int) LOCATION 's3://b/p/'",
+            Some("AwsDataCatalog"),
+        ),
+        (
+            "CREATE TABLE `t` (n int) LOCATION 's3://b/p/'",
             Some("AwsDataCatalog"),
         ),
     ];
