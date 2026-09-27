@@ -106,6 +106,12 @@ fn substatement_type_は実測した文の種類を返す() {
             "ALTER TABLE t REPLACE COLUMNS (n int, s string)",
             "ALTER_TABLE_REPLACE_COLUMN",
         ),
+        // CHANGE COLUMN は ALTER の直後のブロックコメントで本物が失敗させる形の分類に使う
+        // （2026-09-27 実測 r3。#257）。
+        (
+            "ALTER TABLE t CHANGE COLUMN n n2 int",
+            "ALTER_TABLE_CHANGE_COLUMN",
+        ),
         (
             "ALTER TABLE t ADD PARTITION (p = 'v')",
             "ALTER_TABLE_ADD_PARTITION",
@@ -136,6 +142,8 @@ fn substatement_type_は実測した文の種類を返す() {
         // Expecting: '.', 'DROP' で StartQueryExecution ごと弾かれる。2026-09-21 実測）。
         // ADD は複数形の COLUMNS を受けるので、単複の扱いは対称ではない。
         "ALTER TABLE t DROP COLUMNS c",
+        // `CHANGE` だけ（`COLUMN` が続かない）は本物に構文が無いので分類しない（#257）。
+        "ALTER TABLE t CHANGE n n2 int",
         "CALL x()",
         "SET SESSION a = 1",
         "",

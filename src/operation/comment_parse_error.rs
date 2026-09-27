@@ -10,12 +10,13 @@
 //! 決める）。そのため `detect` はブロックコメントの位置が本物の Hive パーサを落とす形と一致すれば、対象の
 //! 表の種類によらず同じ `ParseError` を返す（後述のテストの「detect はテーブルの種類を見ない」参照）。
 
+mod alter;
 mod position;
 
-use crate::failure::{DDL_ENGINE_UNSUPPORTED, Failure, SYSTEM, USER};
+use crate::failure::{Failure, SYSTEM, USER};
 
-use super::classification::substatement_type;
-use super::target_table::if_follows;
+use alter::alter;
+pub(in crate::operation) use alter::{awsdatacatalog_drop_column_error_message, plain_drop_column};
 
 /// 本物の Hive のパーサがブロックコメントで失敗させる文の種類。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,6 +27,10 @@ pub(super) enum Target {
     AlterAddColumns,
     AlterDropColumn,
     AlterRename,
+    /// `ALTER TABLE ... REPLACE COLUMNS`。ALTER の直後のブロックコメントだけが対象（2026-09-27 実測 r1。#257）。
+    AlterReplaceColumns,
+    /// `ALTER TABLE ... CHANGE COLUMN`。ALTER の直後のブロックコメントだけが対象（2026-09-27 実測 r3。#257）。
+    AlterChangeColumn,
 }
 
 /// 開始後に FAILED にする失敗の中身（`Failure` への変換は下の `From`）。
@@ -38,6 +43,10 @@ pub(super) struct ParseError {
     pub error_message: Option<String>,
     pub category: i32,
     pub error_type: i32,
+    /// true なら Hive 表だけで本物が失敗させる（呼び出し側はビュー・無い表を今までどおり Trino に送る）。
+    /// #244 の既存のチェックポイントはすべて false（ビュー・無い表でも失敗、実測済み）。#257 で追加した
+    /// 新しいチェックポイント（`dot_comment` の g1）は true（Hive 表でしか実測していない。2026-09-27 実測。#257）。
+    pub hive_only: bool,
 }
 
 /// `query` は StartQueryExecution の単一の文（前後の空白と `;` は落としてある）。対象の文で、
@@ -62,10 +71,12 @@ struct Hit<'a> {
 }
 
 /// キーワード列 `keywords` の前後のどこかにブロックコメントがあれば、その `Hit` と、名前が始まる位置
-/// （最後のキーワードの直後）を返す。キーワードが 1 つでも一致しなければ（この文の型でなければ）None。
-/// ブロックコメントは `position::comment_start` で見つける（空白・行コメントだけ読み飛ばし、ブロック
-/// コメント自体は読み飛ばさない）ので、`Cursor::keyword`（トリビアを丸ごと読み飛ばす）より先に確かめる。
-fn scan<'a>(query: &'a str, keywords: &[&str]) -> Option<(Hit<'a>, usize)> {
+/// （最後のキーワードの直後）を返す。`Hit` は決め手の位置（先頭・キーワードの間）で見つかったときだけ
+/// `Some`（名前の内側の位置は呼び出し側が名前を読んでから別に判定する。g1。#257）。キーワードが 1 つでも
+/// 一致しなければ（この文の型でなければ）関数全体が None。ブロックコメントは `position::comment_start` で
+/// 見つける（空白・行コメントだけ読み飛ばし、ブロックコメント自体は読み飛ばさない）ので、`Cursor::keyword`
+/// （トリビアを丸ごと読み飛ばす）より先に確かめる。
+fn scan<'a>(query: &'a str, keywords: &[&str]) -> Option<(Option<Hit<'a>>, usize)> {
     let mut cursor = athena_sql::Cursor::new(query);
     let mut hit = position::comment_start(query, 0).map(|comment_at| Hit {
         index: 0,
@@ -88,7 +99,7 @@ fn scan<'a>(query: &'a str, keywords: &[&str]) -> Option<(Hit<'a>, usize)> {
         }
     }
     let name_start = query.len() - cursor.rest().len();
-    hit.map(|hit| (hit, name_start))
+    Some((hit, name_start))
 }
 
 /// 名前が読めて、引用符付きの部品を含まず 4 部未満なら OK（開始時の判定 `quoted_names`／`unquoted_ddl` に
@@ -121,31 +132,67 @@ fn show_create_table(query: &str) -> Option<ParseError> {
     if !valid_name(query, name_start) {
         return None;
     }
-    let (line, col) = position::position(query, hit.comment_at);
-    let reason = match hit.index {
-        0 => head_reason(query, hit.comment_at, line, col),
-        1 => {
-            let (show, _) = hit.keyword?;
-            format!(
-                "FAILED: ParseException line {line}:{col} cannot recognize input near '{show}' '/' '*' in ddl statement"
-            )
-        }
-        2 => {
-            let (create, _) = hit.keyword?;
-            format!(
-                "FAILED: ParseException line {line}:{col} mismatched input '/' expecting TABLE near '{create}' in show statement"
-            )
-        }
-        3 => table_name_reason(query, hit.comment_at, line, col),
-        _ => unreachable!("SHOW CREATE TABLE のチェックポイントは 4 つ"),
-    };
+    if let Some(hit) = hit {
+        let (line, col) = position::position(query, hit.comment_at);
+        let reason = match hit.index {
+            0 => head_reason(query, hit.comment_at, line, col),
+            1 => {
+                let (show, _) = hit.keyword?;
+                format!(
+                    "FAILED: ParseException line {line}:{col} cannot recognize input near '{show}' '/' '*' in ddl statement"
+                )
+            }
+            2 => {
+                let (create, _) = hit.keyword?;
+                format!(
+                    "FAILED: ParseException line {line}:{col} mismatched input '/' expecting TABLE near '{create}' in show statement"
+                )
+            }
+            3 => table_name_reason(query, hit.comment_at, line, col),
+            _ => unreachable!("SHOW CREATE TABLE のチェックポイントは 4 つ"),
+        };
+        return Some(ParseError {
+            target: Target::ShowCreateTable,
+            reason,
+            error_message: None,
+            category: 1,
+            error_type: 1003,
+            hive_only: false,
+        });
+    }
+    // 名前の内側（無引用ちょうど 2 部の名前の `.` の直後）は、決め手の位置の外なので別に判定する（g1。#257）。
+    let (comment_at, spelling) = dot_comment(query, name_start)?;
+    let (line, col) = position::position(query, comment_at);
     Some(ParseError {
         target: Target::ShowCreateTable,
-        reason,
+        reason: format!(
+            "FAILED: ParseException line {line}:{col} cannot recognize input near '{spelling}' '.' '/' in table name"
+        ),
         error_message: None,
         category: 1,
         error_type: 1003,
+        hive_only: true,
     })
+}
+
+/// 無引用ちょうど 2 部の名前の `.` の直後にブロックコメントがあれば、その位置（`/` の位置）と 1 部目の
+/// 綴り（書いたまま）を返す（2026-09-27 実測 g1。#257）。3 部・1 部（`.` が無い）・`.` の前のコメントは
+/// None（`name.parts` の個数と、`.` の直後の位置を見るだけで自然に外れる）。引用符付きの部品は、呼び出し側
+/// （`show_create_table` の `valid_name`）が先に弾く。
+fn dot_comment(query: &str, name_start: usize) -> Option<(usize, &str)> {
+    let name = athena_sql::Cursor::new(&query[name_start..]).qualified_name()?;
+    if name.parts.len() != 2 {
+        return None;
+    }
+    let db = &name.parts[0];
+    let dot_at = name_start + db.end;
+    if query.as_bytes().get(dot_at) != Some(&b'.') {
+        return None;
+    }
+    let after_dot = dot_at + 1;
+    query[after_dot..]
+        .starts_with("/*")
+        .then_some((after_dot, db.text))
 }
 
 /// `DESCRIBE` と `DESC` の両方を試す（`target_table::keywords` と同じ規則）。DESCRIBE の直後のケースは
@@ -153,29 +200,62 @@ fn show_create_table(query: &str) -> Option<ParseError> {
 /// `DESCRIBE <db>./* c */<t>` を 2026-09-26 に m10 で確かめた（#242）。
 fn describe(query: &str) -> Option<ParseError> {
     let (hit, name_start) = scan(query, &["DESCRIBE"]).or_else(|| scan(query, &["DESC"]))?;
-    if !valid_name(query, name_start) {
+    if let Some(hit) = hit {
+        if !valid_name(query, name_start) {
+            return None;
+        }
+        let (line, col) = position::position(query, hit.comment_at);
+        let reason = match hit.index {
+            0 => head_reason(query, hit.comment_at, line, col),
+            // DESCRIBE・DESC の後ろは、コメントの位置でなく DESCRIBE・DESC 自身の位置（実測 1:0。D5）。
+            1 => {
+                let (keyword, start) = hit.keyword?;
+                let (kline, kcol) = position::position(query, start);
+                format!(
+                    "FAILED: ParseException line {kline}:{kcol} cannot recognize input near '{keyword}' '/' '*' in describe statement"
+                )
+            }
+            _ => unreachable!("DESCRIBE のチェックポイントは 2 つ"),
+        };
+        return Some(ParseError {
+            target: Target::Describe,
+            reason,
+            error_message: None,
+            category: 1,
+            error_type: 1003,
+            hive_only: false,
+        });
+    }
+    // de1: `DESCRIBE EXTENDED` の `EXTENDED` の直後（2026-09-27 実測。#257）。`DESC EXTENDED`・
+    // `DESCRIBE FORMATTED` は未実測なので対象にしない（`describe_extended_comment` が `DESCRIBE` と
+    // `EXTENDED` の並びだけを見る）。
+    let comment_at = describe_extended_comment(query)?;
+    if !valid_name(query, comment_at) {
         return None;
     }
-    let (line, col) = position::position(query, hit.comment_at);
-    let reason = match hit.index {
-        0 => head_reason(query, hit.comment_at, line, col),
-        // DESCRIBE・DESC の後ろは、コメントの位置でなく DESCRIBE・DESC 自身の位置（実測 1:0。D5）。
-        1 => {
-            let (keyword, start) = hit.keyword?;
-            let (kline, kcol) = position::position(query, start);
-            format!(
-                "FAILED: ParseException line {kline}:{kcol} cannot recognize input near '{keyword}' '/' '*' in describe statement"
-            )
-        }
-        _ => unreachable!("DESCRIBE のチェックポイントは 2 つ"),
-    };
+    let (line, col) = position::position(query, comment_at);
+    let token = position::leading_token(query, comment_at);
     Some(ParseError {
         target: Target::Describe,
-        reason,
+        reason: format!(
+            "FAILED: ParseException line {line}:{col} cannot recognize input near '/' '*' '{token}' in specifying describe table types"
+        ),
         error_message: None,
         category: 1,
         error_type: 1003,
+        hive_only: true,
     })
+}
+
+/// `DESCRIBE EXTENDED` の `EXTENDED` の直後にブロックコメントがあれば、その位置（`/` の位置）を返す
+/// （de1。2026-09-27 実測。#257）。
+fn describe_extended_comment(query: &str) -> Option<usize> {
+    let mut cursor = athena_sql::Cursor::new(query);
+    if !(cursor.keyword("DESCRIBE") && cursor.keyword("EXTENDED")) {
+        return None;
+    }
+    let end = query.len() - cursor.rest().len();
+    position::comment_start(query, end)
 }
 
 fn msck_repair(query: &str) -> Option<ParseError> {
@@ -183,131 +263,50 @@ fn msck_repair(query: &str) -> Option<ParseError> {
     if !valid_name(query, name_start) {
         return None;
     }
-    let (line, col) = position::position(query, hit.comment_at);
-    let reason = match hit.index {
-        0 => head_reason(query, hit.comment_at, line, col),
-        1 | 2 => {
-            let (keyword, _) = hit.keyword?;
-            format!("FAILED: ParseException line {line}:{col} missing EOF at '/' near '{keyword}'")
-        }
-        3 => table_name_reason(query, hit.comment_at, line, col),
-        _ => unreachable!("MSCK REPAIR TABLE のチェックポイントは 4 つ"),
-    };
+    if let Some(hit) = hit {
+        let (line, col) = position::position(query, hit.comment_at);
+        let reason = match hit.index {
+            0 => head_reason(query, hit.comment_at, line, col),
+            1 | 2 => {
+                let (keyword, _) = hit.keyword?;
+                format!(
+                    "FAILED: ParseException line {line}:{col} missing EOF at '/' near '{keyword}'"
+                )
+            }
+            3 => table_name_reason(query, hit.comment_at, line, col),
+            _ => unreachable!("MSCK REPAIR TABLE のチェックポイントは 4 つ"),
+        };
+        return Some(ParseError {
+            target: Target::MsckRepair,
+            reason,
+            error_message: None,
+            category: 1,
+            error_type: 1003,
+            hive_only: false,
+        });
+    }
+    // g2: 名前の直後（2026-09-27 実測。#257）。
+    let (comment_at, spelling) = name_comment(query, name_start)?;
+    let (line, col) = position::position(query, comment_at);
     Some(ParseError {
         target: Target::MsckRepair,
-        reason,
+        reason: format!(
+            "FAILED: ParseException line {line}:{col} missing EOF at '/' near '{spelling}'"
+        ),
         error_message: None,
         category: 1,
         error_type: 1003,
+        hive_only: true,
     })
 }
 
-fn alter(query: &str) -> Option<ParseError> {
-    // `ALTER TABLE IF EXISTS ...` は本物が開始時に弾く（今回の対象外。D1）。
-    if if_follows(query, "ALTER") {
-        return None;
-    }
-    let (hit, name_start) = scan(query, &["ALTER", "TABLE"])?;
-    if !valid_name(query, name_start) {
-        return None;
-    }
-    // 動作は `classification::alter_table_action` の値で見るが、ADD は複数形の COLUMNS のときだけ
-    // （単数の ADD COLUMN は Trino だけの綴りで対象外。D1）。ADD PARTITION・DROP PARTITION・
-    // SET TBLPROPERTIES などは本物で成功する（実測 a8〜a10）ので None。
-    let target = match substatement_type(query) {
-        Some("ALTER_TABLE_ADD_COLUMN") if adds_columns_plural(query) => Target::AlterAddColumns,
-        Some("ALTER_TABLE_DROP_COLUMN") => Target::AlterDropColumn,
-        Some("ALTER_TABLE_RENAME") => Target::AlterRename,
-        _ => return None,
-    };
-    let (line, col) = position::position(query, hit.comment_at);
-    let reason = match hit.index {
-        0 => head_reason(query, hit.comment_at, line, col),
-        // ALTER の後ろは、コメントの位置でなく ALTER 自身の位置（実測 1:0。空白 2 つ・改行でも 1:0。D5）。
-        1 => {
-            let (alter, start) = hit.keyword?;
-            let (aline, acol) = position::position(query, start);
-            format!(
-                "FAILED: ParseException line {aline}:{acol} cannot recognize input near '{alter}' '/' '*' in alter statement"
-            )
-        }
-        2 => table_name_reason(query, hit.comment_at, line, col),
-        _ => unreachable!("ALTER TABLE のチェックポイントは 3 つ"),
-    };
-    // RENAME TO・DROP COLUMN だけ category 2・error_type 1006 で、ErrorMessage が reason と別（D4）。
-    let (error_message, category, error_type) = match target {
-        Target::AlterRename => (Some(DDL_ENGINE_UNSUPPORTED.to_string()), 2, 1006),
-        Target::AlterDropColumn => (Some(drop_column_message(query)?), 2, 1006),
-        _ => (None, 1, 1003),
-    };
-    Some(ParseError {
-        target,
-        reason,
-        error_message,
-        category,
-        error_type,
-    })
-}
-
-/// `ADD` の直後が複数形の `COLUMNS` か（単数形の `ADD COLUMN` は Trino だけの綴りで対象外。D1）。
-fn adds_columns_plural(query: &str) -> bool {
-    let mut cursor = athena_sql::Cursor::new(query);
-    cursor.keyword("ALTER")
-        && cursor.keyword("TABLE")
-        && cursor.qualified_name().is_some()
-        && cursor.keyword("ADD")
-        && cursor.keyword("COLUMNS")
-}
-
-/// `DROP COLUMN` の `COLUMN` の位置から、AthenaError.ErrorMessage を作る（2026-09-26 実測 n7・n9。ラウンド 3）。
-/// 位置は畳んだ文で数えた行と列 + 1（`quoted_names::position` と同じ UTF-16 の数え方に + 1 を重ねる。D5）。
-fn drop_column_message(query: &str) -> Option<String> {
-    let (_, column, line, col) = drop_column_keywords(query)?;
-    Some(drop_column_error_message(column, line, col))
-}
-
-fn drop_column_error_message(column: &str, line: usize, col: usize) -> String {
-    format!(
-        "line {line}:{}: mismatched input '{column}' expecting 'PARTITION'",
-        col + 1
-    )
-}
-
-/// `ALTER TABLE <名前> DROP COLUMN` の `DROP` と `COLUMN` の綴り（書いたまま）と、`COLUMN` の行と列。
-fn drop_column_keywords(query: &str) -> Option<(&str, &str, usize, usize)> {
-    let mut cursor = athena_sql::Cursor::new(query);
-    if !(cursor.keyword("ALTER") && cursor.keyword("TABLE")) {
-        return None;
-    }
-    cursor.qualified_name()?;
-    if !cursor.keyword("DROP") {
-        return None;
-    }
-    let drop_end = query.len() - cursor.rest().len();
-    let drop = &query[drop_end - "DROP".len()..drop_end];
-    if !cursor.keyword("COLUMN") {
-        return None;
-    }
-    let end = query.len() - cursor.rest().len();
-    let start = end - "COLUMN".len();
-    let (line, col) = position::position(query, start);
-    Some((drop, &query[start..end], line, col))
-}
-
-/// コメント無しの `ALTER TABLE <名前> DROP COLUMN` を本物の Hive のパーサが落とす ParseException（2026-09-20 実測
-/// #39 d1。#256）。StateChangeReason は `COLUMN` の 0 始まりの位置、ErrorMessage はブロックコメントの形と同じ
-/// + 1 の位置。対象の表が Hive 表か無い表かは呼び出し側（`comment_parse_check::plain_alter_failure`）が見る。
-pub(super) fn plain_drop_column(query: &str) -> Option<ParseError> {
-    let (drop, column, line, col) = drop_column_keywords(query)?;
-    Some(ParseError {
-        target: Target::AlterDropColumn,
-        reason: format!(
-            "FAILED: ParseException line {line}:{col} mismatched input '{column}' expecting PARTITION near '{drop}' in drop partition statement"
-        ),
-        error_message: Some(drop_column_error_message(column, line, col)),
-        category: 2,
-        error_type: 1006,
-    })
+/// 名前の直後（読み終わった位置）にブロックコメントがあれば、その位置（`/` の位置）と名前の最後の
+/// 部品の綴り（書いたまま）を返す（g2。2026-09-27 実測。#257）。名前の中（`dot_comment` の対象）は
+/// `qualified_name` がコメントをトリビアとして読み飛ばして名前ごと読むので、ここには来ない。
+fn name_comment(query: &str, name_start: usize) -> Option<(usize, &str)> {
+    let name = athena_sql::Cursor::new(&query[name_start..]).qualified_name()?;
+    let comment_at = position::comment_start(query, name_start + name.end)?;
+    Some((comment_at, name.parts.last()?.text))
 }
 
 /// `.txt` の理由・AthenaError の中身を `ParseError` からそのまま作る（1 か所にまとめる。配線側は

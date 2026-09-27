@@ -27,6 +27,10 @@ const RESOLVED_STATEMENTS: &[&str] = &[
     "DROP_TABLE",
     "CREATE_TABLE",
     "ALTER_TABLE_ADD_COLUMN",
+    // REPLACE COLUMNS・CHANGE COLUMN も、ALTER の直後のブロックコメントで構文チェックの前に判定する
+    // ので、ADD COLUMNS と同じく実在しない Catalog でも解決の対象に載せる（2026-09-27 実測 r1・r3。#257）。
+    "ALTER_TABLE_REPLACE_COLUMN",
+    "ALTER_TABLE_CHANGE_COLUMN",
     "CREATE_VIEW",
     "SHOW_CREATE_VIEW",
     "DROP_VIEW",
@@ -121,5 +125,19 @@ mod tests {
             substatement_type("MSCK REPAIR TABLE t")
                 .is_some_and(|kind| RESOLVED_STATEMENTS.contains(&kind))
         );
+    }
+
+    /// REPLACE COLUMNS・CHANGE COLUMN も #257 で構文チェックの前に判定するので、同じく解決の対象になる。
+    #[test]
+    fn alter_table_replace_columns_と_change_column_は解決の対象になる() {
+        for query in [
+            "ALTER TABLE t REPLACE COLUMNS (n int, s string)",
+            "ALTER TABLE t CHANGE COLUMN n n2 int",
+        ] {
+            assert!(
+                substatement_type(query).is_some_and(|kind| RESOLVED_STATEMENTS.contains(&kind)),
+                "{query}"
+            );
+        }
     }
 }

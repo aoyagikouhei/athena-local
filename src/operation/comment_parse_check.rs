@@ -15,13 +15,16 @@ use super::table_format::{TableFormat, TargetStatement};
 use super::target_table;
 
 /// 構文チェックの前の判定: `query` が `MSCK REPAIR TABLE` か、`comment_parse_error::detect` が
-/// `AlterAddColumns`（`ALTER TABLE ... ADD COLUMNS` の複数形にブロックコメントが決め手の位置にある形）を
-/// 返すときだけ対象の存在を確かめる。対象が Iceberg 表なら、ブロックコメントの有無・位置によらず本物は
-/// 別の失敗（`Failure::msck_iceberg`）で FAILED にする。Hive・ビュー・無い表は、ブロックコメントが決め手の
+/// `AlterAddColumns`（`ALTER TABLE ... ADD COLUMNS` の複数形にブロックコメントが決め手の位置にある形）・
+/// `AlterReplaceColumns`・`AlterChangeColumn`（ALTER の直後のコメント。r1・r3）・`Describe` の
+/// `hive_only` なチェックポイント（`DESCRIBE EXTENDED` の `EXTENDED` の直後。de1）のどれかを返すときだけ
+/// 対象の存在を確かめる（Trino にこれらの構文が無く、構文チェックへ進むと必ず構文エラーになるため。
+/// 2026-09-27 実測。#257）。対象が Iceberg 表なら、ブロックコメントの有無・位置によらず本物は
+/// 別の失敗（`Failure::msck_iceberg`）で FAILED にする（MSCK だけ）。Hive・ビュー・無い表は、ブロックコメントが決め手の
 /// 位置にあるとき（`detect` が Some）だけ、その ParseException で FAILED にする。名前が引用符付きの部品を
 /// 含むか 4 部以上・カタログが無い・問い合わせが失敗したとき（`Probe::NoCatalog`・`Probe::Unknown`）は
 /// 何もせず、今までどおり構文チェックへ進む（2026-09-26 実測。#244）。問い合わせが増えるのは MSCK と、
-/// コメント入りの ADD COLUMNS のときだけ（design-checklist #39）。
+/// コメント入りの ADD COLUMNS・REPLACE COLUMNS・CHANGE COLUMN・DESCRIBE EXTENDED のときだけ（design-checklist #39）。
 pub(super) async fn pre_syntax_check_failure(
     trino: &Trino,
     config: &Config,
@@ -41,10 +44,18 @@ pub(super) async fn pre_syntax_check_failure(
     };
     let is_msck = classification::substatement_type(query) == Some("MSCK_REPAIR");
     let comment = comment_parse_error::detect(query);
-    let add_columns_comment = comment
-        .clone()
-        .filter(|error| !is_msck && error.target == Target::AlterAddColumns);
-    if !is_msck && add_columns_comment.is_none() {
+    // MSCK 以外で構文チェックの前に判定するのは、Trino に構文が無い ALTER TABLE の ADD COLUMNS（複数形）・
+    // REPLACE COLUMNS・CHANGE COLUMN と、DESCRIBE EXTENDED（`EXTENDED` の直後のコメントだけ。`hive_only`
+    // で見分ける。DESCRIBE の他のチェックポイントは Trino がそのまま構文チェックを通すので、構文チェックの
+    // 後（`comment_parse_error_failure`）で判定する）だけ（2026-09-27 実測。#257）。
+    let pre_check_comment = comment.clone().filter(|error| {
+        !is_msck
+            && (matches!(
+                error.target,
+                Target::AlterAddColumns | Target::AlterReplaceColumns | Target::AlterChangeColumn
+            ) || (error.target == Target::Describe && error.hive_only))
+    });
+    if !is_msck && pre_check_comment.is_none() {
         return None;
     }
 
@@ -54,6 +65,11 @@ pub(super) async fn pre_syntax_check_failure(
 
     let target = if is_msck {
         target_table::parse_msck_target(query, raw_catalog, default_database)?
+    } else if pre_check_comment
+        .as_ref()
+        .is_some_and(|error| error.target == Target::Describe)
+    {
+        target_table::parse_describe_extended_target(query, raw_catalog, default_database)?
     } else {
         target_table::parse_target_table(
             query,
@@ -90,21 +106,24 @@ pub(super) async fn pre_syntax_check_failure(
     let comment = if is_msck {
         comment.filter(|error| error.target == Target::MsckRepair)
     } else {
-        add_columns_comment
+        pre_check_comment
     }?;
 
-    match probe {
-        Probe::Missing
-        | Probe::View
-        | Probe::Table {
+    // `comment.hive_only` が true なチェックポイント（#257 の g1 など）は、ビュー・無い表を今までどおり
+    // Trino に送る（Hive 表だけ本物どおり失敗）。#244 の既存のチェックポイントは hive_only が false で
+    // ビュー・無い表でも今までどおり失敗する。
+    let ok = match probe {
+        Probe::Table {
             format: Some(TableFormat::Hive),
-        } => Some(ImmediateFailure {
-            failure: comment.into(),
-            writes_result_file: true,
-            runs_ctas_query: false,
-        }),
-        Probe::Table { .. } | Probe::NoCatalog | Probe::Unknown => None,
-    }
+        } => true,
+        Probe::Missing | Probe::View => !comment.hive_only,
+        Probe::Table { .. } | Probe::NoCatalog | Probe::Unknown => false,
+    };
+    ok.then(|| ImmediateFailure {
+        failure: comment.into(),
+        writes_result_file: true,
+        runs_ctas_query: false,
+    })
 }
 
 /// 構文チェックの後の判定: `comment_parse_error::detect` が対象にした文で、本物が実際に FAILED にするか。DESCRIBE は
@@ -112,7 +131,9 @@ pub(super) async fn pre_syntax_check_failure(
 /// `Check::Reject` の `Box<Response>` を async の境界越しに借用すると `dispatch` が `Handler` を実装
 /// できなくなる）、SHOW CREATE TABLE・ALTER TABLE の RENAME TO・DROP COLUMN は名前を読み直して
 /// `entity_check::probe` をもう 1 回だけ投げる（問い合わせが増えるのはブロックコメントが決め手の位置に
-/// あるときだけ。design-checklist #39）。
+/// あるときだけ。design-checklist #39）。返り値の `bool` は対象が Hive 表だったか（`start_checks.rs` が
+/// pos1（ALTER の直後のコメント・無引用 3 部・1 部目 awsdatacatalog の DROP COLUMN）の ErrorMessage の
+/// 差し替えに使う。2026-09-27 実測。#257）。
 pub(super) async fn comment_parse_error_failure(
     trino: &Trino,
     config: &Config,
@@ -121,11 +142,11 @@ pub(super) async fn comment_parse_error_failure(
     resolved: Option<&str>,
     database: Option<&str>,
     parse_error: comment_parse_error::ParseError,
-) -> Option<Failure> {
+) -> Option<(Failure, bool)> {
     use comment_parse_error::Target;
 
     match parse_error.target {
-        Target::Describe => describe_table_hive.then(|| parse_error.into()),
+        Target::Describe => describe_table_hive.then(|| (parse_error.into(), describe_table_hive)),
         Target::ShowCreateTable | Target::AlterDropColumn | Target::AlterRename => {
             // ALTER の 3 動作は名前の前のキーワードが同じ `ALTER TABLE` なので、`target_table` の読み方は
             // ADD COLUMNS と共有する（`table_format::TargetStatement` に RENAME TO・DROP COLUMN 用の腕は無い）。
@@ -142,24 +163,37 @@ pub(super) async fn comment_parse_error_failure(
                 raw_catalog,
                 default_database,
             )?;
-            match entity_check::probe(
+            let probe = entity_check::probe(
                 trino,
                 config,
                 &target.catalog,
                 &target.schema,
                 &target.table,
             )
-            .await
-            {
-                Probe::Missing
-                | Probe::View
-                | Probe::Table {
+            .await;
+            let hive = matches!(
+                probe,
+                Probe::Table {
+                    format: Some(TableFormat::Hive)
+                }
+            );
+            // `parse_error.hive_only` は #257 の g1 のような新しいチェックポイントだけ true
+            // （ビュー・無い表は今までどおり Trino に送る）。#244 の既存のチェックポイントは false のまま。
+            let ok = match probe {
+                Probe::Table {
                     format: Some(TableFormat::Hive),
-                } => Some(parse_error.into()),
-                Probe::Table { .. } | Probe::NoCatalog | Probe::Unknown => None,
-            }
+                } => true,
+                Probe::Missing | Probe::View => !parse_error.hive_only,
+                Probe::Table { .. } | Probe::NoCatalog | Probe::Unknown => false,
+            };
+            ok.then(|| (parse_error.into(), hive))
         }
-        Target::MsckRepair | Target::AlterAddColumns => None,
+        // REPLACE COLUMNS・CHANGE COLUMN は Trino に構文が無く、構文チェックの前（`pre_syntax_check_failure`）
+        // だけで判定する（r1・r3。#257）。このパスは Trino が構文を通した文だけが届くので、実際には来ない。
+        Target::MsckRepair
+        | Target::AlterAddColumns
+        | Target::AlterReplaceColumns
+        | Target::AlterChangeColumn => None,
     }
 }
 
