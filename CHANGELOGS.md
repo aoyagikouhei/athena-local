@@ -9,6 +9,8 @@ later name the date they were measured on.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-27
+
 ### Changed
 
 - `DESCRIBE` on an Iceberg table spells `timestamp with time zone` as `timestamp` and fails on a
@@ -320,7 +322,8 @@ These change what 0.2.0 returned. All of them follow measured Athena behaviour.
   `X-Trino-Catalog` / `X-Trino-Schema` headers.
 - `linux/amd64` and `linux/arm64` images published on tag push.
 
-[Unreleased]: https://github.com/aoyagikouhei/athena-local/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/aoyagikouhei/athena-local/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/aoyagikouhei/athena-local/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/aoyagikouhei/athena-local/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/aoyagikouhei/athena-local/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/aoyagikouhei/athena-local/compare/v0.2.0...v0.3.0
