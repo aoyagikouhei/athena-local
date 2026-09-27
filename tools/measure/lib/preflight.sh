@@ -55,11 +55,11 @@ except Exception:
 
 # (d)+(e) DB の自動選択と PREFIX の衝突確認を1本の SHOW TABLES で兼ねる。
 # DB が指定されていれば、まずそれで SHOW TABLES を試す（実在確認）。無いか失敗すれば
-# SHOW DATABASES の1件目を DB にして SHOW TABLES を取り直す。どちらの経路でも id は
-# 同じ preflight-list-tables（後勝ちでファイルが残る）。run_query を使うので、この2つの
-# 項目も summary と課金（START_CALL_FILE）に数えられる。
+# SHOW DATABASES の1件目を DB にして SHOW TABLES を取り直す。取り直しの id は
+# preflight-list-tables-auto（1 回目と分けて、1 回目だけの失敗を DRY_RUN_FAIL で注入できるように）。
+# run_query を使うので、これらの項目も summary と課金（START_CALL_FILE）に数えられる。
 _lib_preflight_select_db() {
-  local tables_ok=0
+  local tables_ok=0 tables_id=preflight-list-tables
   if [ -n "$DB" ] && run_query preflight-list-tables db "SHOW TABLES"; then
     tables_ok=1
   fi
@@ -74,17 +74,18 @@ _lib_preflight_select_db() {
       echo "SHOW DATABASES の結果からデータベース名を読めませんでした。" >&2
       exit 1
     fi
-    if ! run_query preflight-list-tables db "SHOW TABLES"; then
+    tables_id=preflight-list-tables-auto
+    if ! run_query "$tables_id" db "SHOW TABLES"; then
       echo "自動選択したデータベースで SHOW TABLES が通りませんでした。" >&2
       exit 1
     fi
   fi
 
-  if [ ! -f "$RUN_DIR/preflight-list-tables.results.rows.txt" ]; then
+  if [ ! -f "$RUN_DIR/$tables_id.results.rows.txt" ]; then
     echo "SHOW TABLES の結果を取得できず、${PREFIX} を含む表が無いことを確認できません。安全のため何も作らずに止まります。" >&2
     exit 1
   fi
-  if [ -s "$RUN_DIR/preflight-list-tables.results.rows.txt" ] && grep -qF "$PREFIX" "$RUN_DIR/preflight-list-tables.results.rows.txt"; then
+  if [ -s "$RUN_DIR/$tables_id.results.rows.txt" ] && grep -qF "$PREFIX" "$RUN_DIR/$tables_id.results.rows.txt"; then
     echo "このデータベースに ${PREFIX} を含む表・ビューが既にあります。上書き事故を避けるため、何も作らずに止まります。" >&2
     exit 1
   fi

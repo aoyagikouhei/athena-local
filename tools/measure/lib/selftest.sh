@@ -284,7 +284,21 @@ selected_db=$(_p2_field "$marker" DB)
 assert "ケース18: DB 未指定の実行が用意できる" [ -n "$dir18" ]
 assert "ケース18: SHOW DATABASES の1件目（dry_run_db）が選ばれる" [ "$selected_db" = dry_run_db ]
 assert "ケース18: preflight-databases が投げられる" [ -s "$dir18/preflight-databases.sql" ]
-assert "ケース18: preflight-list-tables が投げられる" [ -s "$dir18/preflight-list-tables.sql" ]
+assert "ケース18: 選んだ DB で SHOW TABLES を投げる" [ -s "$dir18/preflight-list-tables-auto.sql" ]
+
+# 指定した DB で SHOW TABLES が失敗したら、SHOW DATABASES の1件目に落ちて取り直す
+marker=$(mktemp)
+DB="nosuch_db" DRY_RUN_FAIL=preflight-list-tables _p2_run_dir_of "$marker" 310 athena_local_probe_310f
+dir18b=$(_p2_field "$marker" RUN_DIR)
+assert "ケース18: 指定した DB の SHOW TABLES が失敗したら SHOW DATABASES の1件目に落ちる" [ "$(_p2_field "$marker" DB)" = dry_run_db ]
+assert "ケース18: 落ちた先で SHOW TABLES を取り直す" [ -s "$dir18b/preflight-list-tables-auto.sql" ]
+
+# 同じ表を 2 つの項目が作り直したとき、DROP 1 本の成功で台帳から消えるのは 1 行だけ
+RUN_DIR_SAVE=$RUN_DIR; RUN_DIR=$(mktemp -d)
+printf 'TABLE\tprobe_twice\nTABLE\tprobe_twice\n' > "$RUN_DIR/created.tsv"
+forget_created TABLE probe_twice
+assert "ケース18: forget_created は同じ行を 1 行だけ消す" [ "$(wc -l < "$RUN_DIR/created.tsv" | tr -d ' ')" = 1 ]
+RUN_DIR=$RUN_DIR_SAVE
 
 # --- ケース19: SHOW TABLES に PREFIX を含む表があれば止まる（衝突検知） ---------
 marker=$(mktemp)

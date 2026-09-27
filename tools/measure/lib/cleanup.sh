@@ -21,7 +21,10 @@ forget_created() {
 kind, name, path = sys.argv[1:4]
 target = "%s\t%s\n" % (kind, name)
 lines = open(path).readlines()
-open(path, "w").writelines(l for l in lines if l != target)' \
+# 同じ表を 2 つの項目が作り直したときは同じ行が 2 つある。DROP 1 本の成功で消すのは 1 行だけ
+if target in lines:
+    lines.remove(target)
+open(path, "w").writelines(lines)' \
     "$kind" "$name" "$RUN_DIR/created.tsv"
 }
 
