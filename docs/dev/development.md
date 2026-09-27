@@ -20,7 +20,7 @@ tools/dev.sh tools/e2e/minio/verify.sh             # 検証の足場（tools/e2e
 
 ルートの `Cargo.toml` は workspace を兼ね、`default-members` に内部 crate（`crates/athena-sql`）も入れているので、上のコマンドは `-p`／`--workspace` なしで crate にも効く（`cargo test` の出力に crate の `unittests` と `Doc-tests` の行が足される）。`--test <名前>` は athena-local の結合テストだけ、`--lib <パス>` は両方の lib で走る（crate 側は filtered out）。`Cargo.lock` はルートの 1 つだけで、crate の版は追わない（[decisions.md](decisions.md) の「SQL の内部 crate（athena-sql）」）。
 
-CI（`.github/workflows/ci.yml`）の `check` ジョブはホストランナーで直に cargo を回す。`e2e` ジョブは toolbox の中で request-errors と paging-validation と quoted-names（#207）と context-catalog（#214）と sdk-retry を流し、MinIO も使う 7 本（create-table-catalog・ctas-catalog・s3-tables-location・block-comment・utility-rows・result-content-type・minio。#265）を流し、`cargo test --locked` を回す（amd64 の toolbox で通すため。#184）（toolbox のイメージは GHA キャッシュ、cargo は `.toolbox/target/release` だけキャッシュ）。
+CI（`.github/workflows/ci.yml`）の `check` ジョブはホストランナーで直に cargo を回す。`e2e` ジョブは toolbox の中で request-errors と paging-validation と quoted-names（#207）と context-catalog（#214）と sdk-retry を流し、MinIO も使う 7 本（create-table-catalog・ctas-catalog・s3-tables-location・block-comment・utility-rows・result-content-type・minio。#265）を流し、`cargo test --locked` を回す（amd64 の toolbox で通すため。#184）（toolbox のイメージは GHA キャッシュ、cargo は `.toolbox/target/release` だけキャッシュ）。最初の `changes` ジョブ（`tools/ci/code-changed.sh`）が、その push で変わったファイルが `docs/`・`.claude/`・`tools/measure/`・`*.md` だけなら `check` と `e2e` を飛ばす（PR の更新は前の head から、PR を開いたときは base との分岐点から、main への push は前のコミットから比べる。手動の起動と差分が取れないときは走らせる。#286）。`paths-ignore` は `pull_request` では PR 全体の差分で判定するので、コードを含む PR に issue ノートだけのコミットを足したときに効かない。
 
 ## 検証の足場（toolbox）
 
@@ -92,7 +92,7 @@ rootless docker（同じマシンに `dockerd-rootless-setuptool.sh install --fo
 
 ## テスト
 
-テストは本物のルーターを、同じプロセス内に立てた偽 Trino と偽 S3 に向けて動かす。そのため Athena のワイヤ上の形（ヘッダ行、`UpdateCount`、ページング、エラーの写し方）、パラメータの分類、そしてパラメータの無い SQL がカタログの別名を除いて書き換えずに渡されることを確かめられる。CI は main への push とプルリクエストのたびに（手動でも起動できる）`fmt`、`clippy`、`test` と、軽い e2e の足場 12 本（request-errors、paging-validation、quoted-names、context-catalog、sdk-retry と、MinIO も使う 7 本）を回す。CI に入れていない 4 本（retention・python-clients・jdbc-drivers・trino-probe）とその理由は `ci.yml` の `e2e` ジョブの先頭のコメントにある（#265）。
+テストは本物のルーターを、同じプロセス内に立てた偽 Trino と偽 S3 に向けて動かす。そのため Athena のワイヤ上の形（ヘッダ行、`UpdateCount`、ページング、エラーの写し方）、パラメータの分類、そしてパラメータの無い SQL がカタログの別名を除いて書き換えずに渡されることを確かめられる。CI は main への push とプルリクエストのたびに（手動でも起動できる。docs・issue ノート・実測スクリプトだけの push では飛ばす。#286）`fmt`、`clippy`、`test` と、軽い e2e の足場 12 本（request-errors、paging-validation、quoted-names、context-catalog、sdk-retry と、MinIO も使う 7 本）を回す。CI に入れていない 4 本（retention・python-clients・jdbc-drivers・trino-probe）とその理由は `ci.yml` の `e2e` ジョブの先頭のコメントにある（#265）。
 
 ## リリース
 
