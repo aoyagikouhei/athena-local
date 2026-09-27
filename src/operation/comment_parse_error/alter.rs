@@ -13,6 +13,7 @@ pub(super) fn alter(query: &str) -> Option<ParseError> {
         return None;
     }
     let (hit, name_start) = scan(query, &["ALTER", "TABLE"])?;
+    let hit = hit?;
     if !valid_name(query, name_start) {
         return None;
     }
@@ -51,6 +52,7 @@ pub(super) fn alter(query: &str) -> Option<ParseError> {
         error_message,
         category,
         error_type,
+        hive_only: false,
     })
 }
 
@@ -112,6 +114,7 @@ pub(in crate::operation) fn plain_drop_column(query: &str) -> Option<ParseError>
         error_message: Some(drop_column_error_message(column, line, col)),
         category: 2,
         error_type: 1006,
+        hive_only: false,
     })
 }
 

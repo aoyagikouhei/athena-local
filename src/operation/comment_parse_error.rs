@@ -39,6 +39,10 @@ pub(super) struct ParseError {
     pub error_message: Option<String>,
     pub category: i32,
     pub error_type: i32,
+    /// true なら Hive 表だけで本物が失敗させる（呼び出し側はビュー・無い表を今までどおり Trino に送る）。
+    /// #244 の既存のチェックポイントはすべて false（ビュー・無い表でも失敗、実測済み）。#257 で追加した
+    /// 新しいチェックポイント（`dot_comment` の g1）は true（Hive 表でしか実測していない。2026-09-27 実測。#257）。
+    pub hive_only: bool,
 }
 
 /// `query` は StartQueryExecution の単一の文（前後の空白と `;` は落としてある）。対象の文で、
@@ -63,10 +67,12 @@ struct Hit<'a> {
 }
 
 /// キーワード列 `keywords` の前後のどこかにブロックコメントがあれば、その `Hit` と、名前が始まる位置
-/// （最後のキーワードの直後）を返す。キーワードが 1 つでも一致しなければ（この文の型でなければ）None。
-/// ブロックコメントは `position::comment_start` で見つける（空白・行コメントだけ読み飛ばし、ブロック
-/// コメント自体は読み飛ばさない）ので、`Cursor::keyword`（トリビアを丸ごと読み飛ばす）より先に確かめる。
-fn scan<'a>(query: &'a str, keywords: &[&str]) -> Option<(Hit<'a>, usize)> {
+/// （最後のキーワードの直後）を返す。`Hit` は決め手の位置（先頭・キーワードの間）で見つかったときだけ
+/// `Some`（名前の内側の位置は呼び出し側が名前を読んでから別に判定する。g1。#257）。キーワードが 1 つでも
+/// 一致しなければ（この文の型でなければ）関数全体が None。ブロックコメントは `position::comment_start` で
+/// 見つける（空白・行コメントだけ読み飛ばし、ブロックコメント自体は読み飛ばさない）ので、`Cursor::keyword`
+/// （トリビアを丸ごと読み飛ばす）より先に確かめる。
+fn scan<'a>(query: &'a str, keywords: &[&str]) -> Option<(Option<Hit<'a>>, usize)> {
     let mut cursor = athena_sql::Cursor::new(query);
     let mut hit = position::comment_start(query, 0).map(|comment_at| Hit {
         index: 0,
@@ -89,7 +95,7 @@ fn scan<'a>(query: &'a str, keywords: &[&str]) -> Option<(Hit<'a>, usize)> {
         }
     }
     let name_start = query.len() - cursor.rest().len();
-    hit.map(|hit| (hit, name_start))
+    Some((hit, name_start))
 }
 
 /// 名前が読めて、引用符付きの部品を含まず 4 部未満なら OK（開始時の判定 `quoted_names`／`unquoted_ddl` に
@@ -122,31 +128,67 @@ fn show_create_table(query: &str) -> Option<ParseError> {
     if !valid_name(query, name_start) {
         return None;
     }
-    let (line, col) = position::position(query, hit.comment_at);
-    let reason = match hit.index {
-        0 => head_reason(query, hit.comment_at, line, col),
-        1 => {
-            let (show, _) = hit.keyword?;
-            format!(
-                "FAILED: ParseException line {line}:{col} cannot recognize input near '{show}' '/' '*' in ddl statement"
-            )
-        }
-        2 => {
-            let (create, _) = hit.keyword?;
-            format!(
-                "FAILED: ParseException line {line}:{col} mismatched input '/' expecting TABLE near '{create}' in show statement"
-            )
-        }
-        3 => table_name_reason(query, hit.comment_at, line, col),
-        _ => unreachable!("SHOW CREATE TABLE のチェックポイントは 4 つ"),
-    };
+    if let Some(hit) = hit {
+        let (line, col) = position::position(query, hit.comment_at);
+        let reason = match hit.index {
+            0 => head_reason(query, hit.comment_at, line, col),
+            1 => {
+                let (show, _) = hit.keyword?;
+                format!(
+                    "FAILED: ParseException line {line}:{col} cannot recognize input near '{show}' '/' '*' in ddl statement"
+                )
+            }
+            2 => {
+                let (create, _) = hit.keyword?;
+                format!(
+                    "FAILED: ParseException line {line}:{col} mismatched input '/' expecting TABLE near '{create}' in show statement"
+                )
+            }
+            3 => table_name_reason(query, hit.comment_at, line, col),
+            _ => unreachable!("SHOW CREATE TABLE のチェックポイントは 4 つ"),
+        };
+        return Some(ParseError {
+            target: Target::ShowCreateTable,
+            reason,
+            error_message: None,
+            category: 1,
+            error_type: 1003,
+            hive_only: false,
+        });
+    }
+    // 名前の内側（無引用ちょうど 2 部の名前の `.` の直後）は、決め手の位置の外なので別に判定する（g1。#257）。
+    let (comment_at, spelling) = dot_comment(query, name_start)?;
+    let (line, col) = position::position(query, comment_at);
     Some(ParseError {
         target: Target::ShowCreateTable,
-        reason,
+        reason: format!(
+            "FAILED: ParseException line {line}:{col} cannot recognize input near '{spelling}' '.' '/' in table name"
+        ),
         error_message: None,
         category: 1,
         error_type: 1003,
+        hive_only: true,
     })
+}
+
+/// 無引用ちょうど 2 部の名前の `.` の直後にブロックコメントがあれば、その位置（`/` の位置）と 1 部目の
+/// 綴り（書いたまま）を返す（2026-09-27 実測 g1。#257）。3 部・1 部（`.` が無い）・`.` の前のコメントは
+/// None（`name.parts` の個数と、`.` の直後の位置を見るだけで自然に外れる）。引用符付きの部品は、呼び出し側
+/// （`show_create_table` の `valid_name`）が先に弾く。
+fn dot_comment(query: &str, name_start: usize) -> Option<(usize, &str)> {
+    let name = athena_sql::Cursor::new(&query[name_start..]).qualified_name()?;
+    if name.parts.len() != 2 {
+        return None;
+    }
+    let db = &name.parts[0];
+    let dot_at = name_start + db.end;
+    if query.as_bytes().get(dot_at) != Some(&b'.') {
+        return None;
+    }
+    let after_dot = dot_at + 1;
+    query[after_dot..]
+        .starts_with("/*")
+        .then_some((after_dot, db.text))
 }
 
 /// `DESCRIBE` と `DESC` の両方を試す（`target_table::keywords` と同じ規則）。DESCRIBE の直後のケースは
@@ -154,6 +196,7 @@ fn show_create_table(query: &str) -> Option<ParseError> {
 /// `DESCRIBE <db>./* c */<t>` を 2026-09-26 に m10 で確かめた（#242）。
 fn describe(query: &str) -> Option<ParseError> {
     let (hit, name_start) = scan(query, &["DESCRIBE"]).or_else(|| scan(query, &["DESC"]))?;
+    let hit = hit?;
     if !valid_name(query, name_start) {
         return None;
     }
@@ -176,11 +219,13 @@ fn describe(query: &str) -> Option<ParseError> {
         error_message: None,
         category: 1,
         error_type: 1003,
+        hive_only: false,
     })
 }
 
 fn msck_repair(query: &str) -> Option<ParseError> {
     let (hit, name_start) = scan(query, &["MSCK", "REPAIR", "TABLE"])?;
+    let hit = hit?;
     if !valid_name(query, name_start) {
         return None;
     }
@@ -200,6 +245,7 @@ fn msck_repair(query: &str) -> Option<ParseError> {
         error_message: None,
         category: 1,
         error_type: 1003,
+        hive_only: false,
     })
 }
 

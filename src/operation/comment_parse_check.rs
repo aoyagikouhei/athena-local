@@ -93,18 +93,21 @@ pub(super) async fn pre_syntax_check_failure(
         add_columns_comment
     }?;
 
-    match probe {
-        Probe::Missing
-        | Probe::View
-        | Probe::Table {
+    // `comment.hive_only` が true なチェックポイント（#257 の g1 など）は、ビュー・無い表を今までどおり
+    // Trino に送る（Hive 表だけ本物どおり失敗）。#244 の既存のチェックポイントは hive_only が false で
+    // ビュー・無い表でも今までどおり失敗する。
+    let ok = match probe {
+        Probe::Table {
             format: Some(TableFormat::Hive),
-        } => Some(ImmediateFailure {
-            failure: comment.into(),
-            writes_result_file: true,
-            runs_ctas_query: false,
-        }),
-        Probe::Table { .. } | Probe::NoCatalog | Probe::Unknown => None,
-    }
+        } => true,
+        Probe::Missing | Probe::View => !comment.hive_only,
+        Probe::Table { .. } | Probe::NoCatalog | Probe::Unknown => false,
+    };
+    ok.then(|| ImmediateFailure {
+        failure: comment.into(),
+        writes_result_file: true,
+        runs_ctas_query: false,
+    })
 }
 
 /// 構文チェックの後の判定: `comment_parse_error::detect` が対象にした文で、本物が実際に FAILED にするか。DESCRIBE は
@@ -142,22 +145,24 @@ pub(super) async fn comment_parse_error_failure(
                 raw_catalog,
                 default_database,
             )?;
-            match entity_check::probe(
+            let probe = entity_check::probe(
                 trino,
                 config,
                 &target.catalog,
                 &target.schema,
                 &target.table,
             )
-            .await
-            {
-                Probe::Missing
-                | Probe::View
-                | Probe::Table {
+            .await;
+            // `parse_error.hive_only` は #257 の g1 のような新しいチェックポイントだけ true
+            // （ビュー・無い表は今までどおり Trino に送る）。#244 の既存のチェックポイントは false のまま。
+            let ok = match probe {
+                Probe::Table {
                     format: Some(TableFormat::Hive),
-                } => Some(parse_error.into()),
-                Probe::Table { .. } | Probe::NoCatalog | Probe::Unknown => None,
-            }
+                } => true,
+                Probe::Missing | Probe::View => !parse_error.hive_only,
+                Probe::Table { .. } | Probe::NoCatalog | Probe::Unknown => false,
+            };
+            ok.then(|| parse_error.into())
         }
         Target::MsckRepair | Target::AlterAddColumns => None,
     }

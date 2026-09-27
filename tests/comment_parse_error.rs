@@ -187,6 +187,69 @@ async fn show_create_table_のブロックコメントは先頭でも名前の�
     }
 }
 
+/// 無引用ちょうど 2 部の名前の `.` の直後（g1。2026-09-27 実測。#257）は、Hive 表だけ本物どおり FAILED
+/// になり、ビュー・無い表・Iceberg は今までどおり Trino に送る（`hive_only` の印）。
+#[tokio::test]
+async fn show_create_table_の名前の中の_ドット直後のコメントは_hive_表だけ_failed_になる() {
+    const REASON: &str =
+        "FAILED: ParseException line 1:21 cannot recognize input near 'db' '.' '/' in table name";
+    let sql = "SHOW CREATE TABLE db./* c */t";
+    let harness = Harness::builder(select_response())
+        .route(
+            &probe_sql(DEFAULT_CATALOG, "db", "t"),
+            probe_response("hive", "TABLE"),
+        )
+        .results_s3()
+        .start()
+        .await;
+
+    let execution = harness
+        .run_query(json!({
+            "QueryString": sql,
+            "ResultConfiguration": { "OutputLocation": "s3://results-bucket/athena/" }
+        }))
+        .await["QueryExecution"]
+        .clone();
+
+    assert_eq!(execution["Status"]["State"], "FAILED", "{execution}");
+    assert_eq!(execution["Status"]["StateChangeReason"], REASON);
+    assert!(
+        harness.trino_sqls().iter().all(|s| !s.starts_with("SHOW")),
+        "Trino に SHOW の文を送らない: {:?}",
+        harness.trino_sqls()
+    );
+}
+
+#[tokio::test]
+async fn show_create_table_の名前の中の_ドット直後のコメントはビュー_無い表_iceberg_なら_trino_に送る()
+ {
+    for (name, response) in [
+        ("v", probe_response("hive", "VIEW")),
+        ("nope", probe_response_missing()),
+        ("t", probe_response("iceberg", "TABLE")),
+    ] {
+        let sql = format!("SHOW CREATE TABLE db./* c */{name}");
+        let harness = Harness::builder(select_response())
+            .route(&probe_sql(DEFAULT_CATALOG, "db", name), response)
+            .route(&sql, create_table_response())
+            .start()
+            .await;
+
+        let execution =
+            harness.run_query(json!({ "QueryString": sql })).await["QueryExecution"].clone();
+
+        assert_eq!(
+            execution["Status"]["State"], "SUCCEEDED",
+            "{name}: {execution}"
+        );
+        assert!(
+            harness.trino_sqls().iter().any(|s| s == &sql),
+            "{name}: hive_only は Trino に送る: {:?}",
+            harness.trino_sqls()
+        );
+    }
+}
+
 /// DESCRIBE の Hive 表・Iceberg 表（先頭以外の形）は tests/reported_query.rs にある（#242 の拡張）。
 /// ここでは DESC・先頭コメントを足す。
 #[tokio::test]

@@ -19,6 +19,7 @@ fn parse_exception(target: Target, reason: &str) -> ParseError {
         error_message: None,
         category: 1,
         error_type: 1003,
+        hive_only: false,
     }
 }
 
@@ -297,13 +298,60 @@ fn 決め手の位置より後ろにしかブロックコメントが無けれ�
             "SHOW CREATE TABLE db.t /* c */",
         ),
         (
-            "SHOW CREATE TABLE・名前の中（未実測。D1）",
-            "SHOW CREATE TABLE db./* c */t",
-        ),
-        (
             "ALTER TABLE・名前と ADD の間（未実測。D1）",
             "ALTER TABLE db.t /* c */ ADD COLUMNS (c int)",
         ),
+    ] {
+        assert_eq!(detect(sql), None, "{ids}: {sql}");
+    }
+}
+
+#[test]
+fn show_create_table_は無引用ちょうど_2_部の名前の_ドット直後のコメントで_hive_only_の印付きで_some()
+ {
+    for (ids, sql, reason) in [
+        (
+            "g1",
+            "SHOW CREATE TABLE db./* c */t",
+            "FAILED: ParseException line 1:21 cannot recognize input near 'db' '.' '/' in table name",
+        ),
+        // 大文字の DB の綴りも書いたまま（2026-09-27 実測 g1 の綴りの規則。#257）。
+        (
+            "g1・大文字の綴り",
+            "SHOW CREATE TABLE MyDb./* c */t",
+            "FAILED: ParseException line 1:23 cannot recognize input near 'MyDb' '.' '/' in table name",
+        ),
+    ] {
+        assert_eq!(
+            detect(sql),
+            Some(ParseError {
+                target: Target::ShowCreateTable,
+                reason: reason.to_string(),
+                error_message: None,
+                category: 1,
+                error_type: 1003,
+                hive_only: true,
+            }),
+            "{ids}: {sql}"
+        );
+    }
+}
+
+#[test]
+fn show_create_table_の_2_部の名前の_ドット直後のコメントは対象を絞り_ほかは_none() {
+    for (ids, sql) in [
+        ("3 部（未実測）", "SHOW CREATE TABLE a./* c */b.c"),
+        (
+            "引用符付きの部品（未実測）",
+            r#"SHOW CREATE TABLE "db"./* c */t"#,
+        ),
+        // `.` の前にコメントがあるとき（`.` の直後ではない。未実測）。
+        (
+            ".の前のコメント（未実測）",
+            "SHOW CREATE TABLE db /* c */.t",
+        ),
+        // 1 部の名前の後ろ（`.` が無い。決め手の位置より後ろと同じ扱い。未実測）。
+        ("1 部の名前の後ろ（未実測）", "SHOW CREATE TABLE t/* c */"),
     ] {
         assert_eq!(detect(sql), None, "{ids}: {sql}");
     }

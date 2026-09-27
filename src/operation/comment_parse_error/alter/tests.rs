@@ -11,6 +11,7 @@ fn parse_exception(target: Target, reason: &str) -> ParseError {
         error_message: None,
         category: 1,
         error_type: 1003,
+        hive_only: false,
     }
 }
 
@@ -21,6 +22,7 @@ fn rename_error(reason: &str) -> ParseError {
         error_message: Some("Query type not supported by DDL engine.".to_string()),
         category: 2,
         error_type: 1006,
+        hive_only: false,
     }
 }
 
@@ -31,6 +33,7 @@ fn drop_column_error(reason: &str, message: &str) -> ParseError {
         error_message: Some(message.to_string()),
         category: 2,
         error_type: 1006,
+        hive_only: false,
     }
 }
 

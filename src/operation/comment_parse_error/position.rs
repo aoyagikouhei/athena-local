@@ -58,11 +58,18 @@ pub(super) fn position(query: &str, pos: usize) -> (usize, usize) {
 }
 
 /// `/*` の直後（`comment_start` が返した位置）から、Hive の字句規則で最初の字句を読む
-/// （2026-09-26 実測 s20〜s27・c1〜c13。ラウンド 2・3）。コメントの閉じ `*/` を越えて読んでよい。
-/// 測っていない字句（`<=` などの 2 文字の記号、引用符の中のエスケープ）は同じ規則で近似する（D5）。
+/// （2026-09-26 実測 s20〜s27・c1〜c13。ラウンド 2・3。`<=`・`!=` の 2 文字と、閉じていない引用符は
+/// 2026-09-27 実測 e1・e2・e5。#257）。コメントの閉じ `*/` を越えて読んでよい。
+/// 測っていない字句（`>=`・`<>` などほかの 2 文字の記号、引用符の中のエスケープ）は同じ規則で近似する（D5）。
 pub(super) fn leading_token(query: &str, comment_at: usize) -> &str {
+    read_token(query, comment_at + 2) // comment_at + 2 は "/*" の直後。
+}
+
+/// 空白・非 ASCII を読み飛ばした位置から、1 つの字句を読む。閉じる引用符が文の末尾まで無ければ、
+/// その引用符を 1 バイト飛ばして次の語を読み直す（Hive の字句器が引用符を捨てて読み直す形。実測 e5。#257）。
+fn read_token(query: &str, pos: usize) -> &str {
     let bytes = query.as_bytes();
-    let mut i = comment_at + 2; // "/*" の直後。
+    let mut i = pos;
     while i < bytes.len() {
         match bytes[i] {
             b' ' | b'\t' | b'\r' | b'\n' | b'\x0B' | b'\x0C' => i += 1,
@@ -78,6 +85,7 @@ pub(super) fn leading_token(query: &str, comment_at: usize) -> &str {
         return "";
     }
     match bytes[start] {
+        b'\'' | b'"' if !quoted_closes(bytes, start) => read_token(query, start + 1),
         b'\'' | b'"' => &query[start..athena_sql::skip_quoted(bytes, start)],
         byte if byte.is_ascii_alphanumeric() || byte == b'_' => {
             let mut end = start;
@@ -96,9 +104,32 @@ pub(super) fn leading_token(query: &str, comment_at: usize) -> &str {
             }
             &query[start..end]
         }
-        // それ以外（非 ASCII はここに来ない）は 1 文字（`,`・`)`・`+`・`*` など）。
+        // 測った 2 文字の記号（`<=`・`!=`）だけ 2 文字、ほかは 1 文字（`,`・`)`・`+`・`*`・`|`・`>` など。
+        // 非 ASCII はここに来ない（実測 e1・e2・e3。#257）。
+        _ if bytes[start..].starts_with(b"<=") || bytes[start..].starts_with(b"!=") => {
+            &query[start..start + 2]
+        }
         _ => &query[start..start + 1],
     }
+}
+
+/// 引用符（`'`・`"`）が文の末尾までに閉じるか。`athena_sql::skip_quoted` と同じ規則で走査するが、
+/// あちらの返り値（閉じの次の位置。閉じなければ `bytes.len()`）だけでは、末尾ちょうどで閉じた場合と
+/// 区別できないため、閉じたかどうかを別に判定する（実測 e5。#257）。
+fn quoted_closes(bytes: &[u8], start: usize) -> bool {
+    let quote = bytes[start];
+    let mut i = start + 1;
+    while i < bytes.len() {
+        if bytes[i] == quote {
+            if bytes.get(i + 1) == Some(&quote) {
+                i += 2;
+                continue;
+            }
+            return true;
+        }
+        i += 1;
+    }
+    false
 }
 
 #[cfg(test)]
@@ -163,9 +194,24 @@ mod tests {
             ("/* 'x' */", "'x'"),
             ("/* \"q\" */", "\"q\""),
             ("/* ) */", ")"),
+            // 2 文字の記号は測った `<=`・`!=` だけ 2 文字（2026-09-27 実測 e1・e2。#257）。
+            ("/* <= */", "<="),
+            ("/* != */", "!="),
+            // ほかの 2 文字の記号は未実測なので今までどおり 1 文字（e3 は実測どおり 1 文字。回帰）。
+            ("/* || */", "|"),
+            ("/* >= */", ">"),
+            // 閉じる引用符が文の末尾まで無ければ、引用符を飛ばして次の語を読む（実測 e5。#257）。
+            ("/* 'a */", "a"),
         ] {
             assert_eq!(leading_token(comment, 0), expected, "{comment}");
         }
+        // 後ろで閉じる形（引用符の外に別の `'` がある文）は、今までどおり後ろの `'` までを 1 語にする
+        // （閉じていないときだけ引用符を飛ばす。計画攻撃 B1・回帰）。
+        assert_eq!(
+            leading_token("/* 'a */ ... 'x'", 0),
+            "'a */ ... '",
+            "後ろで閉じる引用符は今までどおり 1 語にする"
+        );
         // 空のコメント（閉じ記号すら無い）は空文字列。
         assert_eq!(leading_token("/*", 0), "");
     }
