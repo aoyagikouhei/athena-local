@@ -316,6 +316,50 @@ assert "ケース19: PREFIX の衝突で exit 1" [ "$rc19" -eq 1 ]
 assert "ケース19: 止まったメッセージが出る" contains "$(cat "$marker.err")" "何も作らずに止まります"
 assert "ケース19: 衝突後は先へ進まない" [ ! -e "$marker.reached" ]
 
+# 大文字小文字だけが違う残骸も衝突とみなす
+marker=$(mktemp)
+(
+  export OUT_DIR="$(mktemp -d)"
+  export DB=""
+  export DRY_RUN_SHOW_TABLES="ATHENA_LOCAL_PROBE_310H_LEFTOVER"
+  # shellcheck source=tools/measure/lib.sh
+  . "$LIB_DIR/lib.sh" > /dev/null
+  lib_init 310 athena_local_probe_310h
+) > "$marker.out" 2> "$marker.err"
+assert "ケース19: 大文字小文字の違う残骸でも exit 1" [ "$?" -eq 1 ]
+
+# --- ケース22: 終端を待つ間に中断されても、作りかけの表に trap が DROP IF EXISTS を投げる ---
+# 中断は待ちの中で自分の subshell に TERM を送って作る。trap の保険の DROP は START_CALL_FILE に
+# 数えないので、偽 aws の start-query-execution がそれより 1 本多ければ投げている。
+out22=$(mktemp -d)
+(
+  export OUT_DIR="$out22"
+  export DB=""
+  # shellcheck source=tools/measure/lib.sh
+  . "$LIB_DIR/lib.sh" > /dev/null
+  lib_init 310 athena_local_probe_310k > /dev/null
+  me=$BASHPID
+  poll_until_terminal() { kill -TERM "$me"; sleep 1; }
+  item mk_k creates=TABLE:athena_local_probe_310k_t "CREATE TABLE t_k (n int)"
+  run_items
+) > /dev/null 2>&1
+dir22=$(ls -d "$out22"/run-* | head -1)
+starts22=$(grep -c start-query-execution "$dir22/.dry-run/calls.log")
+counted22=$(wc -l < "$dir22/.start-calls" | tr -d ' ')
+assert "ケース22: trap が作りかけの表に DROP を投げる" [ "$starts22" -eq "$((counted22 + 1))" ]
+
+# --- ケース23: summary.tsv の値が " で始まっても、後の項目の要約行が summary.txt から消えない ---
+# 後始末の手掛かり（cleanup_hint）も summary.txt の冒頭に出る
+marker=$(mktemp)
+_p2_run_dir_of "$marker" 310 athena_local_probe_310m '
+  cleanup_hint "hint-for-selftest"
+  item quoted1 skip="\"Not available と文書にある（引用符が閉じない）" "SELECT 1"
+  item after1 "SELECT 2"
+  run_items'
+dir23=$(_p2_field "$marker" RUN_DIR)
+assert "ケース23: 引用符で始まる note の後の項目にも要約行が出る" grep -q "^- state=SUCCEEDED" <(sed -n '/^### after1/,$p' "$dir23/summary.txt")
+assert "ケース23: cleanup_hint が summary.txt の冒頭に出る" grep -q "hint-for-selftest" "$dir23/summary.txt"
+
 # --- ケース20: summary.txt（ケース13の RUN_DIR を使う） --------------------------
 summary_txt13="$dir13/summary.txt"
 assert "ケース20: summary.txt が作られる" [ -s "$summary_txt13" ]

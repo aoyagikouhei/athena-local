@@ -13,6 +13,13 @@ record_created() {
   printf '%s\t%s\n' "$kind" "$name" >> "$RUN_DIR/created.tsv"
 }
 
+# DROP では消えないもの（Hive の外部表・CTAS の external_location の S3 のデータなど）を、
+# summary.txt の冒頭に「手で消すもの」として出す。unmeasured-batch/lib-cleanup.sh の
+# record_cleanup_hint と同じ役割（#113）。ラウンドのスクリプトが lib_init の後に呼ぶ。
+cleanup_hint() {
+  echo "$1" >> "$RUN_DIR/cleanup-hints.txt"
+}
+
 # DROP が SUCCEEDED になったときだけ呼び、created.tsv からその1行を消す。
 forget_created() {
   local kind=$1 name=$2

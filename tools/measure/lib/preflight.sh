@@ -85,7 +85,7 @@ _lib_preflight_select_db() {
     echo "SHOW TABLES の結果を取得できず、${PREFIX} を含む表が無いことを確認できません。安全のため何も作らずに止まります。" >&2
     exit 1
   fi
-  if [ -s "$RUN_DIR/$tables_id.results.rows.txt" ] && grep -qF "$PREFIX" "$RUN_DIR/$tables_id.results.rows.txt"; then
+  if [ -s "$RUN_DIR/$tables_id.results.rows.txt" ] && grep -qiF "$PREFIX" "$RUN_DIR/$tables_id.results.rows.txt"; then
     echo "このデータベースに ${PREFIX} を含む表・ビューが既にあります。上書き事故を避けるため、何も作らずに止まります。" >&2
     exit 1
   fi

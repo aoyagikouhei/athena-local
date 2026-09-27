@@ -167,16 +167,17 @@ run_items() {
         _ITEM_RUN_STATE[$id]=FAILED
       fi
     else
+      # 作る項目は投げる前に台帳へ載せる（終端を待つ間に中断されても、trap の保険が DROP IF EXISTS を
+      # 投げる。移植元の describe-extended.sh は作成に着手した時点で保険を有効にしていた）。
+      # SUCCEEDED にならなければ台帳から外し、DROP を投げない
+      creates_spec=${_ITEM_CREATES[$idx]}
+      [ -n "$creates_spec" ] && record_created "${creates_spec%%:*}" "${creates_spec#*:}"
       if run_query "$id" "${_ITEM_CTX[$idx]}" "${_ITEM_ARG1[$idx]}"; then
         _ITEM_RUN_STATE[$id]=SUCCEEDED
       else
         _ITEM_RUN_STATE[$id]=$(awk -F'\t' -v id="$id" '$1==id{s=$3} END{print s}' "$SUMMARY")
+        [ -n "$creates_spec" ] && forget_created "${creates_spec%%:*}" "${creates_spec#*:}"
       fi
-    fi
-
-    creates_spec=${_ITEM_CREATES[$idx]}
-    if [ -n "$creates_spec" ] && [ "${_ITEM_RUN_STATE[$id]}" = SUCCEEDED ]; then
-      record_created "${creates_spec%%:*}" "${creates_spec#*:}"
     fi
 
     if [ -n "${_LIB_DROP_AT_KIND[$pos]:-}" ]; then

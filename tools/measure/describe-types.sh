@@ -16,6 +16,7 @@ lib_init 307 athena_local_probe_307
 
 T_H="${PREFIX}_h"; T_I="${PREFIX}_i"
 loc() { printf '%stables-probe-307-%s-%s/' "$OUTPUT" "$1" "$RUN_STAMP"; }
+cleanup_hint "Hive の表（mk_h・ch_*）の LOCATION は DROP で消えない: $(loc '*')"
 
 # Hive: DDL で書ける未測の型を 1 表に
 item mk_h creates=TABLE:"$T_H" "CREATE EXTERNAL TABLE $DB.$T_H (c_char char(10), c_varchar varchar(10), c_dec decimal(10,2), c_bin binary, c_arr_st array<struct<a:int,b:string>>, c_st2 struct<a:int,b:string>, c_map_arr map<string,array<int>>) LOCATION '$(loc h)'"

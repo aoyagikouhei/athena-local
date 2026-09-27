@@ -76,8 +76,8 @@ run_query() {
 
   state=$(poll_until_terminal "$qid")
 
-  aws athena get-query-execution --region "$REGION" --query-execution-id "$qid" \
-    > "$RUN_DIR/$item_id.execution.json" 2> "$RUN_DIR/$item_id.execution.err"
+  retry_aws "$RUN_DIR/$item_id.execution.json" "$RUN_DIR/$item_id.execution.err" \
+    aws athena get-query-execution --region "$REGION" --query-execution-id "$qid"
   write_reason "$RUN_DIR/$item_id.execution.json" "$RUN_DIR/$item_id.reason.txt"
 
   IFS=$'\t' read -r stype sub loc < <(read_execution_fields "$RUN_DIR/$item_id.execution.json")

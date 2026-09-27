@@ -10,7 +10,7 @@ _lib_summary_row_of() {
 item_id = sys.argv[2]
 last = None
 with open(sys.argv[1], newline="") as f:
-    for row in csv.DictReader(f, delimiter="\t"):
+    for row in csv.DictReader(f, delimiter="\t", quoting=csv.QUOTE_NONE):
         if row["id"] == item_id:
             last = row
 if last is not None:
@@ -68,9 +68,17 @@ _lib_summary_header() {
       echo "#   $name ($kind)"
     done < "$RUN_DIR/created.tsv"
   fi
+  if [ -s "$RUN_DIR/cleanup-hints.txt" ]; then
+    echo "# DROP では消えないもの（手で消してください）:"
+    while IFS= read -r line; do
+      echo "#   $(hide "$line")"
+    done < "$RUN_DIR/cleanup-hints.txt"
+  fi
   echo "# skip の数: $(awk -F'\t' '$2=="skip"{n++} END{print n+0}' "$SUMMARY")"
   echo "# 注意: これは実測した本物の Athena の挙動であり、将来の Athena の変更や、コンソールでの"
   echo "#   設定変更で変わりうる。実測値は工場出荷時の既定とは限らない。"
+  echo "# マスク: 実名と、前後が数字でない 12 桁の数字（アカウント ID とみなす）を伏せている。測った値が"
+  echo "#   12 桁の数字だと <ACCOUNT_ID> に見えるので、生の値は <id>.bytes・<id>.results-*.json で確かめる。"
 }
 
 # 項目1件ぶんのブロック（query 系: sql・要約行・Query・Context・ColumnInfo・State/Reason・
@@ -147,7 +155,7 @@ _lib_summary_skip_note() {
 item_id = sys.argv[2]
 last = None
 with open(sys.argv[1], newline="") as f:
-    for row in csv.DictReader(f, delimiter="\t"):
+    for row in csv.DictReader(f, delimiter="\t", quoting=csv.QUOTE_NONE):
         if row["id"] == item_id:
             last = row
 print(last["note"] if last is not None else "")' "$SUMMARY" "$id")
