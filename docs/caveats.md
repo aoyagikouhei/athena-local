@@ -651,10 +651,9 @@ it as without the comment. `MSCK REPAIR TABLE` on an Iceberg table, with or with
   `AS` (without a trailing `WITH [NO] DATA`) as written, with the context
   catalog, database and `ExecutionParameters` of the statement, and writing
   the companion from that query's ID and row count; it writes no manifest and
-  no data files. Real Athena's message for a failing query part also ends
-  with the same ` You may need to manually clean ...` sentence and reports
-  positions a few lines off, while athena-local returns Trino's message
-  (measured 2026-09-27). Without an output location (results not
+  no data files. A failing query part gets the same sentence and position as
+  any CTAS that fails on the engine (see [Failed queries](#failed-queries)).
+  Without an output location (results not
   written and no `OutputLocation`), or when Trino cannot tell whether the
   database exists, the statement is sent instead
   ([#232](https://github.com/aoyagikouhei/athena-local/issues/232),
@@ -792,6 +791,34 @@ it as without the comment. `MSCK REPAIR TABLE` on an Iceberg table, with or with
 
 ## Failed queries
 
+- **An engine failure of a CTAS or `INSERT` names the result location, and a
+  CTAS reports the position in Athena's reformatted statement.** Real Athena
+  appends ` You may need to manually clean the data at location '<output
+  location>tables/<id>' before retrying. Athena will not delete data in your
+  account.` to the reason of a CTAS that fails on the engine, and ` If a data
+  manifest file was generated at '<output location><id>-manifest.csv', you may
+  need to manually clean the data from locations specified in the manifest.
+  Athena will not delete data in your account.` to that of an `INSERT`, after
+  a `.` when the engine's message does not end with one (measured 2026-09-25
+  and 2026-09-27, [#272](https://github.com/aoyagikouhei/athena-local/issues/272));
+  athena-local does the same, for both `StateChangeReason` and
+  `AthenaError.ErrorMessage`. Real Athena also reformats a CTAS before running
+  it, and the `line N:M` of an analysis error counts in the reformatted text:
+  `CREATE TABLE db.t AS SELECT * FROM db.missing` answers `line 6:3`, one line
+  more for each `WITH (...)` table property. athena-local moves the position
+  to the same place, without changing the statement it sends to Trino, for
+  the forms that were measured: under an `AwsDataCatalog` or omitted context
+  catalog (or into `awsdatacatalog.<database>.<table>` under an S3 Tables
+  context catalog), a `SELECT` of `*`, columns, literals or one binary
+  operator, one table in `FROM`, one comparison in `WHERE`, the query in
+  parentheses or behind one `WITH` query, with or without `WITH (...)` table
+  properties and a trailing `WITH [NO] DATA`. Other forms (joins, `GROUP BY`,
+  `ORDER BY`, function calls, ...), a statement with `ExecutionParameters` or
+  with non-ASCII characters, and a CTAS into an S3 Tables namespace (where real
+  Athena kept the position as sent) keep Trino's position. Real Athena's own
+  wording can differ from Trino's (`Column 'x' cannot be resolved or requester
+  is not authorized to access requested resources`); athena-local keeps
+  Trino's wording.
 - **A failed query writes a result file for more statements than Athena.** On
   Athena it depends on the engine behind the statement: DDL that runs through
   Hive writes `<id>.txt` holding the reason (`SHOW TABLES`, `DROP TABLE` and

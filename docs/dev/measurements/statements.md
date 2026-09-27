@@ -890,3 +890,32 @@ Content-Type と `.metadata` を含む置き場所は本項が主で、[result-f
 - CTAS・CREATE VIEW は、#242 の m35・m36 と #251 の r4〜r8c・t1〜t15 ほか 20 件以上で、成功・失敗によらず Query が送ったまま
 - 採用した判断: athena-local で開始できるのは、S3 Tables の Context の CTAS でない `CREATE TABLE <awsdatacatalog の類>.<ns>.<t>`（1 部目が小文字ちょうどの `awsdatacatalog` なら 2 catalogs で開始時に弾く）だけ。この形の GetQueryExecution の Query から 1 部目と直後の `.`・空白を落とし（コメントは残す）、Context の Database を文の名前空間（文中の綴り）にする。成功（1 部目を空白にして Trino に送る）でも、名前空間が無い FAILED・`STORED AS` の FAILED（#266 で 3 部も開始するようになった。w2）でも同じ。実行する文と実行の Database は変えない。`CREATE EXTERNAL TABLE`・`LOCATION`・`SHOW PARTITIONS`・`CREATE / ALTER / DROP DATABASE`・`ADD PARTITION` は Trino の文法に無く開始時の構文チェックで弾くので、Query の組み直しは要らない
 - 備考: 大文字の混ざる名前空間を書いたときに Context の Database が文中の綴りか小文字かと、1 部目と `.` の間のコメントの扱いは未実測（`docs/dev/unmeasured.md`）
+
+### エンジンで失敗した CTAS・INSERT の理由の接尾辞と位置（#272）
+- 日付: 2026-09-27（UTC 2026-09-27 00:05）／ issue: #272 ／ スクリプト: `tools/measure/unquoted-ddl.sh`（`ROUND=18`）／ 生データ: `$HOME/athena-unquoted-ddl-measurements/run-20260927-000528`
+- 相手: 本物の Athena（Context はすべて `Catalog=AwsDataCatalog,Database=<DB>`）
+- 投げたもの: StartQueryExecution 42 回。p 群は無い DB（X 版）とある DB（y 版）の両方。準備の `<PROBE>_src` と後始末も SUCCEEDED
+- 返ったもの（接尾辞 ` You may need to manually clean the data at location '<OUTPUT>tables/<id>' before retrying. Athena will not delete data in your account.` を「+接尾辞」と書く。StateChangeReason と AthenaError.ErrorMessage はバイト単位で同じ。X 版と y 版は w1 以外同じ文言・同じ位置）:
+
+  | 項目 | 文（`CREATE TABLE <名前> ...` の後ろ） | 本物（すべて FAILED、DDL / CREATE_TABLE_AS_SELECT。書いたもの以外） |
+  |---|---|---|
+  | p1・p1y・p5・p5y・p10・p10y・p11・p11y・p13y・p14y・p15y | `AS SELECT * FROM <DB>.<nosrc>`（AS の後の空白 4 つ・IF NOT EXISTS・先頭のコメント・1 部・2 部の名前・`WITH DATA`） | 2 / 1301 `TABLE_NOT_FOUND: line 6:3: Table 'awsdatacatalog.<DB>.<nosrc>' does not exist.` +接尾辞 |
+  | p2・p2y・w3・w3y | `AS SELECT nosuch272 FROM <DB>.<src>`（w3 は `WITH NO DATA` 付き） | 2 / 1006 `COLUMN_NOT_FOUND: line 4:13: Column 'nosuch272' cannot be resolved or requester is not authorized to access requested resources.` +接尾辞 |
+  | p3・p3y | `AS SELECT n, s, nosuch272 FROM <DB>.<src>` | 同じ文言で `line 7:3` |
+  | p4・p4y | `AS\nSELECT n\nFROM <DB>.<src>\nWHERE nosuch272 = 1`（複数行） | 同じ文言で `line 7:8` |
+  | p6・p6y | `AS (SELECT * FROM <DB>.<nosrc>)` | TABLE_NOT_FOUND、`line 7:6` |
+  | p7・p7y | `AS WITH c AS (SELECT * FROM <DB>.<nosrc>) SELECT * FROM c` | TABLE_NOT_FOUND、`line 8:6` |
+  | p8・p8y | `WITH (format = 'PARQUET') AS SELECT * FROM <DB>.<nosrc>` | TABLE_NOT_FOUND、`line 7:3` |
+  | p9・p9y | `WITH (format = 'PARQUET', write_compression = 'SNAPPY') AS ...` | TABLE_NOT_FOUND、`line 8:3` |
+  | p12・p12y | `AS SELECT 1 + 'a' AS n` | 2 / **1002** `TYPE_MISMATCH: line 4:16: Cannot apply operator: integer + varchar(1).` +接尾辞 |
+  | w1 | `awsdatacatalog.<無い DB>.<t> AS SELECT CAST('x' AS integer) AS n WITH NO DATA` | 2 / 1301 `Database <無い DB> not found. Please check your query.` +接尾辞（DB の無い CTAS の既知の文言） |
+  | w1y | 同じ文をある DB に | **SUCCEEDED**（`WITH NO DATA` では問い合わせを実行しないので CAST は失敗しない） |
+  | w2・w2y | `AS SELECT * FROM <DB>.<nosrc> WITH NO DATA` | TABLE_NOT_FOUND、`line 6:3` +接尾辞（解析は `WITH NO DATA` でも走る） |
+  | c1y | `AS SELECT n FROM <DB>.<src>`（対照） | SUCCEEDED |
+  | i1 | `INSERT INTO <DB>.<src> SELECT nosuch272, 'y' FROM <DB>.<src>` | COLUMN_NOT_FOUND、`line 1:65`（**送った文のままの位置**）、接尾辞は INSERT の ` If a data manifest file was generated at '<OUTPUT><id>-manifest.csv', you may need to manually clean ...`（#217 と同じ） |
+  | i2 | `INSERT INTO <DB>.<src> SELECT * FROM <DB>.<nosrc>` | TABLE_NOT_FOUND、`line 1:72`（送った文のままの位置）、INSERT の接尾辞 |
+
+- 付随物: エンジンで失敗した CTAS（31 件）は結果ファイル本体・`.metadata` とも無かった（`.metadata` は w1 の DB が無い CTAS だけ）。返った Query は送ったまま
+- 読み取れる規則: 本物は CTAS を Trino の SqlFormatter で整形し直し、プロパティを 1 つ足して実行している（`CREATE TABLE <名前>` / `WITH (` / `   <プロパティ>`（利用者の WITH のプロパティ 1 つごとに 1 行）/ `) AS SELECT <項目>`（複数の項目は改行して `  n` / `, s`）/ `FROM` / `  <表>` / `WHERE (<比較>)`、括弧の問い合わせと WITH の CTE は 3 桁の字下げ、二項演算子は括弧で包む）。手元の Trino 482 で、この規則で組み直した CTAS が本物と同じ位置を返すことを 8 種類で確かめた（読み取り専用の問い合わせ。Trino に整形した文字列を返させる手段は無かった）
+- 採用した判断: 接尾辞はエンジンで失敗した CTAS・INSERT すべて（エンジンの文言が `.` で終わらなければ `.` を足す）、位置は測った形だけ整形後の位置に写す（decisions.md の #272 の項）
+- 備考: #273 の先行実測（ROUND=19、`run-20260927-001229` の f7）で、S3 Tables の Context の名前空間への 2 部の CTAS の位置は送った文のまま（`line 1:98`）だった。#251 の t3（S3 Tables の Context の `awsdatacatalog.<DB>.<表>` の CTAS）は `line 6:3`。本物の COLUMN_NOT_FOUND の文言（`or requester is not authorized to access requested resources`）は Trino と違う（athena-local は Trino の文言のまま）

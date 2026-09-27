@@ -221,6 +221,10 @@ later name the date they were measured on.
   `CREATE TABLE` with four parts or more and `SHOW TABLES IN` with three
   parts or more, and lower-cases quoted parts in `Invalid table name`, as real
   Athena does (measured 2026-09-25) ([docs](docs/caveats.md#sql-dialect)).
+- The reason of a CTAS or `INSERT` that fails on the engine ends with real
+  Athena's sentence naming the result location, and a CTAS in the measured
+  forms reports the error position of Athena's reformatted statement
+  ([docs](docs/caveats.md#failed-queries)).
 
 ### Fixed
 
