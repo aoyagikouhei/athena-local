@@ -18,12 +18,21 @@
 #   （資格情報はホストのシェルで AWS_ACCESS_KEY_ID などを export してから。または ~/.aws/credentials）
 #   DB を省略するか実在しなければ、SHOW DATABASES の候補の 1 件目を自動で使う。
 #
+#   ROUND=2（1 回目で Iceberg の CTAS が失敗し、Iceberg 絡みの項目が未測定になったときのやり直し。
+#   下の「任意の環境変数」の ROUND、「項目（ROUND=2）」を参照）:
+#     tools/dev.sh OUTPUT=s3://your-bucket/prefix/ DB=your_db ROUND=2 bash tools/measure/describe-extended.sh
+#
 # 必要な環境変数:
 #   OUTPUT    結果の出力先。s3://bucket/prefix/ の形（末尾の / を付ける）。
 #
 # 任意の環境変数:
 #   DB           データベース名。省略するか実在しなければ、SHOW DATABASES の候補の 1 件目を使う
 #                （$RUN_DIR/available-databases.bytes に一覧を残す。実名を含む）。
+#   ROUND        既定 1（下の「項目」の全部を流す）。2 にすると H・I だけをフィクスチャに作り、
+#                Iceberg 絡みの項目（e_i・f_i・d_i・p5〜p9）と、同じラウンドの対照 e_h、
+#                Query の書き方を Iceberg でも押さえる i2〜i4（下の「項目（ROUND=2）」）だけを流す。
+#                HP・V は作らない・後始末の DROP も呼ばない。フィクスチャの場所（location）は
+#                実行ごとに変える（RUN_STAMP）ので、ROUND を変えて流し直しても場所は衝突しない。
 #   CATALOG      既定 AwsDataCatalog
 #   REGION       既定 ap-northeast-1
 #   OUT_DIR      既定 ${DEV_HOST_HOME:-$HOME}/athena-describe-extended-measurements
@@ -35,26 +44,30 @@
 #
 # ** このスクリプトが本物に対して行う DDL（破壊的な操作） **
 #   最初に SHOW TABLES で athena_local_probe_275_* という名前が db に既に無いことを確かめ、
-#   1 件でもあれば何も作らずに止まる。確かめた後、次の 4 つを CREATE で作る:
+#   1 件でもあれば何も作らずに止まる。確かめた後、ROUND=1（既定）は次の 4 つを CREATE で作る:
 #     - athena_local_probe_275_h  （Hive の EXTERNAL TABLE。列 n int、s string（列コメント付き））
 #     - athena_local_probe_275_hp （Hive。CTAS で PARTITIONED BY 相当の partitioned_by を持ち、
 #                                   最小の 1 行（p='x'）を最初から持つ）
-#     - athena_local_probe_275_i  （Iceberg。CTAS で partitioning を持ち、最小の 1 行（p='x'））
+#     - athena_local_probe_275_i  （Iceberg。CTAS で partitioning・is_external = false を持ち、
+#                                   最小の 1 行（p='x'）を最初から持つ）
 #     - athena_local_probe_275_v  （ビュー。SELECT 1 AS n, 'x' AS s）
-#   athena_local_probe_275_x（無い表）は作らない。作った直後に SHOW CREATE TABLE で
-#   形式を裏取りする（DROP 後は呼べないため）。
+#   ROUND=2 は athena_local_probe_275_h・_i の 2 つだけを作る（_hp・_v は作らない・後始末の
+#   DROP も呼ばない）。athena_local_probe_275_x（無い表）はどちらの ROUND でも作らない。
+#   作った直後に SHOW CREATE TABLE で形式を裏取りする（DROP 後は呼べないため）。
 #   投げる文はすべて DESCRIBE 系（EXTENDED・FORMATTED・無印・DESC）で、読み取りのみ。
 #   ALTER・RENAME・DROP COLUMN の類は一切投げない（対象の表を変えない）。
-#   最後に 4 つとも DROP する（正常終了なら本編の中で。異常終了時は trap がベストエフォートで
-#   もう一度 DROP TABLE IF EXISTS / DROP VIEW IF EXISTS を投げる）。
+#   最後に作った分だけ DROP する（正常終了なら本編の中で。異常終了時は trap がベストエフォートで
+#   もう一度 DROP TABLE IF EXISTS / DROP VIEW IF EXISTS を 4 つとも投げる。作っていない方は
+#   IF EXISTS なので無害）。
 #   location は $OUTPUT の下の実行ごとの場所（tables-probe-275-*-<日時>/）。_i（Iceberg）は DROP で
 #   データも消えるが、_hp（Hive の CTAS。external_location）は DROP してもデータ（1 行）が残る。
 #   athena_local_probe_275_h は EXTERNAL なので DROP TABLE では S3 の場所自体は残るが、
 #   行を入れていないので中身は無い。
 #   スキャンする SELECT は一切投げない（CTAS の SELECT はリテラルだけで、既存データを読まない）。
 #
-# 課金について: CTAS 2 回・CREATE 1 回・CREATE VIEW 1 回・DROP 4 回（メタデータのみ）と、
-# 読み取りのみの DESCRIBE 系を最大 48 回。Athena の最小課金 × クエリ数の見込み。
+# 課金について: ROUND=1 は CTAS 2 回・CREATE 1 回・CREATE VIEW 1 回・DROP 4 回（メタデータのみ）と、
+# 読み取りのみの DESCRIBE 系を最大 48 回。ROUND=2 は CTAS 1 回・CREATE 1 回・DROP 2 回と、
+# 読み取りのみの DESCRIBE 系を最大 12 回。Athena の最小課金 × クエリ数の見込み。
 # StartQueryExecution を呼んだ回数は summary.txt の冒頭に実測値で出す（list-work-groups・
 # sts get-caller-identity など Athena のクエリではない API 呼び出しは含めない。trap で発動する
 # 後始末のベストエフォート呼び出しも、正常終了で本編の DROP が全部済んでいれば呼ばれないため
@@ -99,6 +112,17 @@
 #     z3 DESCRIBE EXTENDED <NODB>.<H>（無い DB）
 #     z4 DESCRIBE EXTENDED <H> nocol_275（無い列）
 #     z5 DESCRIBE EXTENDED <HP> PARTITION (p='nope_275')（無いパーティション値）
+#
+# 項目（ROUND=2。1 回目で Iceberg の CTAS が `NOT_SUPPORTED: Only managed table is supported
+# for Iceberg table type` で失敗し、I に依存する 8 項目（e_i・f_i・d_i・p5〜p9）が未測定に
+# なったための やり直し。フィクスチャは H・I の 2 つだけ作る。ID・SQL は上の ROUND=1 と同じ
+# ものを流し直す。加えて i2〜i4 で Iceberg でも Query の書き方の変異を最低限押さえる）:
+#     e_h  DESCRIBE EXTENDED <H>                       Hive の対照（I と同じラウンドで比べる）
+#     e_i  DESCRIBE EXTENDED <I>       f_i DESCRIBE FORMATTED <I>       d_i DESCRIBE <I>
+#     p5〜p9（上の「3. 列指定とパーティション指定」の I の項目と同じ 5 つ）
+#     i2   DESCRIBE EXTENDED awsdatacatalog.<DB>.<I>   qe2 の Iceberg 版
+#     i3   DESCRIBE EXTENDED <I>（無修飾。Context の Database で解決）  qe1 の Iceberg 版
+#     i4   DESC FORMATTED <I>                          qf5 の Iceberg 版
 #
 # ** SQL に改行を含める書き方の注意 **
 # 「DESCRIBE\nEXTENDED ...」のような文は、シェルで実際の改行文字（0x0a）にしてから渡さないと、
@@ -167,6 +191,13 @@ POLL_TIMEOUT=${POLL_TIMEOUT:-180}
 RETRY_MAX=${RETRY_MAX:-4}
 RETRY_DELAY=${RETRY_DELAY:-5}
 
+# ROUND=1（既定）は全項目。ROUND=2 は 1 回目で Iceberg の CTAS が is_external の不足で失敗して
+# 測れなかった Iceberg の項目と、Hive の対照 e_h だけを流す（フィクスチャは H と I だけ作る）。
+ROUND=${ROUND:-1}
+case "$ROUND" in
+  1|2) ;;
+  *) echo "ROUND は 1 か 2 を指定してください（受け取った値: $ROUND）" >&2; exit 2 ;;
+esac
 PREFIX=athena_local_probe_275
 H="${PREFIX}_h"
 HP="${PREFIX}_hp"
@@ -923,26 +954,27 @@ else
   echo "== H（Hive の EXTERNAL TABLE）を作れませんでした。H を使う項目は未測定にします。"
 fi
 
-if run create-hp "CREATE TABLE $DB.$HP WITH (partitioned_by = ARRAY['p'], external_location = '$LOC_HP') AS SELECT 1 AS n, 'x' AS p"; then
+if [ "$ROUND" = 1 ] && run create-hp "CREATE TABLE $DB.$HP WITH (partitioned_by = ARRAY['p'], external_location = '$LOC_HP') AS SELECT 1 AS n, 'x' AS p"; then
   HP_OK=1
   FMT_HP=$(verify_format hp "$HP")
 else
-  echo "== HP（パーティション付き Hive 表）を作れませんでした。HP を使う項目は未測定にします。"
+  [ "$ROUND" = 1 ] && echo "== HP（パーティション付き Hive 表）を作れませんでした。HP を使う項目は未測定にします。"
 fi
 
-if run create-i "CREATE TABLE $DB.$I WITH (table_type = 'ICEBERG', partitioning = ARRAY['p'], location = '$LOC_I') AS SELECT 1 AS n, 'x' AS p"; then
+if run create-i "CREATE TABLE $DB.$I WITH (table_type = 'ICEBERG', is_external = false, partitioning = ARRAY['p'], location = '$LOC_I') AS SELECT 1 AS n, 'x' AS p"; then
   I_OK=1
   FMT_I=$(verify_format i "$I")
 else
   echo "== I（Iceberg 表）を作れませんでした。I を使う項目は未測定にします。"
 fi
 
-if run create-v "CREATE VIEW $DB.$V AS SELECT 1 AS n, 'x' AS s"; then
+if [ "$ROUND" = 1 ] && run create-v "CREATE VIEW $DB.$V AS SELECT 1 AS n, 'x' AS s"; then
   V_OK=1
 else
-  echo "== V（ビュー）を作れませんでした。V を使う項目は未測定にします。"
+  [ "$ROUND" = 1 ] && echo "== V（ビュー）を作れませんでした。V を使う項目は未測定にします。"
 fi
 
+if [ "$ROUND" = 1 ]; then
 # ============================================================================
 # 1. EXTENDED・FORMATTED・対照の DESCRIBE を H・HP・I・V・X に。
 # ============================================================================
@@ -1015,6 +1047,26 @@ run "z2" "DESCRIBE FORMATTED"
 run "z3" "DESCRIBE EXTENDED $NODB.$H"
 run_req z4 "DESCRIBE EXTENDED $DB.$H nocol_275" H
 run_req z5 "DESCRIBE EXTENDED $DB.$HP PARTITION (p='nope_275')" HP
+fi # ROUND=1
+
+if [ "$ROUND" = 2 ]; then
+# ============================================================================
+# ROUND=2: Iceberg の項目（ROUND=1 と同じ ID・同じ文）と、同じラウンドの Hive の対照 e_h。
+# 加えて、Iceberg の失敗の文言と Query を修飾の違いで比べる i2・i3、FORMATTED の DESC 形 i4。
+# ============================================================================
+run_req e_h "DESCRIBE EXTENDED $DB.$H" H
+run_req e_i "DESCRIBE EXTENDED $DB.$I" I
+run_req f_i "DESCRIBE FORMATTED $DB.$I" I
+run_req d_i "DESCRIBE $DB.$I" I
+run_req p5 "DESCRIBE $DB.$I n" I
+run_req p6 "DESCRIBE EXTENDED $DB.$I n" I
+run_req p7 "DESCRIBE FORMATTED $DB.$I n" I
+run_req p8 "DESCRIBE $DB.$I PARTITION (p='x')" I
+run_req p9 "DESC $DB.$I" I
+run_req i2 "DESCRIBE EXTENDED awsdatacatalog.$DB.$I" I
+run_req i3 "DESCRIBE EXTENDED $I" I
+run_req i4 "DESC FORMATTED $DB.$I" I
+fi # ROUND=2
 
 # ============================================================================
 # 後始末: 作った 4 つを DROP する。
@@ -1054,6 +1106,9 @@ GROUP3_LABELS="p1 p2 p3 p4 p5 p6 p7 p8 p9"
 GROUP4_LABELS="z1 z2 z3 z4 z5"
 CLEANUP_LABELS="drop-v drop-i drop-hp drop-h"
 ALL_LABELS="$PREFLIGHT_LABELS $FIXTURE_LABELS $GROUP1_LABELS $GROUP2_LABELS $GROUP3_LABELS $GROUP4_LABELS $CLEANUP_LABELS"
+if [ "$ROUND" = 2 ]; then
+  ALL_LABELS="$PREFLIGHT_LABELS create-h create-i verify-h verify-i e_h e_i f_i d_i p5 p6 p7 p8 p9 i2 i3 i4 drop-i drop-h"
+fi
 
 # summary.tsv から 1 行を読み、要点を 1 行にまとめて返す。
 row_summary_of() {
@@ -1088,23 +1143,35 @@ write_summary_txt() {
   {
     echo "# issue #275: DESCRIBE EXTENDED・DESCRIBE FORMATTED を本物どおり実行したときの"
     echo "#             結果の形（Query・Context・StatementType・結果ファイル・GetQueryResults）を実測"
+    echo "# ROUND: $ROUND$([ "$ROUND" = 2 ] && echo "（1 回目で Iceberg の CTAS が失敗した項目のやり直し。H・I だけ作る）")"
     echo "# 実行日時: $(date -Iseconds)"
     echo "# StartQueryExecution を呼んだ回数（一時的な失敗の再試行込み。フィクスチャ作成・"
     echo "#   形式の裏取り（SHOW CREATE TABLE）・後始末の DROP を含む。list-work-groups・"
     echo "#   sts get-caller-identity など Athena のクエリではない API 呼び出しは含めない）: $(wc -l < "$START_CALL_FILE" | tr -d ' ')"
     echo "#   ※ GetQueryExecution / GetQueryResults / S3 への呼び出しはこの回数に含めない（課金には影響しない）。"
     echo "#   ※ trap で発動する後始末（ベストエフォートの DROP）だけはこの回数に含めない。"
-    echo "#     正常終了で 4 つとも消せていれば trap は何も呼ばない。"
-    echo "# DDL: あり。作成: ${PREFIX}_h（Hive の EXTERNAL TABLE）・${PREFIX}_hp（パーティション付き"
-    echo "#   Hive、CTAS）・${PREFIX}_i（Iceberg、CTAS）・${PREFIX}_v（ビュー）の 4 つ。投げる項目は"
-    echo "#   すべて DESCRIBE 系の読み取りのみ（ALTER・RENAME・DROP COLUMN は投げない）。最後に 4 つ"
-    echo "#   とも DROP。location は <OUTPUT> の下の実行ごとの場所（tables-probe-275-*-<日時>/）。"
-    echo "#   ${PREFIX}_i（Iceberg）は DROP でデータも消えるが、${PREFIX}_hp（Hive の CTAS）は DROP しても"
-    echo "#   データ（1 行）が残る。${PREFIX}_h（Hive の EXTERNAL）は行を入れていないので中身は無い。"
+    echo "#     正常終了で作った分をすべて消せていれば trap は何も呼ばない。"
+    if [ "$ROUND" = 2 ]; then
+      echo "# DDL: あり。作成: ${PREFIX}_h（Hive の EXTERNAL TABLE）・${PREFIX}_i（Iceberg、CTAS。"
+      echo "#   is_external = false）の 2 つだけ（${PREFIX}_hp・${PREFIX}_v は ROUND=2 では作らない・"
+      echo "#   後始末の DROP も呼ばない）。投げる項目はすべて DESCRIBE 系の読み取りのみ（ALTER・"
+      echo "#   RENAME・DROP COLUMN は投げない）。最後に作った 2 つとも DROP。location は <OUTPUT> の"
+      echo "#   下の実行ごとの場所（tables-probe-275-*-<日時>/）。${PREFIX}_i は DROP でデータも消える。"
+      echo "#   ${PREFIX}_h（Hive の EXTERNAL）は行を入れていないので中身は無い。"
+    else
+      echo "# DDL: あり。作成: ${PREFIX}_h（Hive の EXTERNAL TABLE）・${PREFIX}_hp（パーティション付き"
+      echo "#   Hive、CTAS）・${PREFIX}_i（Iceberg、CTAS。is_external = false）・${PREFIX}_v（ビュー）の"
+      echo "#   4 つ。投げる項目はすべて DESCRIBE 系の読み取りのみ（ALTER・RENAME・DROP COLUMN は"
+      echo "#   投げない）。最後に 4 つとも DROP。location は <OUTPUT> の下の実行ごとの場所"
+      echo "#   （tables-probe-275-*-<日時>/）。${PREFIX}_i（Iceberg）は DROP でデータも消えるが、"
+      echo "#   ${PREFIX}_hp（Hive の CTAS）は DROP してもデータ（1 行）が残る。${PREFIX}_h（Hive の"
+      echo "#   EXTERNAL）は行を入れていないので中身は無い。"
+    fi
     echo "# 課金の見込み: スキャンする SELECT は投げていない。CTAS の SELECT はリテラルだけ。"
     echo "#   DROP はメタデータのみ、DESCRIBE 系は読み取りのみ。Athena の最小課金 × クエリ数の見込み。"
     echo "# フィクスチャの形式（SHOW CREATE TABLE で裏取り。作成直後の値）: H=$FMT_H  HP=$FMT_HP  I=$FMT_I"
-    echo "#   （hive/iceberg 以外は、作成に失敗したか裏取りできなかったことを示す）"
+    echo "#   （hive/iceberg 以外は、作成に失敗したか裏取りできなかったことを示す。ROUND=2 では HP は"
+    echo "#   常に unknown＝作っていない）"
     echo "# 注意: これは実測した本物の Athena の挙動であり、将来の Athena の変更や、コンソールでの"
     echo "#   設定変更で変わりうる。実測値は工場出荷時の既定とは限らない。"
     echo "# 注意: DESCRIBE EXTENDED／FORMATTED の本体には S3 のロケーション（バケット名）や Owner"
