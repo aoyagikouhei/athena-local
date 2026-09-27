@@ -4,8 +4,8 @@
 //! 含む 1 セル）。本物の Thrift（`Table(...)`・`Partition(...)`）と FORMATTED の節・行は、Trino から出せる
 //! 値と、実測した Hive 表・パーティション付き Hive 表・ビューのどれでも同じだった値だけを入れ、作り方で
 //! 変わる値・取れない値は省く（2026-09-27 実測。#275。詳細は docs/dev/measurements/statements.md の
-//! 該当節）。フェーズ 3（#275）で `background_execution::run` から配線するまで、まだどこからも呼ばない。
-#![allow(dead_code)] // フェーズ 3（#275）で配線するまで
+//! 該当節）。`background_execution::run` から配線する（#275 フェーズ 3）。列指定（p1・p2）・PARTITION
+//! 指定（p3・p4）はフェーズ 4 で配線するまで呼ばれない。
 
 use serde_json::Value;
 
@@ -35,7 +35,8 @@ pub(super) struct Table<'a> {
     pub(super) kind: Kind,
 }
 
-/// FORMATTED の列指定（p2）の ColumnInfo の列名。11 列（2026-09-27 実測 p2）。
+/// FORMATTED の列指定（p2）の ColumnInfo の列名。11 列（2026-09-27 実測 p2）。フェーズ 4 で配線する。
+#[allow(dead_code)]
 pub(super) const COLUMN_INFO_NAMES: [&str; 11] = [
     "col_name",
     "data_type",
@@ -80,13 +81,15 @@ pub(super) fn formatted(rows: &[Vec<Value>], table: &Table) -> Vec<String> {
 }
 
 /// 列指定 EXTENDED の結果の行（p1）。コメント欄は列コメントによらず `from deserializer`
-/// （2026-09-27 実測 p1）。
+/// （2026-09-27 実測 p1）。フェーズ 4 で配線する。
+#[allow(dead_code)]
 pub(super) fn column_extended(row: &[Value]) -> Vec<String> {
     vec![column_line_with(row, "from deserializer")]
 }
 
 /// 列指定 FORMATTED の結果の行（p2）。ColumnInfo は `COLUMN_INFO_NAMES` の 11 列
-/// （2026-09-27 実測 p2）。
+/// （2026-09-27 実測 p2）。フェーズ 4 で配線する。
+#[allow(dead_code)]
 pub(super) fn column_formatted(row: &[Value]) -> Vec<String> {
     // 先頭の見出しだけ `# ` 付き（`# col_name`。それも 20 桁詰めの外。2026-09-27 実測 p2）。
     let mut header: Vec<String> = COLUMN_INFO_NAMES.iter().map(|name| pad(name)).collect();
@@ -103,6 +106,8 @@ pub(super) fn column_formatted(row: &[Value]) -> Vec<String> {
 }
 
 /// PARTITION 指定 EXTENDED の結果の行（p3）。`values` は PARTITION の `(キー, 値)` の並び。
+/// フェーズ 4 で配線する。
+#[allow(dead_code)]
 pub(super) fn partition_extended(
     rows: &[Vec<Value>],
     table: &Table,
@@ -120,6 +125,8 @@ pub(super) fn partition_extended(
 /// PARTITION 指定 FORMATTED の結果の行（p4）。`Detailed Partition Information` は
 /// `Partition Value:`・`Database:`・`Table:`・`LastAccessTime:`・`Protect Mode:` だけを残す
 /// （`CreateTime:`・`Location:`・`Partition Parameters:` の節は省く。2026-09-27 実測 p4）。
+/// フェーズ 4 で配線する。
+#[allow(dead_code)]
 pub(super) fn partition_formatted(
     rows: &[Vec<Value>],
     table: &Table,
@@ -187,6 +194,8 @@ fn column_line(row: &[Value]) -> String {
 }
 
 /// `column_line` のコメント欄を固定の文字列に差し替えたもの（p1 の `from deserializer`）。
+/// `column_extended`（フェーズ 4）専用。
+#[allow(dead_code)]
 fn column_line_with(row: &[Value], comment: &str) -> String {
     format!(
         "{}\t{}\t{}",
@@ -197,7 +206,8 @@ fn column_line_with(row: &[Value], comment: &str) -> String {
 }
 
 /// `values:[x]`／`Partition Value: [x]` の中身。複数値の区切りは未実測で、Java の `List.toString`
-/// に倣い `, ` にしている。
+/// に倣い `, ` にしている。`partition_thrift`・`partition_formatted`（フェーズ 4）専用。
+#[allow(dead_code)]
 fn value_list(values: &[(String, String)]) -> String {
     values
         .iter()
@@ -231,6 +241,8 @@ fn table_thrift(rows: &[Vec<Value>], table: &Table) -> String {
 /// `sd.cols` のコメント欄は、パーティション列以外は空なら `comment:`（値が無ければ空文字。
 /// 表の EXTENDED の `comment:null` と違う。生データどおり）、パーティション列は空なら
 /// `comment:null`（生データどおり。#275 のノート参照。表の種類・作り方が増えたら要再確認）。
+/// `partition_extended`（フェーズ 4）専用。
+#[allow(dead_code)]
 fn partition_thrift(rows: &[Vec<Value>], table: &Table, values: &[(String, String)]) -> String {
     let cols = rows
         .iter()

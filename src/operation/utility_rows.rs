@@ -74,8 +74,13 @@ pub(super) fn reshape(
 
 /// 列を `columns`（名前と型の対）の列（Precision・Scale 0、CaseSensitive false）に、行を 1 値の行に置き換える。
 /// ビューの varchar も 0/false なので（2026-09-24 実測 d5）、`athena_type` の表（varchar は 2147483647/true）
-/// ではなくここで決めた ColumnInfo を `athena_columns` に置く。
-fn replace(mut outcome: Outcome, columns: &[(&str, &str)], rows: Vec<String>) -> Outcome {
+/// ではなくここで決めた ColumnInfo を `athena_columns` に置く。`describe_extended`（#275）が
+/// `col_name`／`data_type`／`comment` の 3 列に置き換えるのに再利用する。
+pub(super) fn replace(
+    mut outcome: Outcome,
+    columns: &[(&str, &str)],
+    rows: Vec<String>,
+) -> Outcome {
     outcome.rows = rows
         .into_iter()
         .map(|text| vec![Value::from(text)])

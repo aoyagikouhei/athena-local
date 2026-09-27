@@ -1,12 +1,10 @@
 //! `DESCRIBE`／`DESC` の `EXTENDED`／`FORMATTED` と、列名・`PARTITION` 指定の認識、Trino に送る文の組み立て、
 //! GetQueryExecution の `Query`／Context の Database の組み直し（2026-09-27 実測。#275）。
 //!
-//! フェーズ 3（#275）で `start_checks.rs`・`background_execution.rs` から呼ぶまで、ここの関数はどこからも
-//! 呼ばない（純関数のみ）。
+//! `start_checks.rs`・`background_execution.rs` から呼ぶ（#275 フェーズ 3）。
 //!
 //! 文の認識は字句処理を新しく書かず `athena_sql::Cursor` を再利用する。二重引用符とバッククォートの部品を
 //! 含む名前は対象外（今までどおりの経路に任せ、`None` を返す）。
-#![allow(dead_code)] // フェーズ 3（#275）で配線するまで
 
 use super::reported_query;
 

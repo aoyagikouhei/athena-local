@@ -61,6 +61,7 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
         database,
         immediate_failure,
         reported,
+        describe_extended,
     } = match decide(
         app,
         query,
@@ -91,6 +92,7 @@ pub async fn start_query_execution(app: &App, body: &Bytes) -> Response {
             fingerprint,
             immediate_failure,
             reported,
+            describe_extended,
         },
     );
 

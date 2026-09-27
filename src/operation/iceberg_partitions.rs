@@ -36,6 +36,44 @@ fn is_identifier(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
 }
 
+/// Trino の `SHOW CREATE TABLE` の DDL から `<key> = 'value'`（`location`・`format`）の値を取り出す
+/// （`''` は `'` に戻す）。`parse_partitioning` と同じ走査（文字列リテラル・引用符付き識別子は
+/// `skip_quoted` で読み飛ばす）。`key` が無ければ None（#275 の describe_detail_iceberg が呼ぶ。
+/// 取れなければ行を省く。D1・D7）。
+pub(super) fn parse_string_property(ddl: &str, key: &str) -> Option<String> {
+    let bytes = ddl.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\'' | b'"' => index = skip_quoted(bytes, index),
+            byte if is_identifier(byte) => {
+                let start = index;
+                while index < bytes.len() && is_identifier(bytes[index]) {
+                    index += 1;
+                }
+                if &ddl[start..index] == key
+                    && let Some(value) = string_value(&ddl[index..])
+                {
+                    return Some(value);
+                }
+            }
+            _ => index += 1,
+        }
+    }
+    None
+}
+
+/// `= 'value'` の値（`''` を `'` に戻す）。形が違えば None。
+fn string_value(rest: &str) -> Option<String> {
+    let rest = rest.trim_start().strip_prefix('=')?.trim_start();
+    let bytes = rest.as_bytes();
+    if bytes.first() != Some(&b'\'') {
+        return None;
+    }
+    let end = skip_quoted(bytes, 0);
+    Some(rest.get(1..end - 1)?.replace("''", "'"))
+}
+
 /// `= ARRAY['a', 'b']` の要素。形が違えば None。
 fn array_elements(rest: &str) -> Option<Vec<String>> {
     let rest = rest.trim_start().strip_prefix('=')?.trim_start();
@@ -197,5 +235,27 @@ mod tests {
         for spec in ["void(s)", "bucket(n)", "unknown(s, 1)"] {
             assert_eq!(partition_row(spec), None, "{spec}");
         }
+    }
+
+    /// `location`・`format` の値を取り出す（`''` を `'` に戻す。#275）。
+    #[test]
+    fn parse_string_property_は_key_の値を取り出す() {
+        let ddl = ddl("   format = 'PARQUET',\n   location = 's3://b/it''s'");
+        assert_eq!(
+            parse_string_property(&ddl, "format"),
+            Some("PARQUET".to_string())
+        );
+        assert_eq!(
+            parse_string_property(&ddl, "location"),
+            Some("s3://b/it's".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_string_property_は_key_が無ければ_none() {
+        assert_eq!(
+            parse_string_property(&ddl("   format = 'PARQUET'"), "location"),
+            None
+        );
     }
 }

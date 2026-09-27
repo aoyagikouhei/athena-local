@@ -34,11 +34,14 @@ pub(super) async fn iceberg_partition_specs(
 }
 
 /// DESCRIBE の対象の名前の、元の SQL での範囲。`iceberg_partition_specs` が Trino に投げる名前。
+/// `EXTENDED`／`FORMATTED`（あれば）を読み飛ばしてから名前を読むので、`describe_extended` が実行する
+/// `DESCRIBE FORMATTED <名前>` の表示用の文（execution.query）でも正しく名前を取れる（計画攻撃 A1。#275）。
 pub(super) fn describe_target_name(query: &str) -> Option<&str> {
     let mut cursor = athena_sql::Cursor::new(query);
     if !(cursor.keyword("DESCRIBE") || cursor.keyword("DESC")) {
         return None;
     }
+    let _ = cursor.keyword("EXTENDED") || cursor.keyword("FORMATTED");
     Some(cursor.qualified_name()?.text)
 }
 

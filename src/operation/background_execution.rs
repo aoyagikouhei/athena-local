@@ -12,6 +12,7 @@ use crate::trino::{Outcome, QueryError, Trino};
 use super::completion;
 use super::context_catalog;
 use super::ctas_reformat;
+use super::describe_extended;
 use super::format_probe;
 use super::result_output;
 use super::table_format::{self, FormatOverride};
@@ -242,6 +243,28 @@ async fn run(
     let (statement, format, format_override, substatement_type) =
         format_probe::probe_target_format(trino, config, execution, raw_catalog, database, cancel)
             .await;
+
+    // 名前だけの修飾子付き DESCRIBE（#275）は、受け取った文（`execution.query`。表示用に DB を落として
+    // ある）を Trino に送らず、`DESCRIBE <名前>` と（Iceberg の FORMATTED だけ）追加の問い合わせを別に
+    // 投げて行を組み立てる（D3）。`describe_extended::parse` が None（そんなことは無いはずだが）なら
+    // 今までどおりの経路に倒す。
+    if execution.describe_extended
+        && let Some(describe) = describe_extended::parse(&execution.query)
+    {
+        let outcome = super::describe_run::run(
+            trino,
+            config,
+            execution,
+            &describe,
+            catalog,
+            database,
+            format,
+            raw_catalog,
+            cancel,
+        )
+        .await?;
+        return Ok((outcome, format_override, substatement_type));
+    }
 
     let bound = bind_parameters(trino, execution, catalog, database).await;
     let query = aliased_query(trino, config, execution).await;

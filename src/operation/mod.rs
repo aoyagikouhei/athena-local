@@ -12,6 +12,8 @@ mod ctas_reformat;
 mod describe_detail;
 mod describe_detail_iceberg;
 mod describe_extended;
+mod describe_run;
+mod describe_start;
 mod entity_check;
 mod execution;
 mod format_probe;

@@ -61,11 +61,22 @@ pub(super) async fn probe_target_format(
             None => None,
         }
     };
-    let format_override = statement
-        .zip(format)
-        .and_then(|(statement, format)| table_format::format_override(statement, format));
+    // 名前だけの修飾子付き DESCRIBE（`execution.describe_extended`）のビューは、本物が
+    // DESCRIBE_TABLE・application/octet-stream・UpdateCount 無しで返す（e_v・f_v）。無印の DESCRIBE の
+    // ビュー（DescribeView・binary・0）とは違うので、この組だけ上書きしない（計画攻撃 A2。2026-09-27
+    // 実測。#275）。
+    let extended_view =
+        execution.describe_extended && format == Some(table_format::TableFormat::View);
+    let format_override = if extended_view {
+        None
+    } else {
+        statement
+            .zip(format)
+            .and_then(|(statement, format)| table_format::format_override(statement, format))
+    };
     // 本物はビューへの DESCRIBE と SHOW COLUMNS を `DESC_VIEW` と分類する（2026-09-24 実測 d5。#173）。
-    let substatement_type = (format == Some(table_format::TableFormat::View)
+    let substatement_type = (!extended_view
+        && format == Some(table_format::TableFormat::View)
         && matches!(
             statement,
             Some(
