@@ -14,11 +14,12 @@
 | [query-results.md](query-results.md) | `GetQueryResults` の先頭行、UTILITY 文の ColumnInfo と `DESCRIBE`／`SHOW COLUMNS` の行の形、ページング、`MaxResults`／`NextToken` の検証、QUEUED のクエリへの呼び出し | [api.md](../../api.md)、[caveats.md](../../caveats.md) |
 | [errors.md](errors.md) | リクエスト本文の解釈の失敗（`SerializationException`）、必須項目の欠落、`UnknownOperationException` | [caveats.md](../../caveats.md) |
 | [work-groups.md](work-groups.md) | `GetWorkGroup`、`ListWorkGroups` | [api.md](../../api.md)、[caveats.md](../../caveats.md) |
+| [parameters.md](parameters.md) | `ExecutionParameters` の値の分類（式のまま当たるか文字列リテラルになるか）、全桁数字の UUID | [parameters.md](../../parameters.md) |
 | [client-request-token.md](client-request-token.md) | `ClientRequestToken` による冪等性とトークンの検証、`GetQueryExecution` の `QueryExecutionContext` の返り方 | [api.md](../../api.md)、[caveats.md](../../caveats.md) |
 | [clients.md](clients.md) | クライアント（AWS CLI、Athena JDBC 3.x、Grafana、awswrangler、PyAthena、dbt-athena）の挙動とソース読み。本物の Athena ではない | [clients.md](../../clients.md)、[caveats.md](../../caveats.md) |
 | [trino.md](trino.md) | 手元の Trino 482／483 での実測。本物の Athena ではない | — |
 
-`ExecutionParameters` の値そのものを本物で測った記録はまだ無いので、`parameters.md` は置いていない。分類にからむ疑問（括弧で始まる `SELECT` の扱い）は #113 で [statements.md](statements.md) に記録した。
+`ExecutionParameters` の最初のラウンド（2026-09-14）は生データを残していない。[parameters.md](parameters.md) にあるのはその後に測り直したものだけ。分類にからむ疑問（括弧で始まる `SELECT` の扱い）は #113 で [statements.md](statements.md) に記録した。
 
 ## 書き方
 
